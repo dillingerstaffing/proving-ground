@@ -4107,3 +4107,939 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
 })();
+/* ============================================================
+   THE SPILL BIN
+   An RV32I register allocation bench for the freelance
+   portfolio's pipeline work: a real graph-coloring register
+   allocator. You are the allocator. Map virtual registers onto
+   K physical registers, spill the rest to the stack, and stay
+   inside the spill budget. Real liveness analysis, real
+   interference graph, real Chaitin-Briggs solver running the
+   shop baseline you are graded against. Three qualification
+   trials, hint tokens, and downloadable allocation reports.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- tiny helpers (module-local) ---------------- */
+  function sb$(id) { return document.getElementById(id); }
+  function sbEl(tag, cls, html) {
+    var d = document.createElement(tag);
+    if (cls) d.className = cls;
+    if (html != null) d.innerHTML = html;
+    return d;
+  }
+  function sbEsc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function sbToast(msg) {
+    var t = sb$("sbToastBox");
+    if (!t) {
+      t = sbEl("div", "sb-toast");
+      t.id = "sbToastBox";
+      document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.classList.add("show");
+    setTimeout(function () { t.classList.remove("show"); }, 2200);
+  }
+
+  /* ---------------- deterministic RNG ---------------- */
+  function sbRng(seed) {
+    var a = seed >>> 0;
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /* ============================================================
+     PURE LOGIC: liveness, interference, Chaitin-Briggs
+     prog: [{op, d (vreg|null), u:[vregs]}]
+     args: vregs live on entry
+     ============================================================ */
+  function sbVregsOf(prog, args) {
+    var seen = {}, out = [];
+    function add(v) { if (v && !seen[v]) { seen[v] = 1; out.push(v); } }
+    (args || []).forEach(add);
+    prog.forEach(function (ins) { add(ins.d); (ins.u || []).forEach(add); });
+    out.sort(function (a, b) {
+      return parseInt(a.slice(1), 10) - parseInt(b.slice(1), 10);
+    });
+    return out;
+  }
+
+  function sbLiveness(prog, args) {
+    var n = prog.length, liveIn = [], liveOut = [];
+    var i, j, ins, s;
+    for (i = 0; i < n; i++) { liveIn.push({}); liveOut.push({}); }
+    (args || []).forEach(function (v) { liveIn[0][v] = 1; });
+    for (i = n - 1; i >= 0; i--) {
+      ins = prog[i];
+      s = {};
+      if (i + 1 < n) { for (var v in liveIn[i + 1]) s[v] = 1; }
+      liveOut[i] = s;
+      s = {};
+      for (var v2 in liveOut[i]) s[v2] = 1;
+      if (ins.d) delete s[ins.d];
+      (ins.u || []).forEach(function (v3) { s[v3] = 1; });
+      liveIn[i] = s;
+    }
+    return { liveIn: liveIn, liveOut: liveOut };
+  }
+
+  function sbInterference(prog, args) {
+    var lv = sbLiveness(prog, args), adj = {}, vregs = sbVregsOf(prog, args);
+    vregs.forEach(function (v) { adj[v] = {}; });
+    prog.forEach(function (ins, i) {
+      if (!ins.d) return;
+      for (var v in lv.liveOut[i]) {
+        if (v === ins.d) continue;
+        adj[ins.d][v] = 1; adj[v][ins.d] = 1;
+      }
+    });
+    return adj;
+  }
+
+  function sbSpillCosts(prog, args) {
+    var costs = {}, vregs = sbVregsOf(prog, args);
+    vregs.forEach(function (v) { costs[v] = 0; });
+    prog.forEach(function (ins) {
+      if (ins.d) costs[ins.d] += 3;
+      (ins.u || []).forEach(function (v) { costs[v] += 2; });
+    });
+    (args || []).forEach(function (v) { costs[v] += 2; });
+    return costs;
+  }
+
+  function sbLiveRange(prog, args, v) {
+    var lv = sbLiveness(prog, args), first = -1, last = -1;
+    for (var i = 0; i < prog.length; i++) {
+      if (lv.liveIn[i][v] || lv.liveOut[i][v] ||
+          prog[i].d === v || (prog[i].u || []).indexOf(v) >= 0) {
+        if (first < 0) first = i;
+        last = i;
+      }
+    }
+    return { first: first, last: last };
+  }
+
+  /* Chaitin-Briggs graph coloring with spill heuristic.
+     Returns {assign: {v: colorIndex | -1 (spilled)}, cost} */
+  function sbSolve(prog, args, K) {
+    var adj = sbInterference(prog, args);
+    var costs = sbSpillCosts(prog, args);
+    var vregs = sbVregsOf(prog, args);
+    var deg = {}, alive = {}, stack = [], spilled = {};
+    vregs.forEach(function (v) {
+      deg[v] = Object.keys(adj[v]).length;
+      alive[v] = 1;
+    });
+    var remaining = vregs.length, guard = 0;
+    while (remaining > 0 && guard++ < 10000) {
+      var pick = null, i;
+      for (i = 0; i < vregs.length; i++) {
+        var v = vregs[i];
+        if (alive[v] && deg[v] < K) { pick = v; break; }
+      }
+      if (pick === null) {
+        var best = null, bestScore = Infinity;
+        for (i = 0; i < vregs.length; i++) {
+          var w = vregs[i];
+          if (!alive[w]) continue;
+          var score = costs[w] / Math.max(1, deg[w]);
+          if (score < bestScore) { bestScore = score; best = w; }
+        }
+        pick = best;
+        spilled[pick] = 1;
+      }
+      stack.push(pick);
+      alive[pick] = 0;
+      remaining--;
+      for (var nb in adj[pick]) { if (alive[nb]) deg[nb]--; }
+    }
+    var assign = {};
+    var cost = 0;
+    while (stack.length) {
+      var v2 = stack.pop();
+      if (spilled[v2]) { assign[v2] = -1; cost += costs[v2]; continue; }
+      var used = {};
+      for (var nb2 in adj[v2]) {
+        if (assign[nb2] !== undefined && assign[nb2] >= 0) used[assign[nb2]] = 1;
+      }
+      var c = 0;
+      while (used[c]) c++;
+      assign[v2] = c;
+    }
+    return { assign: assign, cost: cost, adj: adj, costs: costs, vregs: vregs };
+  }
+
+  function sbVerify(prog, args, K, assign) {
+    var adj = sbInterference(prog, args);
+    var vregs = sbVregsOf(prog, args);
+    var conflicts = [];
+    vregs.forEach(function (v) {
+      if (assign[v] === undefined || assign[v] === null) {
+        conflicts.push({ v: v, why: "unassigned" });
+      }
+    });
+    var seen = {};
+    vregs.forEach(function (v) {
+      for (var nb in adj[v]) {
+        var key = v < nb ? v + "|" + nb : nb + "|" + v;
+        if (seen[key]) continue;
+        seen[key] = 1;
+        if (assign[v] !== undefined && assign[v] === assign[nb] && assign[v] >= 0) {
+          conflicts.push({ v: v, nb: nb, why: "color" });
+        }
+      }
+    });
+    return conflicts;
+  }
+
+  /* ---------------- trial programs ----------------
+     args: vregs live on entry (function arguments) */
+  function I(op, d, u) { return { op: op, d: d, u: u || [] }; }
+
+  var SB_TRIALS = [
+    {
+      name: "FIRST SHIFT",
+      desc: "A small leaf function, eight virtual registers, four physical. No spilling required if you read the ranges right.",
+      K: 4, budget: 14, par: 0,
+      args: ["v0", "v1"],
+      prog: [
+        I("add", "v2", ["v0", "v1"]),
+        I("mul", "v3", ["v2", "v0"]),
+        I("sub", "v4", ["v1", "v3"]),
+        I("xor", "v5", ["v2", "v4"]),
+        I("add", "v6", ["v3", "v5"]),
+        I("or", "v7", ["v6", "v0"]),
+        I("ret", null, ["v7"])
+      ]
+    },
+    {
+      name: "DOUBLE SHIFT",
+      desc: "Eleven virtuals fighting over four physical registers in a checksum kernel. Something has to spill. Pick the cheapest victim.",
+      K: 4, budget: 8, par: 5,
+      args: ["v0", "v1"],
+      prog: [
+        I("add", "v2", ["v0", "v1"]),
+        I("mul", "v3", ["v0", "v1"]),
+        I("sub", "v4", ["v1", "v0"]),
+        I("xor", "v5", ["v0", "v1"]),
+        I("sll", "v6", ["v5", "v2"]),
+        I("xor", "v7", ["v6", "v5"]),
+        I("xor", "v8", ["v7", "v4"]),
+        I("xor", "v9", ["v8", "v3"]),
+        I("xor", "v10", ["v9", "v2"]),
+        I("ret", null, ["v10"])
+      ]
+    },
+    {
+      name: "GRAVEYARD SHIFT",
+      desc: "Fifteen virtuals, five physical registers, one gnarly crypto round. The shop solver spills twice to fit it. Match the par and you run this bench.",
+      K: 5, budget: 15, par: 10,
+      args: ["v0", "v1"],
+      prog: [
+        I("add", "v2", ["v0", "v1"]),
+        I("mul", "v3", ["v0", "v1"]),
+        I("sub", "v4", ["v1", "v0"]),
+        I("xor", "v5", ["v0", "v1"]),
+        I("or", "v6", ["v0", "v1"]),
+        I("and", "v7", ["v1", "v0"]),
+        I("sll", "v8", ["v7", "v2"]),
+        I("xor", "v9", ["v8", "v7"]),
+        I("xor", "v10", ["v9", "v6"]),
+        I("xor", "v11", ["v10", "v5"]),
+        I("xor", "v12", ["v11", "v4"]),
+        I("xor", "v13", ["v12", "v3"]),
+        I("xor", "v14", ["v13", "v2"]),
+        I("ret", null, ["v14"])
+      ]
+    }
+  ];
+
+  /* ---------------- explore-mode program generator ---------------- */
+  var SB_OPS = ["add", "sub", "mul", "xor", "or", "and", "sll", "srl"];
+  function sbRandomProg(seed, nV, nIns) {
+    var rng = sbRng(seed);
+    var prog = [], next = 2, live = ["v0", "v1"], i;
+    for (i = 0; i < nIns; i++) {
+      var op = SB_OPS[Math.floor(rng() * SB_OPS.length)];
+      var d = "v" + (next++);
+      var u = [];
+      if (live.length === 0) live.push("v0");
+      u.push(live[Math.floor(rng() * live.length)]);
+      if (rng() < 0.8 && live.length > 0) {
+        var u2 = live[Math.floor(rng() * live.length)];
+        if (u2 !== u[0]) u.push(u2);
+      }
+      prog.push(I(op, d, u));
+      live.push(d);
+      if (live.length > 6 && rng() < 0.45) {
+        live.splice(Math.floor(rng() * live.length), 1);
+      }
+      if (next - 2 >= nV) break;
+    }
+    prog.push(I("ret", null, [live[live.length - 1]]));
+    return { prog: prog, args: ["v0", "v1"] };
+  }
+
+  /* ---------------- palette: one color per physical register ---------------- */
+  var SB_COLORS = ["#c6ff4a", "#41e6ff", "#ff8b3d", "#ff5470",
+                   "#b78bff", "#ffd23f", "#5affc7", "#ff9de2"];
+
+  var SB_CSS = [
+    ".sb-overlay{position:fixed;inset:0;z-index:60;display:none;background:rgba(5,8,7,.88);overflow-y:auto;padding:18px 12px;}",
+    ".sb-overlay.open{display:block;}",
+    ".sb-panel{max-width:1060px;margin:0 auto;background:#0d1312;border:1px solid var(--line);padding:22px 22px 28px;}",
+    ".sb-close{float:right;background:none;border:1px solid var(--line);color:var(--ink);font:inherit;font-size:11px;letter-spacing:.12em;padding:8px 12px;cursor:pointer;}",
+    ".sb-close:hover{border-color:var(--acid);color:var(--acid);}",
+    ".sb-panel h3{font-family:'Chakra Petch',sans-serif;font-size:30px;margin:0 0 6px;text-transform:uppercase;letter-spacing:-.01em;color:var(--ink);}",
+    ".sb-panel h3 .sb-acid{color:var(--acid);}",
+    ".sb-sub{font-size:12px;line-height:1.7;color:#9fb0ac;margin:0 0 16px;max-width:72ch;}",
+    ".sb-sub a{color:var(--acid);}",
+    ".sb-tabs{display:flex;gap:8px;margin-bottom:16px;}",
+    ".sb-tab{background:none;border:1px solid var(--line);color:#9fb0ac;font:inherit;font-size:11px;letter-spacing:.14em;padding:10px 18px;cursor:pointer;}",
+    ".sb-tab.on{border-color:var(--acid);color:var(--acid);}",
+    ".sb-ctl{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px;}",
+    ".sb-field h5{margin:0 0 6px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--cyan);font-weight:600;}",
+    ".sb-field select{background:var(--black);border:1px solid var(--line);color:var(--ink);padding:10px;font-size:14px;min-height:44px;}",
+    ".sb-btn{background:none;border:1px solid var(--line);color:var(--ink);font:inherit;font-size:11px;letter-spacing:.12em;text-transform:uppercase;padding:12px 16px;cursor:pointer;min-height:44px;}",
+    ".sb-btn:hover{border-color:var(--acid);color:var(--acid);}",
+    ".sb-btn.primary{border-color:var(--acid);color:var(--acid);}",
+    ".sb-btn.warn{border-color:var(--orange);color:var(--orange);}",
+    ".sb-btn:disabled{opacity:.35;cursor:default;}",
+    ".sb-runhead{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;justify-content:space-between;margin:0 0 8px;}",
+    ".sb-runhead h4{font-family:'Chakra Petch',sans-serif;font-size:19px;margin:0;text-transform:uppercase;color:var(--ink);}",
+    ".sb-stats{font-family:monospace;font-size:11px;color:#9fb0ac;letter-spacing:.04em;}",
+    ".sb-stats b{color:var(--acid);}",
+    ".sb-cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;}",
+    ".sb-col h5{margin:0 0 8px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--cyan);font-weight:600;}",
+    ".sb-prog{font-family:monospace;font-size:12px;line-height:1.9;background:var(--black);border:1px solid var(--line);padding:10px 12px;max-height:300px;overflow-y:auto;}",
+    ".sb-prog .ln{white-space:pre;color:#8fa09c;}",
+    ".sb-prog .ln .num{color:#5a6a67;margin-right:10px;}",
+    ".sb-prog .ln.live{color:var(--ink);background:rgba(198,255,74,.07);}",
+    ".sb-prog .ln.live .num{color:var(--acid);}",
+    ".sb-ranges{margin-top:10px;border:1px solid var(--line);background:var(--panel-2);padding:10px 12px;}",
+    ".rg-row{display:grid;grid-template-columns:44px 44px minmax(0,1fr);gap:8px;align-items:center;padding:5px 4px;cursor:pointer;border:1px solid transparent;min-height:44px;}",
+    ".rg-row:hover{background:rgba(255,255,255,.03);}",
+    ".rg-row.sel{border-color:var(--cyan);}",
+    ".rg-lab{font-family:monospace;font-size:12px;color:var(--ink);}",
+    ".rg-cost{font-family:monospace;font-size:10px;color:#7c8d89;}",
+    ".rg-bar{position:relative;height:16px;background:rgba(255,255,255,.04);}",
+    ".rg-fill{position:absolute;top:0;bottom:0;background:#3a4a47;}",
+    ".rg-row.done .rg-fill{opacity:1;}",
+    ".rg-row.spilled .rg-fill{background:repeating-linear-gradient(45deg,#5a2f16,#5a2f16 4px,#2c1a0e 4px,#2c1a0e 8px);}",
+    ".sb-graph{border:1px solid var(--line);background:var(--black);padding:6px;}",
+    ".sb-graph svg{display:block;width:100%;height:auto;}",
+    ".sb-graph .nd{cursor:pointer;}",
+    ".sb-chips{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 10px;align-items:stretch;}",
+    ".sb-chip{border:1px solid var(--line);background:var(--panel-2);color:var(--ink);font:inherit;min-width:52px;min-height:48px;padding:8px 10px;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;}",
+    ".sb-chip .dot{width:18px;height:18px;border:1px solid rgba(0,0,0,.4);}",
+    ".sb-chip small{font-size:10px;letter-spacing:.1em;}",
+    ".sb-chip:hover{border-color:#fff;}",
+    ".sb-chip.spill{border-style:dashed;border-color:var(--orange);color:var(--orange);}",
+    ".sb-chip.ghost{border-style:dashed;color:#7c8d89;}",
+    ".sb-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;}",
+    ".sb-verdict{margin-top:14px;}",
+    ".sb-stamp{display:inline-block;font-family:'Chakra Petch',sans-serif;font-size:22px;text-transform:uppercase;letter-spacing:.06em;padding:10px 18px;border:2px solid;margin-bottom:8px;}",
+    ".sb-stamp.pass{color:var(--acid);border-color:var(--acid);}",
+    ".sb-stamp.fail{color:var(--orange);border-color:var(--orange);}",
+    ".sb-verdict p{font-size:12px;line-height:1.7;color:#9fb0ac;margin:0 0 4px;max-width:70ch;}",
+    ".sb-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;}",
+    ".sb-card{border:1px solid var(--line);background:var(--panel-2);padding:16px;display:flex;flex-direction:column;gap:8px;}",
+    ".sb-card h4{font-family:'Chakra Petch',sans-serif;font-size:18px;margin:0;text-transform:uppercase;}",
+    ".sb-card p{font-size:12px;line-height:1.65;color:#9fb0ac;margin:0;flex:1;}",
+    ".sb-card .meta{font-family:monospace;font-size:11px;color:#7c8d89;}",
+    ".sb-card .best{font-family:monospace;font-size:11px;letter-spacing:.1em;}",
+    ".sb-card .best.gold{color:var(--acid);}",
+    ".sb-card .best.silver{color:#cfd8d6;}",
+    ".sb-card .best.shop{color:var(--orange);}",
+    ".sb-toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);background:#101715;border:1px solid var(--acid);color:var(--ink);font-size:12px;padding:12px 18px;z-index:80;opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;max-width:92vw;}",
+    ".sb-toast.show{opacity:1;transform:translateX(-50%) translateY(0);}",
+    "@keyframes sbShake{0%,100%{transform:translateX(0);}25%{transform:translateX(-6px);}75%{transform:translateX(6px);}}",
+    ".sb-shake{animation:sbShake .25s ease 2;}",
+    "@media (max-width:900px){.sb-cols{grid-template-columns:minmax(0,1fr);}.sb-cards{grid-template-columns:minmax(0,1fr);}.sb-panel{padding:16px 14px 22px;}}"
+  ].join("\n");
+
+  /* ---------------- persistent best grades ---------------- */
+  function sbBestLoad() {
+    try { return JSON.parse(localStorage.getItem("sbBest") || "{}"); }
+    catch (e) { return {}; }
+  }
+  function sbBestSave(b) {
+    try { localStorage.setItem("sbBest", JSON.stringify(b)); } catch (e) {}
+  }
+  var SB_GRADE_RANK = { "GOLD": 3, "SILVER": 2, "SHOP-BUILT": 1 };
+
+  /* ---------------- overlay shell ---------------- */
+  var sbExpSeed = 1001;
+
+  function sbBuildShell() {
+    var st = document.createElement("style");
+    st.textContent = SB_CSS;
+    document.head.appendChild(st);
+
+    var box = document.querySelector(".dossier .actions");
+    if (box && !sb$("sbBtn")) {
+      var b = sbEl("button", "secondary", "Run the Spill Bin");
+      b.id = "sbBtn";
+      b.addEventListener("click", function () { sb$("sbOverlay").classList.add("open"); });
+      box.appendChild(b);
+    }
+
+    var ov = sbEl("div", "sb-overlay");
+    ov.id = "sbOverlay";
+    var panel = sbEl("div", "sb-panel");
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    panel.innerHTML =
+      '<button class="sb-close" id="sbClose">CLOSE [x]</button>' +
+      '<h3>The Spill <span class="sb-acid">Bin</span></h3>' +
+      '<p class="sb-sub">Every function is a bar fight over registers: more live values than ' +
+      'physical registers, and somebody spills to the stack. This bench puts you in the ' +
+      'allocator seat for the same register pressure behind the ' +
+      '<a href="https://dillingerstaffing.github.io/portfolio/" target="_blank" rel="noopener">RV32I pipeline work</a> ' +
+      'in the portfolio. Read the live ranges, color the interference graph, spill the cheapest ' +
+      'victims, stay inside the budget. Free-build in EXPLORE, then qualify on three shifts in TRIALS. ' +
+      'The shop solver (a real Chaitin-Briggs allocator running under the bench) sets every par.</p>' +
+      '<div class="sb-tabs">' +
+      '<button class="sb-tab on" id="sbTabExp">EXPLORE</button>' +
+      '<button class="sb-tab" id="sbTabTri">TRIALS</button>' +
+      '</div>' +
+      '<div id="sbPageExp"></div>' +
+      '<div id="sbPageTri" style="display:none"></div>';
+
+    sb$("sbClose").addEventListener("click", function () {
+      ov.classList.remove("open");
+    });
+    var tExp = sb$("sbTabExp"), tTri = sb$("sbTabTri");
+    tExp.addEventListener("click", function () {
+      tExp.classList.add("on"); tTri.classList.remove("on");
+      sb$("sbPageExp").style.display = ""; sb$("sbPageTri").style.display = "none";
+    });
+    tTri.addEventListener("click", function () {
+      tTri.classList.add("on"); tExp.classList.remove("on");
+      sb$("sbPageTri").style.display = ""; sb$("sbPageExp").style.display = "none";
+    });
+
+    sbBuildExplore(sb$("sbPageExp"));
+    sbBuildTrials(sb$("sbPageTri"));
+  }
+
+  function sbBuildExplore(page) {
+    var ctl = sbEl("div", "sb-ctl");
+    var f = sbEl("div", "sb-field", "<h5>Physical registers</h5>");
+    var sel = document.createElement("select");
+    ["3", "4", "5", "6", "7", "8"].forEach(function (n) {
+      var o = document.createElement("option");
+      o.value = n; o.textContent = n + " (R0..R" + (parseInt(n, 10) - 1) + ")";
+      sel.appendChild(o);
+    });
+    sel.value = "5";
+    f.appendChild(sel);
+    ctl.appendChild(f);
+    var nb = sbEl("button", "sb-btn", "New program");
+    ctl.appendChild(nb);
+    page.appendChild(ctl);
+    var wrap = sbEl("div", null, "");
+    page.appendChild(wrap);
+
+    function deal() {
+      var K = parseInt(sel.value, 10);
+      var g = sbRandomProg(sbExpSeed++, 8 + (sbExpSeed % 5), 12 + (sbExpSeed % 5));
+      wrap.innerHTML = "";
+      sbNewBoard("sbE", wrap, {
+        mode: "explore", name: "OPEN BENCH",
+        desc: "Free build. Match the shop solver and take gold.",
+        K: K, prog: g.prog, args: g.args
+      });
+    }
+    nb.addEventListener("click", deal);
+    sel.addEventListener("change", deal);
+    deal();
+  }
+
+  function sbBuildTrials(page) {
+    var cards = sbEl("div", "sb-cards");
+    cards.id = "sbCards";
+    page.appendChild(cards);
+    var runWrap = sbEl("div", null, "");
+    runWrap.id = "sbRunWrap";
+    runWrap.style.display = "none";
+    page.appendChild(runWrap);
+    sbRenderTrialCards();
+  }
+
+  function sbRenderTrialCards() {
+    var cards = sb$("sbCards");
+    if (!cards) return;
+    var best = sbBestLoad();
+    cards.innerHTML = "";
+    SB_TRIALS.forEach(function (t, i) {
+      var card = sbEl("div", "sb-card");
+      var b = best[String(i)];
+      var bHtml = b ? '<div class="best ' + b.toLowerCase().replace("-", "") + '">BEST: ' + sbEsc(b) + '</div>'
+                    : '<div class="best" style="color:#5a6a67">BEST: UNQUALIFIED</div>';
+      card.innerHTML =
+        "<h4>" + sbEsc(t.name) + "</h4>" +
+        "<p>" + sbEsc(t.desc) + "</p>" +
+        '<div class="meta">VIRTUALS ' + sbVregsOf(t.prog, t.args).length +
+        " · PHYSICAL " + t.K + " · BUDGET " + t.budget + "u · PAR " + t.par + "u</div>" +
+        bHtml;
+      var rb = sbEl("button", "sb-btn primary", "Run this shift");
+      rb.addEventListener("click", function () { sbStartTrial(i); });
+      card.appendChild(rb);
+      cards.appendChild(card);
+    });
+  }
+
+  function sbStartTrial(i) {
+    var t = SB_TRIALS[i];
+    sb$("sbCards").style.display = "none";
+    var rw = sb$("sbRunWrap");
+    rw.style.display = "";
+    rw.innerHTML = "";
+    var back = sbEl("button", "sb-btn", "Back to shifts");
+    back.addEventListener("click", function () {
+      rw.style.display = "none";
+      sb$("sbCards").style.display = "";
+      sbRenderTrialCards();
+    });
+    rw.appendChild(back);
+    var wrap = sbEl("div", null, "");
+    rw.appendChild(wrap);
+    sbNewBoard("sbT", wrap, {
+      mode: "trial", trialIdx: i, name: t.name, desc: t.desc,
+      K: t.K, budget: t.budget, par: t.par, prog: t.prog, args: t.args
+    });
+  }
+
+  /* ============================================================
+     BOARD: one live bench per explore deal or trial run
+     ============================================================ */
+  function sbSolver(st) {
+    if (!st.solver) st.solver = sbSolve(st.cfg.prog, st.cfg.args, st.cfg.K);
+    return st.solver;
+  }
+  function sbSpillCost(st) {
+    var c = 0;
+    st.vregs.forEach(function (v) { if (st.assign[v] === -1) c += st.costs[v]; });
+    return c;
+  }
+  function sbIsLive(st, v, i) {
+    var ins = st.cfg.prog[i];
+    return !!(st.live.liveIn[i][v] || st.live.liveOut[i][v] ||
+      ins.d === v || (ins.u || []).indexOf(v) >= 0);
+  }
+
+  function sbNewBoard(px, wrap, cfg) {
+    var st = {
+      px: px, cfg: cfg,
+      vregs: sbVregsOf(cfg.prog, cfg.args),
+      adj: sbInterference(cfg.prog, cfg.args),
+      costs: sbSpillCosts(cfg.prog, cfg.args),
+      live: sbLiveness(cfg.prog, cfg.args),
+      ranges: {},
+      assign: {}, sel: null,
+      hintsLeft: cfg.mode === "trial" ? 3 : 999,
+      hintsUsed: 0, attempts: 0, shopUsed: false,
+      verdict: null, solver: null
+    };
+    st.vregs.forEach(function (v) { st.ranges[v] = sbLiveRange(cfg.prog, cfg.args, v); });
+
+    wrap.innerHTML =
+      '<div class="sb-runhead"><h4>' + sbEsc(cfg.name) + '</h4>' +
+      '<div class="sb-stats" id="' + px + 'Stats"></div></div>' +
+      '<div class="sb-cols">' +
+      '<div class="sb-col"><h5>Program and live ranges (tap a row to select)</h5>' +
+      '<div class="sb-prog" id="' + px + 'Prog"></div>' +
+      '<div class="sb-ranges" id="' + px + 'Ranges"></div></div>' +
+      '<div class="sb-col"><h5>Interference graph (tap a node, then a color)</h5>' +
+      '<div class="sb-graph" id="' + px + 'Graph"></div></div>' +
+      "</div>" +
+      '<div class="sb-chips" id="' + px + 'Chips"></div>' +
+      '<div class="sb-actions" id="' + px + 'Actions"></div>' +
+      '<div class="sb-verdict" id="' + px + 'Verdict"></div>';
+
+    sbBuildChips(st);
+    sbBuildActions(st);
+    sb$(px + "Graph").addEventListener("click", function (e) {
+      var t = e.target && e.target.closest ? e.target.closest("[data-v]") : null;
+      if (t) sbSelect(st, t.getAttribute("data-v"));
+    });
+    sbRenderAll(st);
+    return st;
+  }
+
+  function sbBuildChips(st) {
+    var box = sb$(st.px + "Chips");
+    box.innerHTML = "";
+    for (var c = 0; c < st.cfg.K; c++) {
+      (function (cc) {
+        var b = sbEl("button", "sb-chip", "");
+        b.innerHTML = '<span class="dot" style="background:' + SB_COLORS[cc] + '"></span><small>R' + cc + "</small>";
+        b.addEventListener("click", function () { sbAssign(st, cc); });
+        box.appendChild(b);
+      })(c);
+    }
+    var spill = sbEl("button", "sb-chip spill", "<small>SPILL</small><small>to stack</small>");
+    spill.addEventListener("click", function () { sbSpill(st); });
+    var clear = sbEl("button", "sb-chip ghost", "<small>CLEAR</small>");
+    clear.addEventListener("click", function () { sbClear(st); });
+    var hint = sbEl("button", "sb-chip ghost", "");
+    hint.id = st.px + "HintBtn";
+    hint.addEventListener("click", function () { sbHint(st); });
+    var shop = sbEl("button", "sb-chip ghost", "<small>ASK THE</small><small>SHOP</small>");
+    shop.addEventListener("click", function () { sbShop(st); });
+    box.appendChild(spill);
+    box.appendChild(clear);
+    box.appendChild(hint);
+    box.appendChild(shop);
+  }
+
+  function sbBuildActions(st) {
+    var box = sb$(st.px + "Actions");
+    box.innerHTML = "";
+    var main = sbEl("button", "sb-btn primary", st.cfg.mode === "trial" ? "Commit allocation" : "Grade this build");
+    main.addEventListener("click", function () { sbCommit(st); });
+    var reset = sbEl("button", "sb-btn", "Reset bench");
+    reset.addEventListener("click", function () { sbReset(st); });
+    var dl = sbEl("button", "sb-btn", "Download report");
+    dl.addEventListener("click", function () { sbDownloadReport(st); });
+    box.appendChild(main);
+    box.appendChild(reset);
+    box.appendChild(dl);
+  }
+
+  /* ---------------- rendering ---------------- */
+  function sbRenderAll(st) {
+    sbRenderStats(st);
+    sbRenderProg(st);
+    sbRenderRanges(st);
+    sbRenderGraph(st);
+    sbRenderVerdict(st);
+    var hb = sb$(st.px + "HintBtn");
+    if (hb) hb.innerHTML = "<small>HINT</small><small>" + (st.hintsLeft > 90 ? "free" : st.hintsLeft + " left") + "</small>";
+  }
+
+  function sbRenderStats(st) {
+    var done = 0, sp = 0;
+    st.vregs.forEach(function (v) {
+      if (st.assign[v] !== undefined) done++;
+      if (st.assign[v] === -1) sp++;
+    });
+    var cost = sbSpillCost(st);
+    var h = "BENCH <b>" + done + "/" + st.vregs.length + "</b> · SPILLED " + sp +
+      " · SPILL COST <b>" + cost + "u</b>";
+    if (st.cfg.mode === "trial") {
+      h += " / BUDGET " + st.cfg.budget + "u · PAR " + st.cfg.par + "u · HINTS " + st.hintsLeft + " · ATTEMPTS " + st.attempts;
+    } else {
+      h += " · SHOP BASELINE " + sbSolver(st).cost + "u";
+    }
+    if (st.sel) h += ' · SELECTED <b>' + st.sel + "</b>";
+    sb$(st.px + "Stats").innerHTML = h;
+  }
+
+  function sbRenderProg(st) {
+    var h = "";
+    st.cfg.prog.forEach(function (ins, i) {
+      var num = (i < 10 ? "0" : "") + i;
+      var txt = ins.op + (ins.d ? " " + ins.d : "") +
+        (ins.u && ins.u.length ? (ins.d ? ", " : " ") + ins.u.join(", ") : "");
+      var cls = "ln" + (st.sel && sbIsLive(st, st.sel, i) ? " live" : "");
+      h += '<div class="' + cls + '"><span class="num">' + num + "</span>" + sbEsc(txt) + "</div>";
+    });
+    sb$(st.px + "Prog").innerHTML = h;
+  }
+
+  function sbRenderRanges(st) {
+    var box = sb$(st.px + "Ranges");
+    box.innerHTML = "";
+    var n = st.cfg.prog.length;
+    st.vregs.forEach(function (v) {
+      var r = st.ranges[v];
+      var cls = "rg-row" + (st.sel === v ? " sel" : "") +
+        (st.assign[v] === -1 ? " spilled" : "") +
+        (st.assign[v] >= 0 ? " done" : "");
+      var row = sbEl("div", cls, "");
+      var left = (r.first / n * 100).toFixed(1);
+      var width = ((r.last - r.first + 1) / n * 100).toFixed(1);
+      var col = st.assign[v] >= 0 ? SB_COLORS[st.assign[v]] : "";
+      row.innerHTML =
+        '<span class="rg-lab">' + v + '</span>' +
+        '<span class="rg-cost">' + st.costs[v] + 'u</span>' +
+        '<span class="rg-bar"><span class="rg-fill" style="left:' + left + "%;width:" + width + "%;" +
+        (col ? "background:" + col + ";" : "") + '"></span></span>';
+      row.addEventListener("click", function () { sbSelect(st, v); });
+      box.appendChild(row);
+    });
+  }
+
+  function sbRenderGraph(st) {
+    var box = sb$(st.px + "Graph");
+    var N = st.vregs.length;
+    var W = 420, H = 400, cx = W / 2, cy = H / 2;
+    var R = N <= 8 ? 138 : 152;
+    var nr = N > 12 ? 19 : 23;
+    var pos = {};
+    st.vregs.forEach(function (v, i) {
+      var a = -Math.PI / 2 + i * 2 * Math.PI / N;
+      pos[v] = [cx + R * Math.cos(a), cy + R * Math.sin(a)];
+    });
+    var h = '<svg viewBox="0 0 ' + W + " " + H + '">';
+    var seen = {};
+    st.vregs.forEach(function (v) {
+      Object.keys(st.adj[v]).forEach(function (nb) {
+        var key = v < nb ? v + "|" + nb : nb + "|" + v;
+        if (seen[key]) return;
+        seen[key] = 1;
+        var hot = st.sel && (v === st.sel || nb === st.sel);
+        h += '<line x1="' + pos[v][0].toFixed(1) + '" y1="' + pos[v][1].toFixed(1) +
+          '" x2="' + pos[nb][0].toFixed(1) + '" y2="' + pos[nb][1].toFixed(1) +
+          '" stroke="' + (hot ? "#41e6ff" : "#3a4a47") + '" stroke-width="' + (hot ? 2.5 : 1.5) + '"/>';
+      });
+    });
+    st.vregs.forEach(function (v) {
+      var a = st.assign[v];
+      var fill = a >= 0 ? SB_COLORS[a] : "#141b1a";
+      var isSel = st.sel === v;
+      var isNb = !!(st.sel && st.adj[st.sel][v]);
+      var stroke = isSel ? "#ffffff" : (isNb ? "#41e6ff" : "#5a6a67");
+      var sw = (isSel || isNb) ? 3 : 1.5;
+      var dash = a === -1 ? ' stroke-dasharray="5,4"' : "";
+      var op = a === -1 ? ' opacity="0.55"' : "";
+      var p = pos[v];
+      var tc = a >= 0 ? "#0b0e0d" : "#cfd8d6";
+      h += '<g class="nd" data-v="' + v + '"' + op + ">" +
+        '<circle cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) + '" r="' + nr +
+        '" fill="' + fill + '" stroke="' + stroke + '" stroke-width="' + sw + '"' + dash + "/>" +
+        '<text x="' + p[0].toFixed(1) + '" y="' + (p[1] - 2).toFixed(1) +
+        '" text-anchor="middle" font-size="13" font-family="monospace" fill="' + tc + '">' + v + "</text>" +
+        '<text x="' + p[0].toFixed(1) + '" y="' + (p[1] + 13).toFixed(1) +
+        '" text-anchor="middle" font-size="9" font-family="monospace" fill="' + tc + '">' + st.costs[v] + "u</text></g>";
+    });
+    box.innerHTML = h + "</svg>";
+  }
+
+  function sbRenderVerdict(st) {
+    var box = sb$(st.px + "Verdict");
+    if (!st.verdict) { box.innerHTML = ""; return; }
+    var v = st.verdict;
+    var stamp = v.ok
+      ? '<span class="sb-stamp pass">' + sbEsc(v.grade) + "</span>"
+      : '<span class="sb-stamp fail">Rejected</span>';
+    box.innerHTML = stamp + "<p>" + sbEsc(v.text) + "</p>";
+  }
+
+  /* ---------------- interaction ---------------- */
+  function sbSelect(st, v) {
+    st.sel = (st.sel === v) ? null : v;
+    st.verdict = null;
+    sbRenderAll(st);
+  }
+
+  function sbAssign(st, c) {
+    var v = st.sel;
+    if (!v) { sbToast("Tap a register node first, then a color."); return; }
+    var bad = null;
+    Object.keys(st.adj[v]).forEach(function (nb) { if (st.assign[nb] === c) bad = nb; });
+    if (bad) {
+      sbToast(v + " fights " + bad + " for R" + c + ": both are live at once. Spill one or pick another color.");
+      var g = sb$(st.px + "Graph");
+      g.classList.remove("sb-shake");
+      void g.offsetWidth;
+      g.classList.add("sb-shake");
+      return;
+    }
+    st.assign[v] = c;
+    st.verdict = null;
+    sbRenderAll(st);
+  }
+
+  function sbSpill(st) {
+    var v = st.sel;
+    if (!v) { sbToast("Tap a register node first, then SPILL."); return; }
+    st.assign[v] = -1;
+    st.verdict = null;
+    sbToast(v + " spilled to the stack (" + st.costs[v] + "u).");
+    sbRenderAll(st);
+  }
+
+  function sbClear(st) {
+    if (st.sel && st.assign[st.sel] !== undefined) {
+      delete st.assign[st.sel];
+      st.verdict = null;
+      sbRenderAll(st);
+    }
+  }
+
+  function sbHint(st) {
+    if (st.hintsLeft <= 0) { sbToast("No hints left on this shift."); return; }
+    var sol = sbSolver(st);
+    var cand = null, bestD = -1;
+    st.vregs.forEach(function (v) {
+      if (st.assign[v] !== undefined) return;
+      var d = Object.keys(st.adj[v]).length;
+      if (d > bestD) { bestD = d; cand = v; }
+    });
+    if (!cand) { sbToast("Nothing left to hint at."); return; }
+    st.hintsLeft--;
+    st.hintsUsed++;
+    var s = sol.assign[cand];
+    st.assign[cand] = s;
+    st.sel = cand;
+    st.verdict = null;
+    sbToast(s === -1
+      ? "Shop says: spill " + cand + " (" + st.costs[cand] + "u)."
+      : "Shop says: " + cand + " takes R" + s + ".");
+    sbRenderAll(st);
+  }
+
+  function sbShop(st) {
+    var sol = sbSolver(st);
+    st.vregs.forEach(function (v) {
+      if (st.assign[v] === undefined) st.assign[v] = sol.assign[v];
+    });
+    st.shopUsed = true;
+    st.verdict = null;
+    sbToast("The shop built it. Best grade now: SHOP-BUILT.");
+    sbRenderAll(st);
+  }
+
+  function sbReset(st) {
+    st.assign = {};
+    st.sel = null;
+    st.verdict = null;
+    st.hintsLeft = st.cfg.mode === "trial" ? 3 : 999;
+    st.hintsUsed = 0;
+    st.attempts = 0;
+    st.shopUsed = false;
+    sbRenderAll(st);
+  }
+
+  function sbCommit(st) {
+    var un = st.vregs.filter(function (v) { return st.assign[v] === undefined; });
+    if (un.length) {
+      sbToast(un.length + " virtual register(s) still on the bench: " +
+        un.slice(0, 4).join(", ") + (un.length > 4 ? ", ..." : ""));
+      return;
+    }
+    st.attempts++;
+    var cost = sbSpillCost(st);
+    if (st.cfg.mode === "trial") {
+      if (cost > st.cfg.budget) {
+        st.verdict = {
+          ok: false,
+          text: "OVER BUDGET by " + (cost - st.cfg.budget) + "u. The foreman rejects this allocation. " +
+            "Un-spill something expensive, or find a cheaper victim."
+        };
+      } else {
+        var grade = (cost <= st.cfg.par && !st.shopUsed) ? "GOLD"
+          : (st.shopUsed ? "SHOP-BUILT" : "SILVER");
+        st.verdict = {
+          ok: true, grade: grade,
+          text: "QUALIFIED on " + st.cfg.name + " with spill cost " + cost + "u " +
+            "(budget " + st.cfg.budget + "u, par " + st.cfg.par + "u) in " + st.attempts + " attempt(s)."
+        };
+        var best = sbBestLoad();
+        var k = String(st.cfg.trialIdx);
+        if (!best[k] || SB_GRADE_RANK[grade] > SB_GRADE_RANK[best[k]]) {
+          best[k] = grade;
+          sbBestSave(best);
+        }
+      }
+    } else {
+      var S = sbSolver(st).cost;
+      var g2 = cost <= S ? "GOLD" : (cost <= Math.ceil(S * 1.5) ? "SILVER" : "BRONZE");
+      st.verdict = {
+        ok: true, grade: g2,
+        text: "Spill cost " + cost + "u against a shop baseline of " + S + "u. " +
+          (g2 === "GOLD" ? "You match the shop solver. Take the gold."
+            : (g2 === "SILVER" ? "Within shouting distance of the shop."
+              : "The shop did it cheaper. Study the ranges and try again."))
+      };
+    }
+    sbRenderAll(st);
+  }
+
+  /* ---------------- report download ---------------- */
+  function sbDownloadReport(st) {
+    var L = [];
+    L.push("THE SPILL BIN: REGISTER ALLOCATION REPORT");
+    L.push("==========================================");
+    L.push("Run: " + st.cfg.name + (st.cfg.mode === "trial" ? " (qualification trial)" : " (open bench)"));
+    L.push("Date: " + new Date().toISOString().slice(0, 10));
+    var head = "Physical registers: " + st.cfg.K;
+    if (st.cfg.mode === "trial") head += "   Budget: " + st.cfg.budget + "u   Par: " + st.cfg.par + "u";
+    L.push(head);
+    L.push("Attempts: " + st.attempts + "   Hints used: " + st.hintsUsed +
+      "   Shop-built: " + (st.shopUsed ? "yes" : "no"));
+    L.push("");
+    L.push("PROGRAM");
+    st.cfg.prog.forEach(function (ins, i) {
+      L.push("  " + (i < 10 ? "0" : "") + i + "  " + ins.op + (ins.d ? " " + ins.d : "") +
+        (ins.u && ins.u.length ? (ins.d ? ", " : " ") + ins.u.join(", ") : ""));
+    });
+    L.push("");
+    L.push("ALLOCATION");
+    st.vregs.forEach(function (v) {
+      var a = st.assign[v];
+      L.push("  " + v + " -> " + (a === undefined ? "UNASSIGNED"
+        : (a === -1 ? "SPILLED (" + st.costs[v] + "u)" : "R" + a)));
+    });
+    var sp = st.vregs.filter(function (v) { return st.assign[v] === -1; });
+    L.push("");
+    L.push("SPILLS (" + sp.length + "): " +
+      (sp.length ? sp.map(function (v) { return v + " (" + st.costs[v] + "u)"; }).join(", ") : "none"));
+    L.push("SPILL COST: " + sbSpillCost(st) + "u");
+    L.push("VERDICT: " + (st.verdict
+      ? (st.verdict.ok ? st.verdict.grade + ", " : "REJECTED, ") + st.verdict.text
+      : "not yet committed"));
+    sbDownload(L.join("\n"), "spill-bin-report.txt");
+  }
+
+  function sbDownload(text, name) {
+    var blob = new Blob([text], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = (window.URL || window.webkitURL).createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      (window.URL || window.webkitURL).revokeObjectURL(a.href);
+      a.remove();
+    }, 500);
+  }
+
+  /* ---------------- init ---------------- */
+  function sbInit() {
+    if (typeof document === "undefined") return;
+    if (!document.querySelector(".dossier .actions")) return;
+    sbBuildShell();
+  }
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", sbInit);
+    } else {
+      sbInit();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+      SB: {
+        solve: sbSolve, verify: sbVerify, inter: sbInterference,
+        costs: sbSpillCosts, vregs: sbVregsOf, range: sbLiveRange,
+        trials: SB_TRIALS, rand: sbRandomProg
+      }
+    };
+  }
+
+})();
+

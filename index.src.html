@@ -438,7 +438,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "06", name: "The Wipe Station", btn: "wsBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "NIST 800-88 drive sanitization: choose Clear, Purge, or Destroy per drive. Per-serial wipe certificates.",
     how: "Pick the right method for each drive and survive the audit.",
-    spec: "NIST 800-88 \u00B7 PER-SERIAL" }
+    spec: "NIST 800-88 \u00B7 PER-SERIAL" },
+  { section: "silicon", n: "07", name: "The Spill Bin", btn: "sbBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "RV32I register allocation: real liveness analysis, interference graph, and a Chaitin-Briggs solver as your baseline. Spill the cheapest victims, stay inside budget.",
+    how: "Color the interference graph, spill the cheapest virtuals, beat the shop solver.",
+    spec: "REGALLOC \u00B7 CHAITIN-BRIGGS" }
 ];
 
 var pgFilter = "all";
