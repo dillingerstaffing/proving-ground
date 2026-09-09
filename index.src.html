@@ -73,6 +73,7 @@
   --font-m: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-pop: cubic-bezier(0.2, 0.9, 0.25, 1.12);
+  --ease-spring: cubic-bezier(0.2, 0.9, 0.25, 1.15);
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -137,6 +138,14 @@ a { color: var(--ember); }
   margin-bottom: 30px; animation: rise 0.6s var(--ease-out) both;
 }
 .sigil { width: 46px; height: 46px; flex: none; }
+/* Boot sequence: the sigil draws itself, then the core ignites. */
+.sigil .draw-ring {
+  stroke-dasharray: 132; stroke-dashoffset: 132;
+  animation: sigilDraw 1.1s var(--ease-out) 0.1s forwards;
+}
+.sigil .draw-core { opacity: 0; animation: sigilIn 0.45s var(--ease-out) 0.85s forwards; }
+@keyframes sigilDraw { to { stroke-dashoffset: 0; } }
+@keyframes sigilIn { to { opacity: 1; } }
 .sysstat {
   font-family: var(--font-m); font-size: 12px; font-weight: 500;
   letter-spacing: 0.18em; color: var(--dim);
@@ -152,7 +161,14 @@ a { color: var(--ember); }
   position: relative; margin: 0;
   font-size: clamp(58px, 13vw, 132px); font-weight: 700; line-height: 0.94;
   letter-spacing: -0.03em; text-wrap: balance;
-  animation: rise 0.7s var(--ease-out) 0.08s both;
+}
+/* Boot sequence: each line rises out of its mask, like a press stamping. */
+.wl { display: block; overflow: hidden; padding-bottom: 0.06em; margin-bottom: -0.06em; }
+.wl > span { display: block; animation: wlUp 0.9s var(--ease-out) 0.25s both; }
+.wl:nth-child(2) > span { animation-delay: 0.37s; }
+@keyframes wlUp {
+  from { opacity: 0; transform: translateY(112%); }
+  to { opacity: 1; transform: none; }
 }
 .wordmark .outline { color: transparent; -webkit-text-stroke: 1.5px var(--paper); }
 @supports not (-webkit-text-stroke: 1px #000) { .wordmark .outline { color: var(--paper); } }
@@ -177,7 +193,7 @@ a { color: var(--ember); }
 .findicator {
   position: absolute; top: 4px; left: 4px; height: calc(100% - 8px); width: 0;
   border-radius: 999px; background: var(--ember);
-  transition: transform 0.28s var(--ease-out), width 0.28s var(--ease-out);
+  transition: transform 0.34s var(--ease-spring), width 0.34s var(--ease-spring);
 }
 .filter {
   position: relative; z-index: 1; border: 0; background: none; cursor: pointer;
@@ -201,9 +217,20 @@ a { color: var(--ember); }
   min-height: 232px; padding: 22px; cursor: pointer; overflow: hidden;
   background: linear-gradient(180deg, #151b23, #0e1319);
   border: 1px solid var(--line); border-radius: var(--radius); color: var(--paper);
-  font-family: var(--font-d); opacity: 0;
+  font-family: var(--font-d); opacity: 0; transform-style: preserve-3d;
+  box-shadow: inset 0 1px 0 rgba(242, 237, 227, 0.07);
   transition: transform 0.2s var(--ease-out), border-color 0.2s var(--ease-out), box-shadow 0.25s var(--ease-out);
   -webkit-tap-highlight-color: transparent;
+}
+/* Specular glare: tracks the pointer, so each card feels machined. */
+.bench::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0;
+  background: radial-gradient(440px circle at var(--mx, 50%) var(--my, 50%),
+    rgba(255, 255, 255, 0.10), transparent 62%);
+  transition: opacity 0.3s var(--ease-out);
+}
+@media (pointer: fine) {
+  .bench:hover::before { opacity: 1; }
 }
 .bench.in { opacity: 1; animation: rise 0.55s var(--ease-pop); }
 .bench.hide { opacity: 0; transform: scale(0.97); transition: opacity 0.16s ease, transform 0.16s ease; }
@@ -342,13 +369,13 @@ div[class*="-overlay"].pg-enter { animation: pgOverlayIn 0.26s var(--ease-out); 
     <canvas id="sparks" aria-hidden="true"></canvas>
     <div class="head-row">
       <svg class="sigil" viewBox="0 0 48 48" aria-hidden="true">
-        <circle cx="24" cy="24" r="21" fill="none" stroke="#ff5a1f" stroke-width="2.5"/>
-        <path d="M24 10 L29 24 L24 38 L19 24 Z" fill="#ff5a1f"/>
-        <circle cx="24" cy="24" r="2.6" fill="#0a0c0e"/>
+        <circle class="draw-ring" cx="24" cy="24" r="21" fill="none" stroke="#ff5a1f" stroke-width="2.5"/>
+        <path class="draw-core" d="M24 10 L29 24 L24 38 L19 24 Z" fill="#ff5a1f"/>
+        <circle class="draw-core" cx="24" cy="24" r="2.6" fill="#0a0c0e"/>
       </svg>
       <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">06</b>&nbsp;BENCHES&nbsp;&middot;&nbsp;ALL&nbsp;SYSTEMS&nbsp;NOMINAL</span></div>
     </div>
-    <h1 class="wordmark">The Proving<br><span class="outline">Ground</span></h1>
+    <h1 class="wordmark"><span class="wl"><span>The Proving</span></span><span class="wl"><span class="outline">Ground</span></span></h1>
   </header>
 
   <main id="benches" aria-label="Engineering benches"></main>
@@ -363,7 +390,7 @@ div[class*="-overlay"].pg-enter { animation: pgOverlayIn 0.26s var(--ease-out); 
       </a>
       <a class="vrow" href="https://dillingerstaffing.github.io/tapeout/">
         <span class="grow"><span class="vname">TAPEOUT</span>
-        <span class="vsub">LEAN GRAPHICS HARDWARE &middot; QUALIFIED OPENLY</span></span>
+        <span class="vsub">LEAN GRAPHICS HARDWARE &middot; BURN-IN TESTED</span></span>
         <span class="vext" aria-hidden="true">&nearr;</span>
       </a>
       <a class="vrow" href="https://dillingerstaffing.github.io/old-iron/">
@@ -372,7 +399,7 @@ div[class*="-overlay"].pg-enter { animation: pgOverlayIn 0.26s var(--ease-out); 
         <span class="vext" aria-hidden="true">&nearr;</span>
       </a>
     </section>
-    <p class="fineprint">Built by Emi for Chris Dillinger. New benches land regularly.<br>Everything runs on your device: no accounts, no tracking, no cost.</p>
+    <p class="fineprint">New benches land regularly.<br>Everything runs on your device: no accounts, no tracking, no cost.</p>
     <p class="fineprint"><a href="https://dillingerstaffing.github.io/riscv-playground/">RISC-V Playground</a> &middot; <a href="https://dillingerstaffing.github.io/garage-inventions/">Garage Inventions (retired)</a></p>
   </footer>
 </div>
@@ -504,6 +531,7 @@ function pgApplyFilter(first) {
       vis.push(c);
     } else if (c.style.display !== "none") {
       c.classList.add("hide");
+      c.style.transform = "";
       (function (card) {
         setTimeout(function () {
           if (card.classList.contains("hide")) card.style.display = "none";
@@ -512,7 +540,11 @@ function pgApplyFilter(first) {
     }
   }
   var dc = $("deckCount");
-  if (dc) dc.innerHTML = "<b>" + (vis.length < 10 ? "0" + vis.length : vis.length) + "</b>&nbsp;BENCH" + (vis.length === 1 ? "" : "ES");
+  if (dc) {
+    var nn = vis.length < 10 ? "0" + vis.length : vis.length;
+    var tt = PG_BENCHES.length < 10 ? "0" + PG_BENCHES.length : PG_BENCHES.length;
+    dc.innerHTML = "<b>" + nn + "</b>&nbsp;/ " + tt + "&nbsp;BENCH" + (vis.length === 1 ? "" : "ES");
+  }
   for (var j = 0; j < vis.length; j++) {
     (function (card, k) {
       card.classList.remove("in");
@@ -575,22 +607,75 @@ function pgRender() {
 
   pgMoveIndicator();
   pgApplyFilter(true);
+  pgBindTilt();
   window.addEventListener("resize", pgMoveIndicator);
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready.then(pgMoveIndicator);
   }
 }
 
+/* Pointer-tracked 3D tilt + glare: each card feels like a machined
+   instrument, not a flat rectangle. Fine pointers only,
+   transform-only, rAF-throttled, and fully motion-safe. */
+function pgBindTilt() {
+  if (pgReduced || !window.matchMedia("(pointer: fine)").matches) return;
+  var cards = document.querySelectorAll(".bench");
+  for (var i = 0; i < cards.length; i++) (function (card) {
+    var raf = 0;
+    function apply() {
+      raf = 0;
+      var t = card._tilt;
+      if (!t || card.style.display === "none") return;
+      var rx = (0.5 - t.y) * 7, ry = (t.x - 0.5) * 9;
+      card.style.transform =
+        "perspective(900px) rotateX(" + rx.toFixed(2) + "deg) rotateY(" + ry.toFixed(2) +
+        "deg) translateY(-4px)";
+      card.style.setProperty("--mx", (t.x * 100).toFixed(1) + "%");
+      card.style.setProperty("--my", (t.y * 100).toFixed(1) + "%");
+    }
+    card.addEventListener("pointermove", function (ev) {
+      var r = card.getBoundingClientRect();
+      if (!r.width) return;
+      card._tilt = { x: (ev.clientX - r.left) / r.width, y: (ev.clientY - r.top) / r.height };
+      if (!raf) raf = requestAnimationFrame(apply);
+    });
+    card.addEventListener("pointerleave", function () {
+      card._tilt = null;
+      if (raf) { cancelAnimationFrame(raf); raf = 0; }
+      card.style.transform = "";
+      card.style.removeProperty("--mx");
+      card.style.removeProperty("--my");
+    });
+  })(cards[i]);
+}
+
 /* Bench overlay watcher: grows the overlay out of the tapped card,
    and locks background scroll while any bench is open. Modules
-   toggle overlays with an `open` class; we never touch their code. */
+   toggle overlays with an `open` class; we never touch their code.
+   Transition-guarded: the enter animation only runs on the
+   closed-to-open edge. Without the guard, the animation's own
+   class changes re-trigger the observer forever and hang the tab. */
 (function pgOverlayWatcher() {
+  function isOverlay(t) {
+    return t && t.classList && t.className && t.className.indexOf("-overlay") !== -1;
+  }
+  function refreshLock() {
+    var ovs = document.querySelectorAll('div[class*="-overlay"]');
+    var anyOpen = false;
+    for (var i = 0; i < ovs.length; i++) {
+      if (ovs[i].classList.contains("open")) { anyOpen = true; break; }
+    }
+    document.body.classList.toggle("pg-locked", anyOpen);
+  }
   var mo = new MutationObserver(function (muts) {
     for (var k = 0; k < muts.length; k++) {
       var t = muts[k].target;
-      if (!t.classList || (t.className && t.className.indexOf("-overlay") === -1)) continue;
-      if (t.classList.contains("open")) {
-        document.body.classList.add("pg-locked");
+      if (!isOverlay(t)) continue;
+      var isOpen = t.classList.contains("open");
+      var wasOpen = !!t._pgOpen;
+      if (isOpen === wasOpen) continue;
+      t._pgOpen = isOpen;
+      if (isOpen) {
         if (pgLastPoint && !pgReduced) {
           var r = t.getBoundingClientRect();
           t.style.transformOrigin = (pgLastPoint.x - r.left) + "px " + (pgLastPoint.y - r.top) + "px";
@@ -601,13 +686,8 @@ function pgRender() {
       } else {
         t.classList.remove("pg-enter");
         t.style.transformOrigin = "";
-        var anyOpen = false;
-        var ovs = document.querySelectorAll('div[class*="-overlay"]');
-        for (var i = 0; i < ovs.length; i++) {
-          if (ovs[i].classList.contains("open")) { anyOpen = true; break; }
-        }
-        if (!anyOpen) document.body.classList.remove("pg-locked");
       }
+      refreshLock();
     }
   });
   mo.observe(document.body, { subtree: true, attributes: true, attributeFilter: ["class"] });
@@ -620,6 +700,16 @@ function pgRender() {
   if (!cv || pgReduced) return;
   var ctx = cv.getContext("2d");
   var W = 0, H = 0, parts = [], running = true, visible = true;
+  /* Sparks shy away from the pointer: the hero feels alive, not looped. */
+  var pmx = -9999, pmy = -9999;
+  if (window.matchMedia("(pointer: fine)").matches) {
+    var hero = cv.parentElement;
+    hero.addEventListener("pointermove", function (e) {
+      var r = cv.getBoundingClientRect();
+      pmx = e.clientX - r.left; pmy = e.clientY - r.top;
+    });
+    hero.addEventListener("pointerleave", function () { pmx = -9999; pmy = -9999; });
+  }
   function size() {
     var r = cv.parentElement.getBoundingClientRect();
     var d = Math.min(window.devicePixelRatio || 1, 2);
@@ -647,6 +737,11 @@ function pgRender() {
     for (var i = 0; i < parts.length; i++) {
       var p = parts[i];
       p.y -= p.s; p.x += p.drift + Math.sin(p.y * 0.02) * 0.18; p.life -= p.decay;
+      var pdx = p.x - pmx, pdy = p.y - pmy, pd2 = pdx * pdx + pdy * pdy;
+      if (pd2 < 8100 && pd2 > 0.01) {
+        var pd = Math.sqrt(pd2);
+        p.x += pdx / pd * 1.5; p.y += pdy / pd * 1.5;
+      }
       if (p.life <= 0 || p.y < -10) { parts[i] = spawn(false); continue; }
       var tw = 0.55 + 0.45 * Math.sin(p.y * 0.11);
       ctx.beginPath();

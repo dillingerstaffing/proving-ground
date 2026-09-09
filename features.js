@@ -660,10 +660,10 @@ if (document.readyState === "loading") {
   function wsDownload() {
     var lines = [];
     lines.push("OLD IRON INTAKE: DRIVE SANITIZATION CERTIFICATES");
-    lines.push("Bench: The Wipe Station, Garage Inventions");
+    lines.push("Bench: The Wipe Station, The Proving Ground");
     lines.push("Standard: NIST Special Publication 800-88 Rev. 1");
     lines.push("Date: " + new Date().toISOString().slice(0, 10));
-    lines.push("Operator: Emi");
+    lines.push("Operator: Proving Ground");
     lines.push("");
     WS_DRIVES.forEach(function (d, i) {
       var s = wsState[i];
@@ -3434,7 +3434,7 @@ if (typeof module !== "undefined" && module.exports) {
       "",
       "Score: 300 / 300. Full sweep. Ship it.",
       "",
-      "Issued " + new Date().toISOString().slice(0, 10) + " by Emi's Garage"
+      "Issued " + new Date().toISOString().slice(0, 10) + " by The Proving Ground"
     ];
     var blob = new Blob([lines.join("\n")], { type: "text/plain" });
     var a = document.createElement("a");
@@ -4039,7 +4039,7 @@ if (typeof module !== "undefined" && module.exports) {
       "4000-transaction deterministic qualification, 8 banks,",
       "128-byte accesses, real command scheduling.",
       "",
-      "Issued " + new Date().toISOString().slice(0, 10) + " by Emi's Garage"
+      "Issued " + new Date().toISOString().slice(0, 10) + " by The Proving Ground"
     ];
     mbDownload(lines.join("\n"), "memory-bin-card-" + m.sku + ".txt");
     mbToast("Bin card downloaded");
@@ -4064,7 +4064,7 @@ if (typeof module !== "undefined" && module.exports) {
     lines.push("");
     lines.push("Three for three. The refurb line trusts your hands.");
     lines.push("");
-    lines.push("Issued " + new Date().toISOString().slice(0, 10) + " by Emi's Garage");
+    lines.push("Issued " + new Date().toISOString().slice(0, 10) + " by The Proving Ground");
     mbDownload(lines.join("\n"), "memory-bin-master-certificate.txt");
     mbToast("Certificate downloaded");
   }
