@@ -73,6 +73,8 @@
   --font-m: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-pop: cubic-bezier(0.2, 0.9, 0.25, 1.12);
+  --t-fast: 140ms; --t-base: 240ms; --t-slow: 520ms;
+  --ease-pop: cubic-bezier(0.2, 0.9, 0.25, 1.12);
   --ease-spring: cubic-bezier(0.2, 0.9, 0.25, 1.15);
   color-scheme: dark;
 }
@@ -183,6 +185,7 @@ a { color: var(--ember); }
   background: color-mix(in srgb, var(--ink) 82%, transparent);
   -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--line);
+  cursor: crosshair;
 }
 .filters {
   position: relative; display: inline-flex; gap: 2px; padding: 4px; max-width: 100%;
@@ -199,9 +202,10 @@ a { color: var(--ember); }
   position: relative; z-index: 1; border: 0; background: none; cursor: pointer;
   color: var(--steel); font-family: var(--font-m); font-size: 13px; font-weight: 600;
   letter-spacing: 0.08em; padding: 0 18px; min-height: 44px; border-radius: 999px;
-  white-space: nowrap; transition: color 0.2s var(--ease-out);
+  white-space: nowrap; transition: color 0.2s var(--ease-out), transform 0.12s ease-out;
   -webkit-tap-highlight-color: transparent;
 }
+.filter:active { transform: scale(0.94); }
 .filter.is-on { color: #0a0c0e; }
 .filter:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
 .deck-count {
@@ -340,9 +344,9 @@ div[class*="-overlay"] {
 .rv-overlay.open { align-items: flex-start !important; overflow-y: auto !important; }
 .rv-overlay.open > .rv-panel { margin-top: auto !important; margin-bottom: auto !important; }
 /* Bench opening transition: the overlay grows out of the tapped card. */
-div[class*="-overlay"].pg-enter { animation: pgOverlayIn 0.26s var(--ease-out); }
+div[class*="-overlay"].pg-enter { animation: pgOverlayIn 0.3s var(--ease-out); }
 @keyframes pgOverlayIn {
-  from { opacity: 0; transform: scale(0.96) translateY(12px); }
+  from { opacity: 0; transform: scale(0.96) translateY(26px); }
   to { opacity: 1; transform: none; }
 }
 
@@ -541,6 +545,7 @@ function pgSetFilter(f) {
   }
   pgMoveIndicator();
   pgApplyFilter(false);
+  pgScrambleSpecs();
 }
 
 function pgMoveIndicator() {
@@ -651,37 +656,69 @@ function pgRender() {
 
 /* Pointer-tracked 3D tilt + glare: each card feels like a machined
    instrument, not a flat rectangle. Fine pointers only,
-   transform-only, rAF-throttled, and fully motion-safe. */
+   transform-only, rAF-driven with lerp smoothing (0.18) so the motion
+   feels weighted like aim assist, never twitchy. Fully motion-safe. */
 function pgBindTilt() {
   if (pgReduced || !window.matchMedia("(pointer: fine)").matches) return;
   var cards = document.querySelectorAll(".bench");
   for (var i = 0; i < cards.length; i++) (function (card) {
-    var raf = 0;
-    function apply() {
+    var raf = 0, cur = { x: 0.5, y: 0.5 }, tgt = null;
+    function frame() {
       raf = 0;
-      var t = card._tilt;
-      if (!t || card.style.display === "none") return;
-      var rx = (0.5 - t.y) * 7, ry = (t.x - 0.5) * 9;
+      if (!tgt) return;
+      cur.x += (tgt.x - cur.x) * 0.18;
+      cur.y += (tgt.y - cur.y) * 0.18;
+      var rx = (0.5 - cur.y) * 7, ry = (cur.x - 0.5) * 9;
       card.style.transform =
         "perspective(900px) rotateX(" + rx.toFixed(2) + "deg) rotateY(" + ry.toFixed(2) +
         "deg) translateY(-4px)";
-      card.style.setProperty("--mx", (t.x * 100).toFixed(1) + "%");
-      card.style.setProperty("--my", (t.y * 100).toFixed(1) + "%");
+      card.style.setProperty("--mx", (cur.x * 100).toFixed(1) + "%");
+      card.style.setProperty("--my", (cur.y * 100).toFixed(1) + "%");
+      if (Math.abs(tgt.x - cur.x) > 0.001 || Math.abs(tgt.y - cur.y) > 0.001) {
+        raf = requestAnimationFrame(frame);
+      }
     }
     card.addEventListener("pointermove", function (ev) {
       var r = card.getBoundingClientRect();
       if (!r.width) return;
-      card._tilt = { x: (ev.clientX - r.left) / r.width, y: (ev.clientY - r.top) / r.height };
-      if (!raf) raf = requestAnimationFrame(apply);
+      tgt = { x: (ev.clientX - r.left) / r.width, y: (ev.clientY - r.top) / r.height };
+      if (!raf) raf = requestAnimationFrame(frame);
     });
     card.addEventListener("pointerleave", function () {
-      card._tilt = null;
+      tgt = null;
       if (raf) { cancelAnimationFrame(raf); raf = 0; }
       card.style.transform = "";
       card.style.removeProperty("--mx");
       card.style.removeProperty("--my");
+      cur = { x: 0.5, y: 0.5 };
     });
   })(cards[i]);
+}
+
+/* Telemetry scramble: spec readouts decrypt left to right whenever the
+   visible set changes, like instruments locking in. Motion-safe. */
+function pgScrambleSpecs() {
+  if (pgReduced) return;
+  var GLYPHS = "!<>-_\\/[]{}+=*^?#";
+  var cards = document.querySelectorAll(".bench");
+  for (var c = 0; c < cards.length; c++) (function (card) {
+    var show = pgFilter === "all" || card.getAttribute("data-section") === pgFilter;
+    if (!show) return;
+    var el = card.querySelector(".spec");
+    if (!el) return;
+    var orig = el.textContent, n = orig.length, i = 0;
+    if (!n || el._scrambling) return;
+    el._scrambling = true;
+    var timer = setInterval(function () {
+      i++;
+      var out = "";
+      for (var j = 0; j < n; j++) {
+        out += (j < i || orig[j] === " ") ? orig[j] : GLYPHS[(Math.random() * GLYPHS.length) | 0];
+      }
+      el.textContent = out;
+      if (i >= n) { clearInterval(timer); el.textContent = orig; el._scrambling = false; }
+    }, 24);
+  })(cards[c]);
 }
 
 /* Bench overlay watcher: grows the overlay out of the tapped card,
