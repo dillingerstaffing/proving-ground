@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
 <meta name="description" content="The Proving Ground: real working engineering benches that prove the capabilities behind freelance silicon work, TAPEOUT graphics hardware, and OLD IRON hardware donation. Free, no account, runs entirely on your device.">
 <link rel="canonical" href="https://dillingerstaffing.github.io/proving-ground/">
@@ -57,14 +58,22 @@
   --line: rgba(242, 237, 227, 0.13);
   --ember: #ff5a1f;
   --ember-deep: #b53c0d;
+  --ember-glow: rgba(255, 90, 31, 0.35);
   --ice: #7cc4ff;
   --amber: #ffbe4d;
   --mint: #7de0a8;
+  /* Legacy garage vars used inside bench modules: aliased to the new palette
+     so module chrome (borders, toasts, accents) renders in the new identity. */
+  --acid: #ff5a1f;
+  --cyan: #7cc4ff;
+  --orange: #ffbe4d;
+  --black: #05070a;
   --radius: 14px;
   --font-d: "Space Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-m: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-pop: cubic-bezier(0.2, 0.9, 0.25, 1.15);
+  --ease-pop: cubic-bezier(0.2, 0.9, 0.25, 1.12);
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -76,14 +85,40 @@ body {
   font-size: 17px;
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
+  touch-action: manipulation;
   background-image:
-    linear-gradient(rgba(242, 237, 227, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(242, 237, 227, 0.025) 1px, transparent 1px);
+    linear-gradient(rgba(242, 237, 227, 0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(242, 237, 227, 0.022) 1px, transparent 1px);
   background-size: 44px 44px;
 }
+body.pg-locked { overflow: hidden; }
 ::selection { background: var(--ember); color: #0a0c0e; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--ink); }
+::-webkit-scrollbar-thumb { background: #2a323c; border-radius: 8px; border: 2px solid var(--ink); }
+::-webkit-scrollbar-thumb:hover { background: var(--ember-deep); }
 a { color: var(--ember); }
 .wrap { max-width: 1060px; margin: 0 auto; padding: 0 20px; }
+
+/* Film grain: one static layer, zero motion cost. */
+#grain {
+  position: fixed; inset: 0; z-index: 4; pointer-events: none; opacity: 0.05;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='160' height='160' filter='url(%23n)'/></svg>");
+}
+
+/* Launch iris: a card-origin flash that masks the bench opening. */
+#pgIris {
+  position: fixed; inset: 0; z-index: 20000; pointer-events: none; opacity: 0;
+  transform-origin: var(--ix, 50%) var(--iy, 50%);
+  background: radial-gradient(circle at var(--ix, 50%) var(--iy, 50%),
+    rgba(255, 90, 31, 0.5), rgba(255, 90, 31, 0.1) 34%, transparent 62%);
+}
+#pgIris.go { animation: pgIris 0.42s var(--ease-out); }
+@keyframes pgIris {
+  0% { opacity: 0; transform: scale(0.55); }
+  16% { opacity: 1; }
+  100% { opacity: 0; transform: scale(1.3); }
+}
 
 /* Skip link: keyboard users jump straight to the benches. */
 .skip {
@@ -94,63 +129,100 @@ a { color: var(--ember); }
 }
 .skip:focus { top: 12px; }
 
-/* ---------- Header ---------- */
-.site-head { padding: 64px 0 8px; }
-.eyebrow {
-  font-family: var(--font-m); font-size: 12px; font-weight: 600;
-  letter-spacing: 0.22em; color: var(--ember); margin: 0 0 14px;
+/* ---------- Hero ---------- */
+.site-head { position: relative; padding: 52px 0 10px; overflow: hidden; }
+#sparks { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.head-row {
+  position: relative; display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 30px; animation: rise 0.6s var(--ease-out) both;
 }
+.sigil { width: 46px; height: 46px; flex: none; }
+.sysstat {
+  font-family: var(--font-m); font-size: 12px; font-weight: 500;
+  letter-spacing: 0.18em; color: var(--dim);
+  display: flex; align-items: center; gap: 10px; white-space: nowrap;
+}
+.sysstat b { color: var(--paper); font-weight: 600; }
+.pulse {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--ember);
+  box-shadow: 0 0 12px var(--ember-glow); animation: pulse 2.2s ease-in-out infinite; flex: none;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 .wordmark {
-  font-size: clamp(44px, 8vw, 84px); font-weight: 700; line-height: 0.98;
-  letter-spacing: -0.02em; margin: 0 0 16px; text-wrap: balance;
+  position: relative; margin: 0;
+  font-size: clamp(58px, 13vw, 132px); font-weight: 700; line-height: 0.94;
+  letter-spacing: -0.03em; text-wrap: balance;
+  animation: rise 0.7s var(--ease-out) 0.08s both;
 }
-.wordmark .thin { color: var(--steel); font-weight: 500; }
-.lede { max-width: 62ch; color: var(--steel); font-size: 18px; margin: 0 0 26px; }
-.lede strong { color: var(--paper); font-weight: 600; }
-.rule { height: 2px; background: linear-gradient(90deg, var(--ember), transparent 70%); border: 0; margin: 0 0 34px; }
-.ventures { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 8px; padding: 0; list-style: none; }
-.ventures a {
-  display: inline-flex; align-items: center; gap: 8px;
-  font-family: var(--font-m); font-size: 13px; font-weight: 500;
-  color: var(--paper); text-decoration: none;
-  border: 1px solid var(--line); border-radius: 999px; padding: 9px 15px;
-  background: rgba(16, 20, 26, 0.7);
-  transition: border-color 0.18s var(--ease-out), transform 0.18s var(--ease-out);
-}
-.ventures a:hover { border-color: var(--ember); transform: translateY(-1px); }
-.ventures a:focus-visible { outline: 2px solid var(--ember); outline-offset: 3px; }
-.ventures .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.wordmark .outline { color: transparent; -webkit-text-stroke: 1.5px var(--paper); }
+@supports not (-webkit-text-stroke: 1px #000) { .wordmark .outline { color: var(--paper); } }
+@keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
 
-/* ---------- Mission sections ---------- */
-.mission { margin: 54px 0 8px; }
-.mission-head { margin-bottom: 18px; }
-.kicker {
-  font-family: var(--font-m); font-size: 12px; font-weight: 600;
-  letter-spacing: 0.22em; color: var(--dim); margin: 0 0 8px;
+/* ---------- Filter deck (sticky, real in-page filters) ---------- */
+.deck {
+  position: sticky; top: 0; z-index: 50;
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 14px 0; margin: 30px 0 6px;
+  background: rgba(10, 12, 14, 0.82);
+  background: color-mix(in srgb, var(--ink) 82%, transparent);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--line);
 }
-.mission-head h2 { font-size: clamp(26px, 4vw, 38px); letter-spacing: -0.015em; margin: 0 0 8px; line-height: 1.1; }
-.mission-head p { color: var(--steel); max-width: 64ch; margin: 0; font-size: 16px; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
-
-/* ---------- Bench cards ---------- */
-.bench {
-  position: relative; display: flex; flex-direction: column; text-align: left;
-  min-height: 208px; padding: 20px; cursor: pointer;
-  background: linear-gradient(180deg, var(--panel-2), var(--panel));
-  border: 1px solid var(--line); border-radius: var(--radius); color: var(--paper);
-  font-family: var(--font-d);
-  transition: transform 0.2s var(--ease-out), border-color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out);
-  opacity: 0; transform: translateY(16px);
+.filters {
+  position: relative; display: inline-flex; gap: 2px; padding: 4px; max-width: 100%;
+  border: 1px solid var(--line); border-radius: 999px; background: rgba(16, 20, 26, 0.7);
+  overflow-x: auto; scrollbar-width: none;
+}
+.filters::-webkit-scrollbar { display: none; }
+.findicator {
+  position: absolute; top: 4px; left: 4px; height: calc(100% - 8px); width: 0;
+  border-radius: 999px; background: var(--ember);
+  transition: transform 0.28s var(--ease-out), width 0.28s var(--ease-out);
+}
+.filter {
+  position: relative; z-index: 1; border: 0; background: none; cursor: pointer;
+  color: var(--steel); font-family: var(--font-m); font-size: 13px; font-weight: 600;
+  letter-spacing: 0.08em; padding: 0 18px; min-height: 44px; border-radius: 999px;
+  white-space: nowrap; transition: color 0.2s var(--ease-out);
   -webkit-tap-highlight-color: transparent;
 }
-.bench.in { opacity: 1; transform: none; transition: opacity 0.45s var(--ease-out), transform 0.45s var(--ease-pop), border-color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out); }
+.filter.is-on { color: #0a0c0e; }
+.filter:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+.deck-count {
+  margin: 0 0 0 auto; font-family: var(--font-m); font-size: 12px;
+  letter-spacing: 0.18em; color: var(--dim); white-space: nowrap;
+}
+.deck-count b { color: var(--ember); font-weight: 600; }
+
+/* ---------- Bench grid ---------- */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-top: 22px; }
+.bench {
+  position: relative; display: flex; flex-direction: column; text-align: left;
+  min-height: 232px; padding: 22px; cursor: pointer; overflow: hidden;
+  background: linear-gradient(180deg, #151b23, #0e1319);
+  border: 1px solid var(--line); border-radius: var(--radius); color: var(--paper);
+  font-family: var(--font-d); opacity: 0;
+  transition: transform 0.2s var(--ease-out), border-color 0.2s var(--ease-out), box-shadow 0.25s var(--ease-out);
+  -webkit-tap-highlight-color: transparent;
+}
+.bench.in { opacity: 1; animation: rise 0.55s var(--ease-pop); }
+.bench.hide { opacity: 0; transform: scale(0.97); transition: opacity 0.16s ease, transform 0.16s ease; }
+.bench::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(105deg, transparent 42%, rgba(255, 90, 31, 0.14) 50%, transparent 58%);
+  transform: translateX(-130%); transition: transform 0.7s var(--ease-out);
+}
 @media (pointer: fine) {
-  .bench:hover { transform: translateY(-3px); border-color: rgba(255, 90, 31, 0.55); box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45); }
+  .bench:hover {
+    transform: translateY(-4px); border-color: rgba(255, 90, 31, 0.6);
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5), 0 0 32px rgba(255, 90, 31, 0.12);
+  }
+  .bench:hover::after { transform: translateX(130%); }
 }
 .bench:active { transform: scale(0.985); }
 .bench:focus-visible { outline: 2px solid var(--ember); outline-offset: 3px; }
-.bench-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-.idx { font-family: var(--font-m); font-size: 13px; font-weight: 600; color: var(--ember); letter-spacing: 0.12em; }
+.bench-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.idx { font-family: var(--font-m); font-size: 27px; font-weight: 600; color: var(--ember); letter-spacing: 0.02em; line-height: 1; }
 .pill {
   font-family: var(--font-m); font-size: 11px; font-weight: 600; letter-spacing: 0.14em;
   padding: 5px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--paper);
@@ -160,32 +232,47 @@ a { color: var(--ember); }
 .pill.riscv i { background: var(--ice); }
 .pill.tapeout i { background: var(--amber); }
 .pill.oldiron i { background: var(--mint); }
-.bench h3 { font-size: 23px; letter-spacing: -0.01em; margin: 0 0 8px; line-height: 1.15; }
+.bench h3 { font-size: 24px; letter-spacing: -0.01em; margin: 0 0 8px; line-height: 1.15; }
 .bench .desc { color: var(--steel); font-size: 15px; margin: 0 0 12px; }
 .bench .how {
   font-family: var(--font-m); font-size: 12.5px; color: var(--dim); margin: 0 0 auto;
   border-top: 1px dashed var(--line); padding-top: 12px; line-height: 1.6;
 }
 .bench .how b { color: var(--steel); font-weight: 600; letter-spacing: 0.08em; font-size: 11px; }
+.bench-foot {
+  margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+}
+.spec { font-family: var(--font-m); font-size: 11px; letter-spacing: 0.12em; color: var(--dim); }
 .enter {
-  display: inline-flex; align-items: center; gap: 8px; margin-top: 14px;
+  display: inline-flex; align-items: center; gap: 8px;
   font-family: var(--font-m); font-size: 13px; font-weight: 600; letter-spacing: 0.06em;
-  color: var(--ember);
+  color: var(--ember); white-space: nowrap;
 }
-.enter .arrow { transition: transform 0.2s var(--ease-out); font-style: normal; }
-.bench:hover .enter .arrow { transform: translateX(4px); }
+.enter i { transition: transform 0.2s var(--ease-out); font-style: normal; }
+.bench:hover .enter i { transform: translateX(4px); }
 
-/* ---------- Footer ---------- */
-.site-foot { margin: 70px 0 0; padding: 30px 0 46px; border-top: 1px solid var(--line); }
-.site-foot p { color: var(--dim); font-size: 14px; margin: 0 0 14px; max-width: 64ch; }
-.foot-links { display: flex; flex-wrap: wrap; gap: 10px; padding: 0; margin: 0; list-style: none; }
-.foot-links a {
-  font-family: var(--font-m); font-size: 13px; color: var(--steel); text-decoration: none;
-  border: 1px solid var(--line); border-radius: 999px; padding: 8px 14px;
-  transition: color 0.18s var(--ease-out), border-color 0.18s var(--ease-out);
+/* ---------- Footer: the ventures, as unmistakable external rows ---------- */
+.site-foot { margin: 84px 0 0; padding: 0 0 52px; }
+.elsewhere .kicker {
+  font-family: var(--font-m); font-size: 12px; font-weight: 600;
+  letter-spacing: 0.22em; color: var(--dim); margin: 0 0 6px;
 }
-.foot-links a:hover { color: var(--paper); border-color: var(--ember); }
-.foot-links a:focus-visible { outline: 2px solid var(--ember); outline-offset: 3px; }
+.vrow {
+  display: flex; align-items: center; gap: 16px; padding: 20px 4px;
+  border-top: 1px solid var(--line); text-decoration: none; color: var(--paper);
+  transition: background 0.18s var(--ease-out), padding 0.18s var(--ease-out);
+}
+.vrow:last-of-type { border-bottom: 1px solid var(--line); }
+.vrow:hover { background: rgba(255, 90, 31, 0.045); }
+.vrow:focus-visible { outline: 2px solid var(--ember); outline-offset: -2px; }
+.vrow .grow { flex: 1; min-width: 0; }
+.vname { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
+.vsub { display: block; font-family: var(--font-m); font-size: 12px; color: var(--dim); letter-spacing: 0.04em; margin-top: 5px; }
+.vext { font-family: var(--font-m); color: var(--ember); font-size: 19px; transition: transform 0.2s var(--ease-out); flex: none; }
+.vrow:hover .vext { transform: translate(3px, -3px); }
+.fineprint { color: var(--dim); font-size: 13px; margin: 28px 0 0; font-family: var(--font-m); line-height: 1.7; }
+.fineprint a { color: var(--steel); }
 
 /* ---------- Toast ---------- */
 #pgToast {
@@ -202,45 +289,91 @@ a { color: var(--ember); }
 /* Staging area for bench launch buttons injected by feature modules. */
 .dossier .actions { display: none; }
 
+/* ============================================================
+   In-app browser hardening for bench overlays.
+   Modules open overlays by toggling an `open` class on an
+   element named *-overlay. These rules (page-level, higher
+   specificity than module-injected styles) fix the three
+   reported WebView issues: clipped tops, wrong colors on
+   native controls, and unruly scrolling.
+   ============================================================ */
+div[class*="-overlay"] {
+  height: 100vh;
+  height: 100dvh;
+  padding-top: max(16px, env(safe-area-inset-top)) !important;
+  padding-bottom: max(16px, env(safe-area-inset-bottom)) !important;
+  padding-left: max(12px, env(safe-area-inset-left)) !important;
+  padding-right: max(12px, env(safe-area-inset-right)) !important;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+/* Flex-centered overlay panels clip their tops when taller than the
+   viewport. Top-align + auto margins: centered when short, reachable
+   when tall. */
+.rv-overlay.open { align-items: flex-start !important; overflow-y: auto !important; }
+.rv-overlay.open > .rv-panel { margin-top: auto !important; margin-bottom: auto !important; }
+/* Bench opening transition: the overlay grows out of the tapped card. */
+div[class*="-overlay"].pg-enter { animation: pgOverlayIn 0.26s var(--ease-out); }
+@keyframes pgOverlayIn {
+  from { opacity: 0; transform: scale(0.96) translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+
 @media (max-width: 560px) {
-  .site-head { padding-top: 44px; }
-  .lede { font-size: 16px; }
+  .site-head { padding-top: 40px; }
+  .vname { font-size: 17px; }
   .bench { min-height: 0; }
 }
 /* Motion sensitivity: honor it, always. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
-  .bench { opacity: 1; transform: none; }
+  .bench { opacity: 1; }
+  #sparks, #pgIris { display: none; }
 }
 </style>
 </head>
 <body>
 <a class="skip" href="#benches">Skip to the benches</a>
+<div id="grain" aria-hidden="true"></div>
+<div id="pgIris" aria-hidden="true"></div>
 <div class="wrap">
 
   <header class="site-head">
-    <p class="eyebrow">WORKING MACHINES, NOT MOCKUPS</p>
-    <h1 class="wordmark">The Proving <span class="thin">Ground</span></h1>
-    <p class="lede">Every bench on this page is a <strong>real working instrument</strong>: live simulations, real math, win and fail states, and artifacts you can download. Each one proves a capability behind three ventures: <strong>freelance silicon engineering</strong>, <strong>TAPEOUT</strong> graphics hardware, and <strong>OLD IRON</strong> hardware donation.</p>
-    <hr class="rule">
-    <ul class="ventures" aria-label="The three ventures">
-      <li><a href="https://dillingerstaffing.github.io/portfolio/"><span class="dot" style="background:#7cc4ff"></span>Portfolio: C, RISC-V, kernels</a></li>
-      <li><a href="https://dillingerstaffing.github.io/tapeout/"><span class="dot" style="background:#ffbe4d"></span>TAPEOUT: lean GPUs</a></li>
-      <li><a href="https://dillingerstaffing.github.io/old-iron/"><span class="dot" style="background:#7de0a8"></span>OLD IRON: hardware donation</a></li>
-    </ul>
+    <canvas id="sparks" aria-hidden="true"></canvas>
+    <div class="head-row">
+      <svg class="sigil" viewBox="0 0 48 48" aria-hidden="true">
+        <circle cx="24" cy="24" r="21" fill="none" stroke="#ff5a1f" stroke-width="2.5"/>
+        <path d="M24 10 L29 24 L24 38 L19 24 Z" fill="#ff5a1f"/>
+        <circle cx="24" cy="24" r="2.6" fill="#0a0c0e"/>
+      </svg>
+      <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">06</b>&nbsp;BENCHES&nbsp;&middot;&nbsp;ALL&nbsp;SYSTEMS&nbsp;NOMINAL</span></div>
+    </div>
+    <h1 class="wordmark">The Proving<br><span class="outline">Ground</span></h1>
   </header>
 
   <main id="benches" aria-label="Engineering benches"></main>
 
   <footer class="site-foot">
-    <p>Built by Emi for Chris Dillinger. New benches land regularly. Everything runs on your device: no accounts, no tracking, no cost.</p>
-    <ul class="foot-links">
-      <li><a href="https://dillingerstaffing.github.io/portfolio/">Portfolio</a></li>
-      <li><a href="https://dillingerstaffing.github.io/tapeout/">TAPEOUT</a></li>
-      <li><a href="https://dillingerstaffing.github.io/old-iron/">OLD IRON</a></li>
-      <li><a href="https://dillingerstaffing.github.io/riscv-playground/">RISC-V Playground</a></li>
-      <li><a href="https://dillingerstaffing.github.io/garage-inventions/">Garage Inventions (retired)</a></li>
-    </ul>
+    <section class="elsewhere" aria-label="The ventures behind the benches">
+      <p class="kicker">THE VENTURES</p>
+      <a class="vrow" href="https://dillingerstaffing.github.io/portfolio/">
+        <span class="grow"><span class="vname">Freelance silicon engineering</span>
+        <span class="vsub">C &middot; RISC-V &middot; OS KERNELS &middot; HIRE CHRIS</span></span>
+        <span class="vext" aria-hidden="true">&nearr;</span>
+      </a>
+      <a class="vrow" href="https://dillingerstaffing.github.io/tapeout/">
+        <span class="grow"><span class="vname">TAPEOUT</span>
+        <span class="vsub">LEAN GRAPHICS HARDWARE &middot; QUALIFIED OPENLY</span></span>
+        <span class="vext" aria-hidden="true">&nearr;</span>
+      </a>
+      <a class="vrow" href="https://dillingerstaffing.github.io/old-iron/">
+        <span class="grow"><span class="vname">OLD IRON</span>
+        <span class="vsub">HARDWARE DONATION &middot; RETIRED SERVERS, WIPED RIGHT</span></span>
+        <span class="vext" aria-hidden="true">&nearr;</span>
+      </a>
+    </section>
+    <p class="fineprint">Built by Emi for Chris Dillinger. New benches land regularly.<br>Everything runs on your device: no accounts, no tracking, no cost.</p>
+    <p class="fineprint"><a href="https://dillingerstaffing.github.io/riscv-playground/">RISC-V Playground</a> &middot; <a href="https://dillingerstaffing.github.io/garage-inventions/">Garage Inventions (retired)</a></p>
   </footer>
 </div>
 
@@ -270,71 +403,263 @@ function toast(msg) {
 /* ============================================================
    BENCH REGISTRY. To add a bench: append its module to features.js,
    then add one entry here with the module's launch button id.
+   The page renders one filterable grid; `section` drives the
+   mission filter and must be one of: silicon, tapeout, oldiron.
+   Overlay convention for in-app browsers: name the overlay
+   element `<name>-overlay` and toggle it with an `open` class
+   only; page-level CSS hardens every *-overlay automatically.
    ============================================================ */
 var PG_SECTIONS = [
-  { id: "silicon", kicker: "FOR HIRE", title: "Freelance silicon",
-    blurb: "First-principles RISC-V and systems chops, running live. The same skills Chris sells as a freelancer." },
-  { id: "tapeout", kicker: "TAPEOUT", title: "Graphics hardware, qualified",
-    blurb: "Burn-in and memory testing for the lean GPU lab. Honest verdicts, printable certificates." },
-  { id: "oldiron", kicker: "OLD IRON", title: "Donated hardware, handled right",
-    blurb: "NIST 800-88 sanitization for retired drives. Proof of wipe, per serial number." }
+  { id: "silicon", label: "Silicon" },
+  { id: "tapeout", label: "TAPEOUT" },
+  { id: "oldiron", label: "Old Iron" }
 ];
 var PG_BENCHES = [
   { section: "silicon", n: "01", name: "The Silicon Anvil", btn: "rvAnvilBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "A real RV32I core on the bench. Write assembly, assemble to machine code, step the silicon, earn trial certificates.",
-    how: "Type RV32I assembly, assemble it, single-step the core through the trials." },
+    how: "Type RV32I assembly, assemble it, single-step the core through the trials.",
+    spec: "RV32I CORE \u00B7 3 TRIALS" },
   { section: "silicon", n: "02", name: "The Pipeline Hazard Lab", btn: "phBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "A five-stage RV32I pipeline with real forwarding, load-use stalls, and a swappable branch predictor. Beat three cycle budgets.",
-    how: "Schedule instructions to dodge stalls and come in under the cycle budget." },
+    how: "Schedule instructions to dodge stalls and come in under the cycle budget.",
+    spec: "5-STAGE PIPE \u00B7 3 BUDGETS" },
   { section: "silicon", n: "03", name: "The Cache Forge", btn: "cfBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "A real set-associative L1 data-cache simulator with LRU replacement and live AMAT scoring. Tune under a silicon budget.",
-    how: "Pick size, associativity, and block size, then run the access traces." },
+    how: "Pick size, associativity, and block size, then run the access traces.",
+    spec: "L1 SIM \u00B7 LIVE AMAT" },
   { section: "tapeout", n: "04", name: "The Burn-In Chamber", btn: "biBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "GPU qualification bench: real thermal physics, hidden card faults, ECC telemetry. Call SHIP or RMA on each card.",
-    how: "Design the stress profile, read the telemetry, verdict all three cards." },
+    how: "Design the stress profile, read the telemetry, verdict all three cards.",
+    spec: "3 CARDS \u00B7 SHIP / RMA" },
   { section: "tapeout", n: "05", name: "The Memory Bin Lab", btn: "mbBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "GDDR timing qualification: a real FR-FCFS DRAM command scheduler over 16 banks. Bin each module grade A or B.",
-    how: "Tune tCL, tRCD, tRP, tRAS and watch the command-bus trace." },
+    how: "Tune tCL, tRCD, tRP, tRAS and watch the command-bus trace.",
+    spec: "16 BANKS \u00B7 FR-FCFS" },
   { section: "oldiron", n: "06", name: "The Wipe Station", btn: "wsBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "NIST 800-88 drive sanitization: choose Clear, Purge, or Destroy per drive. Per-serial wipe certificates.",
-    how: "Pick the right method for each drive and survive the audit." }
+    how: "Pick the right method for each drive and survive the audit.",
+    spec: "NIST 800-88 \u00B7 PER-SERIAL" }
 ];
+
+var pgFilter = "all";
+var pgLastPoint = null;
+var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+function pgIris(pt) {
+  if (pgReduced) return;
+  var iris = $("pgIris");
+  if (!iris) return;
+  iris.style.setProperty("--ix", pt.x + "px");
+  iris.style.setProperty("--iy", pt.y + "px");
+  iris.classList.remove("go");
+  void iris.offsetWidth;
+  iris.classList.add("go");
+}
+
+function pgLaunch(b, card) {
+  var r = card.getBoundingClientRect();
+  pgLastPoint = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  pgIris(pgLastPoint);
+  var launcher = $(b.btn);
+  if (launcher) { launcher.click(); }
+  else { toast("That bench is still warming up. Try again in a moment."); }
+}
+
+function pgSetFilter(f) {
+  if (pgFilter === f) return;
+  pgFilter = f;
+  var btns = document.querySelectorAll(".filter");
+  for (var i = 0; i < btns.length; i++) {
+    var on = btns[i].getAttribute("data-f") === f;
+    btns[i].classList.toggle("is-on", on);
+    btns[i].setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  pgMoveIndicator();
+  pgApplyFilter(false);
+}
+
+function pgMoveIndicator() {
+  var wrap = document.querySelector(".filters");
+  if (!wrap) return;
+  var on = wrap.querySelector(".filter.is-on");
+  var ind = wrap.querySelector(".findicator");
+  if (!on || !ind) return;
+  ind.style.width = on.offsetWidth + "px";
+  ind.style.transform = "translateX(" + (on.offsetLeft - 4) + "px)";
+}
+
+function pgApplyFilter(first) {
+  var cards = document.querySelectorAll(".bench");
+  var vis = [];
+  for (var i = 0; i < cards.length; i++) {
+    var c = cards[i];
+    var show = pgFilter === "all" || c.getAttribute("data-section") === pgFilter;
+    if (show) {
+      c.classList.remove("hide");
+      c.style.display = "";
+      vis.push(c);
+    } else if (c.style.display !== "none") {
+      c.classList.add("hide");
+      (function (card) {
+        setTimeout(function () {
+          if (card.classList.contains("hide")) card.style.display = "none";
+        }, 180);
+      })(c);
+    }
+  }
+  var dc = $("deckCount");
+  if (dc) dc.innerHTML = "<b>" + (vis.length < 10 ? "0" + vis.length : vis.length) + "</b>&nbsp;BENCH" + (vis.length === 1 ? "" : "ES");
+  for (var j = 0; j < vis.length; j++) {
+    (function (card, k) {
+      card.classList.remove("in");
+      card.style.animationDelay = ((first ? 120 : 0) + k * 60) + "ms";
+      void card.offsetWidth;
+      card.classList.add("in");
+    })(vis[j], j);
+  }
+  var bc = $("benchCount");
+  if (bc && first) {
+    var total = PG_BENCHES.length;
+    bc.textContent = total < 10 ? "0" + total : total;
+  }
+}
 
 function pgRender() {
   var main = $("benches");
-  PG_SECTIONS.forEach(function (s) {
-    var benches = PG_BENCHES.filter(function (b) { return b.section === s.id; });
-    if (!benches.length) return;
-    var sec = el("section", "mission");
-    sec.setAttribute("aria-label", s.title);
-    var head = el("div", "mission-head",
-      '<p class="kicker">' + s.kicker + '</p><h2>' + s.title + '</h2><p>' + s.blurb + '</p>');
-    var grid = el("div", "grid");
-    benches.forEach(function (b, i) {
-      var card = el("button", "bench");
-      card.type = "button";
-      card.setAttribute("aria-label", b.name + ": " + b.desc);
-      card.innerHTML =
-        '<span class="bench-top"><span class="idx">' + b.n + '</span>' +
-        '<span class="pill ' + b.pill + '"><i></i>' + b.pillLabel + '</span></span>' +
-        '<h3>' + b.name + '</h3>' +
-        '<p class="desc">' + b.desc + '</p>' +
-        '<p class="how"><b>HOW IT WORKS</b><br>' + b.how + '</p>' +
-        '<span class="enter">Enter the bench <i class="arrow">&rarr;</i></span>';
-      card.addEventListener("click", function () {
-        var launcher = $(b.btn);
-        if (launcher) { launcher.click(); }
-        else { toast("That bench is still warming up. Try again in a moment."); }
-      });
-      grid.appendChild(card);
-      /* Staggered entrance: motion is decoration, never a gate. */
-      setTimeout(function () { card.classList.add("in"); }, 60 * (i + 1));
-    });
-    sec.appendChild(head);
-    sec.appendChild(grid);
-    main.appendChild(sec);
+
+  var deck = el("div", "deck");
+  var filters = el("div", "filters");
+  filters.setAttribute("role", "group");
+  filters.setAttribute("aria-label", "Filter benches by mission");
+  filters.appendChild(el("span", "findicator"));
+  var defs = [{ id: "all", label: "All" }].concat(PG_SECTIONS);
+  defs.forEach(function (d) {
+    var b = el("button", "filter" + (d.id === "all" ? " is-on" : ""));
+    b.type = "button";
+    b.textContent = d.label;
+    b.setAttribute("data-f", d.id);
+    b.setAttribute("aria-pressed", d.id === "all" ? "true" : "false");
+    (function (id) { b.addEventListener("click", function () { pgSetFilter(id); }); })(d.id);
+    filters.appendChild(b);
   });
+  deck.appendChild(filters);
+  var count = el("p", "deck-count");
+  count.id = "deckCount";
+  deck.appendChild(count);
+  main.appendChild(deck);
+
+  var grid = el("div", "grid");
+  PG_BENCHES.forEach(function (b) {
+    var card = el("button", "bench");
+    card.type = "button";
+    card.setAttribute("data-section", b.section);
+    card.setAttribute("aria-label", b.name + ": " + b.desc);
+    card.innerHTML =
+      '<span class="bench-top"><span class="idx">' + b.n + '</span>' +
+      '<span class="pill ' + b.pill + '"><i></i>' + b.pillLabel + '</span></span>' +
+      '<h3>' + b.name + '</h3>' +
+      '<p class="desc">' + b.desc + '</p>' +
+      '<p class="how"><b>HOW IT WORKS</b><br>' + b.how + '</p>' +
+      '<span class="bench-foot"><span class="spec">' + b.spec + '</span>' +
+      '<span class="enter">ENTER <i>&rarr;</i></span></span>';
+    (function (bench, c) {
+      c.addEventListener("click", function () { pgLaunch(bench, c); });
+    })(b, card);
+    grid.appendChild(card);
+  });
+  main.appendChild(grid);
+
+  pgMoveIndicator();
+  pgApplyFilter(true);
+  window.addEventListener("resize", pgMoveIndicator);
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(pgMoveIndicator);
+  }
 }
+
+/* Bench overlay watcher: grows the overlay out of the tapped card,
+   and locks background scroll while any bench is open. Modules
+   toggle overlays with an `open` class; we never touch their code. */
+(function pgOverlayWatcher() {
+  var mo = new MutationObserver(function (muts) {
+    for (var k = 0; k < muts.length; k++) {
+      var t = muts[k].target;
+      if (!t.classList || (t.className && t.className.indexOf("-overlay") === -1)) continue;
+      if (t.classList.contains("open")) {
+        document.body.classList.add("pg-locked");
+        if (pgLastPoint && !pgReduced) {
+          var r = t.getBoundingClientRect();
+          t.style.transformOrigin = (pgLastPoint.x - r.left) + "px " + (pgLastPoint.y - r.top) + "px";
+          t.classList.remove("pg-enter");
+          void t.offsetWidth;
+          t.classList.add("pg-enter");
+        }
+      } else {
+        t.classList.remove("pg-enter");
+        t.style.transformOrigin = "";
+        var anyOpen = false;
+        var ovs = document.querySelectorAll('div[class*="-overlay"]');
+        for (var i = 0; i < ovs.length; i++) {
+          if (ovs[i].classList.contains("open")) { anyOpen = true; break; }
+        }
+        if (!anyOpen) document.body.classList.remove("pg-locked");
+      }
+    }
+  });
+  mo.observe(document.body, { subtree: true, attributes: true, attributeFilter: ["class"] });
+})();
+
+/* Ember sparks rising through the hero. Cheap by design: a few dozen
+   particles, transform-free canvas, paused offscreen or when hidden. */
+(function pgSparks() {
+  var cv = $("sparks");
+  if (!cv || pgReduced) return;
+  var ctx = cv.getContext("2d");
+  var W = 0, H = 0, parts = [], running = true, visible = true;
+  function size() {
+    var r = cv.parentElement.getBoundingClientRect();
+    var d = Math.min(window.devicePixelRatio || 1, 2);
+    W = Math.max(1, r.width); H = Math.max(1, r.height);
+    cv.width = W * d; cv.height = H * d;
+    ctx.setTransform(d, 0, 0, d, 0, 0);
+  }
+  function spawn(anyY) {
+    return {
+      x: Math.random() * W,
+      y: anyY ? Math.random() * H : H + 8,
+      r: 0.6 + Math.random() * 1.8,
+      s: 0.25 + Math.random() * 0.9,
+      drift: (Math.random() - 0.5) * 0.35,
+      life: 0.5 + Math.random() * 0.5,
+      decay: 0.0016 + Math.random() * 0.0032,
+      hue: 16 + Math.random() * 16
+    };
+  }
+  function tick() {
+    if (!running) return;
+    requestAnimationFrame(tick);
+    if (!visible || document.hidden) return;
+    ctx.clearRect(0, 0, W, H);
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i];
+      p.y -= p.s; p.x += p.drift + Math.sin(p.y * 0.02) * 0.18; p.life -= p.decay;
+      if (p.life <= 0 || p.y < -10) { parts[i] = spawn(false); continue; }
+      var tw = 0.55 + 0.45 * Math.sin(p.y * 0.11);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, 6.2832);
+      ctx.fillStyle = "hsla(" + p.hue + ", 96%, 56%," + (p.life * tw * 0.85).toFixed(3) + ")";
+      ctx.fill();
+    }
+  }
+  size();
+  for (var i = 0; i < 44; i++) parts.push(spawn(true));
+  window.addEventListener("resize", size);
+  if ("IntersectionObserver" in window) {
+    new IntersectionObserver(function (es) { visible = es[0].isIntersecting; }).observe(cv);
+  }
+  document.addEventListener("visibilitychange", function () { running = !document.hidden; if (running) tick(); });
+  tick();
+})();
 
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", pgRender);
