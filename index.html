@@ -44,10 +44,26 @@
   catch (e2) { try { window.localStorage = shim; } catch (e3) {} }
 })();
 </script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
+    /* Self-hosted fonts: zero third-party requests, so privacy-focused
+       browsers (DuckDuckGo, Brave) have nothing to block or stall on.
+       A blocked render-blocking font stylesheet was stalling first paint. */
+    @font-face {
+      font-family: "Space Grotesk"; font-style: normal; font-weight: 300 700;
+      font-display: swap; src: url("fonts/space-grotesk-var.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400;
+      font-display: swap; src: url("fonts/ibm-plex-mono-400.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "IBM Plex Mono"; font-style: normal; font-weight: 500;
+      font-display: swap; src: url("fonts/ibm-plex-mono-500.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "IBM Plex Mono"; font-style: normal; font-weight: 600;
+      font-display: swap; src: url("fonts/ibm-plex-mono-600.woff2") format("woff2");
+    }
 :root {
   --ink: #0a0c0e;
   --panel: #10141a;
@@ -355,6 +371,38 @@ div[class*="-overlay"].pg-enter { animation: pgOverlayIn 0.3s var(--ease-out); }
   .vname { font-size: 17px; }
   .bench { min-height: 0; }
 }
+/* Second beat: after the backdrop fades, the panel rises into place. */
+div[class*="-overlay"].pg-enter > div {
+  animation: pgInnerIn 0.32s var(--ease-out) 0.06s backwards;
+}
+@keyframes pgInnerIn {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Universal close: a fixed CLOSE control whenever any bench is open,
+   so nobody gets stuck. Large target, safe-area aware. */
+#pgCloseFab {
+  position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 10010;
+  width: 64px; height: 64px; border-radius: 50%;
+  border: 1px solid var(--ember); background: var(--ember); color: #0a0c0e;
+  font-family: var(--font-m); font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+  cursor: pointer; display: none; box-shadow: 0 6px 24px rgba(255, 90, 31, 0.45);
+  -webkit-tap-highlight-color: transparent;
+}
+body.pg-any-open #pgCloseFab { display: block; }
+#pgCloseFab:active { transform: scale(0.92); }
+
+/* Press anticipation: controls depress before the action fires. */
+.filter:active, .rv-btn:active, .rv-tab:active, .rv-mini:active { transform: scale(0.94); }
+.rv-close:active { transform: scale(0.96); }
+
+/* Film grain: SVG turbulence at 4 percent, instant premium finish. */
+.pg-grain {
+  position: fixed; inset: 0; z-index: 9000; pointer-events: none; opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
 /* Motion sensitivity: honor it, always. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
@@ -404,7 +452,7 @@ div[class*="-overlay"].pg-enter { animation: pgOverlayIn 0.3s var(--ease-out); }
       </a>
     </section>
     <p class="fineprint">New benches land regularly.<br>Everything runs on your device: no accounts, no tracking, no cost.</p>
-    <p class="fineprint"><a href="https://dillingerstaffing.github.io/riscv-playground/">RISC-V Playground</a></p>
+    <p class="fineprint"><a href="#bench=riscv-playground">RISC-V Playground</a></p>
   </footer>
 </div>
 
@@ -738,6 +786,7 @@ function pgScrambleSpecs() {
       if (ovs[i].classList.contains("open")) { anyOpen = true; break; }
     }
     document.body.classList.toggle("pg-locked", anyOpen);
+    document.body.classList.toggle("pg-any-open", anyOpen);
   }
   var mo = new MutationObserver(function (muts) {
     for (var k = 0; k < muts.length; k++) {
@@ -832,12 +881,170 @@ function pgScrambleSpecs() {
   tick();
 })();
 
+/* Bench-bundle load failure: if features.js can't be fetched (privacy
+   blocker, poisoned cache, offline), say so with a retry instead of
+   silently dead cards. */
+function pgBundleFailed() {
+  if (document.getElementById("pgBundleWarn")) return;
+  var w = document.createElement("div");
+  w.id = "pgBundleWarn";
+  w.setAttribute("role", "alert");
+  w.style.cssText = "position:fixed;left:12px;right:12px;bottom:12px;z-index:9999;" +
+    "background:#2a1408;border:1px solid #ff5a1f;color:#f2ede3;font-family:monospace;" +
+    "font-size:13px;padding:12px 14px;border-radius:10px;display:flex;gap:12px;" +
+    "align-items:center;justify-content:space-between";
+  w.innerHTML = "<span>Bench instruments failed to load. Check your connection, then retry.</span>";
+  var b = document.createElement("button");
+  b.textContent = "Retry";
+  b.style.cssText = "background:#ff5a1f;border:0;color:#0a0c0e;font-weight:700;" +
+    "padding:10px 18px;border-radius:8px;min-height:44px;cursor:pointer";
+  b.onclick = function () { window.location.reload(); };
+  w.appendChild(b);
+  document.body.appendChild(w);
+}
+
+/* Universal close system: nobody gets stuck in a bench.
+   A fixed CLOSE control, backdrop tap, swipe-down, and Escape all
+   funnel into one close path. Module-specific close buttons keep
+   working; this is the safety net underneath them. */
+function pgCloseAllOverlays() {
+  var ovs = document.querySelectorAll('div[class*="-overlay"].open');
+  for (var i = 0; i < ovs.length; i++) ovs[i].classList.remove("open");
+}
+(function pgUniversalClose() {
+  var fab = document.createElement("button");
+  fab.id = "pgCloseFab";
+  fab.type = "button";
+  fab.textContent = "CLOSE";
+  fab.setAttribute("aria-label", "Close the open bench");
+  fab.addEventListener("click", pgCloseAllOverlays);
+  document.body.appendChild(fab);
+
+  var grain = document.createElement("div");
+  grain.className = "pg-grain";
+  grain.setAttribute("aria-hidden", "true");
+  document.body.appendChild(grain);
+
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    if (t && t.classList && t.className.indexOf("-overlay") !== -1 &&
+        t.classList.contains("open")) {
+      t.classList.remove("open");
+    }
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") pgCloseAllOverlays();
+  });
+
+  /* Swipe down to close: only when the overlay's scroller is at the top,
+     so inner scrolling never fights the gesture. */
+  var startY = 0, scroller = null, tracking = false;
+  document.addEventListener("touchstart", function (e) {
+    var t = e.target;
+    var ov = t && t.closest ? t.closest('div[class*="-overlay"].open') : null;
+    if (!ov || !e.touches.length) { tracking = false; return; }
+    tracking = true;
+    startY = e.touches[0].clientY;
+    scroller = ov.querySelector(".rv-body") || ov;
+  }, { passive: true });
+  document.addEventListener("touchend", function (e) {
+    if (!tracking || !e.changedTouches.length) return;
+    tracking = false;
+    var dy = e.changedTouches[0].clientY - startY;
+    if (dy > 90 && scroller && scroller.scrollTop <= 0) pgCloseAllOverlays();
+  }, { passive: true });
+})();
+
+/* Counter-scroll hero: the ember field drifts against the pointer at
+   0.4x, capped at 12px, lerped. The hero feels deep, not flat. */
+(function pgCounterScroll() {
+  if (pgReduced || !window.matchMedia("(pointer: fine)").matches) return;
+  var cv = $("sparks");
+  var head = document.querySelector(".site-head");
+  if (!cv || !head) return;
+  var tx = 0, ty = 0, cx = 0, cy = 0, raf = 0;
+  function frame() {
+    raf = 0;
+    cx += (tx - cx) * 0.12; cy += (ty - cy) * 0.12;
+    cv.style.transform = "translate(" + cx.toFixed(1) + "px," + cy.toFixed(1) + "px) scale(1.04)";
+    if (Math.abs(tx - cx) > 0.1 || Math.abs(ty - cy) > 0.1) raf = requestAnimationFrame(frame);
+  }
+  head.addEventListener("pointermove", function (e) {
+    var r = head.getBoundingClientRect();
+    var dx = (e.clientX - (r.left + r.width / 2)) / r.width;
+    var dy = (e.clientY - (r.top + r.height / 2)) / r.height;
+    tx = Math.max(-12, Math.min(12, -dx * 24));
+    ty = Math.max(-12, Math.min(12, -dy * 24));
+    if (!raf) raf = requestAnimationFrame(frame);
+  });
+  head.addEventListener("pointerleave", function () {
+    tx = 0; ty = 0;
+    if (!raf) raf = requestAnimationFrame(frame);
+  });
+})();
+
+/* Magnetic filter pills: within 140px they lean toward the pointer,
+   up to 6px, lerped. Cards keep their tilt; pills get the pull. */
+(function pgMagnetic() {
+  if (pgReduced || !window.matchMedia("(pointer: fine)").matches) return;
+  var pills = [], px = -9999, py = -9999, raf = 0;
+  function collect() {
+    pills = [];
+    var els = document.querySelectorAll(".filter");
+    for (var i = 0; i < els.length; i++) {
+      pills.push({ e: els[i], x: 0, y: 0 });
+    }
+  }
+  function frame() {
+    raf = 0;
+    var alive = false;
+    for (var i = 0; i < pills.length; i++) {
+      var p = pills[i];
+      var r = p.e.getBoundingClientRect();
+      var dx = px - (r.left + r.width / 2), dy = py - (r.top + r.height / 2);
+      var d = Math.sqrt(dx * dx + dy * dy);
+      var gx = 0, gy = 0;
+      if (d < 140 && d > 1) {
+        var pull = (1 - d / 140) * 6;
+        gx = dx / d * pull; gy = dy / d * pull;
+      }
+      p.x += (gx - p.x) * 0.18; p.y += (gy - p.y) * 0.18;
+      if (Math.abs(p.x) > 0.05 || Math.abs(p.y) > 0.05 || gx || gy) alive = true;
+      p.e.style.transform = (Math.abs(p.x) > 0.05 || Math.abs(p.y) > 0.05)
+        ? "translate(" + p.x.toFixed(1) + "px," + p.y.toFixed(1) + "px)" : "";
+    }
+    if (alive) raf = requestAnimationFrame(frame);
+  }
+  function kick() { if (!raf) raf = requestAnimationFrame(frame); }
+  document.addEventListener("pointermove", function (e) {
+    px = e.clientX; py = e.clientY; kick();
+  }, { passive: true });
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function () { collect(); });
+  } else { collect(); }
+})();
+
+function pgBoot() {
+  try {
+    pgRender(); pgDeepLink();
+  } catch (err) {
+    var m = document.createElement("div");
+    m.setAttribute("role", "alert");
+    m.style.cssText = "max-width:640px;margin:40px auto;padding:20px;font-family:monospace;" +
+      "color:#f2ede3;background:#1a0f0a;border:1px solid #ff5a1f;border-radius:12px";
+    m.textContent = "The Proving Ground failed to start in this browser (" +
+      (err && err.message ? err.message : err) + "). Try reloading, or another browser.";
+    document.body.appendChild(m);
+  }
+}
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", function () { pgRender(); pgDeepLink(); });
+  document.addEventListener("DOMContentLoaded", pgBoot);
 } else {
-  pgRender(); pgDeepLink();
+  pgBoot();
 }
 </script>
-<script src="features.js" defer></script>
+<script src="rvcore.js?v=ceaddfe" defer></script>
+<script src="rvdata.js?v=ceaddfe" defer></script>
+<script src="features.js?v=ceaddfe" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
