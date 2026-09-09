@@ -5562,3 +5562,801 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
 })();
+/* ================= THE PAGE WALKER (BENCH 09) =================
+   Sv32-style virtual memory on the bench. A real two-level page-table
+   walk with PTE flag decoding, superpage leaves, permission checks, and
+   page faults: the same walk xv6 performs on every memory access.
+   Training rig uses 16-entry tables (the sv32 algorithm, small enough to
+   read on one screen). EXPLORE walks random addresses; TRIALS qualifies
+   on three fixed jobs. */
+
+(function () {
+  "use strict";
+
+  /* ---------------- pure core: no DOM ---------------- */
+
+  function pwRng(seed) {
+    var a = seed >>> 0;
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function pwRi(rng, n) { return Math.floor(rng() * n); }
+  function pwHex(n, pad) {
+    var s = (n >>> 0).toString(16).toUpperCase();
+    while (s.length < pad) s = "0" + s;
+    return "0x" + s;
+  }
+  function pwBin(n, bits) {
+    var s = (n >>> 0).toString(2);
+    while (s.length < bits) s = "0" + s;
+    return s;
+  }
+
+  var PW_V = 0x80, PW_R = 0x40, PW_W = 0x20, PW_X = 0x10,
+      PW_U = 0x08, PW_G = 0x04, PW_A = 0x02, PW_D = 0x01;
+
+  function pwFlagBits(str) {
+    var b = 0;
+    if (str.indexOf("V") >= 0) b |= PW_V;
+    if (str.indexOf("R") >= 0) b |= PW_R;
+    if (str.indexOf("W") >= 0) b |= PW_W;
+    if (str.indexOf("X") >= 0) b |= PW_X;
+    if (str.indexOf("U") >= 0) b |= PW_U;
+    if (str.indexOf("G") >= 0) b |= PW_G;
+    if (str.indexOf("A") >= 0) b |= PW_A;
+    if (str.indexOf("D") >= 0) b |= PW_D;
+    return b;
+  }
+  function pwPte(ppn, fstr) { return (((ppn & 0xFF) << 8) | pwFlagBits(fstr)) & 0xFFFF; }
+  function pwPpn(pte) { return (pte >>> 8) & 0xFF; }
+  function pwFlagStr(pte) {
+    var o = [];
+    if (pte & PW_V) o.push("V");
+    if (pte & PW_R) o.push("R");
+    if (pte & PW_W) o.push("W");
+    if (pte & PW_X) o.push("X");
+    if (pte & PW_U) o.push("U");
+    if (pte & PW_G) o.push("G");
+    if (pte & PW_A) o.push("A");
+    if (pte & PW_D) o.push("D");
+    return o.length ? o.join(" ") : "none";
+  }
+  function pwKind(pte) {
+    if (!(pte & PW_V)) return "INVALID";
+    if (pte & (PW_R | PW_W | PW_X)) return "LEAF";
+    return "TABLE";
+  }
+  function pwNeed(access) { return access === "READ" ? PW_R : access === "WRITE" ? PW_W : PW_X; }
+  function pwPermFor(access) { return access === "READ" ? "R" : access === "WRITE" ? "W" : "X"; }
+  function pwFaultName(access) {
+    return access === "READ" ? "LOAD PAGE FAULT" : access === "WRITE" ? "STORE PAGE FAULT" : "INSTRUCTION PAGE FAULT";
+  }
+
+  function pwDecoyLeaf(rng) {
+    var perms = ["VR", "VRW", "VRX", "VRWX", "VRU", "VX"];
+    return pwPte(pwRi(rng, 256), perms[pwRi(rng, perms.length)]);
+  }
+  function pwDecoyRoot(rng, forbid) {
+    var root = [];
+    for (var i = 0; i < 16; i++) {
+      if (i === forbid) { root.push(0); continue; }
+      var r = rng();
+      if (r < 0.55) root.push(0);
+      else if (r < 0.82) root.push(pwPte(pwRi(rng, 4), "V"));
+      else root.push(pwDecoyLeaf(rng));
+    }
+    return root;
+  }
+  function pwDecoyL1(rng, forbid) {
+    var t = [];
+    for (var i = 0; i < 16; i++) {
+      if (i === forbid) { t.push(0); continue; }
+      t.push(rng() < 0.6 ? 0 : pwDecoyLeaf(rng));
+    }
+    return t;
+  }
+
+  /* kind: l2 | super | faultperm | faultinvalid */
+  function pwGenTables(seed, spec) {
+    var rng = pwRng(seed >>> 0);
+    var va = spec.va >>> 0, access = spec.access, kind = spec.kind;
+    var vpn1 = (va >>> 12) & 15, vpn0 = (va >>> 8) & 15;
+    var tables = { root: pwDecoyRoot(rng, vpn1), l1: {} };
+    var k, t, leafPerm;
+    function leafFor(acc) { return acc === "READ" ? "VR" : acc === "WRITE" ? "VRW" : "VRX"; }
+    if (kind === "l2") {
+      k = pwRi(rng, 4);
+      tables.root[vpn1] = pwPte(k, "V");
+      for (t = 0; t < 4; t++) tables.l1[t] = pwDecoyL1(rng, t === k ? vpn0 : -1);
+      tables.l1[k][vpn0] = pwPte(pwRi(rng, 256), leafFor(access));
+    } else if (kind === "super") {
+      tables.root[vpn1] = pwPte(pwRi(rng, 16) << 4, leafFor(access));
+      for (t = 0; t < 4; t++) tables.l1[t] = pwDecoyL1(rng, -1);
+    } else if (kind === "faultperm") {
+      k = pwRi(rng, 4);
+      tables.root[vpn1] = pwPte(k, "V");
+      for (t = 0; t < 4; t++) tables.l1[t] = pwDecoyL1(rng, t === k ? vpn0 : -1);
+      leafPerm = access === "WRITE" ? "VR" : access === "EXECUTE" ? "VRW" : "VX";
+      tables.l1[k][vpn0] = pwPte(pwRi(rng, 256), leafPerm);
+    } else {
+      tables.root[vpn1] = 0;
+      for (t = 0; t < 4; t++) tables.l1[t] = pwDecoyL1(rng, -1);
+    }
+    return tables;
+  }
+
+  function pwWalk(tables, va, access) {
+    va = va >>> 0;
+    var vpn1 = (va >>> 12) & 15, vpn0 = (va >>> 8) & 15, off = va & 255;
+    var steps = [];
+    function fault(why) { return { ok: false, fault: pwFaultName(access), why: why, steps: steps, pa: null }; }
+    var pte = tables.root[vpn1] & 0xFFFF;
+    steps.push({ level: 1, index: vpn1, pte: pte });
+    if (!(pte & PW_V)) return fault("level-1 PTE at index " + vpn1 + " is invalid (V=0), the page is not present");
+    if (pte & (PW_R | PW_W | PW_X)) {
+      if ((pte & PW_W) && !(pte & PW_R)) return fault("reserved PTE encoding (W=1, R=0)");
+      if (!(pte & pwNeed(access))) {
+        return fault("leaf PTE grants [" + pwFlagStr(pte) + "] but this " +
+          access.toLowerCase() + " needs " + pwPermFor(access));
+      }
+      var ppn = (((pwPpn(pte) >>> 4) << 4) | vpn0) & 0xFF;
+      return { ok: true, pa: (((ppn << 8) | off) & 0xFFFF), super: true, ppn: ppn, steps: steps, fault: null };
+    }
+    var t = pwPpn(pte) & 15;
+    var l1 = tables.l1[t];
+    if (!l1) return fault("level-1 PTE points at table " + t + ", which is not present");
+    var pte2 = l1[vpn0] & 0xFFFF;
+    steps.push({ level: 2, index: vpn0, pte: pte2, table: t });
+    if (!(pte2 & PW_V)) return fault("level-2 PTE at index " + vpn0 + " is invalid (V=0), the page is not present");
+    if (!(pte2 & (PW_R | PW_W | PW_X))) return fault("non-leaf PTE at the last level, the walk cannot continue");
+    if ((pte2 & PW_W) && !(pte2 & PW_R)) return fault("reserved PTE encoding (W=1, R=0)");
+    if (!(pte2 & pwNeed(access))) {
+      return fault("leaf PTE grants [" + pwFlagStr(pte2) + "] but this " +
+        access.toLowerCase() + " needs " + pwPermFor(access));
+    }
+    return { ok: true, pa: ((((pwPpn(pte2) << 8) | off) & 0xFFFF)), super: false, ppn: pwPpn(pte2), steps: steps, fault: null };
+  }
+
+  var PW_JOBS = [
+    { id: "t1", name: "Trial 1: First Steps", seed: 0xC0FFEE, va: 0x3A7C, access: "READ", kind: "l2",
+      brief: "A plain two-level walk. Read VPN1 and VPN0 out of the address, step both tables, commit the physical address." },
+    { id: "t2", name: "Trial 2: The Superpage", seed: 0x5EED, va: 0x94B2, access: "EXECUTE", kind: "super",
+      brief: "The level-1 entry is a leaf: a superpage. Its low PPN nibble comes from VPN0. Fetch permission required." },
+    { id: "t3", name: "Trial 3: Fault Lines", seed: 0xFA07, va: 0x6D1E, access: "WRITE", kind: "faultperm",
+      brief: "Something is wrong with this mapping. Walk it, find the denial, and raise the page fault instead of translating." }
+  ];
+
+  /* ---------------- CSS ---------------- */
+
+  var PW_CSS = [
+    ".pw-overlay{position:fixed;inset:0;z-index:9995;background:rgba(5,8,10,.94);display:none;}",
+    ".pw-overlay.open{display:flex;}",
+    ".pw-panel{flex:1;min-height:0;width:100%;max-width:1080px;margin:0 auto;display:flex;flex-direction:column;background:#0a0c0e;border:1px solid var(--line);overflow:hidden;}",
+    "@media(min-width:700px){.pw-panel{border-radius:14px;}}",
+    ".pw-bar{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line);flex:none;flex-wrap:wrap;background:#0d1116;}",
+    ".pw-title{font-family:var(--font-d);font-size:13px;font-weight:700;letter-spacing:.14em;color:var(--paper);white-space:nowrap;}",
+    ".pw-title b{color:var(--ember);}",
+    ".pw-tabs{display:flex;gap:6px;flex:1;flex-wrap:wrap;}",
+    ".pw-tab{font-family:var(--font-m);font-size:11px;font-weight:600;letter-spacing:.1em;padding:12px 16px;min-height:48px;border:1px solid transparent;background:none;color:var(--steel);cursor:pointer;border-radius:8px;transition:transform 200ms;}",
+    ".pw-tab.on{color:var(--ember);border-color:rgba(255,90,31,.4);background:rgba(255,90,31,.08);}",
+    ".pw-tab:active{transform:scale(.96);}",
+    ".pw-close{font-family:var(--font-m);font-size:12px;font-weight:700;letter-spacing:.08em;min-height:48px;min-width:48px;padding:12px 18px;border-radius:10px;border:1px solid var(--ember);background:var(--ember);color:#0a0c0e;cursor:pointer;transition:transform 200ms;}",
+    ".pw-close:active{transform:scale(.96);}",
+    ".pw-body{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px;}",
+    ".pw-sub{font-family:var(--font-m);font-size:11px;color:var(--steel);letter-spacing:.04em;line-height:1.8;margin:0 0 12px;}",
+    ".pw-sub b{color:var(--paper);font-weight:600;letter-spacing:.08em;font-size:10px;}",
+    ".pw-sub a{color:var(--ice);}",
+    ".pw-cards{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:12px;}",
+    "@media(min-width:700px){.pw-cards{grid-template-columns:repeat(3,1fr);}}",
+    ".pw-card{border:1px solid var(--line);border-radius:10px;padding:14px;background:#0d1116;}",
+    ".pw-card h5{margin:0 0 6px;font-family:var(--font-d);font-size:14px;color:var(--paper);}",
+    ".pw-card p{margin:0 0 10px;font-size:12px;color:var(--steel);line-height:1.6;}",
+    ".pw-card .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}",
+    ".pw-pstat{font-family:var(--font-m);font-size:10px;font-weight:700;letter-spacing:.12em;padding:6px 12px;border-radius:20px;border:1px solid var(--line);color:var(--steel);}",
+    ".pw-pstat.pass{color:var(--mint);border-color:rgba(125,224,168,.5);}",
+    ".pw-pstat.fail{color:#ff7a7a;border-color:rgba(255,122,122,.5);}",
+    ".pw-mini{font-family:var(--font-m);font-size:11px;font-weight:700;letter-spacing:.06em;min-height:48px;padding:12px 16px;border-radius:8px;border:1px solid rgba(242,237,227,.2);background:#141a21;color:var(--paper);cursor:pointer;transition:transform 200ms;}",
+    ".pw-mini:active{transform:scale(.96);}",
+    ".pw-mini.go{background:var(--ember);border-color:var(--ember);color:#0a0c0e;}",
+    ".pw-fields{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;}",
+    ".pw-field{border:1px solid var(--line);border-radius:8px;padding:8px 12px;background:#0d1116;min-width:0;}",
+    ".pw-field .k{display:block;font-family:var(--font-m);font-size:9px;letter-spacing:.16em;color:var(--dim);margin-bottom:4px;}",
+    ".pw-field .v{font-family:var(--font-m);font-size:14px;color:var(--paper);}",
+    ".pw-field .v em{font-style:normal;color:var(--ember);}",
+    ".pw-cols{display:grid;grid-template-columns:1fr;gap:12px;}",
+    "@media(min-width:900px){.pw-cols{grid-template-columns:1.05fr .95fr;}}",
+    ".pw-pane{border:1px solid var(--line);border-radius:10px;background:#0d1116;overflow:hidden;min-width:0;}",
+    ".pw-pane h5{margin:0;padding:10px 12px;font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--paper);border-bottom:1px solid var(--line);font-weight:600;}",
+    ".pw-pane h5 small{display:block;color:var(--dim);letter-spacing:.04em;margin-top:3px;font-weight:400;}",
+    ".pw-rows{max-height:420px;overflow-y:auto;-webkit-overflow-scrolling:touch;}",
+    ".pw-row{display:grid;grid-template-columns:44px 1fr 1fr auto;gap:8px;align-items:center;width:100%;min-height:48px;padding:8px 12px;background:none;border:none;border-bottom:1px solid rgba(242,237,227,.06);cursor:pointer;text-align:left;transition:transform 200ms,background 200ms;}",
+    ".pw-row:active{transform:scale(.98);}",
+    ".pw-row:hover{background:rgba(255,90,31,.05);}",
+    ".pw-row.sel{background:rgba(255,90,31,.12);box-shadow:inset 3px 0 0 var(--ember);}",
+    ".pw-idx{font-family:var(--font-m);font-size:12px;color:var(--dim);}",
+    ".pw-row.sel .pw-idx{color:var(--ember);font-weight:700;}",
+    ".pw-pte{font-family:var(--font-m);font-size:13px;color:var(--paper);}",
+    ".pw-flags{font-family:var(--font-m);font-size:11px;color:var(--steel);}",
+    ".pw-kind{font-family:var(--font-m);font-size:10px;font-weight:700;letter-spacing:.1em;padding:5px 10px;border-radius:20px;border:1px solid;}",
+    ".pw-kind.kINVALID{color:var(--dim);border-color:rgba(107,116,128,.5);}",
+    ".pw-kind.kLEAF{color:var(--mint);border-color:rgba(125,224,168,.5);}",
+    ".pw-kind.kTABLE{color:var(--ice);border-color:rgba(124,196,255,.5);}",
+    ".pw-log{font-family:var(--font-m);font-size:11px;line-height:1.8;color:var(--steel);padding:10px 12px;max-height:190px;overflow-y:auto;background:#07090b;white-space:pre-wrap;word-break:break-word;}",
+    ".pw-log .ok{color:var(--mint);}",
+    ".pw-log .bad{color:#ff7a7a;}",
+    ".pw-leaf{padding:12px;border-top:1px solid var(--line);}",
+    ".pw-dec{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-family:var(--font-m);font-size:12px;margin-bottom:12px;}",
+    ".pw-dec dt{color:var(--dim);letter-spacing:.08em;font-size:10px;}",
+    ".pw-dec dd{margin:0;color:var(--paper);}",
+    ".pw-dec dd.good{color:var(--mint);}",
+    ".pw-dec dd.bad{color:#ff7a7a;}",
+    ".pw-commit{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;}",
+    ".pw-commit label{font-family:var(--font-m);font-size:10px;letter-spacing:.12em;color:var(--dim);display:flex;flex-direction:column;gap:6px;flex:1;min-width:180px;}",
+    ".pw-commit input{font-family:var(--font-m);font-size:16px;padding:12px;min-height:48px;border-radius:8px;border:1px solid var(--line);background:#07090b;color:var(--paper);width:100%;box-sizing:border-box;}",
+    ".pw-commit input:focus{outline:2px solid var(--ember);outline-offset:1px;}",
+    ".pw-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;}",
+    ".pw-btn{font-family:var(--font-m);font-size:12px;font-weight:700;letter-spacing:.06em;min-height:48px;padding:12px 18px;border-radius:10px;border:1px solid rgba(242,237,227,.22);background:#141a21;color:var(--paper);cursor:pointer;transition:transform 200ms;}",
+    ".pw-btn:active{transform:scale(.96);}",
+    ".pw-btn.primary{background:var(--ember);border-color:var(--ember);color:#0a0c0e;}",
+    ".pw-btn.warn{border-color:rgba(255,122,122,.55);color:#ff7a7a;}",
+    ".pw-btn:disabled{opacity:.4;cursor:default;}",
+    ".pw-verdict{font-family:var(--font-m);font-size:13px;line-height:1.7;margin-top:12px;padding:12px 14px;border-radius:10px;border:1px solid var(--line);display:none;}",
+    ".pw-verdict.show{display:block;}",
+    ".pw-verdict.pass{border-color:rgba(125,224,168,.55);color:var(--mint);}",
+    ".pw-verdict.fail{border-color:rgba(255,122,122,.55);color:#ff7a7a;}",
+    ".pw-verdict b{letter-spacing:.1em;}",
+    ".pw-cert{margin-top:12px;border:1px solid rgba(255,90,31,.5);border-radius:10px;padding:16px;background:rgba(255,90,31,.06);display:none;}",
+    ".pw-cert.show{display:block;}",
+    ".pw-cert h4{margin:0 0 6px;font-family:var(--font-d);color:var(--ember);letter-spacing:.1em;font-size:15px;}",
+    ".pw-cert p{margin:0 0 12px;font-size:12px;color:var(--steel);line-height:1.7;}",
+    "button:focus-visible,.pw-commit input:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    "@media (prefers-reduced-motion:reduce){.pw-panel *{transition:none !important;}}"
+  ];
+
+  /* ---------------- DOM helpers ---------------- */
+
+  function pw$(id) { return document.getElementById(id); }
+  function pwEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  function pwEsc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function pwField(k, vHtml) {
+    return '<div class="pw-field"><span class="k">' + pwEsc(k) + '</span><span class="v">' + vHtml + "</span></div>";
+  }
+
+  /* ---------------- board ---------------- */
+
+  function pwNewBoard(page, opts) {
+    var px = opts.mode === "trial" ? "pwT" : "pwE";
+    var st = {
+      px: px, mode: opts.mode, job: opts.job || null,
+      va: 0, access: "READ", tables: null,
+      view: null, hist: [], sel: -1,
+      logLines: [], attempts: 0, passed: false, verdict: null
+    };
+    page.innerHTML =
+      '<div class="pw-board">' +
+      '<div class="pw-fields" id="' + px + 'Addr"></div>' +
+      '<div class="pw-cols">' +
+      '<div class="pw-pane" id="' + px + 'TPane"><h5 id="' + px + 'THead">Table</h5><div class="pw-rows" id="' + px + 'Rows"></div></div>' +
+      '<div class="pw-pane"><h5>Walk log<small>every step the walker takes, in order</small></h5>' +
+      '<div class="pw-log" id="' + px + 'Log">Walker idle.</div>' +
+      '<div id="' + px + 'Side"></div></div>' +
+      "</div>" +
+      '<div class="pw-actions">' +
+      '<button class="pw-btn primary" id="' + px + 'Step">Step into entry</button>' +
+      '<button class="pw-btn" id="' + px + 'Back" style="display:none">Back up</button>' +
+      '<button class="pw-btn warn" id="' + px + 'Fault">Raise page fault</button>' +
+      (opts.mode === "explore" ? '<button class="pw-btn" id="' + px + 'New">New address</button>' : "") +
+      '<button class="pw-btn" id="' + px + 'Dl">Download report</button>' +
+      "</div>" +
+      '<div class="pw-verdict" id="' + px + 'Verdict"></div>' +
+      "</div>";
+    pw$(px + "Step").addEventListener("click", function () { pwStep(st); });
+    pw$(px + "Back").addEventListener("click", function () { pwBack(st); });
+    pw$(px + "Fault").addEventListener("click", function () { pwRaiseFault(st); });
+    pw$(px + "Dl").addEventListener("click", function () { pwDownloadReport(st); });
+    if (opts.mode === "explore") pw$(px + "New").addEventListener("click", function () { pwNewExplore(st); });
+    if (opts.mode === "trial") pwStartJob(st, opts.job);
+    else pwNewExplore(st);
+    return st;
+  }
+
+  function pwSetAddr(st) {
+    var va = st.va >>> 0;
+    var vpn1 = (va >>> 12) & 15, vpn0 = (va >>> 8) & 15, off = va & 255;
+    pw$(st.px + "Addr").innerHTML =
+      pwField("VIRTUAL ADDRESS", pwHex(va, 4)) +
+      pwField("VPN1 [15:12]", "<em>" + pwBin(vpn1, 4) + "</em> = " + vpn1) +
+      pwField("VPN0 [11:8]", "<em>" + pwBin(vpn0, 4) + "</em> = " + vpn0) +
+      pwField("OFFSET [7:0]", pwBin(off, 8) + " = " + pwHex(off, 2).slice(2)) +
+      pwField("ACCESS", st.access);
+  }
+
+  function pwLog(st, msg, cls) {
+    st.logLines.push(msg);
+    var box = pw$(st.px + "Log");
+    var line = pwEl("div", cls || "", msg);
+    if (st.logLines.length === 1) box.innerHTML = "";
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function pwRootView(st) {
+    var vpn1 = (st.va >>> 12) & 15;
+    return { kind: "table", entries: st.tables.root, level: 1, trueIndex: vpn1,
+             title: "Level 1: root page table",
+             sub: "Index it with VPN1. 16 entries, one true path." };
+  }
+
+  function pwRenderView(st) {
+    var v = st.view, px = st.px;
+    var pane = pw$(px + "TPane"), side = pw$(px + "Side");
+    side.innerHTML = "";
+    if (v.kind === "table") {
+      pane.style.display = "";
+      pw$(px + "THead").innerHTML = pwEsc(v.title) + "<small>" + pwEsc(v.sub) + "</small>";
+      var box = pw$(px + "Rows");
+      box.innerHTML = "";
+      for (var i = 0; i < v.entries.length; i++) {
+        (function (idx) {
+          var pte = v.entries[idx] & 0xFFFF;
+          var b = pwEl("button", "pw-row" + (st.sel === idx ? " sel" : ""));
+          b.setAttribute("aria-pressed", st.sel === idx ? "true" : "false");
+          b.setAttribute("aria-label", "Table entry " + idx + ", " + pwKind(pte) + ", PTE " + pwHex(pte, 4));
+          b.appendChild(pwEl("span", "pw-idx", String(idx)));
+          b.appendChild(pwEl("span", "pw-pte", pwHex(pte, 4).slice(2)));
+          b.appendChild(pwEl("span", "pw-flags", pwFlagStr(pte)));
+          b.appendChild(pwEl("span", "pw-kind k" + pwKind(pte), pwKind(pte)));
+          b.addEventListener("click", function () { pwSelect(st, idx); });
+          box.appendChild(b);
+        })(i);
+      }
+      pw$(px + "Step").style.display = v.noStep ? "none" : "";
+    } else {
+      pane.style.display = "none";
+      var wrap = pwEl("div", "pw-leaf");
+      if (v.kind === "leaf") {
+        wrap.appendChild(pwLeafPanel(st, v));
+      } else {
+        var h = pwEl("h5", null, "Walk ends here");
+        h.style.cssText = "font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--paper);margin:0 0 8px;";
+        var p = pwEl("p", null, v.msg);
+        p.style.cssText = "font-family:var(--font-m);font-size:12px;color:var(--steel);line-height:1.7;margin:0;";
+        wrap.appendChild(h); wrap.appendChild(p);
+      }
+      side.appendChild(wrap);
+      pw$(px + "Step").style.display = "none";
+    }
+    pw$(px + "Back").style.display = st.hist.length ? "" : "none";
+  }
+
+  function pwLeafPanel(st, v) {
+    var pte = v.pte, frag = document.createDocumentFragment();
+    var h = pwEl("h5", null, "Leaf PTE, level " + v.level + ", index " + v.index + (v.super ? " (superpage)" : ""));
+    h.style.cssText = "font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--paper);margin:0 0 10px;";
+    frag.appendChild(h);
+    var dl = pwEl("dl", "pw-dec");
+    function row(k, txt, cls) {
+      var dt = pwEl("dt", null, k), dd = pwEl("dd", cls || "", txt);
+      dl.appendChild(dt); dl.appendChild(dd);
+    }
+    row("PTE", pwHex(pte, 4));
+    row("PPN", pwHex(pwPpn(pte), 2).slice(2) + (v.super ? " (high nibble only, low nibble comes from VPN0)" : ""));
+    row("FLAGS", pwFlagStr(pte));
+    row("COVERAGE", v.super ? "4 KiB superpage (VPN0 + OFFSET)" : "256 byte page");
+    var need = pwPermFor(st.access);
+    var grants = (pte & pwNeed(st.access)) !== 0;
+    row("PERMISSION", grants
+      ? "grants " + st.access + " (" + need + "=1): translation proceeds"
+      : "denies " + st.access + " (" + need + "=0): this walk ends in a " + pwFaultName(st.access),
+      grants ? "good" : "bad");
+    frag.appendChild(dl);
+    if (v.truePath) {
+      var box = pwEl("div", "pw-commit");
+      var lab = pwEl("label", null, "PHYSICAL ADDRESS (HEX)");
+      var inp = pwEl("input", null, "");
+      inp.id = st.px + "CommitInput";
+      inp.setAttribute("placeholder", "0x0000");
+      inp.setAttribute("inputmode", "text");
+      inp.setAttribute("autocomplete", "off");
+      inp.setAttribute("spellcheck", "false");
+      lab.appendChild(inp);
+      var btn = pwEl("button", "pw-btn primary", "Commit translation");
+      btn.id = st.px + "CommitBtn";
+      btn.addEventListener("click", function () { pwCommit(st); });
+      box.appendChild(lab); box.appendChild(btn);
+      frag.appendChild(box);
+      var hint = pwEl("p", null, v.super
+        ? "PA = ((leaf PPN high nibble : VPN0) : OFFSET)"
+        : "PA = (leaf PPN : OFFSET)");
+      hint.style.cssText = "font-family:var(--font-m);font-size:11px;color:var(--dim);margin:10px 0 0;";
+      frag.appendChild(hint);
+    } else {
+      var note = pwEl("p", null, "Decoy entry, off the true path. Step back up and read the VPN fields again.");
+      note.style.cssText = "font-family:var(--font-m);font-size:12px;color:var(--steel);margin:0;";
+      frag.appendChild(note);
+    }
+    return frag;
+  }
+
+  function pwSelect(st, idx) {
+    st.sel = idx;
+    pwRenderView(st);
+  }
+
+  function pwStep(st) {
+    var v = st.view;
+    if (!v || v.kind !== "table" || v.noStep) return;
+    var i = st.sel;
+    if (i < 0) { toast("Pick a table row first, then step into it."); return; }
+    var pte = v.entries[i] & 0xFFFF;
+    if (i === v.trueIndex) {
+      if (!(pte & PW_V)) {
+        pwLog(st, "L" + v.level + ": index " + i + " -> 0x0000, V=0. Page not present.", "bad");
+        st.hist.push(v);
+        st.view = { kind: "dead",
+          msg: "The true entry is invalid (V=0), so the page is not present. There is no translation to commit: raise the page fault." };
+      } else if (pte & (PW_R | PW_W | PW_X)) {
+        var sup = v.level === 1;
+        pwLog(st, "L" + v.level + ": index " + i + " -> leaf " + pwHex(pte, 4) +
+          " [" + pwFlagStr(pte) + "]" + (sup ? " SUPERPAGE" : ""), "ok");
+        st.hist.push(v);
+        st.view = { kind: "leaf", pte: pte, level: v.level, index: i, super: sup, truePath: true };
+      } else {
+        var t = pwPpn(pte) & 15;
+        pwLog(st, "L1: index " + i + " -> pointer, table " + t + ".", "ok");
+        st.hist.push(v);
+        st.view = { kind: "table", entries: st.tables.l1[t], level: 2, trueIndex: (st.va >>> 8) & 15,
+                    title: "Level 2: page table " + t, sub: "Index it with VPN0. One true path." };
+      }
+    } else {
+      var k = pwKind(pte);
+      pwLog(st, "Index " + i + " is a decoy (the VPN fields point at " + v.trueIndex + "). Looking anyway.");
+      st.hist.push(v);
+      if (k === "INVALID") {
+        st.view = { kind: "dead", msg: "Entry " + i + " is 0x0000: not a mapping, just a decoy. Step back up and trust the VPN fields." };
+      } else if (k === "TABLE") {
+        var t2 = pwPpn(pte) & 15;
+        st.view = { kind: "table", entries: st.tables.l1[t2] || [], level: 0, trueIndex: -1, noStep: true,
+                    title: "Decoy table " + t2, sub: "Off the true path. Nothing here translates this address." };
+      } else {
+        st.view = { kind: "leaf", pte: pte, level: v.level, index: i, super: false, truePath: false };
+      }
+    }
+    st.sel = -1;
+    pwRenderView(st);
+  }
+
+  function pwBack(st) {
+    var v = st.hist.pop();
+    if (!v) return;
+    st.view = v;
+    st.sel = -1;
+    pwLog(st, "Backed up a level.");
+    pwRenderView(st);
+  }
+
+  function pwVerdict(st, ok, html) {
+    var box = pw$(st.px + "Verdict");
+    box.className = "pw-verdict show " + (ok ? "pass" : "fail");
+    box.innerHTML = "<b>" + (ok ? "PASS" : "FAIL") + "</b> " + html;
+  }
+
+  function pwPass(st, msg) {
+    st.passed = true;
+    pwLog(st, "Verdict: PASS. " + msg, "ok");
+    pwVerdict(st, true, pwEsc(msg) + " <span style=\"color:var(--dim)\">(" + st.attempts + " attempt" +
+      (st.attempts === 1 ? "" : "s") + ")</span>");
+    if (st.mode === "trial") pwTrialPassed(st);
+  }
+
+  function pwFail(st, msg) {
+    pwLog(st, "Verdict: FAIL. " + msg, "bad");
+    pwVerdict(st, false, pwEsc(msg));
+    if (st.mode === "trial") pwTrialCard(st.job.id, false);
+  }
+
+  function pwCommit(st) {
+    var inp = pw$(st.px + "CommitInput");
+    var raw = inp ? inp.value.trim().replace(/^0x/i, "") : "";
+    st.attempts++;
+    if (!/^[0-9a-fA-F]{1,4}$/.test(raw)) {
+      pwFail(st, "That is not a 16-bit hex value. Type the physical address as hex, for example 0x1A40.");
+      return;
+    }
+    var want = pwWalk(st.tables, st.va, st.access);
+    var got = parseInt(raw, 16) & 0xFFFF;
+    if (!want.ok) {
+      pwFail(st, "There is no translation to commit. The true walk ends in " + want.fault + ": " + want.why + ".");
+    } else if (got === want.pa) {
+      pwPass(st, "Translated " + pwHex(st.va, 4) + " to " + pwHex(want.pa, 4) +
+        (want.super ? " through the superpage." : " through both levels."));
+    } else {
+      pwFail(st, pwHex(got, 4) + " is not this address. Recheck the PPN bits and the offset, then walk it again.");
+    }
+  }
+
+  function pwRaiseFault(st) {
+    st.attempts++;
+    var want = pwWalk(st.tables, st.va, st.access);
+    if (!want.ok) {
+      pwPass(st, "Correct: " + want.fault + ". " + want.why + ".");
+    } else {
+      pwFail(st, "No fault here: this address translates cleanly to " + pwHex(want.pa, 4) + ". Walk the tables and commit it.");
+    }
+  }
+
+  /* ---------------- explore + trials ---------------- */
+
+  function pwStartJob(st, job) {
+    st.va = job.va; st.access = job.access;
+    st.tables = pwGenTables(job.seed, { va: job.va, access: job.access, kind: job.kind });
+    st.hist = []; st.sel = -1; st.logLines = []; st.attempts = 0; st.passed = false;
+    pwSetAddr(st);
+    pw$(st.px + "Log").innerHTML = "";
+    pwLog(st, job.name + ": " + job.brief);
+    st.view = pwRootView(st);
+    pwRenderView(st);
+    pw$(st.px + "Verdict").className = "pw-verdict";
+    pw$(st.px + "Verdict").innerHTML = "";
+  }
+
+  function pwNewExplore(st) {
+    var seed = ((Date.now() ^ Math.floor(Math.random() * 1e9)) >>> 0) || 1;
+    var rng = pwRng(seed);
+    var kinds = ["l2", "super", "faultperm", "faultinvalid"];
+    var accesses = ["READ", "WRITE", "EXECUTE"];
+    var kind = kinds[pwRi(rng, kinds.length)];
+    st.va = pwRi(rng, 65536);
+    st.access = accesses[pwRi(rng, accesses.length)];
+    st.tables = pwGenTables(seed ^ 0x9E37, { va: st.va, access: st.access, kind: kind });
+    st.hist = []; st.sel = -1; st.logLines = []; st.attempts = 0; st.passed = false;
+    pwSetAddr(st);
+    pw$(st.px + "Log").innerHTML = "";
+    pwLog(st, "New address on the bench. Walk it: read the VPN fields, step the tables, then commit or raise the fault.");
+    st.view = pwRootView(st);
+    pwRenderView(st);
+    pw$(st.px + "Verdict").className = "pw-verdict";
+    pw$(st.px + "Verdict").innerHTML = "";
+  }
+
+  function pwTrialCard(id, passed) {
+    for (var i = 0; i < PW_JOBS.length; i++) {
+      if (PW_JOBS[i].id === id) {
+        var s = pw$("pwCardStat" + i);
+        if (s) {
+          s.textContent = passed ? "PASS" : (s.textContent === "PASS" ? "PASS" : "OPEN");
+          s.className = "pw-pstat" + (passed ? " pass" : (s.textContent === "PASS" ? " pass" : ""));
+        }
+      }
+    }
+  }
+
+  function pwTrialPassed(st) {
+    pwTrialCard(st.job.id, true);
+    var all = PW_JOBS.every(function (j) {
+      var s = pw$("pwCardStat" + PW_JOBS.indexOf(j));
+      return s && s.textContent === "PASS";
+    });
+    if (all) {
+      var cert = pw$("pwCert");
+      cert.classList.add("show");
+      pwLog(st, "All three trials passed. The walker is qualified.", "ok");
+    }
+  }
+
+  function pwBuildTrials(page) {
+    var cards = pwEl("div", "pw-cards");
+    PW_JOBS.forEach(function (job, i) {
+      var c = pwEl("div", "pw-card");
+      var h = pwEl("h5", null, job.name);
+      var p = pwEl("p", null, job.brief);
+      var row = pwEl("div", "row");
+      var stat = pwEl("span", "pw-pstat", "OPEN");
+      stat.id = "pwCardStat" + i;
+      var open = pwEl("button", "pw-mini go", "Walk this trial");
+      open.id = "pwOpen" + i;
+      open.addEventListener("click", function () {
+        pwNewBoard(pw$("pwTrialBoard"), { mode: "trial", job: job });
+        toast("Trial selected: " + job.name);
+      });
+      row.appendChild(stat); row.appendChild(open);
+      c.appendChild(h); c.appendChild(p); c.appendChild(row);
+      cards.appendChild(c);
+    });
+    page.appendChild(cards);
+    var board = pwEl("div", null, "");
+    board.id = "pwTrialBoard";
+    page.appendChild(board);
+    var cert = pwEl("div", "pw-cert", "");
+    cert.id = "pwCert";
+    cert.innerHTML =
+      "<h4>PAGE WALKER, QUALIFIED</h4>" +
+      "<p>Three walks, three verdicts, zero faults mishandled. " +
+      "This bench now certifies the walker on sv32-style two-level translation: " +
+      "index math, PTE flag decoding, superpages, permission checks, and fault raising.</p>";
+    var dl = pwEl("button", "pw-btn primary", "Download certificate");
+    dl.addEventListener("click", pwDownloadCert);
+    cert.appendChild(dl);
+    page.appendChild(cert);
+  }
+
+  /* ---------------- reports ---------------- */
+
+  function pwTableDump(tables) {
+    var L = [];
+    L.push("ROOT PAGE TABLE (level 1)");
+    for (var i = 0; i < 16; i++) {
+      var pte = tables.root[i] & 0xFFFF;
+      L.push("  [" + i + "] " + pwHex(pte, 4).slice(2) + "  " + pwFlagStr(pte) + "  " + pwKind(pte));
+    }
+    for (var t = 0; t < 4; t++) {
+      L.push("TABLE " + t + " (level 2)");
+      for (var j = 0; j < 16; j++) {
+        var p2 = (tables.l1[t][j] & 0xFFFF);
+        L.push("  [" + j + "] " + pwHex(p2, 4).slice(2) + "  " + pwFlagStr(p2) + "  " + pwKind(p2));
+      }
+    }
+    return L.join("\n");
+  }
+
+  function pwDownload(text, name) {
+    var blob = new Blob([text], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = (window.URL || window.webkitURL).createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      (window.URL || window.webkitURL).revokeObjectURL(a.href);
+      a.remove();
+    }, 500);
+  }
+
+  function pwBoardForReport(st) {
+    var L = [];
+    L.push("THE PAGE WALKER: WALK REPORT");
+    L.push("=============================");
+    L.push((st.mode === "trial" ? st.job.name : "Open bench walk") + "   access " + st.access);
+    L.push("Virtual address: " + pwHex(st.va, 4) + "   VPN1=" + ((st.va >>> 12) & 15) +
+      " VPN0=" + ((st.va >>> 8) & 15) + " OFFSET=" + pwHex(st.va & 255, 2));
+    var truth = pwWalk(st.tables, st.va, st.access);
+    L.push("True outcome: " + (truth.ok
+      ? "translates to " + pwHex(truth.pa, 4) + (truth.super ? " (superpage)" : "")
+      : truth.fault + ": " + truth.why));
+    L.push("Attempts: " + st.attempts + "   Verdict: " + (st.passed ? "PASS" : "not passed"));
+    L.push("");
+    L.push("WALK LOG");
+    st.logLines.forEach(function (ln) { L.push("  " + ln); });
+    L.push("");
+    L.push(pwTableDump(st.tables));
+    return L.join("\n");
+  }
+
+  var pwLastTrialBoard = null;
+  function pwDownloadReport(st) {
+    pwDownload(pwBoardForReport(st), "page-walker-report.txt");
+    toast("Walk report downloaded.");
+  }
+
+  function pwDownloadCert() {
+    var L = [];
+    L.push("THE PAGE WALKER: QUALIFICATION CERTIFICATE");
+    L.push("===========================================");
+    L.push("The holder walked three sv32-style two-level page tables to a verdict:");
+    PW_JOBS.forEach(function (j) {
+      var truth = pwWalk(pwGenTables(j.seed, { va: j.va, access: j.access, kind: j.kind }), j.va, j.access);
+      L.push("  " + j.name + ": " + (truth.ok ? "translated to " + pwHex(truth.pa, 4) : truth.fault) + " ... PASS");
+    });
+    L.push("");
+    L.push("Index math, PTE flag decoding, superpages, permission checks, fault raising:");
+    L.push("all demonstrated live on the bench. The MMU has no complaints.");
+    L.push("Date: " + new Date().toISOString().slice(0, 10));
+    pwDownload(L.join("\n"), "page-walker-certificate.txt");
+    toast("Certificate downloaded.");
+  }
+
+  /* ---------------- shell ---------------- */
+
+  function pwBuildShell() {
+    var css = document.createElement("style");
+    css.textContent = PW_CSS.join("\n");
+    document.head.appendChild(css);
+
+    var box = document.querySelector(".dossier .actions");
+    if (box && !pw$("pwBtn")) {
+      var b = pwEl("button", "secondary", "Run the Page Walker");
+      b.id = "pwBtn";
+      b.addEventListener("click", function () { pw$("pwOverlay").classList.add("open"); });
+      box.appendChild(b);
+    }
+
+    var ov = pwEl("div", "pw-overlay");
+    ov.id = "pwOverlay";
+    var panel = pwEl("div", "pw-panel");
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    var bar = pwEl("div", "pw-bar");
+    var title = pwEl("div", "pw-title", "");
+    title.innerHTML = "THE PAGE <b>WALKER</b>";
+    var tabs = pwEl("div", "pw-tabs");
+    var tExp = pwEl("button", "pw-tab on", "EXPLORE");
+    tExp.id = "pwTabExp";
+    var tTri = pwEl("button", "pw-tab", "TRIALS");
+    tTri.id = "pwTabTri";
+    tabs.appendChild(tExp); tabs.appendChild(tTri);
+    var close = pwEl("button", "pw-close", "CLOSE [x]");
+    bar.appendChild(title); bar.appendChild(tabs); bar.appendChild(close);
+    panel.appendChild(bar);
+
+    var body = pwEl("div", "pw-body");
+    var sub = pwEl("p", "pw-sub", "");
+    sub.innerHTML = "<b>HOW IT WORKS</b> Every load, store, and fetch walks the page tables. " +
+      "Read VPN1 and VPN0 out of the virtual address, step the matching entries, decode the PTE flags, " +
+      "and either commit the physical address or raise the page fault. " +
+      "Same walk as sv32 (and xv6), on 16-entry training tables. " +
+      "Built for the <a href=\"https://dillingerstaffing.github.io/portfolio/\" target=\"_blank\" rel=\"noopener\">RISC-V portfolio work</a>.";
+    body.appendChild(sub);
+    var pageExp = pwEl("div", null, "");
+    pageExp.id = "pwPageExp";
+    var pageTri = pwEl("div", null, "");
+    pageTri.id = "pwPageTri";
+    pageTri.style.display = "none";
+    body.appendChild(pageExp);
+    body.appendChild(pageTri);
+    panel.appendChild(body);
+
+    close.addEventListener("click", function () { ov.classList.remove("open"); });
+    ov.addEventListener("click", function (e) { if (e.target === ov) ov.classList.remove("open"); });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && ov.classList.contains("open")) ov.classList.remove("open");
+    });
+    tExp.addEventListener("click", function () {
+      tExp.classList.add("on"); tTri.classList.remove("on");
+      pageExp.style.display = ""; pageTri.style.display = "none";
+    });
+    tTri.addEventListener("click", function () {
+      tTri.classList.add("on"); tExp.classList.remove("on");
+      pageTri.style.display = ""; pageExp.style.display = "none";
+    });
+
+    pwNewBoard(pageExp, { mode: "explore" });
+    pwBuildTrials(pageTri);
+  }
+
+  function pwInit() {
+    if (typeof document === "undefined") return;
+    if (!document.querySelector(".dossier .actions")) return;
+    pwBuildShell();
+  }
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", pwInit);
+    } else {
+      pwInit();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+      PW: {
+        walk: pwWalk, gen: pwGenTables, jobs: PW_JOBS,
+        hex: pwHex, bin: pwBin, kind: pwKind, flags: pwFlagStr,
+        pte: pwPte, ppn: pwPpn
+      }
+    };
+  }
+
+})();

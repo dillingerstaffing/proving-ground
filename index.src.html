@@ -525,7 +525,11 @@ var PG_BENCHES = [
   { section: "silicon", n: "08", name: "The RISC-V Playground", btn: "rpBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "The full interactive RISC-V course, as a bench: a real RV32I core in your browser, 10 guided lessons, 8 auto-graded challenges.",
     how: "Work the lessons, beat the challenges, earn the win.",
-    spec: "RV32I CORE \u00B7 10 LESSONS \u00B7 8 CHALLENGES" }
+    spec: "RV32I CORE \u00B7 10 LESSONS \u00B7 8 CHALLENGES" },
+  { section: "silicon", n: "09", name: "The Page Walker", btn: "pwBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "Sv32-style virtual memory on the bench: walk real two-level page tables, decode PTE flags, survive superpages, raise page faults like xv6 does.",
+    how: "Read the VPN fields, step through the tables, commit the physical address or raise the fault.",
+    spec: "2-LEVEL WALK \u00B7 3 TRIALS" }
 ];
 
 var pgFilter = "all";
