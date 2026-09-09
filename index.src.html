@@ -232,72 +232,47 @@ a { color: var(--ember); }
 
 /* ---------- Bench grid ---------- */
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-top: 22px; }
+/* ---------- Bench grid: quiet, machined, AAA restraint ----------
+   One surface, one accent hairline, three text zones. No candy. */
 .bench {
   position: relative; display: flex; flex-direction: column; text-align: left;
-  min-height: 232px; padding: 22px; cursor: pointer; overflow: hidden;
-  background: linear-gradient(180deg, #151b23, #0e1319);
-  border: 1px solid var(--line); border-radius: var(--radius); color: var(--paper);
-  font-family: var(--font-d); opacity: 0; transform-style: preserve-3d;
-  box-shadow: inset 0 1px 0 rgba(242, 237, 227, 0.07);
-  transition: transform 0.2s var(--ease-out), border-color 0.2s var(--ease-out), box-shadow 0.25s var(--ease-out);
+  min-height: 212px; padding: 24px 24px 20px; cursor: pointer; overflow: hidden;
+  background: #10151b;
+  border: 1px solid rgba(242, 237, 227, 0.09); border-radius: var(--radius); color: var(--paper);
+  font-family: var(--font-d); opacity: 0;
+  box-shadow: inset 0 1px 0 rgba(242, 237, 227, 0.05);
+  transition: transform 0.22s var(--ease-out), border-color 0.22s var(--ease-out),
+    box-shadow 0.28s var(--ease-out), background 0.22s var(--ease-out);
   -webkit-tap-highlight-color: transparent;
 }
-/* Specular glare: tracks the pointer, so each card feels machined. */
-.bench::before {
-  content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0;
-  background: radial-gradient(440px circle at var(--mx, 50%) var(--my, 50%),
-    rgba(255, 255, 255, 0.10), transparent 62%);
-  transition: opacity 0.3s var(--ease-out);
-}
-@media (pointer: fine) {
-  .bench:hover::before { opacity: 1; }
-}
+/* Section accent: a single 2px hairline, nothing more. */
+.bench-rule { position: absolute; top: 0; left: 0; right: 0; height: 2px; }
+.bench-rule.section-silicon { background: var(--ember); }
+.bench-rule.section-tapeout { background: var(--amber); }
+.bench-rule.section-oldiron { background: var(--mint); }
 .bench.in { opacity: 1; animation: rise 0.55s var(--ease-pop); }
 .bench.hide { opacity: 0; transform: scale(0.97); transition: opacity 0.16s ease, transform 0.16s ease; }
-.bench::after {
-  content: ""; position: absolute; inset: 0; pointer-events: none;
-  background: linear-gradient(105deg, transparent 42%, rgba(255, 90, 31, 0.14) 50%, transparent 58%);
-  transform: translateX(-130%); transition: transform 0.7s var(--ease-out);
-}
 @media (pointer: fine) {
   .bench:hover {
-    transform: translateY(-4px); border-color: rgba(255, 90, 31, 0.6);
-    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5), 0 0 32px rgba(255, 90, 31, 0.12);
+    transform: translateY(-3px); border-color: rgba(242, 237, 227, 0.22);
+    background: #121922;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(242, 237, 227, 0.07);
   }
-  .bench:hover::after { transform: translateX(130%); }
 }
 .bench:active { transform: scale(0.985); }
 .bench:focus-visible { outline: 2px solid var(--ember); outline-offset: 3px; }
-.bench-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-.idx { font-family: var(--font-m); font-size: 27px; font-weight: 600; color: var(--ember); letter-spacing: 0.02em; line-height: 1; }
-.pill {
-  font-family: var(--font-m); font-size: 11px; font-weight: 600; letter-spacing: 0.14em;
-  padding: 5px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--paper);
-  display: inline-flex; align-items: center; gap: 7px; white-space: nowrap;
+.bench-top { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 16px; }
+.idx { font-family: var(--font-m); font-size: 12px; font-weight: 600; color: var(--dim); letter-spacing: 0.22em; }
+.kicker {
+  font-family: var(--font-m); font-size: 11px; font-weight: 600; letter-spacing: 0.18em;
+  color: var(--steel); text-transform: uppercase; white-space: nowrap;
 }
-.pill i { width: 7px; height: 7px; border-radius: 50%; flex: none; font-style: normal; }
-.pill.riscv i { background: var(--ice); }
-.pill.tapeout i { background: var(--amber); }
-.pill.oldiron i { background: var(--mint); }
-.bench h3 { font-size: 24px; letter-spacing: -0.01em; margin: 0 0 8px; line-height: 1.15; }
-.bench .desc { color: var(--steel); font-size: 15px; margin: 0 0 12px; }
-.bench .how {
-  font-family: var(--font-m); font-size: 12.5px; color: var(--dim); margin: 0 0 auto;
-  border-top: 1px dashed var(--line); padding-top: 12px; line-height: 1.6;
-}
-.bench .how b { color: var(--steel); font-weight: 600; letter-spacing: 0.08em; font-size: 11px; }
+.bench h3 { font-size: 23px; font-weight: 600; letter-spacing: -0.015em; margin: 0 0 10px; line-height: 1.2; }
+.bench .desc { color: var(--steel); font-size: 14.5px; line-height: 1.55; margin: 0 0 auto; max-width: 44ch; }
 .bench-foot {
-  margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 20px; padding-top: 14px; border-top: 1px solid rgba(242, 237, 227, 0.09);
 }
-.spec { font-family: var(--font-m); font-size: 11px; letter-spacing: 0.12em; color: var(--dim); }
-.enter {
-  display: inline-flex; align-items: center; gap: 8px;
-  font-family: var(--font-m); font-size: 13px; font-weight: 600; letter-spacing: 0.06em;
-  color: var(--ember); white-space: nowrap;
-}
-.enter i { transition: transform 0.2s var(--ease-out); font-style: normal; }
-.bench:hover .enter i { transform: translateX(4px); }
+.spec { font-family: var(--font-m); font-size: 10.5px; letter-spacing: 0.14em; color: var(--dim); }
 
 /* ---------- Footer: the ventures, as unmistakable external rows ---------- */
 .site-foot { margin: 84px 0 0; padding: 0 0 52px; }
@@ -392,6 +367,11 @@ div[class*="-overlay"].pg-enter > div {
 }
 body.pg-any-open #pgCloseFab { display: block; }
 #pgCloseFab:active { transform: scale(0.92); }
+/* FAB safe zone: open overlays reserve room above the fixed CLOSE
+   control, so it can never cover bench UI. */
+body.pg-any-open div[class*="-overlay"].open {
+  padding-bottom: calc(92px + env(safe-area-inset-bottom));
+}
 
 /* Press anticipation: controls depress before the action fires. */
 .filter:active, .rv-btn:active, .rv-tab:active, .rv-mini:active { transform: scale(0.94); }
@@ -683,13 +663,12 @@ function pgRender() {
     card.setAttribute("data-n", b.n);
     card.setAttribute("aria-label", b.name + ": " + b.desc);
     card.innerHTML =
+      '<span class="bench-rule section-' + b.section + '"></span>' +
       '<span class="bench-top"><span class="idx">' + b.n + '</span>' +
-      '<span class="pill ' + b.pill + '"><i></i>' + b.pillLabel + '</span></span>' +
+      '<span class="kicker">' + b.pillLabel + '</span></span>' +
       '<h3>' + b.name + '</h3>' +
       '<p class="desc">' + b.desc + '</p>' +
-      '<p class="how"><b>HOW IT WORKS</b><br>' + b.how + '</p>' +
-      '<span class="bench-foot"><span class="spec">' + b.spec + '</span>' +
-      '<span class="enter">ENTER <i>&rarr;</i></span></span>';
+      '<span class="bench-foot"><span class="spec">' + b.spec + '</span></span>';
     (function (bench, c) {
       c.addEventListener("click", function () { pgLaunch(bench, c); });
     })(b, card);
@@ -699,52 +678,10 @@ function pgRender() {
 
   pgMoveIndicator();
   pgApplyFilter(true);
-  pgBindTilt();
   window.addEventListener("resize", pgMoveIndicator);
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready.then(pgMoveIndicator);
   }
-}
-
-/* Pointer-tracked 3D tilt + glare: each card feels like a machined
-   instrument, not a flat rectangle. Fine pointers only,
-   transform-only, rAF-driven with lerp smoothing (0.18) so the motion
-   feels weighted like aim assist, never twitchy. Fully motion-safe. */
-function pgBindTilt() {
-  if (pgReduced || !window.matchMedia("(pointer: fine)").matches) return;
-  var cards = document.querySelectorAll(".bench");
-  for (var i = 0; i < cards.length; i++) (function (card) {
-    var raf = 0, cur = { x: 0.5, y: 0.5 }, tgt = null;
-    function frame() {
-      raf = 0;
-      if (!tgt) return;
-      cur.x += (tgt.x - cur.x) * 0.18;
-      cur.y += (tgt.y - cur.y) * 0.18;
-      var rx = (0.5 - cur.y) * 7, ry = (cur.x - 0.5) * 9;
-      card.style.transform =
-        "perspective(900px) rotateX(" + rx.toFixed(2) + "deg) rotateY(" + ry.toFixed(2) +
-        "deg) translateY(-4px)";
-      card.style.setProperty("--mx", (cur.x * 100).toFixed(1) + "%");
-      card.style.setProperty("--my", (cur.y * 100).toFixed(1) + "%");
-      if (Math.abs(tgt.x - cur.x) > 0.001 || Math.abs(tgt.y - cur.y) > 0.001) {
-        raf = requestAnimationFrame(frame);
-      }
-    }
-    card.addEventListener("pointermove", function (ev) {
-      var r = card.getBoundingClientRect();
-      if (!r.width) return;
-      tgt = { x: (ev.clientX - r.left) / r.width, y: (ev.clientY - r.top) / r.height };
-      if (!raf) raf = requestAnimationFrame(frame);
-    });
-    card.addEventListener("pointerleave", function () {
-      tgt = null;
-      if (raf) { cancelAnimationFrame(raf); raf = 0; }
-      card.style.transform = "";
-      card.style.removeProperty("--mx");
-      card.style.removeProperty("--my");
-      cur = { x: 0.5, y: 0.5 };
-    });
-  })(cards[i]);
 }
 
 /* Telemetry scramble: spec readouts decrypt left to right whenever the
@@ -908,9 +845,10 @@ function pgBundleFailed() {
 }
 
 /* Universal close system: nobody gets stuck in a bench.
-   A fixed CLOSE control, backdrop tap, swipe-down, and Escape all
-   funnel into one close path. Module-specific close buttons keep
-   working; this is the safety net underneath them. */
+   A fixed CLOSE control, backdrop tap, and Escape all funnel into one
+   close path. Module-specific close buttons keep working; this is the
+   safety net underneath them. (Swipe-down closing was removed: it fired
+   by accident during normal scrolling.) */
 function pgCloseAllOverlays() {
   var ovs = document.querySelectorAll('div[class*="-overlay"].open');
   for (var i = 0; i < ovs.length; i++) ovs[i].classList.remove("open");
@@ -939,24 +877,6 @@ function pgCloseAllOverlays() {
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") pgCloseAllOverlays();
   });
-
-  /* Swipe down to close: only when the overlay's scroller is at the top,
-     so inner scrolling never fights the gesture. */
-  var startY = 0, scroller = null, tracking = false;
-  document.addEventListener("touchstart", function (e) {
-    var t = e.target;
-    var ov = t && t.closest ? t.closest('div[class*="-overlay"].open') : null;
-    if (!ov || !e.touches.length) { tracking = false; return; }
-    tracking = true;
-    startY = e.touches[0].clientY;
-    scroller = ov.querySelector(".rv-body") || ov;
-  }, { passive: true });
-  document.addEventListener("touchend", function (e) {
-    if (!tracking || !e.changedTouches.length) return;
-    tracking = false;
-    var dy = e.changedTouches[0].clientY - startY;
-    if (dy > 90 && scroller && scroller.scrollTop <= 0) pgCloseAllOverlays();
-  }, { passive: true });
 })();
 
 /* Counter-scroll hero: the ember field drifts against the pointer at
