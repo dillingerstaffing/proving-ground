@@ -351,10 +351,10 @@ div[class*="-overlay"].pg-enter > div {
    so nobody gets stuck. Large target, safe-area aware. */
 #pgCloseFab {
   position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 10010;
-  width: 64px; height: 64px; border-radius: 50%;
+  width: 64px; height: 64px; border-radius: 4px;
   border: 1px solid var(--ember); background: var(--ember); color: #0a0c0e;
   font-family: var(--font-m); font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
-  cursor: pointer; display: none; box-shadow: 0 6px 24px rgba(255, 90, 31, 0.45);
+  cursor: pointer; display: none; box-shadow: 0 6px 20px rgba(0, 0, 0, .45);
   -webkit-tap-highlight-color: transparent;
 }
 body.pg-any-open #pgCloseFab { display: block; }
@@ -807,8 +807,8 @@ if (document.readyState === "loading") {
   pgBoot();
 }
 </script>
-<script src="rvcore.js?v=adeabcf" defer></script>
-<script src="rvdata.js?v=adeabcf" defer></script>
-<script src="features.js?v=adeabcf" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=3673a77" defer></script>
+<script src="rvdata.js?v=3673a77" defer></script>
+<script src="features.js?v=3673a77" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
