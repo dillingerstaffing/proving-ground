@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>The Proving Ground: Working Engineering Benches</title>
+<meta name="description" content="The Proving Ground: real working engineering benches that prove the capabilities behind freelance silicon work, TAPEOUT graphics hardware, and OLD IRON hardware donation. Free, no account, runs entirely on your device.">
+<link rel="canonical" href="https://dillingerstaffing.github.io/proving-ground/">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="theme-color" content="#0a0c0e">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="The Proving Ground">
+<meta property="og:title" content="The Proving Ground: Working Engineering Benches">
+<meta property="og:description" content="Real working engineering benches. RISC-V cores, GPU qualification, drive sanitization. Proof, not promises.">
+<meta property="og:url" content="https://dillingerstaffing.github.io/proving-ground/">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebApplication",
+ "name":"The Proving Ground",
+ "url":"https://dillingerstaffing.github.io/proving-ground/",
+ "description":"Working engineering benches proving capabilities behind freelance silicon work, TAPEOUT, and OLD IRON.",
+ "applicationCategory":"BrowserApplication","operatingSystem":"Any modern web browser",
+ "isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
+</script>
+<script>
+/* Storage shim: if native localStorage throws (locked-down WebViews, private mode),
+   swap in a memory-backed replacement so benches keep working. */
+(function () {
+  var ok = false;
+  try { window.localStorage.setItem("__pg_probe__", "1"); window.localStorage.removeItem("__pg_probe__"); ok = true; }
+  catch (e) { ok = false; }
+  if (ok) return;
+  var mem = {};
+  var shim = {
+    getItem: function (k) { return Object.prototype.hasOwnProperty.call(mem, k) ? mem[k] : null; },
+    setItem: function (k, v) { mem[String(k)] = String(v); },
+    removeItem: function (k) { delete mem[k]; },
+    clear: function () { mem = {}; },
+    key: function (i) { var ks = Object.keys(mem); return (i >= 0 && i < ks.length) ? ks[i] : null; }
+  };
+  Object.defineProperty(shim, "length", { get: function () { return Object.keys(mem).length; } });
+  try { Object.defineProperty(window, "localStorage", { value: shim, configurable: true, writable: true }); }
+  catch (e2) { try { window.localStorage = shim; } catch (e3) {} }
+})();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --ink: #0a0c0e;
+  --panel: #10141a;
+  --panel-2: #141a21;
+  --paper: #f2ede3;
+  --steel: #9aa3ad;
+  --dim: #6b7480;
+  --line: rgba(242, 237, 227, 0.13);
+  --ember: #ff5a1f;
+  --ember-deep: #b53c0d;
+  --ice: #7cc4ff;
+  --amber: #ffbe4d;
+  --mint: #7de0a8;
+  --radius: 14px;
+  --font-d: "Space Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-m: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-pop: cubic-bezier(0.2, 0.9, 0.25, 1.15);
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--font-d);
+  font-size: 17px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  background-image:
+    linear-gradient(rgba(242, 237, 227, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(242, 237, 227, 0.025) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+::selection { background: var(--ember); color: #0a0c0e; }
+a { color: var(--ember); }
+.wrap { max-width: 1060px; margin: 0 auto; padding: 0 20px; }
+
+/* Skip link: keyboard users jump straight to the benches. */
+.skip {
+  position: absolute; left: 12px; top: -60px; z-index: 200;
+  background: var(--ember); color: #0a0c0e; font-family: var(--font-m);
+  font-size: 13px; font-weight: 600; padding: 10px 16px; border-radius: 8px;
+  text-decoration: none; transition: top 0.18s var(--ease-out);
+}
+.skip:focus { top: 12px; }
+
+/* ---------- Header ---------- */
+.site-head { padding: 64px 0 8px; }
+.eyebrow {
+  font-family: var(--font-m); font-size: 12px; font-weight: 600;
+  letter-spacing: 0.22em; color: var(--ember); margin: 0 0 14px;
+}
+.wordmark {
+  font-size: clamp(44px, 8vw, 84px); font-weight: 700; line-height: 0.98;
+  letter-spacing: -0.02em; margin: 0 0 16px; text-wrap: balance;
+}
+.wordmark .thin { color: var(--steel); font-weight: 500; }
+.lede { max-width: 62ch; color: var(--steel); font-size: 18px; margin: 0 0 26px; }
+.lede strong { color: var(--paper); font-weight: 600; }
+.rule { height: 2px; background: linear-gradient(90deg, var(--ember), transparent 70%); border: 0; margin: 0 0 34px; }
+.ventures { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 8px; padding: 0; list-style: none; }
+.ventures a {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--font-m); font-size: 13px; font-weight: 500;
+  color: var(--paper); text-decoration: none;
+  border: 1px solid var(--line); border-radius: 999px; padding: 9px 15px;
+  background: rgba(16, 20, 26, 0.7);
+  transition: border-color 0.18s var(--ease-out), transform 0.18s var(--ease-out);
+}
+.ventures a:hover { border-color: var(--ember); transform: translateY(-1px); }
+.ventures a:focus-visible { outline: 2px solid var(--ember); outline-offset: 3px; }
+.ventures .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+
+/* ---------- Mission sections ---------- */
+.mission { margin: 54px 0 8px; }
+.mission-head { margin-bottom: 18px; }
+.kicker {
+  font-family: var(--font-m); font-size: 12px; font-weight: 600;
+  letter-spacing: 0.22em; color: var(--dim); margin: 0 0 8px;
+}
+.mission-head h2 { font-size: clamp(26px, 4vw, 38px); letter-spacing: -0.015em; margin: 0 0 8px; line-height: 1.1; }
+.mission-head p { color: var(--steel); max-width: 64ch; margin: 0; font-size: 16px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+
+/* ---------- Bench cards ---------- */
+.bench {
+  position: relative; display: flex; flex-direction: column; text-align: left;
+  min-height: 208px; padding: 20px; cursor: pointer;
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--line); border-radius: var(--radius); color: var(--paper);
+  font-family: var(--font-d);
+  transition: transform 0.2s var(--ease-out), border-color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out);
+  opacity: 0; transform: translateY(16px);
+  -webkit-tap-highlight-color: transparent;
+}
+.bench.in { opacity: 1; transform: none; transition: opacity 0.45s var(--ease-out), transform 0.45s var(--ease-pop), border-color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out); }
+@media (pointer: fine) {
+  .bench:hover { transform: translateY(-3px); border-color: rgba(255, 90, 31, 0.55); box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45); }
+}
+.bench:active { transform: scale(0.985); }
+.bench:focus-visible { outline: 2px solid var(--ember); outline-offset: 3px; }
+.bench-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.idx { font-family: var(--font-m); font-size: 13px; font-weight: 600; color: var(--ember); letter-spacing: 0.12em; }
+.pill {
+  font-family: var(--font-m); font-size: 11px; font-weight: 600; letter-spacing: 0.14em;
+  padding: 5px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--paper);
+  display: inline-flex; align-items: center; gap: 7px; white-space: nowrap;
+}
+.pill i { width: 7px; height: 7px; border-radius: 50%; flex: none; font-style: normal; }
+.pill.riscv i { background: var(--ice); }
+.pill.tapeout i { background: var(--amber); }
+.pill.oldiron i { background: var(--mint); }
+.bench h3 { font-size: 23px; letter-spacing: -0.01em; margin: 0 0 8px; line-height: 1.15; }
+.bench .desc { color: var(--steel); font-size: 15px; margin: 0 0 12px; }
+.bench .how {
+  font-family: var(--font-m); font-size: 12.5px; color: var(--dim); margin: 0 0 auto;
+  border-top: 1px dashed var(--line); padding-top: 12px; line-height: 1.6;
+}
+.bench .how b { color: var(--steel); font-weight: 600; letter-spacing: 0.08em; font-size: 11px; }
+.enter {
+  display: inline-flex; align-items: center; gap: 8px; margin-top: 14px;
+  font-family: var(--font-m); font-size: 13px; font-weight: 600; letter-spacing: 0.06em;
+  color: var(--ember);
+}
+.enter .arrow { transition: transform 0.2s var(--ease-out); font-style: normal; }
+.bench:hover .enter .arrow { transform: translateX(4px); }
+
+/* ---------- Footer ---------- */
+.site-foot { margin: 70px 0 0; padding: 30px 0 46px; border-top: 1px solid var(--line); }
+.site-foot p { color: var(--dim); font-size: 14px; margin: 0 0 14px; max-width: 64ch; }
+.foot-links { display: flex; flex-wrap: wrap; gap: 10px; padding: 0; margin: 0; list-style: none; }
+.foot-links a {
+  font-family: var(--font-m); font-size: 13px; color: var(--steel); text-decoration: none;
+  border: 1px solid var(--line); border-radius: 999px; padding: 8px 14px;
+  transition: color 0.18s var(--ease-out), border-color 0.18s var(--ease-out);
+}
+.foot-links a:hover { color: var(--paper); border-color: var(--ember); }
+.foot-links a:focus-visible { outline: 2px solid var(--ember); outline-offset: 3px; }
+
+/* ---------- Toast ---------- */
+#pgToast {
+  position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); z-index: 300;
+  transform: translate(-50%, 16px); opacity: 0; pointer-events: none;
+  background: var(--panel-2); color: var(--paper); border: 1px solid var(--line);
+  border-left: 3px solid var(--ember); border-radius: 10px;
+  font-family: var(--font-m); font-size: 13.5px; padding: 12px 18px; max-width: min(92vw, 480px);
+  transition: opacity 0.22s var(--ease-out), transform 0.22s var(--ease-pop);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+#pgToast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* Staging area for bench launch buttons injected by feature modules. */
+.dossier .actions { display: none; }
+
+@media (max-width: 560px) {
+  .site-head { padding-top: 44px; }
+  .lede { font-size: 16px; }
+  .bench { min-height: 0; }
+}
+/* Motion sensitivity: honor it, always. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+  .bench { opacity: 1; transform: none; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#benches">Skip to the benches</a>
+<div class="wrap">
+
+  <header class="site-head">
+    <p class="eyebrow">WORKING MACHINES, NOT MOCKUPS</p>
+    <h1 class="wordmark">The Proving <span class="thin">Ground</span></h1>
+    <p class="lede">Every bench on this page is a <strong>real working instrument</strong>: live simulations, real math, win and fail states, and artifacts you can download. Each one proves a capability behind three ventures: <strong>freelance silicon engineering</strong>, <strong>TAPEOUT</strong> graphics hardware, and <strong>OLD IRON</strong> hardware donation.</p>
+    <hr class="rule">
+    <ul class="ventures" aria-label="The three ventures">
+      <li><a href="https://dillingerstaffing.github.io/portfolio/"><span class="dot" style="background:#7cc4ff"></span>Portfolio: C, RISC-V, kernels</a></li>
+      <li><a href="https://dillingerstaffing.github.io/tapeout/"><span class="dot" style="background:#ffbe4d"></span>TAPEOUT: lean GPUs</a></li>
+      <li><a href="https://dillingerstaffing.github.io/old-iron/"><span class="dot" style="background:#7de0a8"></span>OLD IRON: hardware donation</a></li>
+    </ul>
+  </header>
+
+  <main id="benches" aria-label="Engineering benches"></main>
+
+  <footer class="site-foot">
+    <p>Built by Emi for Chris Dillinger. New benches land regularly. Everything runs on your device: no accounts, no tracking, no cost.</p>
+    <ul class="foot-links">
+      <li><a href="https://dillingerstaffing.github.io/portfolio/">Portfolio</a></li>
+      <li><a href="https://dillingerstaffing.github.io/tapeout/">TAPEOUT</a></li>
+      <li><a href="https://dillingerstaffing.github.io/old-iron/">OLD IRON</a></li>
+      <li><a href="https://dillingerstaffing.github.io/riscv-playground/">RISC-V Playground</a></li>
+      <li><a href="https://dillingerstaffing.github.io/garage-inventions/">Garage Inventions (retired)</a></li>
+    </ul>
+  </footer>
+</div>
+
+<!-- Staging: feature modules inject their launch buttons here; bench cards trigger them. -->
+<div class="dossier" aria-hidden="true"><div class="actions"></div></div>
+<div id="pgToast" role="status" aria-live="polite"></div>
+<noscript><div style="max-width:720px;margin:40px auto;padding:24px;font-family:sans-serif;color:#f2ede3;background:#10141a;border:1px solid rgba(242,237,227,.2);border-radius:12px"><h1>The Proving Ground</h1><p>Real working engineering benches in your browser. This page needs JavaScript to run the benches. Enable it and come back.</p></div></noscript>
+
+<script>
+/* Globals the bench modules expect: $, el, toast. */
+function $(id) { return document.getElementById(id); }
+function el(tag, cls, html) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html != null) e.innerHTML = html;
+  return e;
+}
+function toast(msg) {
+  var t = $("pgToast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(t._h);
+  t._h = setTimeout(function () { t.classList.remove("show"); }, 2400);
+}
+</script>
+<script>
+/* ============================================================
+   BENCH REGISTRY. To add a bench: append its module to features.js,
+   then add one entry here with the module's launch button id.
+   ============================================================ */
+var PG_SECTIONS = [
+  { id: "silicon", kicker: "FOR HIRE", title: "Freelance silicon",
+    blurb: "First-principles RISC-V and systems chops, running live. The same skills Chris sells as a freelancer." },
+  { id: "tapeout", kicker: "TAPEOUT", title: "Graphics hardware, qualified",
+    blurb: "Burn-in and memory testing for the lean GPU lab. Honest verdicts, printable certificates." },
+  { id: "oldiron", kicker: "OLD IRON", title: "Donated hardware, handled right",
+    blurb: "NIST 800-88 sanitization for retired drives. Proof of wipe, per serial number." }
+];
+var PG_BENCHES = [
+  { section: "silicon", n: "01", name: "The Silicon Anvil", btn: "rvAnvilBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "A real RV32I core on the bench. Write assembly, assemble to machine code, step the silicon, earn trial certificates.",
+    how: "Type RV32I assembly, assemble it, single-step the core through the trials." },
+  { section: "silicon", n: "02", name: "The Pipeline Hazard Lab", btn: "phBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "A five-stage RV32I pipeline with real forwarding, load-use stalls, and a swappable branch predictor. Beat three cycle budgets.",
+    how: "Schedule instructions to dodge stalls and come in under the cycle budget." },
+  { section: "silicon", n: "03", name: "The Cache Forge", btn: "cfBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "A real set-associative L1 data-cache simulator with LRU replacement and live AMAT scoring. Tune under a silicon budget.",
+    how: "Pick size, associativity, and block size, then run the access traces." },
+  { section: "tapeout", n: "04", name: "The Burn-In Chamber", btn: "biBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+    desc: "GPU qualification bench: real thermal physics, hidden card faults, ECC telemetry. Call SHIP or RMA on each card.",
+    how: "Design the stress profile, read the telemetry, verdict all three cards." },
+  { section: "tapeout", n: "05", name: "The Memory Bin Lab", btn: "mbBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+    desc: "GDDR timing qualification: a real FR-FCFS DRAM command scheduler over 16 banks. Bin each module grade A or B.",
+    how: "Tune tCL, tRCD, tRP, tRAS and watch the command-bus trace." },
+  { section: "oldiron", n: "06", name: "The Wipe Station", btn: "wsBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "NIST 800-88 drive sanitization: choose Clear, Purge, or Destroy per drive. Per-serial wipe certificates.",
+    how: "Pick the right method for each drive and survive the audit." }
+];
+
+function pgRender() {
+  var main = $("benches");
+  PG_SECTIONS.forEach(function (s) {
+    var benches = PG_BENCHES.filter(function (b) { return b.section === s.id; });
+    if (!benches.length) return;
+    var sec = el("section", "mission");
+    sec.setAttribute("aria-label", s.title);
+    var head = el("div", "mission-head",
+      '<p class="kicker">' + s.kicker + '</p><h2>' + s.title + '</h2><p>' + s.blurb + '</p>');
+    var grid = el("div", "grid");
+    benches.forEach(function (b, i) {
+      var card = el("button", "bench");
+      card.type = "button";
+      card.setAttribute("aria-label", b.name + ": " + b.desc);
+      card.innerHTML =
+        '<span class="bench-top"><span class="idx">' + b.n + '</span>' +
+        '<span class="pill ' + b.pill + '"><i></i>' + b.pillLabel + '</span></span>' +
+        '<h3>' + b.name + '</h3>' +
+        '<p class="desc">' + b.desc + '</p>' +
+        '<p class="how"><b>HOW IT WORKS</b><br>' + b.how + '</p>' +
+        '<span class="enter">Enter the bench <i class="arrow">&rarr;</i></span>';
+      card.addEventListener("click", function () {
+        var launcher = $(b.btn);
+        if (launcher) { launcher.click(); }
+        else { toast("That bench is still warming up. Try again in a moment."); }
+      });
+      grid.appendChild(card);
+      /* Staggered entrance: motion is decoration, never a gate. */
+      setTimeout(function () { card.classList.add("in"); }, 60 * (i + 1));
+    });
+    sec.appendChild(head);
+    sec.appendChild(grid);
+    main.appendChild(sec);
+  });
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", pgRender);
+} else {
+  pgRender();
+}
+</script>
+</body>
+</html>
