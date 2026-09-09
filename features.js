@@ -387,9 +387,9 @@ function rvCertificate() {
   toast("Trial certificate downloaded");
 }
 
-if (document.readyState === "loading") {
+if (typeof document !== "undefined" && document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", rvBuild);
-} else {
+} else if (typeof document !== "undefined") {
   rvBuild();
 }
 
@@ -842,13 +842,13 @@ if (document.readyState === "loading") {
 
   /* node test hook: harmless in the browser */
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = {
+    module.exports = Object.assign(module.exports || {}, {
       WS: {
         outcome: wsOutcome,
         DRIVES: WS_DRIVES,
         METHODS: WS_METHODS
       }
-    };
+    });
   }
 
 })();
@@ -1350,14 +1350,14 @@ function phStep(s) {
       if (taken !== oEX.predTaken) {
         flush = true;
         flushTarget = taken ? oEX.target : oEX.pc + 4;
-        s.controlStalls += 2;
+        s.controlStalls += (oIF && !oIF.killed ? 1 : 0) + (oID && !oID.killed ? 1 : 0);
         phBlame(s, oEX.pc, "control");
         ev.push({ t: "mispredict", id: oEX.id, pc: oEX.pc, taken: taken });
       }
     } else if (oEX.isJump) {
       flush = true;
       flushTarget = oEX.target;
-      s.controlStalls += 2;
+      s.controlStalls += (oIF && !oIF.killed ? 1 : 0) + (oID && !oID.killed ? 1 : 0);
       phBlame(s, oEX.pc, "control");
       ev.push({ t: "jump", id: oEX.id, pc: oEX.pc });
     }
@@ -1400,12 +1400,14 @@ function phStep(s) {
   }
 
   s.pipe = [newIF, newID, newEX, newMEM, newWB];
-  var si;
+  var si, marked = false;
   for (si = 0; si < 5; si++) {
     var sl = s.pipe[si];
-    if (sl && !sl.killed) s.trace[sl.row].cells[cycle] = STAGE[si];
+    if (sl && !sl.killed) { s.trace[sl.row].cells[cycle] = STAGE[si]; marked = true; }
   }
-  s.cycle++;
+  /* Only count cycles that did pipeline work: the final retire step drains
+     an empty pipe and must not inflate the counter past the trace. */
+  if (marked) s.cycle++;
   if (s.pcNext >= s.instrs.length * 4 &&
       !s.pipe[0] && !s.pipe[1] && !s.pipe[2] && !s.pipe[3] && !s.pipe[4]) {
     s.done = true;
@@ -1427,32 +1429,32 @@ function phRun(s, maxCycles) {
 var PH_TRIALS = [
   {
     id: "t1", name: "Trial 1: The Slow Loop",
-    brief: "Eight words, one sum, too many stalls. The loop as written burns a load-use stall every lap, and the predictor is stuck on always-not-taken. Reorder the loop to hide the load behind independent work, pick a predictor that learns, and finish at or under <b>56 cycles</b> with a0 = 36. <span class=\"par\">Shop par: 54 cycles.</span>",
+    brief: "Eight words, one sum, too many stalls. The loop as written burns a load-use stall every lap, and the predictor is stuck on always-not-taken. Reorder the loop to hide the load behind independent work, pick a predictor that learns, and finish at or under <b>56 cycles</b> with a0 = 36. <span class=\"par\">Shop par: 53 cycles.</span>",
     hint: "Two independent instructions fit between the load and its use. The loop branch is taken almost every time.",
     program: "  addi t0, x0, 8\n  addi t1, x0, 0\nloop:\n  lw   t3, 0(t2)\n  add  t1, t1, t3\n  addi t2, t2, 4\n  addi t0, t0, -1\n  bne  t0, x0, loop\n  add  a0, x0, t1",
     memInit: { 0: 1, 1: 2, 2: 3, 3: 4, 4: 5, 5: 6, 6: 7, 7: 8 },
     checks: [{ reg: "a0", val: 36 }],
-    minRetired: 35, par: 54, budget: 56,
+    minRetired: 35, par: 53, budget: 56,
     startFwd: true, startPred: "nt"
   },
   {
     id: "t2", name: "Trial 2: Two Branches, One Predictor",
-    brief: "One branch is taken 15 times out of 20, the other 19 out of 20. No static predictor gets both right, and every wrong guess flushes two fresh instructions down the drain. The two-bit predictor learns each branch on its own. Finish at or under <b>205 cycles</b> with a0 = 20 and a1 = 50. <span class=\"par\">Shop par: 196 cycles.</span>",
+    brief: "One branch is taken 15 times out of 20, the other 19 out of 20. No static predictor gets both right, and every wrong guess flushes two fresh instructions down the drain. The two-bit predictor learns each branch on its own. Finish at or under <b>205 cycles</b> with a0 = 20 and a1 = 50. <span class=\"par\">Shop par: 195 cycles.</span>",
     hint: "Static always-taken aces the loop branch but bombs the skip. Static always-not-taken does the reverse. Only the adaptive predictor gets both.",
     program: "  addi t0, x0, 20\n  addi t1, x0, 0\n  addi t2, x0, 0\nloop:\n  addi t1, t1, 1\n  andi t3, t1, 3\n  beq  t3, x0, skip\n  jal  x0, cont\nskip:\n  addi t2, t2, 10\ncont:\n  addi t0, t0, -1\n  bne  t0, x0, loop\n  add  a0, x0, t1\n  add  a1, x0, t2",
     memInit: null,
     checks: [{ reg: "a0", val: 20 }, { reg: "a1", val: 50 }],
-    minRetired: 100, par: 196, budget: 205,
+    minRetired: 100, par: 195, budget: 205,
     startFwd: true, startPred: "nt"
   },
   {
     id: "t3", name: "Trial 3: Forward Frenzy",
-    brief: "Five instructions, every one chained on the last, and the forwarding unit is switched off. The pipe stalls on every link while results crawl to writeback. Flip forwarding on and watch the stalls vanish. Finish at or under <b>12 cycles</b> with a0 = 80. <span class=\"par\">Shop par: 10 cycles.</span>",
+    brief: "Five instructions, every one chained on the last, and the forwarding unit is switched off. The pipe stalls on every link while results crawl to writeback. Flip forwarding on and watch the stalls vanish. Finish at or under <b>12 cycles</b> with a0 = 80. <span class=\"par\">Shop par: 9 cycles.</span>",
     hint: "Forwarding routes each ALU result straight back to the next instruction. No code change needed, this one is pure hardware.",
     program: "  addi t0, x0, 5\n  add  t1, t0, t0\n  add  t2, t1, t1\n  add  t3, t2, t2\n  add  a0, t3, t3",
     memInit: null,
     checks: [{ reg: "a0", val: 80 }],
-    minRetired: 5, par: 10, budget: 12,
+    minRetired: 5, par: 9, budget: 12,
     startFwd: false, startPred: "2bit"
   }
 ];
@@ -1692,13 +1694,13 @@ function phRenderBrief() {
 function phApplyEditor() {
   var ui = phUI;
   var a = phAssemble(ui.ed.value);
-  if (!a.ok) {
-    ui.errors.innerHTML = a.errors.map(function (e) { return "line " + e.line + ": " + phEsc(e.msg); }).join("<br>");
+  if (a.instrs.length === 0 && a.errors.length === 0) {
+    ui.errors.innerHTML = "Empty program: nothing to run.";
     ui.errors.classList.add("show");
     return false;
   }
-  if (a.instrs.length === 0) {
-    ui.errors.innerHTML = "Empty program: nothing to run.";
+  if (!a.ok) {
+    ui.errors.innerHTML = a.errors.map(function (e) { return "line " + e.line + ": " + phEsc(e.msg); }).join("<br>");
     ui.errors.classList.add("show");
     return false;
   }
@@ -2040,12 +2042,12 @@ if (typeof document !== "undefined") {
 
 /* node test hook: harmless in the browser */
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = {
+  module.exports = Object.assign(module.exports || {}, {
     PH: {
       assemble: phAssemble, newSim: phNewSim, step: phStep, run: phRun,
       TRIALS: PH_TRIALS, ABI: PH_ABI, regName: phRegName
     }
-  };
+  });
 }
 
 })();
@@ -2844,13 +2846,13 @@ if (typeof module !== "undefined" && module.exports) {
 
   /* node test hook: harmless in the browser */
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = {
+    module.exports = Object.assign(module.exports || {}, {
       BI: {
         step: biStep, fanH: biFanH, makeCards: biMakeCards, newRun: biNewRun,
         WORKLOADS: BI_WORKLOADS, FANS: BI_FANS,
         T_AMB: BI_T_AMB, T_TARGET: BI_T_TARGET, T_MAX: BI_T_MAX
       }
-    };
+    });
   }
 
 })();
@@ -3482,13 +3484,13 @@ if (typeof module !== "undefined" && module.exports) {
 
   /* node test hook: harmless in the browser */
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = {
+    module.exports = Object.assign(module.exports || {}, {
       CF: {
         newCache: cfNewCache, access: cfAccess, decompose: cfDecompose,
         traceLoop: cfTraceLoop, traceMatrix: cfTraceMatrix, traceSweep: cfTraceSweep,
         fullSim: cfFullSim, trials: CF_TRIALS, log2i: cfLog2i
       }
-    };
+    });
   }
 
 })();
@@ -3555,13 +3557,13 @@ if (typeof module !== "undefined" && module.exports) {
   /* ---------------- module definitions ---------------- */
   var MB_BANKS = 16, MB_ROWS = 4096, MB_BYTES = 128, MB_ECC = 2;
   var MB_MODULES = [
-    { sku: "M12A-8G", desc: "8Gb entry die, 12Gbps grade", clockMHz: 1500, targetGBs: 47.0,
+    { sku: "M12A-8G", desc: "8Gb entry die, 12Gbps grade", clockMHz: 1500, targetGBs: 38.5,
       safe: { tCL: 26, tRCD: 26, tRP: 22, tRAS: 48 },
       floor: { tCL: 24, tRCD: 24, tRP: 20, tRAS: 42 }, local: 0.55, seed: 12001 },
-    { sku: "M14A-16G", desc: "16Gb mid die, 14Gbps grade", clockMHz: 1750, targetGBs: 49.5,
+    { sku: "M14A-16G", desc: "16Gb mid die, 14Gbps grade", clockMHz: 1750, targetGBs: 40.5,
       safe: { tCL: 26, tRCD: 26, tRP: 22, tRAS: 48 },
       floor: { tCL: 22, tRCD: 22, tRP: 18, tRAS: 40 }, local: 0.45, seed: 14001 },
-    { sku: "M16X-24G", desc: "24Gb hot die, 16Gbps grade", clockMHz: 2000, targetGBs: 55.5,
+    { sku: "M16X-24G", desc: "24Gb hot die, 16Gbps grade", clockMHz: 2000, targetGBs: 46.0,
       safe: { tCL: 26, tRCD: 26, tRP: 22, tRAS: 48 },
       floor: { tCL: 20, tRCD: 20, tRP: 16, tRAS: 36 }, local: 0.35, seed: 16001 }
   ];
@@ -3614,10 +3616,17 @@ if (typeof module !== "undefined" && module.exports) {
     var win = [];
     var errors = 0, latSum = 0, reads = 0, rowHits = 0, cmds = 0, done = 0;
 
-    function enqueuePhase(t) {
-      if (openRow[t.bank] === t.row) { t.phase = "col"; rowHits++; }
+    function refreshPhase(t) {
+      /* The window reorders transactions, so a phase snapshotted at enqueue
+         can be stale by issue time. Re-derive the next legal command from
+         live bank state; every issued command is then protocol-legal. */
+      if (t.phase === "done") return;
+      if (openRow[t.bank] === t.row) t.phase = "col";
       else if (openRow[t.bank] === -1) t.phase = "act";
       else t.phase = "pre";
+    }
+    function enqueuePhase(t) {
+      refreshPhase(t);
     }
     function earliest(t) {
       var bk = t.bank;
@@ -3637,9 +3646,11 @@ if (typeof module !== "undefined" && module.exports) {
         lastAct[bk] = e;
         tCol[bk] = e + tim.tRCD;
         openRow[bk] = t.row;
+        t.didAct = true;
         t.phase = "col";
       } else {
         if (trace) trace.push({ c: t.wr ? "W" : "R", bank: bk });
+        if (!t.didAct) rowHits++;
         if (!t.wr) { latSum += (e + tim.tCL) - t.issue; reads++; }
         t.phase = "done";
       }
@@ -3657,6 +3668,7 @@ if (typeof module !== "undefined" && module.exports) {
       /* FR-FCFS: pick the pending txn whose next command can issue earliest */
       var best = -1, bestE = 1e18;
       for (var w = 0; w < win.length; w++) {
+        refreshPhase(win[w]);
         var e = earliest(win[w]);
         if (e < bestE) { bestE = e; best = w; }
       }
@@ -4115,12 +4127,12 @@ if (typeof module !== "undefined" && module.exports) {
 
   /* node test hook: harmless in the browser */
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = {
+    module.exports = Object.assign(module.exports || {}, {
       MB: {
         sim: mbSim, modules: MB_MODULES, deficit: mbDeficit,
         margin: mbMargin, verdict: mbVerdict, grade: mbGrade
       }
-    };
+    });
   }
 
 })();
@@ -4948,6 +4960,15 @@ if (typeof module !== "undefined" && module.exports) {
     }
     st.attempts++;
     var cost = sbSpillCost(st);
+    var clash = sbVerify(st.cfg.prog, st.cfg.args, st.cfg.K, st.assign).filter(function (c) { return c.why === "color"; })[0];
+    if (clash) {
+      st.verdict = {
+        ok: false,
+        text: "COLOR CLASH: " + clash.v + " and " + clash.nb + " are live at the same time, but both hold R" + st.assign[clash.v] + ". That is not a valid allocation: interfering ranges must hold different colors. Re-color or spill one of them and commit again."
+      };
+      sbRenderAll(st);
+      return;
+    }
     if (st.cfg.mode === "trial") {
       if (cost > st.cfg.budget) {
         st.verdict = {
@@ -5049,13 +5070,13 @@ if (typeof module !== "undefined" && module.exports) {
 
   /* node test hook: harmless in the browser */
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = {
+    module.exports = Object.assign(module.exports || {}, {
       SB: {
         solve: sbSolve, verify: sbVerify, inter: sbInterference,
         costs: sbSpillCosts, vregs: sbVregsOf, range: sbLiveRange,
         trials: SB_TRIALS, rand: sbRandomProg
       }
-    };
+    });
   }
 
 })();
@@ -5623,7 +5644,7 @@ if (typeof module !== "undefined" && module.exports) {
 
   /* node test hook: harmless in the browser */
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { RV: { open: rvOpen, close: rvClose, build: rvBuild, grade: grade } };
+    module.exports = Object.assign(module.exports || {}, { RV: { open: rvOpen, close: rvClose, build: rvBuild, grade: grade } });
   }
 
 })();
@@ -6416,13 +6437,13 @@ if (typeof module !== "undefined" && module.exports) {
 
   /* node test hook: harmless in the browser */
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = {
+    module.exports = Object.assign(module.exports || {}, {
       PW: {
         walk: pwWalk, gen: pwGenTables, jobs: PW_JOBS,
         hex: pwHex, bin: pwBin, kind: pwKind, flags: pwFlagStr,
         pte: pwPte, ppn: pwPpn
       }
-    };
+    });
   }
 
 })();
