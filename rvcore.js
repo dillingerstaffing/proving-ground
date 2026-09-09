@@ -271,7 +271,7 @@ function rvAssemble(src) {
       });
     } else if (it.op === ".bytes") {
       for (var b = 0; b < it.bytes.length; b++) img[it.addr + b] = it.bytes[b] & 0xFF;
-      listing.push({ addr: it.addr, word: null, src: it.src, line: it.line, note: it.bytes.length + " bytes" });
+      listing.push({ addr: it.addr, word: null, bytes: it.bytes, src: it.src, line: it.line, note: it.bytes.length + " bytes" });
     } else {
       var w = rvEncode(it.op, it.args, it.addr, labels, it.line);
       putW(it.addr, w);

@@ -14,7 +14,7 @@ var ANVIL_TRIALS = [
     goal: "Print 1, 2, 3, 4, 5 through the UART (ecall with a7 = 1, value in a0), then halt.",
     hint: "loop with beq, mv a0, t0, ecall, addi t0, t0, 1",
     check: function (cpu) {
-      var o = cpu.out;
+      var o = cpu.out.map(function (e) { return e.v; });
       return o.length === 5 && o[0] === 1 && o[1] === 2 && o[2] === 3 && o[3] === 4 && o[4] === 5;
     } },
   { id: "courier", name: "Memory Courier",
@@ -212,6 +212,11 @@ function rvAssembleUI() {
     $("rvCertBtn").disabled = true;
     $("rvHexBtn").disabled = false;
     var lh = a.listing.map(function (l) {
+      if (l.word === null && l.bytes) {
+        return '<span class="ad">0x' + rvHex(l.addr, 8) + "</span>  " +
+          '<span class="hx">' + l.bytes.map(function (b) { return rvHex(b, 2); }).join(" ") + "</span>  " +
+          ".bytes " + l.bytes.length + "   <span class='ad'>; " + l.src.replace(/</g, "&lt;") + "</span>";
+      }
       return '<span class="ad">0x' + rvHex(l.addr, 8) + "</span>  " +
         '<span class="hx">' + rvHex(l.word, 8) + "</span>  " +
         rvDis(l.word) + "   <span class='ad'>; " + l.src.replace(/</g, "&lt;") + "</span>";
@@ -331,7 +336,7 @@ function rvRefresh() {
     cell.title = RV_REGNAMES[r] + " = " + v + " (signed)";
   }
   rvs.prev = cpu.R.slice();
-  $("rvUart").textContent = cpu.out.length ? cpu.out.join(" ") : "(silent)";
+  $("rvUart").textContent = cpu.out.length ? cpu.out.map(function (e) { return e.t === "char" ? String.fromCharCode(e.v) : String(e.v); }).join(" ") : "(silent)";
   var mh = "";
   function wordAt(a) { return (cpu.mem[a] | (cpu.mem[a + 1] << 8) | (cpu.mem[a + 2] << 16) | (cpu.mem[a + 3] << 24)) >>> 0; }
   for (var m = 0; m < 8; m++) {
@@ -495,8 +500,8 @@ if (document.readyState === "loading") {
     if (method === "DESTROY") {
       return { pass: true, destroy: true, cells: [], note: "Shredded to 6mm particles. Verification not applicable: the media no longer exists." };
     }
-    if (method === "PURGE" && drive.id === 2) {
-      return { pass: false, cells: [7, 23, 58, 91, 120, 141], note: "FAIL: grown-defect sectors are unreadable, so verification cannot confirm them. Purge cannot sanitize what it cannot reach. Per NIST 800-88, this media must be destroyed." };
+    if (drive.id === 2 && method !== "DESTROY") {
+      return { pass: false, cells: [7, 23, 58, 91, 120, 141], note: "FAIL: grown-defect sectors are unreadable, so verification cannot confirm them. " + method.charAt(0) + method.slice(1).toLowerCase() + " cannot sanitize what it cannot reach. Per NIST 800-88, this media must be destroyed." };
     }
     if (method === "PURGE" && drive.id === 3) {
       return { pass: false, cells: [44, 45, 100, 101], note: "FAIL: verification found stale data in over-provisioned cells after a successful-looking Secure Erase. The firmware lied. Per NIST 800-88, this media must be destroyed." };
@@ -511,7 +516,14 @@ if (document.readyState === "loading") {
     if (s && s.timer) { clearInterval(s.timer); s.timer = null; }
   }
   function wsStopAll() {
-    wsState.forEach(wsStopTimer);
+    wsState.forEach(function (s, i) {
+      wsStopTimer(s);
+      if (s.running) {          /* a close mid-run aborts the run: the bay goes back to pending */
+        s.running = false;
+        s.status = "pending";
+        wsRefreshBay(i);
+      }
+    });
   }
 
   function wsRefreshBay(i) {
@@ -2257,7 +2269,9 @@ if (typeof module !== "undefined" && module.exports) {
   function biLoadBest() {
     try {
       var v = window.localStorage.getItem("biBest");
-      return v === null ? null : parseInt(v, 10);
+      if (v === null) return null;
+      var n = parseInt(v, 10);
+      return isNaN(n) ? null : n;
     } catch (e) { return null; }
   }
   function biSaveBest(v) {
@@ -2513,7 +2527,7 @@ if (typeof module !== "undefined" && module.exports) {
       return;
     }
     var tCls = s.T >= BI_T_MAX - 10 ? "crit" : s.T >= BI_T_TARGET ? "hot" : "";
-    set("stT", Math.round(s.T) + " C" + (s.T >= BI_T_TARGET && s.T < BI_T_MAX ? " THROTTLING" : ""), tCls);
+    set("stT", Math.round(s.T) + " C" + (s.T >= BI_T_TARGET + 1 && s.T < BI_T_MAX ? " THROTTLING" : ""), tCls);
     var card = ui.sh.cards[ui.sh.cardIdx];
     var clkPct = s.clock / card.boost;
     set("stC", Math.round(s.clock) + " MHz", clkPct < 0.95 && s.t > 10 ? "hot" : "");
@@ -2622,7 +2636,10 @@ if (typeof module !== "undefined" && module.exports) {
     if (!sh.running) return;
     var dt = BI_SPEEDS[sh.prof.speed] || 8;
     var card = sh.cards[sh.cardIdx];
-    var ev = biStep(sh.sim, card, sh.prof, dt);
+    /* Speed is wall-clock only: the explicit Euler step is only stable for
+       small dt, so fast ticks are split into stable substeps of <= 8 s. */
+    var nSub = Math.max(1, Math.ceil(dt / 8)), sdt = dt / nSub, ev = null, bi;
+    for (bi = 0; bi < nSub && !sh.sim.dead; bi++) ev = biStep(sh.sim, card, sh.prof, sdt);
     sh.clockSum += sh.sim.clock; sh.clockN++;
     if (sh.sim.samples.length < 2000) {
       sh.sim.samples.push({ t: sh.sim.t, T: sh.sim.T, clock: sh.sim.clock, power: sh.sim.power, ecc: sh.sim.ecc });
