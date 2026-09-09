@@ -400,7 +400,7 @@ div[class*="-overlay"].pg-enter { animation: pgOverlayIn 0.26s var(--ease-out); 
       </a>
     </section>
     <p class="fineprint">New benches land regularly.<br>Everything runs on your device: no accounts, no tracking, no cost.</p>
-    <p class="fineprint"><a href="https://dillingerstaffing.github.io/riscv-playground/">RISC-V Playground</a> &middot; <a href="https://dillingerstaffing.github.io/garage-inventions/">Garage Inventions (retired)</a></p>
+    <p class="fineprint"><a href="https://dillingerstaffing.github.io/riscv-playground/">RISC-V Playground</a></p>
   </footer>
 </div>
 
@@ -469,7 +469,11 @@ var PG_BENCHES = [
   { section: "silicon", n: "07", name: "The Spill Bin", btn: "sbBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "RV32I register allocation: real liveness analysis, interference graph, and a Chaitin-Briggs solver as your baseline. Spill the cheapest victims, stay inside budget.",
     how: "Color the interference graph, spill the cheapest virtuals, beat the shop solver.",
-    spec: "REGALLOC \u00B7 CHAITIN-BRIGGS" }
+    spec: "REGALLOC \u00B7 CHAITIN-BRIGGS" },
+  { section: "silicon", n: "08", name: "The RISC-V Playground", btn: "rpBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "The full interactive RISC-V course, as a bench: a real RV32I core in your browser, 10 guided lessons, 8 auto-graded challenges.",
+    how: "Work the lessons, beat the challenges, earn the win.",
+    spec: "RV32I CORE \u00B7 10 LESSONS \u00B7 8 CHALLENGES" }
 ];
 
 var pgFilter = "all";
@@ -488,12 +492,42 @@ function pgIris(pt) {
 }
 
 function pgLaunch(b, card) {
-  var r = card.getBoundingClientRect();
-  pgLastPoint = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  var r = card ? card.getBoundingClientRect() : null;
+  pgLastPoint = r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+                  : { x: window.innerWidth / 2, y: window.innerHeight / 2 };
   pgIris(pgLastPoint);
   var launcher = $(b.btn);
   if (launcher) { launcher.click(); }
   else { toast("That bench is still warming up. Try again in a moment."); }
+}
+
+/* Deep links: proving-ground/#bench=riscv-playground (or #bench=08)
+   opens the bench directly, so the venture sites can link to the exact
+   instrument behind their promises. Waits for the deferred bundle. */
+function pgSlug(name) {
+  return name.toLowerCase().replace(/^the\s+/, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+function pgDeepLink() {
+  var m = (location.hash || "").match(/bench=([A-Za-z0-9-]+)/);
+  if (!m) return;
+  var norm = function (s) { return String(s).toLowerCase().replace(/[^a-z0-9]/g, ""); };
+  var key = norm(m[1]);
+  var hit = null;
+  for (var i = 0; i < PG_BENCHES.length; i++) {
+    if (norm(PG_BENCHES[i].n) === key || norm(pgSlug(PG_BENCHES[i].name)) === key) { hit = PG_BENCHES[i]; break; }
+  }
+  if (!hit) return;
+  var card = document.querySelector('.bench[data-n="' + hit.n + '"]');
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries++;
+    if ($(hit.btn)) {
+      clearInterval(timer);
+      pgLaunch(hit, card);
+    } else if (tries > 30) {
+      clearInterval(timer);
+    }
+  }, 200);
 }
 
 function pgSetFilter(f) {
@@ -589,6 +623,7 @@ function pgRender() {
     var card = el("button", "bench");
     card.type = "button";
     card.setAttribute("data-section", b.section);
+    card.setAttribute("data-n", b.n);
     card.setAttribute("aria-label", b.name + ": " + b.desc);
     card.innerHTML =
       '<span class="bench-top"><span class="idx">' + b.n + '</span>' +
@@ -761,9 +796,9 @@ function pgBindTilt() {
 })();
 
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", pgRender);
+  document.addEventListener("DOMContentLoaded", function () { pgRender(); pgDeepLink(); });
 } else {
-  pgRender();
+  pgRender(); pgDeepLink();
 }
 </script>
 <script src="features.js" defer></script>

@@ -5043,3 +5043,134 @@ if (typeof module !== "undefined" && module.exports) {
 
 })();
 
+
+/* ================= THE RISC-V PLAYGROUND (BENCH 08) =================
+   The full interactive RISC-V course, incorporated as a bench: a real
+   RV32I core in the browser, 10 guided lessons, 8 auto-graded
+   challenges. The course lives at its own site; this bench embeds it
+   in a full-viewport overlay so it opens like every other instrument.
+   The frame source is set lazily on first open, never before. */
+
+(function () {
+  "use strict";
+
+  var RP_URL = "https://dillingerstaffing.github.io/riscv-playground/";
+
+  var RP_CSS = [
+    ".rp-overlay{position:fixed;inset:0;z-index:9995;background:rgba(5,8,10,.94);display:none;}",
+    ".rp-overlay.open{display:flex;}",
+    ".rp-panel{flex:1;min-height:0;width:100%;max-width:1180px;margin-left:auto;margin-right:auto;display:flex;flex-direction:column;background:#0a0c0e;border:1px solid rgba(242,237,227,.14);border-radius:14px;overflow:hidden;}",
+    ".rp-bar{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid rgba(242,237,227,.13);flex:none;}",
+    ".rp-title{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;font-weight:600;letter-spacing:.16em;color:#f2ede3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}",
+    ".rp-title b{color:#ff5a1f;}",
+    ".rp-bar .spacer{flex:1;}",
+    ".rp-btn{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;font-weight:600;letter-spacing:.08em;padding:10px 14px;border-radius:9px;border:1px solid rgba(242,237,227,.2);background:#141a21;color:#f2ede3;cursor:pointer;text-decoration:none;white-space:nowrap;}",
+    ".rp-btn:hover{border-color:#ff5a1f;color:#ff5a1f;}",
+    ".rp-btn.primary{background:#ff5a1f;border-color:#ff5a1f;color:#0a0c0e;}",
+    ".rp-btn.primary:hover{color:#0a0c0e;filter:brightness(1.08);}",
+    ".rp-stage{position:relative;flex:1;min-height:0;background:#0a0c0e;}",
+    ".rp-stage iframe{position:absolute;inset:0;width:100%;height:100%;border:0;background:#0a0c0e;}",
+    ".rp-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px;background:#0a0c0e;}",
+    ".rp-loading .bar{width:180px;height:3px;border-radius:2px;background:#1a212b;overflow:hidden;}",
+    ".rp-loading .bar i{display:block;height:100%;width:40%;border-radius:2px;background:#ff5a1f;animation:rpSlide 1.1s ease-in-out infinite;}",
+    "@keyframes rpSlide{0%{transform:translateX(-100%);}100%{transform:translateX(450%);}}",
+    ".rp-loading span{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;letter-spacing:.22em;color:#6b7480;}"
+  ].join("\n");
+
+  function rp$(id) { return document.getElementById(id); }
+  function rpEl(tag, cls, html) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (html != null) e.innerHTML = html;
+    return e;
+  }
+
+  function rpOpen() {
+    var ov = rp$("rpOverlay");
+    if (!ov) return;
+    ov.classList.add("open");
+    var frame = rp$("rpFrame");
+    if (frame && !frame.getAttribute("src")) {
+      frame.setAttribute("src", RP_URL);
+    }
+  }
+  function rpClose() {
+    var ov = rp$("rpOverlay");
+    if (ov) ov.classList.remove("open");
+  }
+
+  function rpBuild() {
+    var st = document.createElement("style");
+    st.textContent = RP_CSS;
+    document.head.appendChild(st);
+
+    var box = document.querySelector(".dossier .actions");
+    if (box && !rp$("rpBtn")) {
+      var b = rpEl("button", "secondary", "Run the RISC-V Playground");
+      b.id = "rpBtn";
+      b.addEventListener("click", rpOpen);
+      box.appendChild(b);
+    }
+    if (rp$("rpOverlay")) return;
+
+    var ov = rpEl("div", "rp-overlay");
+    ov.id = "rpOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The RISC-V Playground");
+
+    var panel = rpEl("div", "rp-panel");
+    var bar = rpEl("div", "rp-bar");
+    bar.innerHTML =
+      '<span class="rp-title"><b>08</b>&nbsp;&nbsp;THE RISC-V PLAYGROUND</span>' +
+      '<span class="spacer"></span>' +
+      '<a class="rp-btn" href="' + RP_URL + '" target="_blank" rel="noopener">FULL SCREEN &#8599;</a>' +
+      '<button class="rp-btn primary" id="rpClose" type="button">CLOSE [x]</button>';
+
+    var stage = rpEl("div", "rp-stage");
+    var loading = rpEl("div", "rp-loading");
+    loading.id = "rpLoading";
+    loading.innerHTML = '<div class="bar"><i></i></div><span>LOADING PLAYGROUND</span>';
+    var frame = rpEl("iframe");
+    frame.id = "rpFrame";
+    frame.title = "RISC-V Playground: interactive RV32I lessons and challenges";
+    frame.setAttribute("allow", "fullscreen");
+    frame.addEventListener("load", function () {
+      var l = rp$("rpLoading");
+      if (l) l.style.display = "none";
+    });
+    stage.appendChild(loading);
+    stage.appendChild(frame);
+
+    panel.appendChild(bar);
+    panel.appendChild(stage);
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    rp$("rpClose").addEventListener("click", rpClose);
+    ov.addEventListener("click", function (e) {
+      if (e.target === ov) rpClose();
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && ov.classList.contains("open")) rpClose();
+    });
+  }
+
+  function rpInit() {
+    if (typeof document === "undefined") return;
+    if (!document.querySelector(".dossier .actions")) return;
+    rpBuild();
+  }
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", rpInit);
+    } else {
+      rpInit();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = { RP: { url: RP_URL, open: rpOpen, close: rpClose, build: rpBuild } };
+  }
+
+})();
