@@ -15,12 +15,16 @@ function rvParseReg(s, line) {
   return n;
 }
 function rvParseImm(s, line) {
-  s = String(s).trim().toLowerCase();
+  var orig = String(s);
+  s = orig.trim().toLowerCase();
   var neg = false;
   if (s.charAt(0) === "-") { neg = true; s = s.slice(1); }
   else if (s.charAt(0) === "+") s = s.slice(1);
-  var v = (s.indexOf("0x") === 0) ? parseInt(s, 16) : parseInt(s, 10);
-  if (isNaN(v)) throw { line: line, msg: "bad number '" + s + "'" };
+  var hex = s.indexOf("0x") === 0;
+  var body = hex ? s.slice(2) : s;
+  if (!body.length || !(hex ? /^[0-9a-f]+$/ : /^[0-9]+$/).test(body))
+    throw { line: line, msg: "bad number '" + orig.trim() + "'" };
+  var v = hex ? parseInt(body, 16) : parseInt(body, 10);
   return neg ? -v : v;
 }
 function rvParseMem(s, line) {
@@ -77,7 +81,9 @@ function rvExpandPseudo(op, args, ln) {
   if (op === "li" && args.length === 2) {
     var v = rvParseImm(args[1], ln);
     if (v >= -2048 && v <= 2047) return [["addi", [args[0], "x0", String(v)]]];
-    var hi = (v + 0x800) >> 12, lo = v - (hi << 12);
+    if (v < -2147483648 || v > 4294967295) throw { line: ln, msg: "li constant " + v + " out of 32-bit range" };
+    v = v | 0; /* wrap unsigned spellings like 0xFFFFFFFF to signed 32-bit */
+    var hi = Math.floor((v + 0x800) / 4096), lo = v - hi * 4096;
     return [["lui", [args[0], String(hi)]], ["addi", [args[0], args[0], String(lo)]]];
   }
   return [[op, args]];
@@ -136,6 +142,7 @@ function rvEncode(op, args, addr, labels, line) {
     case "U": {
       need(2);
       var u = rvParseImm(args[1], line);
+      rvRange(u, -524288, 1048575, "upper immediate", line);
       return rvEncU(u, rvParseReg(args[0], line), d.op);
     }
     case "E": {
@@ -183,7 +190,7 @@ function rvAssemble(src) {
   }
   for (var i = 0; i < raw.length; i++) {
     var ln = i + 1;
-    var t = raw[i].replace(/#.*$/, "").trim();
+    var t = raw[i].replace(/"(?:[^"\\]|\\.)*"|#.*$/g, function (m) { return m.charAt(0) === "#" ? "" : m; }).trim();
     if (!t) continue;
     var m = t.match(/^([A-Za-z_][\w.]*)\s*:\s*(.*)$/);
     var label = null;
@@ -198,8 +205,8 @@ function rvAssemble(src) {
       if (dm && dm[1] === "text") { seg = "text"; continue; }
       if (dm && dm[1] === "data") { seg = "data"; continue; }
       if (dm && dm[1] === "word") {
+        if (!dm[2].trim()) throw { line: ln, msg: ".word needs values" };
         var vals = dm[2].split(",").map(function (s) { return rvParseImm(s, ln); });
-        if (!vals.length) throw { line: ln, msg: ".word needs values" };
         items.push({ line: ln, op: ".word", args: vals, addr: curAddr(), src: raw[i].trim() });
         adv(4 * vals.length, ln);
       } else if (dm && dm[1] === "string") {

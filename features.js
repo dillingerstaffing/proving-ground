@@ -5164,6 +5164,7 @@ if (typeof module !== "undefined" && module.exports) {
     chalsDone: []
   };
   try { S.chalsDone = JSON.parse(store("rvbench.done") || "[]"); } catch (e) { S.chalsDone = []; }
+  if (!Array.isArray(S.chalsDone)) S.chalsDone = [];
   function saveDone() { try { store("rvbench.done", JSON.stringify(S.chalsDone)); } catch (e) {} }
 
   function renderOut(items) {
@@ -5746,6 +5747,7 @@ if (typeof module !== "undefined" && module.exports) {
     if (!(pte & PW_V)) return fault("level-1 PTE at index " + vpn1 + " is invalid (V=0), the page is not present");
     if (pte & (PW_R | PW_W | PW_X)) {
       if ((pte & PW_W) && !(pte & PW_R)) return fault("reserved PTE encoding (W=1, R=0)");
+      if (pwPpn(pte) & 15) return fault("misaligned superpage PPN (low PPN bits must be zero)");
       if (!(pte & pwNeed(access))) {
         return fault("leaf PTE grants [" + pwFlagStr(pte) + "] but this " +
           access.toLowerCase() + " needs " + pwPermFor(access));
