@@ -10381,3 +10381,715 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
 })();
+
+/* ================= THE POWER TREE (BENCH 16) =================
+   GPU power-sequencing bench for TAPEOUT bring-up: five rails must
+   come up in dependency order with real ramp physics (first-order
+   step response), Power-Good thresholds, sequencing violations,
+   PG timeouts, and UVLO faults. Three boards: one golden, one with
+   a weak core VRM (sluggish ramp), one with undersized input bulk
+   caps (input sag under core load). Diagnose from the scope and the
+   event log, apply the rework the data convicts, qualify all three. */
+
+(function () {
+  "use strict";
+
+  /* ---------------- pure core: no DOM ---------------- */
+
+  var PT_RAILS = [
+    { id: "v12", name: "12V_IN",   v: 12.0, tau: 15, pre: [] },
+    { id: "v5",  name: "5V_AUX",   v: 5.0,  tau: 20, pre: ["v12"] },
+    { id: "v33", name: "3V3_IO",   v: 3.3,  tau: 25, pre: ["v5"] },
+    { id: "v18", name: "1V8_MGT",  v: 1.8,  tau: 30, pre: ["v33"] },
+    { id: "v08", name: "0V8_CORE", v: 0.8,  tau: 40, pre: ["v18", "v12"] }
+  ];
+  var PT_COLORS = { v12: "#ff5a1f", v5: "#e8a33d", v33: "#7dd87d", v18: "#6fb3ff", v08: "#c792ea" };
+  var PT_T = 2000;        /* simulation horizon, ms */
+  var PT_PG_WINDOW = 500; /* PG must assert within this after enable */
+  var PT_PAR_RUNS = 6;
+
+  var PT_BOARDS = [
+    { id: "A", name: "GOLDEN UNIT",
+      brief: "Fresh from the fab and believed healthy. The sequencing spec is unforgiving though: a rail may only enable after every rail it depends on is Power Good, and the sequencer counts each enable from the previous enable, not from Power Good. Find the delay that satisfies every dependency, then prove it on the scope." },
+    { id: "B", name: "TIRED VRM",
+      brief: "This card boots when it feels like it. The traveler says the 0.8V core VRM came from a budget reel and the ramp looks sluggish on the shop scope. A rail that cannot reach Power Good inside its window holds the whole tree in reset. Decide from the data whether the VRM is the culprit, and rework only what the data convicts." },
+    { id: "C", name: "SAGGING INPUT",
+      brief: "Passes cold, fails warm, or the other way around, nobody agrees. What the scope caught once: the 12V input dips hard the instant the core VRM kicks in, and the dip drags the tree under lockout. The bulk caps look undersized for the inrush. Prove the sag on the trace, then fix what the data convicts." }
+  ];
+
+  function ptRailById(id) {
+    for (var i = 0; i < PT_RAILS.length; i++)
+      if (PT_RAILS[i].id === id) return PT_RAILS[i];
+    return null;
+  }
+
+  /* Run the power tree. order: rail ids in enable order. delayMs:
+     ms between consecutive enables. reworks: {vrm, caps} booleans.
+     Returns {pass, fail, events, pgT, tEn, bootTime, traces}. */
+  function ptSim(board, order, delayMs, reworks) {
+    var rails = {};
+    PT_RAILS.forEach(function (r) { rails[r.id] = r; });
+    var tau = {};
+    PT_RAILS.forEach(function (r) { tau[r.id] = r.tau; });
+    if (board.id === "B" && !reworks.vrm) tau.v08 = 350; /* weak VRM: sluggish ramp */
+    var tEn = {};
+    order.forEach(function (id, i) { tEn[id] = i * delayMs; });
+    var sagAmp = 0, sagTau = 120, tCore = tEn.v08;
+    if (board.id === "C") sagAmp = reworks.caps ? 0.2 : 1.6; /* undersized bulk caps */
+
+    function volt(id, t) {
+      var r = rails[id], te = tEn[id];
+      if (t < te) return 0;
+      var v = r.v * (1 - Math.exp(-(t - te) / tau[id]));
+      if (id === "v12" && sagAmp > 0 && t >= tCore)
+        v -= sagAmp * Math.exp(-(t - tCore) / sagTau);
+      return v;
+    }
+
+    /* Power-Good time per rail: first ms at or above 95% of target. */
+    var pgT = {};
+    PT_RAILS.forEach(function (r) {
+      var th = 0.95 * r.v, te = tEn[r.id], hit = -1;
+      for (var t = te; t <= PT_T; t++) {
+        if (volt(r.id, t) >= th) { hit = t; break; }
+      }
+      pgT[r.id] = hit;
+    });
+
+    var events = [];
+    events.push({ t: 0, txt: "sequencer start: enable order " +
+      order.map(function (id) { return rails[id].name; }).join(" > ") +
+      ", " + delayMs + "ms between enables" });
+
+    var fail = null;
+    function noteFail(f) { if (!fail || f.t < fail.t) fail = f; }
+
+    /* 1. sequencing: every prerequisite must be PG before this rail enables */
+    order.forEach(function (id) {
+      var r = rails[id];
+      r.pre.forEach(function (pid) {
+        if (pgT[pid] < 0 || pgT[pid] > tEn[id]) {
+          var e = { t: tEn[id], txt: "SEQUENCE VIOLATION: " + r.name +
+            " enabled at t=" + tEn[id] + "ms while " + rails[pid].name +
+            " is not Power Good (PG at t=" + (pgT[pid] < 0 ? "never" : pgT[pid]) + "ms). " +
+            "Enabling out of order risks latch-up: hard fail." };
+          events.push(e);
+          noteFail({ t: tEn[id], kind: "seq", txt: e.txt });
+        }
+      });
+    });
+
+    /* 2. PG timeout, plus the clean PG events */
+    PT_RAILS.forEach(function (r) {
+      var te = tEn[r.id];
+      if (pgT[r.id] < 0 || pgT[r.id] - te > PT_PG_WINDOW) {
+        var vAt = volt(r.id, Math.min(te + PT_PG_WINDOW, PT_T));
+        var e2 = { t: te + PT_PG_WINDOW, txt: "PG TIMEOUT: " + r.name +
+          " reached only " + vAt.toFixed(2) + "V after " + PT_PG_WINDOW +
+          "ms (needs " + (0.95 * r.v).toFixed(2) + "V). The tree stays in reset." };
+        events.push(e2);
+        noteFail({ t: te + PT_PG_WINDOW, kind: "timeout", txt: e2.txt });
+      } else {
+        events.push({ t: pgT[r.id], txt: r.name + " Power Good at t=" + pgT[r.id] +
+          "ms (" + (0.95 * r.v).toFixed(2) + "V threshold)" });
+      }
+    });
+
+    /* 3. UVLO: after PG, a dip under 92% of target is a hard fail */
+    PT_RAILS.forEach(function (r) {
+      if (pgT[r.id] < 0) return;
+      var floor = 0.92 * r.v;
+      for (var t = pgT[r.id]; t <= PT_T; t++) {
+        var vv = volt(r.id, t);
+        if (vv < floor) {
+          var e3 = { t: t, txt: "UVLO: " + r.name + " dipped to " + vv.toFixed(2) +
+            "V (floor " + floor.toFixed(2) + "V). Under-voltage lockout trips, tree collapses." };
+          events.push(e3);
+          noteFail({ t: t, kind: "uvlo", txt: e3.txt });
+          break;
+        }
+      }
+    });
+
+    events.sort(function (a, b) { return a.t - b.t; });
+
+    /* scope traces: percent of target, sampled every 2ms */
+    var traces = {};
+    PT_RAILS.forEach(function (r) {
+      var a = [];
+      for (var t = 0; t <= PT_T; t += 2) a.push(volt(r.id, t) / r.v * 100);
+      traces[r.id] = a;
+    });
+
+    var boot = -1;
+    if (!fail) {
+      boot = 0;
+      PT_RAILS.forEach(function (r) { if (pgT[r.id] > boot) boot = pgT[r.id]; });
+      events.push({ t: boot, txt: "RESET RELEASED at t=" + boot +
+        "ms: every rail Power Good, board boots clean." });
+      events.sort(function (a, b) { return a.t - b.t; });
+    }
+
+    return {
+      pass: !fail, fail: fail, events: events, pgT: pgT, tEn: tEn,
+      tau: tau, sagAmp: sagAmp, bootTime: boot, traces: traces
+    };
+  }
+
+  function ptCertText(quals, runs) {
+    var L = [];
+    L.push("THE PROVING GROUND");
+    L.push("Bench 16: The Power Tree");
+    L.push("GPU power-sequencing bring-up certificate");
+    L.push("");
+    PT_BOARDS.forEach(function (b) {
+      var q = quals[b.id];
+      L.push("BOARD " + b.id + " " + b.name + ": " +
+        (q ? "SIGNED OFF, reset released at t=" + q.boot + "ms, " +
+          "order " + q.order.join(" > ") + ", delay " + q.delay + "ms, rework: " + q.rework :
+          "not signed off"));
+    });
+    L.push("");
+    L.push("Total sequencer runs: " + runs + " (par " + PT_PAR_RUNS + ")");
+    L.push("All three boards bring up clean: sequencing, Power Good, and UVLO verified.");
+    return L.join("\n");
+  }
+
+  /* ---------------- state ---------------- */
+
+  var ptBoardIdx = 0;
+  var ptOrder = ["v12", "v5", "v33", "v18", "v08"];
+  var ptDelay = 40;
+  var ptReworks = {}; /* boardId -> {vrm:bool, caps:bool} */
+  var ptLast = null;  /* last run: {grade, boardId} */
+  var ptQuals = {};   /* boardId -> {boot, order, delay, rework, traces} */
+  var ptRuns = 0;
+
+  function ptEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  function pt$(id) { return document.getElementById(id); }
+  function ptRework(boardId) {
+    if (!ptReworks[boardId]) ptReworks[boardId] = { vrm: false, caps: false };
+    return ptReworks[boardId];
+  }
+  function ptBoard() { return PT_BOARDS[ptBoardIdx]; }
+
+  /* ---------------- UI build ---------------- */
+
+  var PT_CSS = [
+    ".pt-overlay{position:fixed;inset:0;background:rgba(8,8,10,.82);z-index:9000;display:none;overflow-y:auto;padding:24px 16px;}",
+    ".pt-overlay.open{display:block;}",
+    ".pt-panel{max-width:860px;margin:0 auto;background:#101014;border:1px solid #2a2a30;border-radius:12px;color:#f2f0eb;font-family:'Space Grotesk',system-ui,sans-serif;}",
+    ".pt-bar{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid #2a2a30;}",
+    ".pt-title{font-size:20px;letter-spacing:.14em;font-weight:700;}",
+    ".pt-title b{color:#ff5a1f;}",
+    ".pt-close{background:none;border:1px solid #3a3a42;color:#f2f0eb;border-radius:8px;min-height:48px;padding:0 18px;font-family:'IBM Plex Mono',monospace;font-size:13px;cursor:pointer;}",
+    ".pt-close:hover{border-color:#ff5a1f;}",
+    ".pt-close:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".pt-body{padding:22px;}",
+    ".pt-sub{font-size:14px;line-height:1.6;color:#b9b6ae;margin:0 0 20px;}",
+    ".pt-sub b{color:#f2f0eb;}",
+    ".pt-sub a{color:#ff5a1f;}",
+    ".pt-cards{display:flex;gap:10px;margin-bottom:22px;flex-wrap:wrap;}",
+    ".pt-cardtab{flex:1;min-width:150px;min-height:56px;border:1px solid #3a3a42;background:#16161b;color:#f2f0eb;border-radius:10px;cursor:pointer;font-family:'Space Grotesk',sans-serif;padding:8px 10px;text-align:left;transition:transform .2s,border-color .2s;}",
+    ".pt-cardtab:hover{border-color:#ff5a1f;}",
+    ".pt-cardtab:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".pt-cardtab.sel{border-color:#ff5a1f;transform:translateY(-2px);}",
+    ".pt-cardtab .k{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8a877f;letter-spacing:.1em;}",
+    ".pt-cardtab .n{font-size:14px;font-weight:700;margin-top:2px;}",
+    ".pt-cardtab .q{font-family:'IBM Plex Mono',monospace;font-size:11px;margin-top:4px;color:#8a877f;}",
+    ".pt-cardtab .q.done{color:#7dd87d;}",
+    ".pt-brief{font-size:13px;color:#b9b6ae;border-left:3px solid #ff5a1f;padding:8px 14px;margin:0 0 22px;line-height:1.55;}",
+    ".pt-sec{font-size:12px;letter-spacing:.14em;color:#8a877f;font-weight:700;margin:0 0 10px;text-transform:uppercase;}",
+    ".pt-order{display:flex;flex-direction:column;gap:8px;margin-bottom:8px;}",
+    ".pt-row{display:flex;align-items:center;gap:10px;border:1px solid #2a2a30;border-radius:10px;padding:8px 12px;background:#16161b;min-height:56px;}",
+    ".pt-pos{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#ff5a1f;min-width:20px;}",
+    ".pt-rn{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:700;min-width:86px;}",
+    ".pt-rv{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b9b6ae;min-width:56px;}",
+    ".pt-pre{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6e6b64;flex:1;}",
+    ".pt-mv{min-height:48px;min-width:64px;border:1px solid #3a3a42;background:#0a0a0d;color:#f2f0eb;border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;}",
+    ".pt-mv:hover:not(:disabled){border-color:#ff5a1f;}",
+    ".pt-mv:disabled{opacity:.3;cursor:default;}",
+    ".pt-mv:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".pt-hint{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6e6b64;margin:0 0 22px;line-height:1.6;}",
+    ".pt-delayrow{display:flex;align-items:center;gap:14px;margin-bottom:8px;flex-wrap:wrap;}",
+    ".pt-delayrow input[type=range]{flex:1;min-width:200px;min-height:48px;accent-color:#ff5a1f;}",
+    ".pt-delayrow input[type=range]:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".pt-delayval{font-family:'IBM Plex Mono',monospace;font-size:16px;font-weight:700;color:#ff5a1f;min-width:80px;}",
+    ".pt-rework{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;}",
+    ".pt-rw{flex:1;min-width:220px;min-height:52px;border:1px solid #3a3a42;background:#16161b;color:#f2f0eb;border-radius:10px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:13px;letter-spacing:.06em;cursor:pointer;padding:8px 12px;}",
+    ".pt-rw:hover{border-color:#ff5a1f;}",
+    ".pt-rw:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".pt-rw.on{border-color:#7dd87d;color:#7dd87d;}",
+    ".pt-rw small{display:block;font-weight:400;font-size:11px;color:#8a877f;letter-spacing:0;margin-top:2px;font-family:'IBM Plex Mono',monospace;}",
+    ".pt-runrow{display:flex;gap:12px;align-items:center;margin:6px 0 20px;flex-wrap:wrap;}",
+    ".pt-run{min-height:52px;padding:0 28px;border:none;border-radius:10px;background:#ff5a1f;color:#101014;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;letter-spacing:.08em;cursor:pointer;transition:transform .2s;}",
+    ".pt-run:hover{transform:translateY(-2px);}",
+    ".pt-run:focus-visible{outline:2px solid #fff;outline-offset:2px;}",
+    ".pt-run:active{transform:translateY(0);}",
+    ".pt-qual{min-height:52px;padding:0 24px;border:1px solid #7dd87d;background:none;color:#7dd87d;border-radius:10px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;letter-spacing:.08em;cursor:pointer;}",
+    ".pt-qual:hover:not(:disabled){background:#12240f;}",
+    ".pt-qual:disabled{opacity:.35;cursor:default;}",
+    ".pt-qual:focus-visible{outline:2px solid #7dd87d;outline-offset:2px;}",
+    ".pt-runs{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#8a877f;}",
+    ".pt-log{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#f2f0eb;background:#0a0a0d;border:1px solid #2a2a30;border-radius:10px;padding:14px 16px;margin:0 0 14px;max-height:220px;overflow-y:auto;line-height:1.7;white-space:pre-wrap;}",
+    ".pt-log .bad{color:#ff5a1f;}",
+    ".pt-log .good{color:#7dd87d;}",
+    ".pt-log .dim{color:#8a877f;}",
+    ".pt-verdict{font-size:15px;font-weight:700;letter-spacing:.1em;padding:14px;border-radius:10px;text-align:center;margin-bottom:18px;border:1px solid #3a3a42;}",
+    ".pt-verdict.pass{border-color:#7dd87d;color:#7dd87d;}",
+    ".pt-verdict.fail{border-color:#ff5a1f;color:#ff5a1f;}",
+    ".pt-verdict small{display:block;font-weight:400;letter-spacing:0;font-size:12px;color:#b9b6ae;margin-top:6px;}",
+    ".pt-scope{width:100%;height:200px;background:#0a0a0d;border:1px solid #2a2a30;border-radius:10px;margin-bottom:8px;}",
+    ".pt-legend{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px;}",
+    ".pt-leg{display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#b9b6ae;}",
+    ".pt-sw{width:14px;height:8px;border-radius:2px;}",
+    ".pt-scopelab{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8a877f;margin:0 0 18px;line-height:1.6;}",
+    ".pt-cert{border:1px solid #7dd87d;border-radius:10px;padding:18px;margin-top:6px;display:none;}",
+    ".pt-cert.show{display:block;}",
+    ".pt-cert h4{margin:0 0 8px;font-size:15px;letter-spacing:.12em;color:#7dd87d;}",
+    ".pt-cert p{margin:0 0 12px;font-size:13px;color:#b9b6ae;line-height:1.6;}",
+    ".pt-mini{min-height:48px;padding:0 18px;border:1px solid #3a3a42;background:#16161b;color:#f2f0eb;border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;margin-right:10px;margin-bottom:8px;}",
+    ".pt-mini:hover{border-color:#ff5a1f;}",
+    ".pt-mini:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    "@media (prefers-reduced-motion: reduce){.pt-cardtab,.pt-run{transition:none;}}",
+    "@media (max-width:640px){.pt-pre{display:none;}.pt-rn{min-width:0;}}"
+  ].join("\n");
+
+  function ptBuildShell() {
+    var css = document.createElement("style");
+    css.textContent = PT_CSS;
+    document.head.appendChild(css);
+
+    var box = document.querySelector(".dossier .actions");
+    if (box && !pt$("ptBtn")) {
+      var b = ptEl("button", "secondary", "Run the Power Tree");
+      b.id = "ptBtn";
+      b.addEventListener("click", function () {
+        pt$("ptOverlay").classList.add("open");
+        ptDrawScope();
+      });
+      box.appendChild(b);
+    }
+
+    var ov = ptEl("div", "pt-overlay");
+    ov.id = "ptOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Power Tree");
+    var panel = ptEl("div", "pt-panel");
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    var bar = ptEl("div", "pt-bar");
+    var title = ptEl("div", "pt-title", "");
+    title.innerHTML = "THE POWER <b>TREE</b>";
+    var close = ptEl("button", "pt-close", "CLOSE [x]");
+    close.type = "button";
+    bar.appendChild(title); bar.appendChild(close);
+    panel.appendChild(bar);
+
+    var body = ptEl("div", "pt-body");
+    panel.appendChild(body);
+
+    var sub = ptEl("p", "pt-sub", "");
+    sub.innerHTML = "<b>HOW IT WORKS</b> Five rails must come up in dependency order, " +
+      "each Power Good before the next rail enables, with real ramp physics on every rail. " +
+      "Set the enable order and the delay between rails, run the sequence, read the scope " +
+      "and the event log, and rework exactly what the data convicts. Sign off all three " +
+      "boards to earn the bring-up certificate. " +
+      "Built for <a href=\"https://dillingerstaffing.github.io/tapeout/\" target=\"_blank\" rel=\"noopener\">TAPEOUT</a> GPU bring-up.";
+    body.appendChild(sub);
+
+    var cards = ptEl("div", "pt-cards"); cards.id = "ptCards"; body.appendChild(cards);
+    var brief = ptEl("p", "pt-brief", ""); brief.id = "ptBrief"; body.appendChild(brief);
+
+    body.appendChild(ptEl("h3", "pt-sec", "Enable order, top enables first"));
+    var order = ptEl("div", "pt-order"); order.id = "ptOrder"; body.appendChild(order);
+    var oh = ptEl("p", "pt-hint",
+      "A rail may only enable after every rail it depends on is Power Good. " +
+      "Enabling out of order is a sequence violation and fails the board on the spot.");
+    body.appendChild(oh);
+
+    body.appendChild(ptEl("h3", "pt-sec", "Inter-rail delay"));
+    var drow = ptEl("div", "pt-delayrow");
+    var slider = document.createElement("input");
+    slider.type = "range"; slider.id = "ptDelay"; slider.min = "0"; slider.max = "300";
+    slider.step = "5"; slider.value = String(ptDelay);
+    slider.setAttribute("aria-label", "Delay in milliseconds between consecutive rail enables");
+    slider.addEventListener("input", function () {
+      ptDelay = parseInt(slider.value, 10);
+      pt$("ptDelayVal").textContent = ptDelay + " ms";
+      ptLast = null; ptRenderQual();
+    });
+    drow.appendChild(slider);
+    var dval = ptEl("span", "pt-delayval", ptDelay + " ms"); dval.id = "ptDelayVal"; drow.appendChild(dval);
+    body.appendChild(drow);
+    var dh = ptEl("p", "pt-hint",
+      "Each enable is counted from the previous enable, not from Power Good. " +
+      "A sluggish rail needs a longer delay, or the next rail enables into a violation.");
+    body.appendChild(dh);
+
+    body.appendChild(ptEl("h3", "pt-sec", "Shop rework"));
+    var rw = ptEl("div", "pt-rework"); rw.id = "ptRework"; body.appendChild(rw);
+    var rh = ptEl("p", "pt-hint",
+      "Rework is per board and costs nothing but your pride. The scope decides, not the guess: " +
+      "apply the fix the trace actually convicts.");
+    body.appendChild(rh);
+
+    var runrow = ptEl("div", "pt-runrow");
+    var run = ptEl("button", "pt-run", "RUN SEQUENCE");
+    run.id = "ptRun"; run.type = "button";
+    run.addEventListener("click", ptOnRun);
+    runrow.appendChild(run);
+    var qual = ptEl("button", "pt-qual", "SIGN OFF BOARD");
+    qual.id = "ptQual"; qual.type = "button"; qual.disabled = true;
+    qual.addEventListener("click", ptOnQualify);
+    runrow.appendChild(qual);
+    var runs = ptEl("span", "pt-runs", ""); runs.id = "ptRuns"; runrow.appendChild(runs);
+    body.appendChild(runrow);
+
+    var log = ptEl("div", "pt-log", "No run yet. Set the order and delay, then run the sequence.");
+    log.id = "ptLog"; body.appendChild(log);
+    var verdict = ptEl("div", "pt-verdict", "No run yet.");
+    verdict.id = "ptVerdict"; body.appendChild(verdict);
+
+    var canvas = document.createElement("canvas");
+    canvas.className = "pt-scope"; canvas.id = "ptScope";
+    canvas.setAttribute("role", "img");
+    canvas.setAttribute("aria-label", "Oscilloscope trace of the five rail voltages as percent of target");
+    body.appendChild(canvas);
+    var legend = ptEl("div", "pt-legend"); legend.id = "ptLegend"; body.appendChild(legend);
+    var slab = ptEl("p", "pt-scopelab",
+      "SCOPE: each rail as percent of its target. Dashed lines mark the Power-Good threshold (95%) " +
+      "and the under-voltage floor (92%). Vertical ticks are enables, dots are Power-Good asserts, " +
+      "a cross marks the first hard failure.");
+    body.appendChild(slab);
+
+    var cert = ptEl("div", "pt-cert"); cert.id = "ptCert"; body.appendChild(cert);
+
+    close.addEventListener("click", function () { ov.classList.remove("open"); });
+    ov.addEventListener("click", function (e) { if (e.target === ov) ov.classList.remove("open"); });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && ov.classList.contains("open")) ov.classList.remove("open");
+    });
+
+    ptRenderCards(); ptRenderOrder(); ptRenderRework(); ptRenderLegend(); ptRenderQual();
+  }
+
+  function ptRenderCards() {
+    var wrap = pt$("ptCards");
+    wrap.innerHTML = "";
+    PT_BOARDS.forEach(function (c, i) {
+      var tab = ptEl("button", "pt-cardtab" + (i === ptBoardIdx ? " sel" : ""), "");
+      tab.type = "button";
+      tab.setAttribute("aria-pressed", i === ptBoardIdx ? "true" : "false");
+      tab.appendChild(ptEl("div", "k", "BOARD " + c.id));
+      tab.appendChild(ptEl("div", "n", c.name));
+      var q = ptEl("div", "q" + (ptQuals[c.id] ? " done" : ""), "");
+      q.textContent = ptQuals[c.id] ? "SIGNED OFF" : "NOT SIGNED OFF";
+      tab.appendChild(q);
+      tab.addEventListener("click", function () { ptSelectBoard(i); });
+      wrap.appendChild(tab);
+    });
+    pt$("ptBrief").textContent = ptBoard().brief;
+  }
+
+  function ptSelectBoard(i) {
+    ptBoardIdx = i;
+    ptLast = null;
+    ptRenderCards(); ptRenderRework(); ptRenderQual();
+    pt$("ptLog").textContent = "No run yet on board " + ptBoard().id + ". Set the order and delay, then run the sequence.";
+    pt$("ptVerdict").className = "pt-verdict";
+    pt$("ptVerdict").textContent = "No run yet.";
+  }
+
+  function ptRenderOrder() {
+    var wrap = pt$("ptOrder");
+    wrap.innerHTML = "";
+    ptOrder.forEach(function (id, i) {
+      var r = ptRailById(id);
+      var row = ptEl("div", "pt-row", "");
+      row.appendChild(ptEl("span", "pt-pos", String(i + 1)));
+      row.appendChild(ptEl("span", "pt-rn", r.name));
+      row.appendChild(ptEl("span", "pt-rv", r.v.toFixed(1) + "V"));
+      var pre = r.pre.length ?
+        "needs: " + r.pre.map(function (p) { return ptRailById(p).name; }).join(", ") :
+        "needs: none";
+      row.appendChild(ptEl("span", "pt-pre", pre));
+      var up = ptEl("button", "pt-mv", "UP");
+      up.type = "button";
+      up.disabled = (i === 0);
+      up.setAttribute("aria-label", "Move " + r.name + " earlier in the enable order");
+      up.addEventListener("click", function () { ptMove(i, -1); });
+      var down = ptEl("button", "pt-mv", "DOWN");
+      down.type = "button";
+      down.disabled = (i === ptOrder.length - 1);
+      down.setAttribute("aria-label", "Move " + r.name + " later in the enable order");
+      down.addEventListener("click", function () { ptMove(i, 1); });
+      row.appendChild(up); row.appendChild(down);
+      wrap.appendChild(row);
+    });
+  }
+
+  function ptMove(i, d) {
+    var j = i + d;
+    if (j < 0 || j >= ptOrder.length) return;
+    var t = ptOrder[i]; ptOrder[i] = ptOrder[j]; ptOrder[j] = t;
+    ptLast = null;
+    ptRenderOrder(); ptRenderQual();
+  }
+
+  function ptRenderRework() {
+    var wrap = pt$("ptRework");
+    wrap.innerHTML = "";
+    var rw = ptRework(ptBoard().id);
+    var defs = [
+      { k: "vrm",  label: "REPLACE VCORE VRM", note: "fresh 0.8V regulator, fast ramp" },
+      { k: "caps", label: "REWORK INPUT BULK CAPS", note: "bigger input reservoir, kills sag" }
+    ];
+    defs.forEach(function (d) {
+      var b = ptEl("button", "pt-rw" + (rw[d.k] ? " on" : ""), "");
+      b.type = "button";
+      b.setAttribute("aria-pressed", rw[d.k] ? "true" : "false");
+      b.appendChild(ptEl("span", null, d.label + (rw[d.k] ? ": APPLIED" : ": NOT APPLIED")));
+      b.appendChild(ptEl("small", null, d.note));
+      b.addEventListener("click", function () {
+        rw[d.k] = !rw[d.k];
+        ptLast = null;
+        ptRenderRework(); ptRenderQual();
+      });
+      wrap.appendChild(b);
+    });
+  }
+
+  function ptRenderLegend() {
+    var wrap = pt$("ptLegend");
+    wrap.innerHTML = "";
+    PT_RAILS.forEach(function (r) {
+      var item = ptEl("span", "pt-leg", "");
+      var sw = ptEl("span", "pt-sw", "");
+      sw.style.background = PT_COLORS[r.id];
+      item.appendChild(sw);
+      item.appendChild(ptEl("span", null, r.name + " (" + r.v.toFixed(1) + "V)"));
+      wrap.appendChild(item);
+    });
+  }
+
+  function ptRenderQual() {
+    var ok = !!(ptLast && ptLast.grade.pass && ptLast.boardId === ptBoard().id);
+    pt$("ptQual").disabled = !ok || !!ptQuals[ptBoard().id];
+    pt$("ptQual").textContent = ptQuals[ptBoard().id] ? "BOARD SIGNED OFF" : "SIGN OFF BOARD";
+    pt$("ptRuns").textContent = "runs: " + ptRuns + " (par " + PT_PAR_RUNS + ")";
+  }
+
+  function ptOnRun() {
+    var b = ptBoard();
+    var rw = ptRework(b.id);
+    ptRuns++;
+    var grade = ptSim(b, ptOrder.slice(), ptDelay, { vrm: rw.vrm, caps: rw.caps });
+    ptLast = { grade: grade, boardId: b.id };
+    var log = pt$("ptLog");
+    log.innerHTML = "";
+    grade.events.forEach(function (e) {
+      var line = ptEl("div", "", "");
+      var cls = "dim";
+      if (/VIOLATION|TIMEOUT|UVLO/.test(e.txt)) cls = "bad";
+      else if (/RESET RELEASED/.test(e.txt)) cls = "good";
+      var head = ptEl("span", cls, "t=" + e.t + "ms: ");
+      line.appendChild(head);
+      line.appendChild(document.createTextNode(e.txt.replace(/^[^:]*: /, "")));
+      log.appendChild(line);
+    });
+    var v = pt$("ptVerdict");
+    v.className = "pt-verdict " + (grade.pass ? "pass" : "fail");
+    v.innerHTML = "";
+    v.appendChild(ptEl("span", null, grade.pass ? "BOARD BOOTS CLEAN" : "BOARD FAILS"));
+    var small = ptEl("small", null, "");
+    small.textContent = grade.pass
+      ? "Reset released at t=" + grade.bootTime + "ms. This exact order and delay can sign off board " + b.id + "."
+      : "First hard failure: " + grade.fail.kind.toUpperCase() + " at t=" + grade.fail.t + "ms. Read the scope, adjust, re-run.";
+    v.appendChild(small);
+    ptRenderQual();
+    ptDrawScope();
+  }
+
+  function ptOnQualify() {
+    if (!ptLast || !ptLast.grade.pass || ptLast.boardId !== ptBoard().id) return;
+    var b = ptBoard(), g = ptLast.grade;
+    var rw = ptRework(b.id);
+    var fixes = [];
+    if (rw.vrm) fixes.push("vcore VRM replaced");
+    if (rw.caps) fixes.push("input bulk caps reworked");
+    ptQuals[b.id] = {
+      boot: g.bootTime, order: ptOrder.slice(), delay: ptDelay,
+      rework: fixes.length ? fixes.join(", ") : "none", traces: g.traces
+    };
+    ptRenderCards(); ptRenderQual(); ptMaybeCert();
+    if (typeof toast === "function") toast("Board " + b.id + " signed off.");
+  }
+
+  function ptMaybeCert() {
+    var done = PT_BOARDS.every(function (c) { return !!ptQuals[c.id]; });
+    var box = pt$("ptCert");
+    if (!done) { box.classList.remove("show"); box.innerHTML = ""; return; }
+    box.innerHTML = "";
+    box.appendChild(ptEl("h4", null, "BRING-UP COMPLETE"));
+    var p = ptEl("p", null, "");
+    p.textContent = "All three boards bring up clean: sequencing, Power Good, and UVLO verified. " +
+      "The TAPEOUT bring-up bench accepts this power tree in " + ptRuns + " runs (par " + PT_PAR_RUNS + ").";
+    box.appendChild(p);
+    var dl = ptEl("button", "pt-mini", "DOWNLOAD CERTIFICATE");
+    dl.type = "button";
+    dl.addEventListener("click", function () {
+      ptDownload(ptCertText(ptQuals, ptRuns), "power-tree-certificate.txt");
+      if (typeof toast === "function") toast("Certificate downloaded.");
+    });
+    box.appendChild(dl);
+    var dl2 = ptEl("button", "pt-mini", "DOWNLOAD TRACE CSV");
+    dl2.type = "button";
+    dl2.addEventListener("click", function () {
+      ptDownload(ptTraceCsv(), "power-tree-traces.csv");
+      if (typeof toast === "function") toast("Trace CSV downloaded.");
+    });
+    box.appendChild(dl2);
+    box.classList.add("show");
+  }
+
+  function ptTraceCsv() {
+    var L = ["board,t_ms," + PT_RAILS.map(function (r) { return r.name + "_V"; }).join(",")];
+    PT_BOARDS.forEach(function (b) {
+      var q = ptQuals[b.id];
+      if (!q) return;
+      var n = q.traces.v12.length;
+      for (var i = 0; i < n; i++) {
+        var row = [b.id, i * 2];
+        PT_RAILS.forEach(function (r) {
+          row.push((q.traces[r.id][i] / 100 * r.v).toFixed(3));
+        });
+        L.push(row.join(","));
+      }
+    });
+    return L.join("\n");
+  }
+
+  function ptDownload(text, name) {
+    var blob = new Blob([text], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    }, 500);
+  }
+
+  function ptDrawScope() {
+    var cv = pt$("ptScope");
+    if (!cv) return;
+    var g = cv.getContext("2d");
+    if (!g) return;
+    var W = cv.clientWidth || 800, H = 200;
+    var dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+    cv.width = W * dpr; cv.height = H * dpr;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.fillStyle = "#0a0a0d";
+    g.fillRect(0, 0, W, H);
+
+    var X = function (t) { return 8 + (t / PT_T) * (W - 16); };
+    var Y = function (pct) { return H - 18 - (pct / 115) * (H - 36); };
+
+    g.font = "10px 'IBM Plex Mono', monospace";
+    g.lineWidth = 1;
+    [[0, "#2a2a30", "0"], [50, "#2a2a30", "50"], [92, "#5a3a2a", "UVLO 92"],
+     [95, "#2a5a2a", "PG 95"], [100, "#2a2a30", "100"], [110, "#2a2a30", "110%"]
+    ].forEach(function (ln) {
+      g.strokeStyle = ln[1];
+      g.setLineDash(ln[0] === 92 || ln[0] === 95 ? [5, 4] : []);
+      g.beginPath(); g.moveTo(8, Y(ln[0])); g.lineTo(W - 8, Y(ln[0])); g.stroke();
+      g.setLineDash([]);
+      g.fillStyle = "#6e6b64";
+      g.fillText(ln[2], W - 52, Y(ln[0]) - 3);
+    });
+
+    var grade = (ptLast && ptLast.grade) || null;
+    if (grade) {
+      /* enable ticks */
+      PT_RAILS.forEach(function (r) {
+        var te = grade.tEn[r.id];
+        g.strokeStyle = "#3a3a42";
+        g.beginPath(); g.moveTo(X(te), 8); g.lineTo(X(te), H - 18); g.stroke();
+        g.fillStyle = "#8a877f";
+        g.fillText(r.name, X(te) + 3, 14);
+      });
+      /* traces */
+      PT_RAILS.forEach(function (r) {
+        var tr = grade.traces[r.id];
+        g.strokeStyle = PT_COLORS[r.id];
+        g.lineWidth = 1.5;
+        g.beginPath();
+        for (var i = 0; i < tr.length; i++) {
+          var x = X(i * 2), y = Y(Math.min(tr[i], 115));
+          if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+        }
+        g.stroke();
+      });
+      g.lineWidth = 1;
+      /* PG dots */
+      PT_RAILS.forEach(function (r) {
+        var pt2 = grade.pgT[r.id];
+        if (pt2 >= 0) {
+          g.fillStyle = PT_COLORS[r.id];
+          g.beginPath(); g.arc(X(pt2), Y(95), 3, 0, Math.PI * 2); g.fill();
+        }
+      });
+      /* fail cross */
+      if (grade.fail) {
+        var fx = X(grade.fail.t), fy = Y(50);
+        g.strokeStyle = "#ff5a1f"; g.lineWidth = 2;
+        g.beginPath();
+        g.moveTo(fx - 6, fy - 6); g.lineTo(fx + 6, fy + 6);
+        g.moveTo(fx + 6, fy - 6); g.lineTo(fx - 6, fy + 6);
+        g.stroke();
+        g.lineWidth = 1;
+        g.fillStyle = "#ff5a1f";
+        g.fillText(grade.fail.kind.toUpperCase() + " t=" + grade.fail.t + "ms", Math.min(fx + 8, W - 120), fy - 8);
+      }
+    } else {
+      g.fillStyle = "#6e6b64";
+      g.fillText("Run the sequence to paint the scope.", 12, 30);
+    }
+    g.fillStyle = "#6e6b64";
+    g.fillText("0 ms", 8, H - 5);
+    g.fillText("2000 ms", W - 62, H - 5);
+  }
+
+  function ptInit() {
+    if (typeof document === "undefined") return;
+    if (!document.querySelector(".dossier .actions")) return;
+    ptBuildShell();
+  }
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", ptInit);
+    } else {
+      ptInit();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      PT: {
+        rails: PT_RAILS, boards: PT_BOARDS, sim: ptSim,
+        certText: ptCertText, colors: PT_COLORS, par: PT_PAR_RUNS
+      }
+    });
+  }
+
+})();

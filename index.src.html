@@ -521,7 +521,11 @@ var PG_BENCHES = [
   { section: "silicon", n: "15", name: "The Wire Room", btn: "wrBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "UART bring-up on the bench: three harts chatter over one wire in real UART frames. Probe the 0x55 sync byte, match the baud, set parity and stop bits, decode every frame with zero errors.",
     how: "Probe the sync byte to measure the bit cell, set the receiver knobs, capture and decode all three harts.",
-    spec: "UART \u00B7 3 HARTS \u00B7 ZERO ERRORS" }
+    spec: "UART \u00B7 3 HARTS \u00B7 ZERO ERRORS" },
+  { section: "tapeout", n: "16", name: "The Power Tree", btn: "ptBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+    desc: "GPU power sequencing on the bench: five rails with real ramp physics, Power-Good windows, sequence violations, and UVLO faults. Order the enables, dial the delay, convict the two faulty boards on the scope, sign off all three.",
+    how: "Set the rail order and inter-rail delay, run the sequence, rework exactly what the scope proves is broken, qualify all three boards.",
+    spec: "5 RAILS \u00B7 SEQ + UVLO \u00B7 3 BOARDS" }
 ];
 
 var pgFilter = "all";
