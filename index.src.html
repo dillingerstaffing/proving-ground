@@ -517,7 +517,11 @@ var PG_BENCHES = [
   { section: "tapeout", n: "14", name: "The Lock Lab", btn: "lkBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "Clock-generator qualification for GPU bring-up: a real discrete charge-pump PLL under the hood. Tune the loop, beat the lock and jitter budgets on three faulty cards, sign the certificate.",
     how: "Set the charge pump, resistor, and capacitor, run the loop, qualify all three cards.",
-    spec: "CP-PLL \u00B7 3 CARDS \u00B7 LOCK/JITTER" }
+    spec: "CP-PLL \u00B7 3 CARDS \u00B7 LOCK/JITTER" },
+  { section: "silicon", n: "15", name: "The Wire Room", btn: "wrBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "UART bring-up on the bench: three harts chatter over one wire in real UART frames. Probe the 0x55 sync byte, match the baud, set parity and stop bits, decode every frame with zero errors.",
+    how: "Probe the sync byte to measure the bit cell, set the receiver knobs, capture and decode all three harts.",
+    spec: "UART \u00B7 3 HARTS \u00B7 ZERO ERRORS" }
 ];
 
 var pgFilter = "all";

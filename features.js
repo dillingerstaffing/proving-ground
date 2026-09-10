@@ -9633,3 +9633,751 @@ if (typeof module !== "undefined" && module.exports) {
 
 })();
 
+
+/* ================= THE WIRE ROOM (BENCH 15) =================
+   UART bring-up bench for the portfolio's RISC-V focus: three harts
+   stream real UART frames over a single wire, simulated sample by
+   sample at 1 MHz. The receiver is yours: probe the 0x55 sync byte
+   to measure the bit cell, match the baud, set parity and stop bits
+   per each board's datasheet brief, then capture and decode. Zero
+   errors on all three harts signs the bring-up certificate. */
+
+(function () {
+  "use strict";
+
+  /* ---------------- pure core: no DOM ---------------- */
+
+  function wrMulberry32(a) {
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  var WR_HZ = 1000000; /* scope sample rate: 1 sample = 1 us */
+  var WR_BAUDS = [9600, 19200, 38400, 57600, 115200];
+  var WR_BAUD_CELLS = ["104.2", "52.1", "26.0", "17.4", "8.7"]; /* us per bit cell */
+  var WR_PARS = ["none", "even", "odd"];
+  var WR_PAR_LABELS = ["NONE", "EVEN", "ODD"];
+  var WR_STOPS = [1, 2];
+
+  var WR_BOARDS = [
+    { id: "A", name: "GOLDEN HART", baud: 9600, parity: "none", stop: 1,
+      seed: 6101, noise: 0, msg: "HART0 ONLINE",
+      brief: "A known-good hart at a walking pace. Datasheet: 8 data bits, no parity, 1 stop bit. Learn the probe here, then capture and decode." },
+    { id: "B", name: "NOISY NEIGHBOR", baud: 38400, parity: "even", stop: 1,
+      seed: 6202, noise: 1, msg: "BORN TO BITBANG",
+      brief: "A chatty hart with spikes on the wire from a rude neighbor. Datasheet: 8 data bits, parity enabled (the flavor is on the wire), 1 stop bit. The spikes are cosmetic: a mid-bit sampler never sees them." },
+    { id: "C", name: "LONG HAUL", baud: 115200, parity: "odd", stop: 2,
+      seed: 6303, noise: 0, msg: "SHIP IT QUIETLY",
+      brief: "The fast one. Datasheet: 8 data bits, odd parity, 2 stop bits, and acceptance demands the exact framing. A clean decode on the wrong stop count still fails here." }
+  ];
+
+  function wrParityBit(b, par) {
+    var ones = 0;
+    for (var k = 0; k < 8; k++) if ((b >> k) & 1) ones++;
+    if (par === "even") return (ones % 2) ? 1 : 0;
+    return (ones % 2) ? 0 : 1; /* odd */
+  }
+
+  /* Build the wire: dense 1 MHz samples, idle high, start bit low,
+     8 data bits LSB first, optional parity, stop bits high, 2 bit
+     cells of idle between frames. Frame 0 is always 0x55 (sync).
+     Noise spikes land near bit-cell edges only, so a mid-bit
+     sampler is immune, exactly as the brief promises. */
+  function wrWaveform(board) {
+    var bit = WR_HZ / board.baud;
+    var bytes = [0x55];
+    for (var i = 0; i < board.msg.length; i++) bytes.push(board.msg.charCodeAt(i));
+    var sig = [], frames = [], t = 0, idx = 0;
+    function push(level, dur) {
+      var end = Math.floor(t + dur);
+      while (idx < end) { sig[idx] = level; idx++; }
+      t += dur;
+    }
+    push(1, 4 * bit);
+    bytes.forEach(function (b) {
+      frames.push({ start: idx, byte: b });
+      push(0, bit);
+      for (var k = 0; k < 8; k++) push((b >> k) & 1, bit);
+      if (board.parity !== "none") push(wrParityBit(b, board.parity), bit);
+      push(1, board.stop * bit);
+      push(1, 2 * bit);
+    });
+    push(1, 4 * bit);
+    if (board.noise) {
+      var rnd = wrMulberry32(board.seed);
+      var nbitsT = 1 + 8 + (board.parity !== "none" ? 1 : 0) + board.stop;
+      for (var f = 0; f < frames.length; f++) {
+        var nsp = 1 + Math.floor(rnd() * 2);
+        for (var s = 0; s < nsp; s++) {
+          var cell = Math.floor(rnd() * nbitsT);
+          var frac = rnd() < 0.5 ? rnd() * 0.2 : 0.78 + rnd() * 0.2;
+          var at = frames[f].start + Math.floor((cell + frac) * bit);
+          var w = 1 + Math.floor(rnd() * 2);
+          for (var j = 0; j < w && at + j < sig.length; j++) sig[at + j] = 1 - sig[at + j];
+        }
+      }
+    }
+    return { sig: sig, frames: frames, bytes: bytes, bit: bit, n: sig.length };
+  }
+
+  /* Sync probe: median edge-to-edge distance inside the 0x55 sync
+     byte. 0x55 alternates every bit cell, so the median is the bit
+     cell in samples (1 sample = 1 us). Robust against spikes. */
+  function wrProbe(wave) {
+    var sig = wave.sig, n = sig.length, i, j, k;
+    var e0 = -1;
+    for (i = 1; i < n; i++) {
+      if (sig[i - 1] > 0.5 && sig[i] <= 0.5) { e0 = i; break; }
+    }
+    if (e0 < 0) return { cell: 0, cellUs: 0 };
+    var edges = [e0];
+    var limit = e0 + 14 * wave.bit;
+    for (j = e0 + 1; j < n && j < limit; j++) {
+      if ((sig[j - 1] > 0.5) !== (sig[j] > 0.5)) edges.push(j);
+    }
+    var gaps = [];
+    for (k = 1; k < edges.length; k++) gaps.push(edges[k] - edges[k - 1]);
+    gaps.sort(function (a, b) { return a - b; });
+    var med = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0;
+    return { cell: med, cellUs: med };
+  }
+
+  /* The player's software receiver: find falling start edges, sample
+     mid-bit per the knob settings, check parity and stop bits. */
+  function wrDecode(wave, baudIdx, parIdx, stopIdx) {
+    var sig = wave.sig, n = sig.length;
+    var bitP = WR_HZ / WR_BAUDS[baudIdx];
+    var par = WR_PARS[parIdx], stop = WR_STOPS[stopIdx];
+    var frameLen = (1 + 8 + (par !== "none" ? 1 : 0) + stop) * bitP;
+    function levelAt(x) {
+      var i = Math.round(x);
+      if (i < 0) i = 0;
+      if (i >= n) i = n - 1;
+      return sig[i] > 0.5 ? 1 : 0;
+    }
+    function findStart(from) {
+      var i0 = Math.max(1, Math.floor(from));
+      for (var i = i0; i < n; i++) {
+        if (sig[i - 1] > 0.5 && sig[i] <= 0.5) return i;
+      }
+      return -1;
+    }
+    var bytes = [], parityErr = 0, framingErr = 0, starts = [];
+    var s = findStart(0), guard = 0, k, j;
+    while (s >= 0 && guard < 48) {
+      guard++;
+      starts.push(s);
+      var b = 0, ones = 0;
+      for (k = 0; k < 8; k++) {
+        var v = levelAt(s + (1.5 + k) * bitP);
+        if (v) { b |= (1 << k); ones++; }
+      }
+      if (par !== "none") {
+        var p = levelAt(s + 9.5 * bitP);
+        var want = (par === "even") ? ((ones % 2) ? 1 : 0) : ((ones % 2) ? 0 : 1);
+        if (p !== want) parityErr++;
+      }
+      var sb = 9 + (par !== "none" ? 1 : 0);
+      for (j = 0; j < stop; j++) {
+        if (!levelAt(s + (sb + 0.5 + j) * bitP)) framingErr++;
+      }
+      bytes.push(b);
+      s = findStart(s + frameLen);
+    }
+    return { bytes: bytes, parityErr: parityErr, framingErr: framingErr, starts: starts, bitP: bitP };
+  }
+
+  function wrTrueIdx(board) {
+    return {
+      baud: WR_BAUDS.indexOf(board.baud),
+      par: WR_PARS.indexOf(board.parity),
+      stop: WR_STOPS.indexOf(board.stop)
+    };
+  }
+
+  function wrGrade(board, wave, dec, baudIdx, parIdx, stopIdx) {
+    var ti = wrTrueIdx(board);
+    var cfgOk = baudIdx === ti.baud && parIdx === ti.par && stopIdx === ti.stop;
+    var countOk = dec.bytes.length === wave.bytes.length;
+    var dataOk = countOk && dec.bytes.every(function (b, i) { return b === wave.bytes[i]; });
+    var clean = dec.parityErr === 0 && dec.framingErr === 0 && dataOk;
+    var why;
+    if (clean && cfgOk) {
+      why = "PASS: " + dec.bytes.length + "/" + wave.bytes.length +
+        " frames, zero errors, exact framing. Qualify this hart to sign it off.";
+    } else if (dec.framingErr > 0 || !countOk) {
+      why = "FAIL: " + dec.framingErr + " framing errors, " + dec.bytes.length +
+        "/" + wave.bytes.length + " frames locked. The baud is off, or the stop-bit count is wrong.";
+    } else if (dec.parityErr > 0) {
+      why = "FAIL: " + dec.parityErr + " parity errors. The parity flavor is wrong, try another.";
+    } else if (!dataOk) {
+      why = "FAIL: frames decoded without flag errors but the bytes do not match the wire. The baud is off.";
+    } else {
+      why = "DECODED CLEAN, but the acceptance spec demands the exact baud, parity, and stop-bit match. Check the datasheet brief.";
+    }
+    return { pass: clean && cfgOk, clean: clean, cfgOk: cfgOk, why: why };
+  }
+
+  function wrAscii(bytes) {
+    var out = "";
+    for (var i = 0; i < bytes.length; i++) {
+      var b = bytes[i];
+      if (b >= 32 && b < 127) out += String.fromCharCode(b);
+      else out += "[0x" + ("0" + b.toString(16)).slice(-2) + "]";
+    }
+    return out;
+  }
+
+  function wrCfgText(board) {
+    var ti = wrTrueIdx(board);
+    return WR_BAUDS[ti.baud] + " 8" + WR_PAR_LABELS[ti.par].charAt(0) + WR_STOPS[ti.stop];
+  }
+
+  function wrCertText(quals) {
+    var lines = [
+      "THE WIRE ROOM: UART BRING-UP CERTIFICATE",
+      "The Proving Ground, bench 15",
+      ""
+    ];
+    WR_BOARDS.forEach(function (bd) {
+      var q = quals[bd.id];
+      lines.push("BOARD " + bd.id + " " + bd.name + ": " + wrCfgText(bd) +
+        ", " + q.frames + " frames, 0 errors");
+      lines.push("  RX: \"" + q.rx + "\"");
+    });
+    lines.push("");
+    lines.push("All three harts decoded with zero errors against the datasheet spec.");
+    lines.push("Signed: The Proving Ground");
+    return lines.join("\n");
+  }
+
+  /* ---------------- bench CSS ---------------- */
+
+  var WR_CSS = [
+    ".wr-overlay{position:fixed;inset:0;background:rgba(8,8,10,.82);z-index:9000;display:none;overflow-y:auto;padding:24px 16px;}",
+    ".wr-overlay.open{display:block;}",
+    ".wr-panel{max-width:860px;margin:0 auto;background:#101014;border:1px solid #2a2a30;border-radius:12px;color:#f2f0eb;font-family:'Space Grotesk',system-ui,sans-serif;}",
+    ".wr-bar{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid #2a2a30;}",
+    ".wr-title{font-size:20px;letter-spacing:.14em;font-weight:700;}",
+    ".wr-title b{color:#ff5a1f;}",
+    ".wr-close{background:none;border:1px solid #3a3a42;color:#f2f0eb;border-radius:8px;min-height:48px;padding:0 18px;font-family:'IBM Plex Mono',monospace;font-size:13px;cursor:pointer;}",
+    ".wr-close:hover{border-color:#ff5a1f;}",
+    ".wr-close:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".wr-body{padding:22px;}",
+    ".wr-sub{font-size:14px;line-height:1.6;color:#b9b6ae;margin:0 0 20px;}",
+    ".wr-sub b{color:#f2f0eb;}",
+    ".wr-sub a{color:#ff5a1f;}",
+    ".wr-cards{display:flex;gap:10px;margin-bottom:22px;flex-wrap:wrap;}",
+    ".wr-cardtab{flex:1;min-width:150px;min-height:56px;border:1px solid #3a3a42;background:#16161b;color:#f2f0eb;border-radius:10px;cursor:pointer;font-family:'Space Grotesk',sans-serif;padding:8px 10px;text-align:left;transition:transform .2s,border-color .2s;}",
+    ".wr-cardtab:hover{border-color:#ff5a1f;}",
+    ".wr-cardtab:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".wr-cardtab.sel{border-color:#ff5a1f;transform:translateY(-2px);}",
+    ".wr-cardtab .k{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8a877f;letter-spacing:.1em;}",
+    ".wr-cardtab .n{font-size:14px;font-weight:700;margin-top:2px;}",
+    ".wr-cardtab .q{font-family:'IBM Plex Mono',monospace;font-size:11px;margin-top:4px;color:#8a877f;}",
+    ".wr-cardtab .q.done{color:#7dd87d;}",
+    ".wr-brief{font-size:13px;color:#b9b6ae;border-left:3px solid #ff5a1f;padding:8px 14px;margin:0 0 22px;line-height:1.55;}",
+    ".wr-knobs{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:14px;}",
+    ".wr-knob{border:1px solid #2a2a30;border-radius:10px;padding:14px;}",
+    ".wr-knob h4{margin:0 0 4px;font-size:12px;letter-spacing:.12em;color:#8a877f;font-weight:700;}",
+    ".wr-knob .hint{font-size:12px;color:#6e6b64;margin:0 0 10px;font-family:'IBM Plex Mono',monospace;}",
+    ".wr-seg{display:flex;gap:8px;flex-wrap:wrap;}",
+    ".wr-seg label{flex:1;min-width:70px;}",
+    ".wr-seg input{position:absolute;opacity:0;width:1px;height:1px;}",
+    ".wr-seg span{display:flex;align-items:center;justify-content:center;min-height:48px;border:1px solid #3a3a42;border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;transition:transform .2s,border-color .2s,background .2s;padding:0 8px;text-align:center;}",
+    ".wr-seg label:hover span{border-color:#ff5a1f;}",
+    ".wr-seg input:checked+span{border-color:#ff5a1f;background:#2a150c;color:#ffb38a;font-weight:700;}",
+    ".wr-seg input:focus-visible+span{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".wr-probeout{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#ffb38a;margin:0 0 18px;min-height:18px;}",
+    ".wr-runrow{display:flex;gap:12px;align-items:center;margin-bottom:20px;flex-wrap:wrap;}",
+    ".wr-run{min-height:52px;padding:0 28px;border:none;border-radius:10px;background:#ff5a1f;color:#101014;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;letter-spacing:.08em;cursor:pointer;transition:transform .2s;}",
+    ".wr-run:hover{transform:translateY(-2px);}",
+    ".wr-run:focus-visible{outline:2px solid #fff;outline-offset:2px;}",
+    ".wr-run:active{transform:translateY(0);}",
+    ".wr-probe{min-height:52px;padding:0 24px;border:1px solid #3a3a42;background:#16161b;color:#f2f0eb;border-radius:10px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;letter-spacing:.08em;cursor:pointer;transition:transform .2s,border-color .2s;}",
+    ".wr-probe:hover{border-color:#ff5a1f;transform:translateY(-2px);}",
+    ".wr-probe:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".wr-tuning{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#8a877f;}",
+    ".wr-results{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:14px;}",
+    ".wr-metric{border:1px solid #2a2a30;border-radius:10px;padding:14px;}",
+    ".wr-metric h5{margin:0 0 6px;font-size:11px;letter-spacing:.12em;color:#8a877f;font-weight:700;}",
+    ".wr-metric .v{font-family:'IBM Plex Mono',monospace;font-size:24px;font-weight:700;}",
+    ".wr-metric .b{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#8a877f;margin-top:4px;}",
+    ".wr-readout{font-family:'IBM Plex Mono',monospace;font-size:14px;color:#f2f0eb;background:#0a0a0d;border:1px solid #2a2a30;border-radius:10px;padding:14px 16px;margin:0 0 14px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;}",
+    ".wr-readout .k{color:#8a877f;font-size:11px;letter-spacing:.1em;}",
+    ".wr-verdict{font-size:15px;font-weight:700;letter-spacing:.1em;padding:14px;border-radius:10px;text-align:center;margin-bottom:18px;border:1px solid #3a3a42;}",
+    ".wr-verdict.pass{border-color:#7dd87d;color:#7dd87d;}",
+    ".wr-verdict.fail{border-color:#ff5a1f;color:#ff5a1f;}",
+    ".wr-verdict small{display:block;font-weight:400;letter-spacing:0;font-size:12px;color:#b9b6ae;margin-top:6px;}",
+    ".wr-scope{width:100%;height:200px;background:#0a0a0d;border:1px solid #2a2a30;border-radius:10px;margin-bottom:8px;}",
+    ".wr-scopelab{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8a877f;margin:0 0 18px;line-height:1.6;}",
+    ".wr-qualrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px;}",
+    ".wr-qual{min-height:52px;padding:0 24px;border:1px solid #7dd87d;background:none;color:#7dd87d;border-radius:10px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;letter-spacing:.08em;cursor:pointer;}",
+    ".wr-qual:hover{background:#12240f;}",
+    ".wr-qual:focus-visible{outline:2px solid #7dd87d;outline-offset:2px;}",
+    ".wr-qual:disabled{opacity:.4;cursor:default;}",
+    ".wr-cert{border:1px solid #7dd87d;border-radius:10px;padding:18px;margin-top:18px;display:none;}",
+    ".wr-cert.show{display:block;}",
+    ".wr-cert h4{margin:0 0 8px;font-size:14px;letter-spacing:.12em;color:#7dd87d;}",
+    ".wr-cert p{font-size:13px;color:#b9b6ae;line-height:1.6;margin:0 0 12px;}",
+    ".wr-mini{min-height:48px;padding:0 20px;border:1px solid #3a3a42;background:#16161b;color:#f2f0eb;border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;}",
+    ".wr-mini:hover{border-color:#ff5a1f;}",
+    ".wr-mini:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    "@media (prefers-reduced-motion:reduce){.wr-cardtab,.wr-run,.wr-probe,.wr-seg span{transition:none;}}"
+  ];
+
+  /* ---------------- DOM helpers ---------------- */
+
+  function wr$(id) { return document.getElementById(id); }
+  function wrEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  /* ---------------- state ---------------- */
+
+  var wrBoardIdx = 0;
+  var wrKnobs = [0, 0, 0]; /* baud, parity, stop */
+  var wrLast = null; /* {dec, grade} */
+  var wrQuals = {};
+  var wrWaves = {}; /* board id -> waveform cache */
+
+  function wrWave(board) {
+    if (!wrWaves[board.id]) wrWaves[board.id] = wrWaveform(board);
+    return wrWaves[board.id];
+  }
+
+  /* ---------------- UI build ---------------- */
+
+  function wrFmtBaud(i) { return WR_BAUDS[i] + " \u00B7 " + WR_BAUD_CELLS[i] + "u"; }
+
+  function wrBuildShell() {
+    var css = document.createElement("style");
+    css.textContent = WR_CSS.join("\n");
+    document.head.appendChild(css);
+
+    var box = document.querySelector(".dossier .actions");
+    if (box && !wr$("wrBtn")) {
+      var b = wrEl("button", "secondary", "Run the Wire Room");
+      b.id = "wrBtn";
+      b.addEventListener("click", function () {
+        wr$("wrOverlay").classList.add("open");
+        wrDrawScope();
+      });
+      box.appendChild(b);
+    }
+
+    var ov = wrEl("div", "wr-overlay");
+    ov.id = "wrOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Wire Room");
+    var panel = wrEl("div", "wr-panel");
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    var bar = wrEl("div", "wr-bar");
+    var title = wrEl("div", "wr-title", "");
+    title.innerHTML = "THE WIRE <b>ROOM</b>";
+    var close = wrEl("button", "wr-close", "CLOSE [x]");
+    close.type = "button";
+    bar.appendChild(title); bar.appendChild(close);
+    panel.appendChild(bar);
+
+    var body = wrEl("div", "wr-body");
+    panel.appendChild(body);
+
+    var sub = wrEl("p", "wr-sub", "");
+    sub.innerHTML = "<b>HOW IT WORKS</b> Each hart streams its message over one wire, " +
+      "real UART frames at 1 MHz on the scope. Frame 0 is always 0x55 (sync): probe it " +
+      "to measure the bit cell, match the baud, set parity and stop bits per the " +
+      "datasheet brief, then capture and decode. Zero errors on all three harts signs " +
+      "the bring-up certificate. " +
+      "Built for the <a href=\"https://dillingerstaffing.github.io/portfolio/\" target=\"_blank\" rel=\"noopener\">RISC-V portfolio</a> bring-up bench.";
+    body.appendChild(sub);
+
+    var cards = wrEl("div", "wr-cards");
+    cards.id = "wrCards";
+    body.appendChild(cards);
+
+    var brief = wrEl("p", "wr-brief", "");
+    brief.id = "wrBrief";
+    body.appendChild(brief);
+
+    var knobs = wrEl("div", "wr-knobs");
+    knobs.id = "wrKnobs";
+    body.appendChild(knobs);
+
+    var probeout = wrEl("p", "wr-probeout", "No probe yet. The sync byte is 0x55, sent first on every hart.");
+    probeout.id = "wrProbeOut";
+    body.appendChild(probeout);
+
+    var runrow = wrEl("div", "wr-runrow");
+    var probe = wrEl("button", "wr-probe", "PROBE SYNC BYTE");
+    probe.id = "wrProbeBtn";
+    probe.type = "button";
+    probe.addEventListener("click", wrOnProbe);
+    runrow.appendChild(probe);
+    var run = wrEl("button", "wr-run", "CAPTURE + DECODE");
+    run.id = "wrRun";
+    run.type = "button";
+    run.addEventListener("click", wrOnRun);
+    runrow.appendChild(run);
+    var tuning = wrEl("span", "wr-tuning", "");
+    tuning.id = "wrTuning";
+    runrow.appendChild(tuning);
+    body.appendChild(runrow);
+
+    var results = wrEl("div", "wr-results");
+    results.id = "wrResults";
+    body.appendChild(results);
+
+    var readout = wrEl("div", "wr-readout", "");
+    readout.id = "wrReadout";
+    var rk = wrEl("div", "k", "RX");
+    readout.appendChild(rk);
+    var rv = wrEl("div", "", "No capture yet.");
+    rv.id = "wrRxText";
+    readout.appendChild(rv);
+    body.appendChild(readout);
+
+    var verdict = wrEl("div", "wr-verdict", "No capture yet. Set the receiver and capture.");
+    verdict.id = "wrVerdict";
+    body.appendChild(verdict);
+
+    var canvas = document.createElement("canvas");
+    canvas.className = "wr-scope";
+    canvas.id = "wrScope";
+    canvas.setAttribute("role", "img");
+    canvas.setAttribute("aria-label", "Logic analyzer trace of the UART wire");
+    body.appendChild(canvas);
+    var slab = wrEl("p", "wr-scopelab",
+      "SCOPE: first three frames on the wire. Faint verticals are your receiver's bit grid " +
+      "from the trigger edge, dots are the mid-bit sample points. An aligned grid means the baud is right.");
+    body.appendChild(slab);
+
+    var qualrow = wrEl("div", "wr-qualrow");
+    var qual = wrEl("button", "wr-qual", "QUALIFY THIS HART");
+    qual.id = "wrQual";
+    qual.type = "button";
+    qual.disabled = true;
+    qual.addEventListener("click", wrOnQualify);
+    qualrow.appendChild(qual);
+    body.appendChild(qualrow);
+
+    var cert = wrEl("div", "wr-cert");
+    cert.id = "wrCert";
+    body.appendChild(cert);
+
+    close.addEventListener("click", function () { ov.classList.remove("open"); });
+    ov.addEventListener("click", function (e) { if (e.target === ov) ov.classList.remove("open"); });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && ov.classList.contains("open")) ov.classList.remove("open");
+    });
+
+    wrRenderCards();
+    wrRenderKnobs();
+    wrSelectBoard(0);
+  }
+
+  function wrRenderCards() {
+    var wrap = wr$("wrCards");
+    wrap.innerHTML = "";
+    WR_BOARDS.forEach(function (c, i) {
+      var tab = wrEl("button", "wr-cardtab" + (i === wrBoardIdx ? " sel" : ""), "");
+      tab.type = "button";
+      tab.setAttribute("aria-pressed", i === wrBoardIdx ? "true" : "false");
+      tab.appendChild(wrEl("div", "k", "BOARD " + c.id));
+      tab.appendChild(wrEl("div", "n", c.name));
+      var q = wrEl("div", "q" + (wrQuals[c.id] ? " done" : ""), "");
+      q.textContent = wrQuals[c.id] ? "QUALIFIED" : "NOT QUALIFIED";
+      tab.appendChild(q);
+      tab.addEventListener("click", function () { wrSelectBoard(i); });
+      wrap.appendChild(tab);
+    });
+  }
+
+  var WR_KNOB_DEFS = [
+    { key: "baud", title: "BAUD", hint: "receiver bit rate : probe the sync byte",
+      labels: [0, 1, 2, 3, 4].map(wrFmtBaud) },
+    { key: "par", title: "PARITY", hint: "parity flavor : datasheet plus the wire",
+      labels: WR_PAR_LABELS.slice() },
+    { key: "stop", title: "STOP BITS", hint: "exact framing : the spec is strict",
+      labels: ["1", "2"] }
+  ];
+
+  function wrRenderKnobs() {
+    var wrap = wr$("wrKnobs");
+    wrap.innerHTML = "";
+    WR_KNOB_DEFS.forEach(function (def, ki) {
+      var grp = wrEl("div", "wr-knob", "");
+      grp.appendChild(wrEl("h4", null, def.title));
+      grp.appendChild(wrEl("p", "hint", def.hint));
+      var seg = wrEl("div", "wr-seg", "");
+      seg.setAttribute("role", "radiogroup");
+      seg.setAttribute("aria-label", def.title);
+      def.labels.forEach(function (lab, vi) {
+        var l = wrEl("label", "", "");
+        var inp = document.createElement("input");
+        inp.type = "radio";
+        inp.name = "wr-" + def.key;
+        inp.checked = wrKnobs[ki] === vi;
+        inp.addEventListener("change", function () {
+          wrKnobs[ki] = vi;
+          wrLast = null;
+          wr$("wrQual").disabled = true;
+          wrUpdateTuning();
+          wrDrawScope();
+        });
+        var sp = wrEl("span", "", lab);
+        l.appendChild(inp);
+        l.appendChild(sp);
+        seg.appendChild(l);
+      });
+      grp.appendChild(seg);
+      wrap.appendChild(grp);
+    });
+    wrUpdateTuning();
+  }
+
+  function wrUpdateTuning() {
+    var t = wr$("wrTuning");
+    if (!t) return;
+    t.textContent = "Receiver: " + WR_BAUDS[wrKnobs[0]] + " baud / " +
+      WR_PAR_LABELS[wrKnobs[1]] + " / " + WR_STOPS[wrKnobs[2]] + " stop";
+  }
+
+  function wrSelectBoard(i) {
+    wrBoardIdx = i;
+    wrLast = null;
+    var c = WR_BOARDS[i];
+    wr$("wrBrief").textContent = "BOARD " + c.id + " " + c.name + ": " + c.brief;
+    var v = wr$("wrVerdict");
+    v.className = "wr-verdict";
+    v.textContent = "No capture yet. Set the receiver and capture.";
+    wr$("wrResults").innerHTML = "";
+    wr$("wrRxText").textContent = "No capture yet.";
+    wr$("wrProbeOut").textContent = "No probe yet. The sync byte is 0x55, sent first on every hart.";
+    wr$("wrQual").disabled = true;
+    wrRenderCards();
+    wrDrawScope();
+  }
+
+  function wrOnProbe() {
+    var c = WR_BOARDS[wrBoardIdx];
+    var wave = wrWave(c);
+    var p = wrProbe(wave);
+    var cells = WR_BAUDS.map(function (b, i) { return b + "->" + WR_BAUD_CELLS[i] + "u"; }).join(",  ");
+    wr$("wrProbeOut").textContent = "SYNC CELL measured approx " + p.cellUs.toFixed(1) +
+      " us. Standard cells: " + cells + ". Match the nearest baud.";
+    if (typeof toast === "function") toast("Sync cell approx " + p.cellUs.toFixed(1) + " us.");
+  }
+
+  function wrOnRun() {
+    var c = WR_BOARDS[wrBoardIdx];
+    var wave = wrWave(c);
+    var dec = wrDecode(wave, wrKnobs[0], wrKnobs[1], wrKnobs[2]);
+    var g = wrGrade(c, wave, dec, wrKnobs[0], wrKnobs[1], wrKnobs[2]);
+    wrLast = { dec: dec, grade: g };
+
+    var rbox = wr$("wrResults");
+    rbox.innerHTML = "";
+    var m1 = wrEl("div", "wr-metric", "");
+    m1.appendChild(wrEl("h5", null, "FRAMES"));
+    m1.appendChild(wrEl("div", "v", dec.bytes.length + "/" + wave.bytes.length));
+    m1.appendChild(wrEl("div", "b", "locked on the wire"));
+    rbox.appendChild(m1);
+    var m2 = wrEl("div", "wr-metric", "");
+    m2.appendChild(wrEl("h5", null, "PARITY ERRORS"));
+    m2.appendChild(wrEl("div", "v", String(dec.parityErr)));
+    m2.appendChild(wrEl("div", "b", "bad parity bits"));
+    rbox.appendChild(m2);
+    var m3 = wrEl("div", "wr-metric", "");
+    m3.appendChild(wrEl("h5", null, "FRAMING ERRORS"));
+    m3.appendChild(wrEl("div", "v", String(dec.framingErr)));
+    m3.appendChild(wrEl("div", "b", "stop bits not high"));
+    rbox.appendChild(m3);
+
+    wr$("wrRxText").textContent = "RX: \"" + wrAscii(dec.bytes) + "\"";
+
+    var v = wr$("wrVerdict");
+    if (g.pass) {
+      v.className = "wr-verdict pass";
+      v.innerHTML = "PASS: " + dec.bytes.length + "/" + wave.bytes.length +
+        " frames, zero errors, exact framing.<small>Qualify this hart to sign it off.</small>";
+    } else {
+      v.className = "wr-verdict fail";
+      v.innerHTML = g.why.replace(/^FAIL: /, "FAIL: ").replace(/^DECODED CLEAN/, "HOLD: ") +
+        "<small>Adjust the receiver and capture again.</small>";
+    }
+    wrDrawScope(dec);
+    var q = wr$("wrQual");
+    q.disabled = !g.pass;
+    q.textContent = wrQuals[c.id] ? "RE-QUALIFY THIS HART" : "QUALIFY THIS HART";
+  }
+
+  /* Logic-analyzer view: first three frames, the receiver's bit grid
+     from the trigger edge, and mid-bit sample dots per the knobs. */
+  function wrDrawScope(dec) {
+    var cv = wr$("wrScope");
+    if (!cv || typeof cv.getContext !== "function") return;
+    var dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+    var W = cv.clientWidth || 600, H = 200;
+    cv.width = W * dpr; cv.height = H * dpr;
+    var g = cv.getContext("2d");
+    if (!g || typeof g.scale !== "function") return;
+    g.scale(dpr, dpr);
+    g.clearRect(0, 0, W, H);
+
+    var c = WR_BOARDS[wrBoardIdx];
+    var wave = wrWave(c);
+    var bit = wave.bit;
+    var bitP = WR_HZ / WR_BAUDS[wrKnobs[0]];
+    var x0 = Math.max(0, wave.frames[0].start - bit);
+    var x1 = wave.frames[2].start + 14 * bit;
+    function X(s) { return ((s - x0) / (x1 - x0)) * W; }
+    function Y(v) { return v ? 34 : H - 34; }
+
+    g.strokeStyle = "#1c1c22";
+    g.lineWidth = 1;
+    g.setLineDash([4, 4]);
+    [1, 0].forEach(function (v) {
+      g.beginPath(); g.moveTo(0, Y(v)); g.lineTo(W, Y(v)); g.stroke();
+    });
+    g.setLineDash([]);
+
+    /* receiver bit grid from the trigger edge */
+    var anchor = wave.frames[0].start;
+    g.strokeStyle = "rgba(255,90,31,0.22)";
+    g.lineWidth = 1;
+    for (var gx = anchor; gx <= x1; gx += bitP) {
+      var px = X(gx);
+      if (px < 0 || px > W) continue;
+      g.beginPath(); g.moveTo(px, 20); g.lineTo(px, H - 20); g.stroke();
+    }
+
+    /* the wire */
+    g.strokeStyle = "#ff5a1f";
+    g.lineWidth = 2;
+    g.beginPath();
+    var i0 = Math.max(0, Math.floor(x0)), i1 = Math.min(wave.n - 1, Math.ceil(x1));
+    var first = true, prev = 1;
+    for (var i = i0; i <= i1; i++) {
+      var vv = wave.sig[i] > 0.5 ? 1 : 0;
+      var xx = X(i), yy = Y(vv);
+      if (first) { g.moveTo(xx, yy); first = false; }
+      else {
+        if (vv !== prev) { g.lineTo(xx, Y(prev)); }
+        g.lineTo(xx, yy);
+      }
+      prev = vv;
+    }
+    g.stroke();
+
+    /* mid-bit sample dots for the first frame, per the knobs */
+    var par = WR_PARS[wrKnobs[1]], stop = WR_STOPS[wrKnobs[2]];
+    var nbits = 1 + 8 + (par !== "none" ? 1 : 0) + stop;
+    g.fillStyle = "#ffb38a";
+    for (var bIdx = 1; bIdx < nbits; bIdx++) {
+      var sx = X(anchor + (bIdx + 0.5) * bitP);
+      if (sx < 0 || sx > W) continue;
+      var lvl = 0;
+      if (dec && dec.starts.length) {
+        var si = Math.round(dec.starts[0] + (bIdx + 0.5) * bitP);
+        if (si >= 0 && si < wave.n) lvl = wave.sig[si] > 0.5 ? 1 : 0;
+      }
+      g.beginPath();
+      g.arc(sx, Y(lvl), 3, 0, Math.PI * 2);
+      g.fill();
+    }
+
+    /* trigger marker */
+    g.fillStyle = "#7dd87d";
+    g.beginPath();
+    g.moveTo(X(anchor), 8); g.lineTo(X(anchor) + 7, 18); g.lineTo(X(anchor) - 7, 18);
+    g.fill();
+
+    g.fillStyle = "#6e6b64";
+    g.font = "11px 'IBM Plex Mono', monospace";
+    g.fillText("0 us", 8, 16);
+    var total = Math.round((x1 - x0));
+    g.fillText("approx " + total + " us", W - 110, 16);
+  }
+
+  function wrOnQualify() {
+    if (!wrLast || !wrLast.grade.pass) return;
+    var c = WR_BOARDS[wrBoardIdx];
+    wrQuals[c.id] = {
+      frames: wrLast.dec.bytes.length,
+      rx: wrAscii(wrLast.dec.bytes)
+    };
+    wrRenderCards();
+    wrMaybeCert();
+    wr$("wrQual").textContent = "RE-QUALIFY THIS HART";
+    if (typeof toast === "function") toast("Board " + c.id + " qualified.");
+  }
+
+  function wrMaybeCert() {
+    var done = WR_BOARDS.every(function (c) { return !!wrQuals[c.id]; });
+    var box = wr$("wrCert");
+    if (!done) { box.classList.remove("show"); box.innerHTML = ""; return; }
+    box.innerHTML = "";
+    box.appendChild(wrEl("h4", null, "BRING-UP COMPLETE"));
+    var p = wrEl("p", null, "");
+    p.textContent = "All three harts decoded with zero errors against the datasheet spec. " +
+      "The RISC-V bring-up bench accepts these receiver settings.";
+    box.appendChild(p);
+    var dl = wrEl("button", "wr-mini", "DOWNLOAD CERTIFICATE");
+    dl.type = "button";
+    dl.addEventListener("click", function () {
+      wrDownload(wrCertText(wrQuals), "wire-room-certificate.txt");
+      if (typeof toast === "function") toast("Certificate downloaded.");
+    });
+    box.appendChild(dl);
+    box.classList.add("show");
+  }
+
+  function wrDownload(text, name) {
+    var blob = new Blob([text], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    }, 500);
+  }
+
+  function wrInit() {
+    if (typeof document === "undefined") return;
+    if (!document.querySelector(".dossier .actions")) return;
+    wrBuildShell();
+  }
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", wrInit);
+    } else {
+      wrInit();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      WR: {
+        mulberry32: wrMulberry32, waveform: wrWaveform, probe: wrProbe,
+        decode: wrDecode, grade: wrGrade, ascii: wrAscii,
+        certText: wrCertText, cfgText: wrCfgText, boards: WR_BOARDS,
+        bauds: WR_BAUDS, pars: WR_PARS, stops: WR_STOPS
+      }
+    });
+  }
+
+})();
