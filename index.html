@@ -497,7 +497,11 @@ var PG_BENCHES = [
   { section: "silicon", n: "09", name: "The Page Walker", btn: "pwBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "Sv32-style virtual memory on the bench: walk real two-level page tables, decode PTE flags, survive superpages, raise page faults like xv6 does.",
     how: "Read the VPN fields, step through the tables, commit the physical address or raise the fault.",
-    spec: "2-LEVEL WALK \u00B7 3 TRIALS" }
+    spec: "2-LEVEL WALK \u00B7 3 TRIALS" },
+  { section: "silicon", n: "10", name: "The Trap Gate", btn: "tgBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "RISC-V trap delegation on the bench: a real mcause, medeleg, mideleg, and mtvec dispatch engine. Route interrupts and exceptions between M-mode and S-mode with zero misroutes.",
+    how: "Set the delegation bits and the mtvec mode, then run each trap wave.",
+    spec: "M/S DELEGATION \u00B7 3 TRIALS" }
 ];
 
 var pgFilter = "all";
@@ -806,8 +810,8 @@ if (document.readyState === "loading") {
   pgBoot();
 }
 </script>
-<script src="rvcore.js?v=c3a520e" defer></script>
-<script src="rvdata.js?v=c3a520e" defer></script>
-<script src="features.js?v=c3a520e" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=048c402" defer></script>
+<script src="rvdata.js?v=048c402" defer></script>
+<script src="features.js?v=048c402" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

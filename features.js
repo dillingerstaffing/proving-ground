@@ -6447,3 +6447,652 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
 })();
+/* ================= THE TRAP GATE (BENCH 10) =================
+   RISC-V trap delegation on the bench. A real mcause / medeleg /
+   mideleg / mtvec dispatch engine: interrupts and synchronous
+   exceptions arrive on the wire, and the firmware (you) decides which
+   privilege mode handles each one. EXPLORE dispatches any trap live;
+   TRIALS qualifies on three fixed routing jobs. */
+
+(function () {
+  "use strict";
+
+  /* ---------------- pure core: no DOM ---------------- */
+
+  var TG_BASE = 0x1000;
+
+  var TG_CAUSES = [
+    { key: "misalign",   name: "Instruction address misaligned", cause: 0,  interrupt: false },
+    { key: "illegal",    name: "Illegal instruction",            cause: 2,  interrupt: false },
+    { key: "breakpoint", name: "Breakpoint",                     cause: 3,  interrupt: false },
+    { key: "loadacc",    name: "Load access fault",              cause: 5,  interrupt: false },
+    { key: "storeacc",   name: "Store access fault",             cause: 7,  interrupt: false },
+    { key: "ecallu",     name: "Environment call from U-mode",   cause: 8,  interrupt: false },
+    { key: "ecalls",     name: "Environment call from S-mode",   cause: 9,  interrupt: false },
+    { key: "ecallm",     name: "Environment call from M-mode",   cause: 11, interrupt: false },
+    { key: "ipagefault", name: "Instruction page fault",         cause: 12, interrupt: false },
+    { key: "lpagefault", name: "Load page fault",                cause: 13, interrupt: false },
+    { key: "spagefault", name: "Store page fault",               cause: 15, interrupt: false },
+    { key: "ssoft",      name: "Supervisor software interrupt",  cause: 1,  interrupt: true },
+    { key: "msoft",      name: "Machine software interrupt",     cause: 3,  interrupt: true },
+    { key: "stimer",     name: "Supervisor timer interrupt",     cause: 5,  interrupt: true },
+    { key: "mtimer",     name: "Machine timer interrupt",        cause: 7,  interrupt: true },
+    { key: "sexternal",  name: "Supervisor external interrupt",  cause: 9,  interrupt: true },
+    { key: "mexternal",   name: "Machine external interrupt",     cause: 11, interrupt: true }
+  ];
+
+  function tgByKey(key) {
+    for (var i = 0; i < TG_CAUSES.length; i++) {
+      if (TG_CAUSES[i].key === key) return TG_CAUSES[i];
+    }
+    return null;
+  }
+  function tgHex(n, pad) {
+    var s = (n >>> 0).toString(16).toUpperCase();
+    while (s.length < pad) s = "0" + s;
+    return "0x" + s;
+  }
+  function tgBit(n, b) { return ((n >>> 0) >>> b) & 1; }
+
+  /* cfg: { mode: "direct" | "vectored", medeleg: u32, mideleg: u32 } */
+  function tgDispatch(trap, cfg) {
+    var csr = trap.interrupt ? "mideleg" : "medeleg";
+    var mask = trap.interrupt ? (cfg.mideleg >>> 0) : (cfg.medeleg >>> 0);
+    var delegated = tgBit(mask, trap.cause) === 1;
+    var dest = delegated ? "S" : "M";
+    var mcause = ((trap.cause >>> 0) | (trap.interrupt ? 0x80000000 : 0)) >>> 0;
+    var vectored = cfg.mode === "vectored" && trap.interrupt;
+    var pc = (TG_BASE + (vectored ? 4 * trap.cause : 0)) >>> 0;
+    var cycles = cfg.mode === "vectored" ? 1 : 3;
+    var trace = [];
+    trace.push("mcause = " + tgHex(mcause, 8) + ": " +
+      (trap.interrupt ? "interrupt bit set" : "synchronous exception") +
+      ", code " + trap.cause + " (" + trap.name + ")");
+    trace.push(csr + "[" + trap.cause + "] = " + (delegated ? 1 : 0) + ": trap " +
+      (delegated ? "delegated, taken in S-mode" : "kept, taken in M-mode"));
+    trace.push("mtvec " + (cfg.mode === "vectored" ? "VECTORED" : "DIRECT") +
+      (cfg.mode === "vectored" && !trap.interrupt
+        ? " (vectored mode only vectors interrupts, so this sync exception lands at BASE)" : "") +
+      ": target PC = " + tgHex(pc, 8));
+    trace.push("dispatch cost " + cycles + " cycle" + (cycles === 1 ? "" : "s") +
+      (cfg.mode === "vectored" ? " (hardware vector)" : " (software cause decode)"));
+    return { mcause: mcause, dest: dest, pc: pc, cycles: cycles,
+             delegated: delegated, csr: csr, trace: trace };
+  }
+
+  var TG_TRIALS = [
+    { id: "t1", name: "Trial 1: First Light", mode: "direct",
+      brief: "You are the machine firmware on first boot. Nothing delegates: every trap is handled in M-mode. Set mtvec to DIRECT and keep every delegation bit in M.",
+      traps: ["illegal", "ecallm", "mtimer", "loadacc", "misalign"],
+      policy: { illegal: "M", ecallm: "M", mtimer: "M", loadacc: "M", misalign: "M" } },
+    { id: "t2", name: "Trial 2: The Supervisor's Cut", mode: "vectored",
+      brief: "An OS now runs in S-mode and wants its own traps: U-mode ecalls, the supervisor timer, and supervisor external interrupts delegate to S. Everything else stays in M. Firmware rule: VECTORED for speed.",
+      traps: ["ecallu", "stimer", "sexternal", "illegal", "mexternal"],
+      policy: { ecallu: "S", stimer: "S", sexternal: "S", illegal: "M", mexternal: "M" } },
+    { id: "t3", name: "Trial 3: The Fault Line", mode: "vectored",
+      brief: "The OS handles its own memory faults and the debugger lives in S-mode: page faults and breakpoints delegate. Illegal instructions and the machine timer stay with firmware. VECTORED.",
+      traps: ["lpagefault", "spagefault", "breakpoint", "illegal", "mtimer"],
+      policy: { lpagefault: "S", spagefault: "S", breakpoint: "S", illegal: "M", mtimer: "M" } }
+  ];
+
+  function tgTrialById(id) {
+    for (var i = 0; i < TG_TRIALS.length; i++) {
+      if (TG_TRIALS[i].id === id) return TG_TRIALS[i];
+    }
+    return null;
+  }
+
+  /* ---------------- CSS ---------------- */
+
+  var TG_CSS = [
+    ".tg-overlay{position:fixed;inset:0;z-index:9995;background:rgba(5,8,10,.94);display:none;}",
+    ".tg-overlay.open{display:flex;}",
+    ".tg-panel{flex:1;min-height:0;width:100%;max-width:900px;margin:0 auto;display:flex;flex-direction:column;background:#0a0c0e;border:1px solid var(--line);overflow:hidden;}",
+    "@media(min-width:700px){.tg-panel{border-radius:4px;}}",
+    ".tg-bar{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line);flex:none;flex-wrap:wrap;background:var(--panel);}",
+    ".tg-title{font-family:var(--font-d);font-size:13px;font-weight:700;letter-spacing:.14em;color:var(--paper);white-space:nowrap;}",
+    ".tg-title b{color:var(--ember);}",
+    ".tg-tabs{display:flex;gap:6px;flex:1;flex-wrap:wrap;}",
+    ".tg-tab{font-family:var(--font-m);font-size:11px;font-weight:600;letter-spacing:.1em;padding:12px 16px;min-height:48px;border:1px solid transparent;background:none;color:var(--steel);cursor:pointer;border-radius:4px;}",
+    ".tg-tab.on{color:var(--ember);border-color:rgba(255,90,31,.4);background:rgba(255,90,31,.08);}",
+    ".tg-tab:active{transform:scale(.96);}",
+    ".tg-close{font-family:var(--font-m);font-size:12px;font-weight:700;letter-spacing:.08em;min-height:48px;min-width:48px;padding:12px 18px;border-radius:4px;border:1px solid var(--ember);background:var(--ember);color:#0a0c0e;cursor:pointer;}",
+    ".tg-close:active{transform:scale(.96);}",
+    ".tg-body{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px;}",
+    ".tg-sub{font-family:var(--font-m);font-size:11px;color:var(--steel);letter-spacing:.04em;line-height:1.8;margin:0 0 12px;}",
+    ".tg-sub b{color:var(--paper);font-weight:600;letter-spacing:.08em;font-size:10px;}",
+    ".tg-sub a{color:var(--ice);}",
+    ".tg-cards{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:12px;}",
+    "@media(min-width:700px){.tg-cards{grid-template-columns:repeat(3,1fr);}}",
+    ".tg-card{border:1px solid var(--line);border-radius:4px;padding:14px;background:var(--panel);}",
+    ".tg-card h5{margin:0 0 6px;font-family:var(--font-d);font-size:14px;color:var(--paper);}",
+    ".tg-card p{margin:0 0 10px;font-size:12px;color:var(--steel);line-height:1.6;}",
+    ".tg-card .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}",
+    ".tg-pstat{font-family:var(--font-m);font-size:10px;font-weight:700;letter-spacing:.12em;padding:6px 12px;border-radius:2px;border:1px solid var(--line);color:var(--steel);}",
+    ".tg-pstat.pass{color:var(--mint);border-color:rgba(125,224,168,.5);}",
+    ".tg-pstat.fail{color:var(--bad);border-color:rgba(255,122,122,.5);}",
+    ".tg-mini{font-family:var(--font-m);font-size:11px;font-weight:700;letter-spacing:.06em;min-height:48px;padding:12px 16px;border-radius:4px;border:1px solid rgba(242,237,227,.2);background:var(--panel-2);color:var(--paper);cursor:pointer;}",
+    ".tg-mini:active{transform:scale(.96);}",
+    ".tg-mini.go{background:var(--ember);border-color:var(--ember);color:#0a0c0e;}",
+    ".tg-brief{font-size:12px;color:var(--steel);line-height:1.7;margin:0 0 12px;max-width:70ch;}",
+    ".tg-brief b{color:var(--paper);}",
+    ".tg-sec{font-family:var(--font-m);font-size:10px;font-weight:700;letter-spacing:.14em;color:var(--dim);margin:14px 0 8px;}",
+    ".tg-seg{display:inline-flex;border:1px solid var(--line);border-radius:4px;overflow:hidden;}",
+    ".tg-seg button{font-family:var(--font-m);font-size:11px;font-weight:700;letter-spacing:.08em;min-height:48px;min-width:88px;padding:12px 18px;background:var(--panel-2);color:var(--steel);border:none;cursor:pointer;}",
+    ".tg-seg button + button{border-left:1px solid var(--line);}",
+    ".tg-seg button.on{background:var(--ember);color:#0a0c0e;}",
+    ".tg-seg button:active{transform:scale(.96);}",
+    ".tg-note{font-family:var(--font-m);font-size:11px;color:var(--dim);line-height:1.7;margin:8px 0 0;}",
+    ".tg-rows{display:grid;grid-template-columns:1fr;gap:8px;margin:8px 0 12px;}",
+    ".tg-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid var(--line);border-radius:4px;padding:10px 12px;background:var(--panel);}",
+    ".tg-row .nm{flex:1;min-width:180px;font-family:var(--font-d);font-size:13px;color:var(--paper);}",
+    ".tg-row .tag{font-family:var(--font-m);font-size:10px;letter-spacing:.1em;color:var(--dim);display:block;margin-top:2px;}",
+    ".tg-row .tag i{font-style:normal;color:var(--ice);}",
+    ".tg-res{font-family:var(--font-m);font-size:11px;line-height:1.7;color:var(--steel);margin:4px 0 0;flex-basis:100%;}",
+    ".tg-res b{color:var(--paper);}",
+    ".tg-res .ok{color:var(--mint);font-weight:700;}",
+    ".tg-res .no{color:var(--bad);font-weight:700;}",
+    ".tg-strikes{display:flex;align-items:center;gap:10px;margin:10px 0;flex-wrap:wrap;}",
+    ".tg-strike{font-family:var(--font-m);font-size:10px;font-weight:700;letter-spacing:.12em;color:var(--steel);border:1px solid var(--line);border-radius:2px;padding:6px 10px;}",
+    ".tg-strike.hit{color:var(--bad);border-color:rgba(255,122,122,.6);}",
+    ".tg-trace{list-style:none;margin:10px 0 0;padding:0;font-family:var(--font-m);font-size:11px;line-height:1.9;color:var(--steel);}",
+    ".tg-trace li{border-left:2px solid var(--ember);padding-left:10px;margin-bottom:6px;}",
+    ".tg-fields{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;}",
+    ".tg-field{border:1px solid var(--line);border-radius:4px;padding:8px 12px;background:var(--panel);}",
+    ".tg-field .k{display:block;font-family:var(--font-m);font-size:9px;letter-spacing:.16em;color:var(--dim);margin-bottom:4px;}",
+    ".tg-field .v{font-family:var(--font-m);font-size:14px;color:var(--paper);}",
+    ".tg-field .v em{font-style:normal;color:var(--ember);}",
+    ".tg-select{font-family:var(--font-m);font-size:12px;min-height:48px;padding:12px;background:var(--panel-2);color:var(--paper);border:1px solid var(--line);border-radius:4px;max-width:100%;}",
+    ".tg-cert{display:none;border:1px solid rgba(125,224,168,.5);border-radius:4px;padding:16px;background:rgba(125,224,168,.05);margin-top:14px;}",
+    ".tg-cert.show{display:block;}",
+    ".tg-cert h4{margin:0 0 6px;font-family:var(--font-d);color:var(--ember);letter-spacing:.1em;font-size:15px;}",
+    ".tg-cert p{margin:0 0 12px;font-size:12px;color:var(--steel);line-height:1.7;}",
+    "button:focus-visible,.tg-select:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    "@media (prefers-reduced-motion:reduce){.tg-panel *{transition:none !important;}}"
+  ];
+
+  /* ---------------- DOM helpers ---------------- */
+
+  function tg$(id) { return document.getElementById(id); }
+  function tgEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  function tgEsc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  /* ---------------- explore board ---------------- */
+
+  var TG_EXP = { key: "stimer", dest: "S", mode: "vectored" };
+
+  function tgCfgFor(dest, trap) {
+    var m = 0, i = 0;
+    if (dest === "S") {
+      if (trap.interrupt) i = (1 << trap.cause) >>> 0;
+      else m = (1 << trap.cause) >>> 0;
+    }
+    return { medeleg: m >>> 0, mideleg: i >>> 0 };
+  }
+
+  function tgSeg(label, opts, cur, cb) {
+    var wrap = tgEl("span", "tg-seg");
+    wrap.setAttribute("role", "group");
+    wrap.setAttribute("aria-label", label);
+    opts.forEach(function (o) {
+      var b = tgEl("button", null, o.label);
+      b.type = "button";
+      if (o.value === cur) b.classList.add("on");
+      b.setAttribute("aria-pressed", o.value === cur ? "true" : "false");
+      b.addEventListener("click", function () {
+        var kids = wrap.querySelectorAll("button");
+        for (var k = 0; k < kids.length; k++) {
+          kids[k].classList.remove("on");
+          kids[k].setAttribute("aria-pressed", "false");
+        }
+        b.classList.add("on");
+        b.setAttribute("aria-pressed", "true");
+        cb(o.value);
+      });
+      wrap.appendChild(b);
+    });
+    return wrap;
+  }
+
+  function tgBuildExplore(page) {
+    var st = TG_EXP;
+
+    var sec1 = tgEl("div", "tg-sec", "1. PICK A TRAP ON THE WIRE");
+    page.appendChild(sec1);
+    var sel = tgEl("select", "tg-select");
+    sel.id = "tgExpSel";
+    sel.setAttribute("aria-label", "Trap to dispatch");
+    TG_CAUSES.forEach(function (t) {
+      var o = document.createElement("option");
+      o.value = t.key;
+      o.textContent = t.name + " (cause " + t.cause + (t.interrupt ? ", interrupt" : ", sync") + ")";
+      if (t.key === st.key) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.addEventListener("change", function () { st.key = sel.value; });
+    page.appendChild(sel);
+
+    var sec2 = tgEl("div", "tg-sec", "2. ROUTE IT: DELEGATE TO S-MODE OR KEEP IN M-MODE");
+    page.appendChild(sec2);
+    page.appendChild(tgSeg("Delegation", [
+      { label: "KEEP IN M", value: "M" },
+      { label: "DELEGATE TO S", value: "S" }
+    ], st.dest, function (v) { st.dest = v; }));
+    var note1 = tgEl("p", "tg-note",
+      "Sets mideleg for interrupts or medeleg for sync exceptions: bit[cause] = 1 delegates to S-mode.");
+    page.appendChild(note1);
+
+    var sec3 = tgEl("div", "tg-sec", "3. SET MTVEC MODE");
+    page.appendChild(sec3);
+    page.appendChild(tgSeg("mtvec mode", [
+      { label: "DIRECT", value: "direct" },
+      { label: "VECTORED", value: "vectored" }
+    ], st.mode, function (v) { st.mode = v; }));
+    var note2 = tgEl("p", "tg-note",
+      "Vectored mode jumps interrupts to BASE + 4 x cause. Sync exceptions always land at BASE. Direct mode decodes the cause in software (3 cycles).");
+    page.appendChild(note2);
+
+    var row = tgEl("div", "tg-strikes");
+    var step = tgEl("button", "tg-mini go", "STEP THE TRAP");
+    step.type = "button";
+    row.appendChild(step);
+    page.appendChild(row);
+
+    var fields = tgEl("div", "tg-fields");
+    page.appendChild(fields);
+    var trace = tgEl("ol", "tg-trace");
+    page.appendChild(trace);
+
+    function render() {
+      var trap = tgByKey(st.key);
+      var masks = tgCfgFor(st.dest, trap);
+      var cfg = { mode: st.mode, medeleg: masks.medeleg, mideleg: masks.mideleg };
+      var d = tgDispatch(trap, cfg);
+      fields.innerHTML = "";
+      var f1 = tgEl("div", "tg-field");
+      f1.innerHTML = '<span class="k">MIDELEG</span><span class="v">' + tgEsc(tgHex(masks.mideleg, 8)) + "</span>";
+      var f2 = tgEl("div", "tg-field");
+      f2.innerHTML = '<span class="k">MEDELEG</span><span class="v">' + tgEsc(tgHex(masks.medeleg, 8)) + "</span>";
+      var f3 = tgEl("div", "tg-field");
+      f3.innerHTML = '<span class="k">TAKEN IN</span><span class="v"><em>' + d.dest + "-MODE</em></span>";
+      var f4 = tgEl("div", "tg-field");
+      f4.innerHTML = '<span class="k">TARGET PC</span><span class="v">' + tgEsc(tgHex(d.pc, 8)) + "</span>";
+      fields.appendChild(f1); fields.appendChild(f2); fields.appendChild(f3); fields.appendChild(f4);
+      trace.innerHTML = "";
+      d.trace.forEach(function (ln) {
+        var li = tgEl("li", null, ln);
+        trace.appendChild(li);
+      });
+    }
+    step.addEventListener("click", render);
+    render();
+  }
+
+  /* ---------------- trials board ---------------- */
+
+  var TG_ST = {};
+  TG_TRIALS.forEach(function (t) {
+    TG_ST[t.id] = { mode: t.mode, bits: {}, strikes: 0, attempts: 0, passed: false, results: null };
+    t.traps.forEach(function (k) { TG_ST[t.id].bits[k] = "M"; });
+  });
+
+  function tgCfgFromState(t, st) {
+    var m = 0, i = 0, k, trap;
+    for (var j = 0; j < t.traps.length; j++) {
+      k = t.traps[j];
+      if (st.bits[k] === "S") {
+        trap = tgByKey(k);
+        if (trap.interrupt) i |= (1 << trap.cause) >>> 0;
+        else m |= (1 << trap.cause) >>> 0;
+      }
+    }
+    return { mode: st.mode, medeleg: m >>> 0, mideleg: i >>> 0 };
+  }
+
+  function tgDownload(text, name) {
+    var blob = new Blob([text], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = (window.URL || window.webkitURL).createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      (window.URL || window.webkitURL).revokeObjectURL(a.href);
+      a.remove();
+    }, 500);
+  }
+
+  function tgTrialReport(t, st) {
+    var L = [];
+    L.push("THE TRAP GATE: TRIAL REPORT");
+    L.push("===========================");
+    L.push(t.name);
+    L.push(t.brief);
+    L.push("");
+    var cfg = tgCfgFromState(t, st);
+    L.push("Final config: mtvec " + st.mode.toUpperCase() +
+      ", medeleg=" + tgHex(cfg.medeleg, 8) + ", mideleg=" + tgHex(cfg.mideleg, 8));
+    L.push("Attempts: " + st.attempts + "   Strikes: " + st.strikes + "   Verdict: " +
+      (st.passed ? "PASS" : "not passed"));
+    if (st.results) {
+      L.push("");
+      L.push("LAST RUN");
+      st.results.rows.forEach(function (r) {
+        L.push("  [" + (r.ok ? "PASS" : "STRIKE") + "] " + r.trap.name +
+          " -> " + r.d.dest + "-mode (PC " + tgHex(r.d.pc, 8) + ")" +
+          (r.ok ? "" : "  required " + r.want + "-mode"));
+      });
+      L.push("  cycles: " + st.results.cycles + " (budget " + st.results.par + ")");
+    }
+    return L.join("\n");
+  }
+
+  function tgDownloadCert() {
+    var L = [];
+    L.push("THE TRAP GATE: QUALIFICATION CERTIFICATE");
+    L.push("========================================");
+    L.push("The holder routed three RISC-V trap waves between M-mode and S-mode");
+    L.push("with zero misroutes, using real medeleg / mideleg / mtvec semantics:");
+    TG_TRIALS.forEach(function (t) {
+      L.push("  " + t.name + " ... PASS");
+    });
+    L.push("");
+    L.push("mcause decoding, delegation bits, direct vs vectored mtvec:");
+    L.push("all demonstrated live on the bench. No trap went unhandled.");
+    L.push("Date: " + new Date().toISOString().slice(0, 10));
+    tgDownload(L.join("\n"), "trap-gate-certificate.txt");
+    toast("Certificate downloaded.");
+  }
+
+  function tgBuildTrialCard(host, t) {
+    var st = TG_ST[t.id];
+    var card = tgEl("div", "tg-card");
+    card.id = "tgCard-" + t.id;
+    var h = tgEl("h5", null, t.name);
+    card.appendChild(h);
+    var pstat = tgEl("span", "tg-pstat", "NOT RUN");
+    pstat.id = "tgStat-" + t.id;
+    var row = tgEl("div", "row");
+    row.appendChild(pstat);
+    var open = tgEl("button", "tg-mini go", "OPEN");
+    open.type = "button";
+    open.addEventListener("click", function () { tgOpenTrial(t.id); });
+    row.appendChild(open);
+    card.appendChild(row);
+    host.appendChild(card);
+  }
+
+  var tgActiveTrial = null;
+
+  function tgOpenTrial(id) {
+    var t = tgTrialById(id);
+    var st = TG_ST[id];
+    tgActiveTrial = id;
+    var host = tg$("tgTrialHost");
+    host.innerHTML = "";
+
+    var brief = tgEl("p", "tg-brief", "");
+    brief.innerHTML = "<b>" + tgEsc(t.name.toUpperCase()) + "</b> " + tgEsc(t.brief);
+    host.appendChild(brief);
+
+    var sec1 = tgEl("div", "tg-sec", "MTVEC MODE");
+    host.appendChild(sec1);
+    host.appendChild(tgSeg("mtvec mode for " + t.name, [
+      { label: "DIRECT", value: "direct" },
+      { label: "VECTORED", value: "vectored" }
+    ], st.mode, function (v) { st.mode = v; }));
+
+    var sec2 = tgEl("div", "tg-sec", "ROUTE EACH TRAP (SETS THE DELEGATION BIT)");
+    host.appendChild(sec2);
+    var rows = tgEl("div", "tg-rows");
+    t.traps.forEach(function (key) {
+      var trap = tgByKey(key);
+      var r = tgEl("div", "tg-row");
+      var nm = tgEl("div", "nm", "");
+      nm.innerHTML = tgEsc(trap.name) +
+        '<span class="tag">CAUSE ' + trap.cause + " <i>" +
+        (trap.interrupt ? "INTERRUPT" : "SYNC EXCEPTION") + "</i> VIA " +
+        (trap.interrupt ? "mideleg" : "medeleg") + "[" + trap.cause + "]</span>";
+      r.appendChild(nm);
+      r.appendChild(tgSeg("Route " + trap.name, [
+        { label: "M", value: "M" },
+        { label: "S", value: "S" }
+      ], st.bits[key], (function (k) {
+        return function (v) { st.bits[k] = v; };
+      })(key)));
+      rows.appendChild(r);
+    });
+    host.appendChild(rows);
+
+    var ctl = tgEl("div", "tg-strikes");
+    var run = tgEl("button", "tg-mini go", "RUN THE WAVE");
+    run.type = "button";
+    var reset = tgEl("button", "tg-mini", "RESET");
+    reset.type = "button";
+    ctl.appendChild(run); ctl.appendChild(reset);
+    var sk = tgEl("span", "tg-strike", "STRIKES 0 / 3");
+    sk.id = "tgStrikes-" + t.id;
+    ctl.appendChild(sk);
+    var at = tgEl("span", "tg-strike", "ATTEMPTS 0");
+    at.id = "tgAttempts-" + t.id;
+    ctl.appendChild(at);
+    host.appendChild(ctl);
+
+    var res = tgEl("div", null, "");
+    res.id = "tgRes-" + t.id;
+    host.appendChild(res);
+
+    run.addEventListener("click", function () { tgRunTrial(id); });
+    reset.addEventListener("click", function () {
+      st.strikes = 0; st.attempts = 0; st.passed = false; st.results = null;
+      st.mode = t.mode;
+      t.traps.forEach(function (k) { st.bits[k] = "M"; });
+      tgOpenTrial(id);
+      tgPaintCards();
+      toast("Trial reset.");
+    });
+  }
+
+  function tgRunTrial(id) {
+    var t = tgTrialById(id);
+    var st = TG_ST[id];
+    st.attempts++;
+    var cfg = tgCfgFromState(t, st);
+    var rows = [];
+    var strikes = 0;
+    var cycles = 0;
+    var par = t.traps.length * (t.mode === "vectored" ? 1 : 3);
+    if (st.mode !== t.mode) {
+      strikes++;
+      rows.push({ ok: false, mode: true,
+        msg: "mtvec is " + st.mode.toUpperCase() + ", the firmware rule for this wave is " +
+             t.mode.toUpperCase() });
+    }
+    t.traps.forEach(function (key) {
+      var trap = tgByKey(key);
+      var d = tgDispatch(trap, cfg);
+      cycles += d.cycles;
+      var want = t.policy[key];
+      var ok = d.dest === want;
+      if (!ok) strikes++;
+      rows.push({ ok: ok, trap: trap, d: d, want: want });
+    });
+    st.strikes += strikes;
+    st.results = { rows: rows, cycles: cycles, par: par };
+    var waveOk = strikes === 0 && cycles <= par;
+    if (waveOk) st.passed = true;
+
+    var res = tg$("tgRes-" + id);
+    res.innerHTML = "";
+    rows.forEach(function (r) {
+      var p = tgEl("p", "tg-res", "");
+      if (r.mode) {
+        p.innerHTML = '<span class="no">STRIKE</span> ' + tgEsc(r.msg);
+      } else {
+        p.innerHTML = (r.ok ? '<span class="ok">ROUTE OK</span>' : '<span class="no">MISROUTE</span>') +
+          " <b>" + tgEsc(r.trap.name) + "</b> landed in <b>" + r.d.dest +
+          "-mode</b> (" + tgEsc(r.d.csr) + "[" + r.trap.cause + "]=" +
+          (r.d.delegated ? "1" : "0") + ", PC " + tgHex(r.d.pc, 8) + ")" +
+          (r.ok ? "" : ", the wave required <b>" + r.want + "-mode</b>");
+      }
+      res.appendChild(p);
+    });
+    var sum = tgEl("p", "tg-res", "");
+    sum.innerHTML = "cycles <b>" + cycles + "</b> / budget " + par +
+      (waveOk ? ' <span class="ok">WAVE CLEAN</span>'
+              : (st.strikes >= 3 ? ' <span class="no">THREE STRIKES: WAVE FAILED</span>' : ""));
+    res.appendChild(sum);
+
+    var dl = tgEl("button", "tg-mini", "DOWNLOAD WAVE REPORT");
+    dl.type = "button";
+    dl.addEventListener("click", function () {
+      tgDownload(tgTrialReport(t, st), "trap-gate-" + id + "-report.txt");
+      toast("Wave report downloaded.");
+    });
+    res.appendChild(dl);
+
+    tg$("tgStrikes-" + id).textContent = "STRIKES " + Math.min(st.strikes, 3) + " / 3";
+    tg$("tgStrikes-" + id).classList.toggle("hit", st.strikes > 0);
+    tg$("tgAttempts-" + id).textContent = "ATTEMPTS " + st.attempts;
+    tgPaintCards();
+    tgPaintCert();
+  }
+
+  function tgPaintCards() {
+    TG_TRIALS.forEach(function (t) {
+      var el = tg$("tgStat-" + t.id);
+      if (!el) return;
+      var st = TG_ST[t.id];
+      el.classList.remove("pass", "fail");
+      if (st.passed) { el.textContent = "PASS"; el.classList.add("pass"); }
+      else if (st.strikes >= 3) { el.textContent = "FAILED"; el.classList.add("fail"); }
+      else if (st.attempts > 0) { el.textContent = "IN PROGRESS"; }
+      else { el.textContent = "NOT RUN"; }
+    });
+  }
+
+  function tgPaintCert() {
+    var all = TG_TRIALS.every(function (t) { return TG_ST[t.id].passed; });
+    var c = tg$("tgCert");
+    if (c) c.classList.toggle("show", all);
+  }
+
+  function tgBuildTrials(page) {
+    var cards = tgEl("div", "tg-cards");
+    TG_TRIALS.forEach(function (t) { tgBuildTrialCard(cards, t); });
+    page.appendChild(cards);
+    var host = tgEl("div", null, "");
+    host.id = "tgTrialHost";
+    page.appendChild(host);
+    var cert = tgEl("div", "tg-cert", "");
+    cert.id = "tgCert";
+    cert.innerHTML = "<h4>TRAP GATE, QUALIFIED</h4>" +
+      "<p>Three waves routed with zero misroutes. The delegation bits obey you.</p>";
+    var cb = tgEl("button", "tg-mini go", "DOWNLOAD CERTIFICATE");
+    cb.type = "button";
+    cb.addEventListener("click", tgDownloadCert);
+    cert.appendChild(cb);
+    page.appendChild(cert);
+    tgOpenTrial("t1");
+  }
+
+  /* ---------------- shell ---------------- */
+
+  function tgBuildShell() {
+    var css = document.createElement("style");
+    css.textContent = TG_CSS.join("\n");
+    document.head.appendChild(css);
+
+    var box = document.querySelector(".dossier .actions");
+    if (box && !tg$("tgBtn")) {
+      var b = tgEl("button", "secondary", "Run the Trap Gate");
+      b.id = "tgBtn";
+      b.addEventListener("click", function () { tg$("tgOverlay").classList.add("open"); });
+      box.appendChild(b);
+    }
+
+    var ov = tgEl("div", "tg-overlay");
+    ov.id = "tgOverlay";
+    var panel = tgEl("div", "tg-panel");
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    var bar = tgEl("div", "tg-bar");
+    var title = tgEl("div", "tg-title", "");
+    title.innerHTML = "THE TRAP <b>GATE</b>";
+    var tabs = tgEl("div", "tg-tabs");
+    var tExp = tgEl("button", "tg-tab on", "EXPLORE");
+    tExp.id = "tgTabExp";
+    var tTri = tgEl("button", "tg-tab", "TRIALS");
+    tTri.id = "tgTabTri";
+    tabs.appendChild(tExp); tabs.appendChild(tTri);
+    var close = tgEl("button", "tg-close", "CLOSE [x]");
+    bar.appendChild(title); bar.appendChild(tabs); bar.appendChild(close);
+    panel.appendChild(bar);
+
+    var body = tgEl("div", "tg-body");
+    var sub = tgEl("p", "tg-sub", "");
+    sub.innerHTML = "<b>HOW IT WORKS</b> Traps arrive as an mcause value: top bit set means interrupt, " +
+      "low bits name the cause. mideleg bit[cause] delegates an interrupt to S-mode, " +
+      "medeleg bit[cause] delegates a sync exception, and mtvec chooses DIRECT or VECTORED dispatch. " +
+      "Route every wave exactly where the firmware policy demands. " +
+      "Built for the <a href=\"https://dillingerstaffing.github.io/portfolio/\" target=\"_blank\" rel=\"noopener\">RISC-V portfolio work</a>.";
+    body.appendChild(sub);
+    var pageExp = tgEl("div", null, "");
+    pageExp.id = "tgPageExp";
+    var pageTri = tgEl("div", null, "");
+    pageTri.id = "tgPageTri";
+    pageTri.style.display = "none";
+    body.appendChild(pageExp);
+    body.appendChild(pageTri);
+    panel.appendChild(body);
+
+    close.addEventListener("click", function () { ov.classList.remove("open"); });
+    ov.addEventListener("click", function (e) { if (e.target === ov) ov.classList.remove("open"); });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && ov.classList.contains("open")) ov.classList.remove("open");
+    });
+    tExp.addEventListener("click", function () {
+      tExp.classList.add("on"); tTri.classList.remove("on");
+      pageExp.style.display = ""; pageTri.style.display = "none";
+    });
+    tTri.addEventListener("click", function () {
+      tTri.classList.add("on"); tExp.classList.remove("on");
+      pageTri.style.display = ""; pageExp.style.display = "none";
+    });
+
+    tgBuildExplore(pageExp);
+    tgBuildTrials(pageTri);
+  }
+
+  function tgInit() {
+    if (typeof document === "undefined") return;
+    if (!document.querySelector(".dossier .actions")) return;
+    tgBuildShell();
+  }
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", tgInit);
+    } else {
+      tgInit();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      TG: {
+        dispatch: tgDispatch, trials: TG_TRIALS, causes: TG_CAUSES,
+        byKey: tgByKey, hex: tgHex
+      }
+    });
+  }
+
+})();
