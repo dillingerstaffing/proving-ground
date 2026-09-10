@@ -646,7 +646,7 @@ if (typeof document !== "undefined" && document.readyState === "loading") {
       s.failNote = outcome.note;
       els.result.className = "ws-result bad";
       els.result.textContent = outcome.note + " This drive is not resolved: pick DESTROY and run again.";
-      wsToast(d.name + ": purge failed");
+      wsToast(d.name + ": " + s.method.toLowerCase() + " failed");
     }
     wsRefreshBay(i);
     wsRefreshAll();
