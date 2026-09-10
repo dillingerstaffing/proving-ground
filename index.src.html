@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="build-version" content="v20260910-pg">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -987,6 +988,24 @@ if ('serviceWorker' in navigator) {
     });
   });
 }
+// Invisible auto-update: check build version on foreground, reload once if changed
+(function() {
+  const currentVersion = document.querySelector('meta[name="build-version"]')?.content;
+  if (!currentVersion) return;
+  let checked = false;
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible' || checked) return;
+    checked = true;
+    fetch(location.href, { cache: 'no-store' })
+      .then(r => r.text())
+      .then(html => {
+        const m = html.match(/<meta name="build-version" content="([^"]+)"/);
+        if (m && m[1] !== currentVersion) window.location.reload();
+        else checked = false;
+      })
+      .catch(() => { checked = false; });
+  });
+})();
 </script>
 </body>
 </html>
