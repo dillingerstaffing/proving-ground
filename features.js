@@ -15478,3 +15478,588 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
 })();
+/* ============================================================
+   THE STATIC ROOM
+   Old Iron bench 24: ESD-safe handling qualification for the
+   refurb line. A real triboelectric charge model (120 pF human
+   body capacitance, charge rates per flooring) and RC bleed
+   physics (V = V0 e^-t/RC) under the hood. The player tests the
+   wrist strap at the station tester, walks to the parts bin on
+   carpet or tile, reclips, waits for the meter to fall below the
+   board's HBM rating, and only then touches the board. Three
+   boards, two spare straps, two ESD kills fails the bench.
+   Self-contained, appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- pure physics core (no DOM) ---------------- */
+
+  var SR_C = 120e-12;            /* human body capacitance, farads */
+  var SR_MAT_R = 10e9;           /* dissipative shoe plus mat path, ohms: tau 1.2 s */
+  var SR_PASS_R = 10e6;          /* tester: PASS below this */
+  var SR_MARG_R = 100e9;         /* tester: MARGINAL below this */
+
+  var SR_WALKS = {
+    carpet: { rate: 2000, secs: 8,  label: "carpet" },
+    tile:   { rate: 120,  secs: 14, label: "tile" }
+  };
+
+  var SR_STRAPS = {
+    GOOD:  { r: 1e6,      label: "GOOD"  },
+    DIRTY: { r: 50e9,     label: "DIRTY" },
+    DEAD:  { r: Infinity, label: "DEAD"  }
+  };
+
+  var SR_BOARDS = [
+    { tag: "BOARD A", name: "486 ISA POST card", rating: 2000, strap: "GOOD",
+      blurb: "A logic-heavy POST card with protection diodes on every pin. Rated 2000 V HBM. Your strap tests good, so this is the warmup." },
+    { tag: "BOARD B", name: "Pentium II slot cartridge", rating: 1000, strap: "DIRTY",
+      blurb: "A Slot 1 cartridge, edge connector exposed. Rated 1000 V HBM. The strap in the drawer tests marginal: slow bleed, or swap it." },
+    { tag: "BOARD C", name: "NE2000 clone (unprotected CMOS)", rating: 500, strap: "DEAD",
+      blurb: "An unprotected CMOS network card, the most fragile thing on the line. Rated 500 V HBM. The strap is dead: swap it from the drawer, or route every discharge through the grounded mat." }
+  ];
+
+  var SR_KILL_PINS = ["address bus", "data bus", "reset line", "IRQ line"];
+
+  function srCharge(v0, rate, secs) {
+    return v0 + rate * secs;
+  }
+
+  function srBleed(v0, r, secs) {
+    if (!isFinite(r)) return v0;
+    if (secs <= 0 || v0 <= 0) return v0;
+    return v0 * Math.exp(-secs / (r * SR_C));
+  }
+
+  function srTau(r) {
+    return isFinite(r) ? r * SR_C : Infinity;
+  }
+
+  function srTester(r) {
+    if (!isFinite(r) || r >= SR_MARG_R) return { verdict: "FAIL", cls: "bad" };
+    if (r >= SR_PASS_R) return { verdict: "MARGINAL", cls: "warn" };
+    return { verdict: "PASS", cls: "good" };
+  }
+
+  function srBand(v, rating) {
+    if (v >= rating) return { label: "DANGER: at or above the board rating", cls: "bad" };
+    if (v >= rating / 2) return { label: "CAUTION: within half of the board rating", cls: "warn" };
+    return { label: "SAFE: well below the board rating", cls: "good" };
+  }
+
+  function srTouch(v, rating) {
+    return v < rating;
+  }
+
+  function srEnergyMJ(v) {
+    return 0.5 * SR_C * v * v * 1000;
+  }
+
+  function srFmtV(v) {
+    return Math.round(v).toLocaleString("en-US") + " V";
+  }
+
+  function srFmtR(r) {
+    if (!isFinite(r)) return "open circuit";
+    if (r >= 1e9) return (r / 1e9).toFixed(1) + " GΩ";
+    if (r >= 1e6) return (r / 1e6).toFixed(1) + " MΩ";
+    return Math.round(r / 1e3) + " kΩ";
+  }
+
+  /* ---------------- state ---------------- */
+
+  function srNewBoardState(def) {
+    return {
+      def: def,
+      strap: def.strap,
+      strapKnown: false,
+      clipped: true,
+      loc: "bench",
+      v: 120,
+      certified: false,
+      certV: null,
+      certR: null,
+      log: ["Shift start: body at " + srFmtV(120) + " (ambient). Clip the strap story short: walk, reclip, wait, touch."]
+    };
+  }
+
+  function srNewState() {
+    return {
+      boards: SR_BOARDS.map(srNewBoardState),
+      active: 0,
+      spares: 2,
+      kills: 0,
+      failed: false,
+      done: false
+    };
+  }
+
+  function srCertified(s) {
+    var n = 0, i;
+    for (i = 0; i < s.boards.length; i++) if (s.boards[i].certified) n++;
+    return n;
+  }
+
+  function srBleedR(bs) {
+    if (bs.loc === "bench" && bs.clipped) return SR_STRAPS[bs.strap].r;
+    if (bs.loc === "mat") return SR_MAT_R;
+    return Infinity;
+  }
+
+  function srLog(bs, msg) {
+    bs.log.push(msg);
+    if (bs.log.length > 60) bs.log.shift();
+  }
+
+  /* ---------------- actions (pure, operate on state) ---------------- */
+
+  function srActTest(s, bi) {
+    var bs = s.boards[bi];
+    if (bs.certified || s.failed) return null;
+    bs.strapKnown = true;
+    var r = SR_STRAPS[bs.strap].r;
+    var t = srTester(r);
+    srLog(bs, "Strap tester: " + bs.strap + " strap, " + srFmtR(r) + ", " + t.verdict + " (shop standard: PASS under 10 MΩ, MARGINAL to 100 GΩ, FAIL at open).");
+    return t;
+  }
+
+  function srActSwap(s, bi) {
+    var bs = s.boards[bi];
+    if (bs.certified || s.failed) return null;
+    if (s.spares <= 0) return { ok: false, msg: "The drawer is empty. No spare straps left." };
+    s.spares--;
+    bs.strap = "GOOD";
+    bs.strapKnown = false;
+    bs.clipped = false;
+    srLog(bs, "Swapped in a fresh strap from the drawer (" + s.spares + " left). It still needs a tester check, and the clip is off until you reclip at the bench.");
+    return { ok: true };
+  }
+
+  function srActWalk(s, bi, floor, dest) {
+    var bs = s.boards[bi];
+    if (bs.certified || s.failed) return null;
+    var w = SR_WALKS[floor];
+    var v0 = bs.v;
+    bs.v = srCharge(bs.v, w.rate, w.secs);
+    bs.clipped = false;
+    bs.loc = dest;
+    srLog(bs, "Walked " + w.secs + " s on " + w.label + " to the " + dest + ": +" +
+      Math.round(w.rate * w.secs).toLocaleString("en-US") + " V. Body now " + srFmtV(bs.v) +
+      " (strap unclipped while walking, no bleed).");
+    return { v0: v0, v1: bs.v };
+  }
+
+  function srActReclip(s, bi) {
+    var bs = s.boards[bi];
+    if (bs.certified || s.failed || bs.loc !== "bench") return null;
+    bs.clipped = true;
+    var tau = srTau(SR_STRAPS[bs.strap].r);
+    srLog(bs, "Reclipped the strap at the bench. Bleed time constant now " +
+      (isFinite(tau) ? (tau < 0.01 ? "under a millisecond" : tau.toFixed(1) + " s") : "none (open circuit)") + ".");
+    return true;
+  }
+
+  function srActWait(s, bi, secs) {
+    var bs = s.boards[bi];
+    if (bs.certified || s.failed) return null;
+    var r = srBleedR(bs);
+    var v0 = bs.v;
+    bs.v = srBleed(bs.v, r, secs);
+    var path = bs.loc === "bench" ? "strap" : (bs.loc === "mat" ? "mat and dissipative shoes" : "no ground path");
+    srLog(bs, "Waited " + secs + " s (" + path + "): " + srFmtV(v0) + " to " + srFmtV(bs.v) + ".");
+    return { v0: v0, v1: bs.v };
+  }
+
+  function srActTouch(s, bi) {
+    var bs = s.boards[bi];
+    if (bs.certified || s.failed) return null;
+    if (!bs.strapKnown) return { ok: false, msg: "Test the strap first. No touches before the tester." };
+    if (bs.loc !== "bench" || !bs.clipped) return { ok: false, msg: "Touch the board at the bench, strap clipped." };
+    var v = bs.v, rating = bs.def.rating;
+    if (srTouch(v, rating)) {
+      bs.certified = true;
+      bs.certV = v;
+      bs.certR = SR_STRAPS[bs.strap].r;
+      srLog(bs, "Touched the board at " + srFmtV(v) + ", under the " + rating.toLocaleString("en-US") +
+        " V HBM rating. CERTIFIED.");
+      if (srCertified(s) === s.boards.length) s.done = true;
+      return { ok: true, certified: true, v: v };
+    }
+    s.kills++;
+    var pin = SR_KILL_PINS[(bi + s.kills) % SR_KILL_PINS.length];
+    var mj = srEnergyMJ(v);
+    var dead = s.kills >= 2;
+    srLog(bs, "ESD EVENT: " + srFmtV(v) + " discharged into the " + pin + " (" + mj.toFixed(1) +
+      " mJ through 120 pF). Gate-oxide rupture, board scrapped." + (dead ? " Second kill: the bench is FAILED." : " One kill on the record; the replacement board is on the bench."));
+    var nb = srNewBoardState(bs.def);
+    nb.log = bs.log.slice();
+    s.boards[bi] = nb;
+    if (dead) s.failed = true;
+    return { ok: true, certified: false, event: true, v: v, failed: dead };
+  }
+
+  function srActReset(s) {
+    var keep = srNewState();
+    s.boards = keep.boards; s.active = 0; s.spares = 2; s.kills = 0;
+    s.failed = false; s.done = false;
+  }
+
+  /* ---------------- view helpers ---------------- */
+
+  function srEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  var SR_CSS = [
+    ".sr-overlay{position:fixed;inset:0;background:rgba(4,7,7,.94);z-index:90;display:none;overflow-y:auto;padding:18px 12px;}",
+    ".sr-overlay.open{display:block;}",
+    ".sr-panel{max-width:1020px;margin:0 auto;background:var(--panel);border:1px solid var(--line);padding:20px;}",
+    ".sr-panel h3{font-family:var(--font-d);font-size:24px;margin:0 0 4px;text-transform:uppercase;letter-spacing:.02em;color:var(--ember);}",
+    ".sr-spec{font-family:var(--font-m);font-size:10.5px;color:var(--dim);letter-spacing:.1em;margin:0 0 10px;}",
+    ".sr-sub{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 14px;max-width:72ch;}",
+    ".sr-sub b{color:var(--paper);font-weight:600;}",
+    ".sr-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 12px;}",
+    "@media(max-width:760px){.sr-tabs{grid-template-columns:1fr;}}",
+    ".sr-tab{border:1px solid var(--line);background:var(--panel-2);padding:10px 12px;min-height:48px;text-align:left;cursor:pointer;color:var(--paper);font-family:var(--font-d);font-size:13px;}",
+    ".sr-tab .sr-tag{font-family:var(--font-m);font-size:10.5px;color:var(--dim);display:block;letter-spacing:.08em;}",
+    ".sr-tab .sr-st{font-family:var(--font-m);font-size:10.5px;letter-spacing:.08em;display:block;margin-top:2px;}",
+    ".sr-tab[aria-selected=\"true\"]{border-color:var(--ember);}",
+    ".sr-st.todo{color:var(--dim);}.sr-st.part{color:var(--ember);}.sr-st.done{color:var(--mint);}.sr-st.dead{color:var(--ember);}",
+    ".sr-card{border:1px solid var(--line);background:var(--panel-2);padding:14px;margin:0 0 12px;}",
+    ".sr-card.done{border-color:var(--mint);}",
+    ".sr-blurb{border:1px dashed var(--line);padding:10px 12px;margin:0 0 12px;font-size:12.5px;line-height:1.7;color:var(--steel);}",
+    ".sr-blurb b{color:var(--paper);}",
+    ".sr-k{font-family:var(--font-m);font-size:10.5px;color:var(--dim);letter-spacing:.1em;display:block;margin:14px 0 8px;}",
+    ".sr-meter{border:1px solid var(--line);background:var(--ink);padding:12px 14px;margin:0 0 12px;}",
+    ".sr-meter .sr-v{font-family:var(--font-m);font-size:26px;color:var(--paper);letter-spacing:.02em;}",
+    ".sr-meter .sr-band{font-family:var(--font-m);font-size:11px;letter-spacing:.08em;margin-top:4px;display:block;}",
+    ".sr-band.good{color:var(--mint);}.sr-band.warn{color:var(--ember);}.sr-band.bad{color:var(--ember);font-weight:700;}",
+    ".sr-where{font-family:var(--font-m);font-size:11px;color:var(--dim);letter-spacing:.06em;margin:8px 0 0;}",
+    ".sr-where b{color:var(--paper);font-weight:400;}",
+    ".sr-btnrow{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 2px;}",
+    ".sr-btn{border:1px solid var(--line);background:var(--ink);color:var(--paper);font-family:var(--font-d);font-size:13px;min-height:48px;padding:10px 18px;cursor:pointer;letter-spacing:.04em;}",
+    ".sr-btn.primary{background:var(--ember);border-color:var(--ember);color:#0a0a0a;font-weight:700;}",
+    ".sr-btn:disabled{opacity:.45;cursor:default;}",
+    ".sr-btn:hover:not(:disabled){border-color:var(--ember);}",
+    ".sr-btn.primary:hover:not(:disabled){border-color:var(--paper);}",
+    ".sr-log{font-family:var(--font-m);font-size:11.5px;color:var(--steel);line-height:1.8;border:1px solid var(--line);background:var(--ink);padding:10px 12px;max-height:180px;overflow-y:auto;margin:10px 0 0;}",
+    ".sr-log div{margin:0 0 2px;}",
+    ".sr-log .sr-ev{color:var(--ember);}",
+    ".sr-banner{border:1px solid var(--mint);color:var(--mint);font-family:var(--font-m);font-size:12px;letter-spacing:.1em;padding:10px 12px;margin:12px 0 0;}",
+    ".sr-fail{border:1px solid var(--ember);color:var(--ember);font-family:var(--font-m);font-size:12px;letter-spacing:.1em;padding:10px 12px;margin:12px 0 0;}",
+    "@media(prefers-reduced-motion:no-preference){.sr-pop{animation:srpop .2s ease-out;}}",
+    "@keyframes srpop{0%{transform:scale(.96);}100%{transform:scale(1);}}",
+    ".sr-done{border:1px solid var(--ember);padding:18px;margin:0 0 12px;}",
+    ".sr-done h4{font-family:var(--font-d);font-size:18px;color:var(--ember);margin:0 0 8px;text-transform:uppercase;letter-spacing:.03em;}",
+    ".sr-done p{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 8px;}",
+    ".sr-done p b{color:var(--paper);}",
+    ".sr-zline{font-family:var(--font-m);font-size:11.5px;color:var(--steel);margin:0 0 4px;}",
+    ".sr-zline b{color:var(--paper);font-weight:400;}",
+    ".sr-foot{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0 0;}",
+    ".sr-progress{font-family:var(--font-m);font-size:11.5px;color:var(--dim);letter-spacing:.08em;margin-right:auto;}",
+    ".sr-progress b{color:var(--paper);font-weight:600;}",
+    ".sr-panel button:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}"
+  ];
+
+  var srS = null;
+  var srEls = {};
+
+  function srBoardStatus(bs) {
+    if (bs.certified) return { t: "CERTIFIED", c: "done" };
+    if (bs.strapKnown && bs.clipped && bs.v < bs.def.rating) return { t: "READY TO TOUCH", c: "part" };
+    if (bs.strapKnown) return { t: "IN PROGRESS", c: "part" };
+    return { t: "STRAP UNTESTED", c: "todo" };
+  }
+
+  function srRenderTabs() {
+    var w = srEls.tabs;
+    w.innerHTML = "";
+    var i, bs, st;
+    for (i = 0; i < srS.boards.length; i++) {
+      bs = srS.boards[i];
+      st = srBoardStatus(bs);
+      var t = srEl("button", "sr-tab", null);
+      t.setAttribute("data-sr", "tab");
+      t.setAttribute("data-i", String(i));
+      t.setAttribute("aria-selected", i === srS.active ? "true" : "false");
+      t.appendChild(srEl("span", "sr-tag", bs.def.tag + " · " + bs.def.rating.toLocaleString("en-US") + " V HBM"));
+      t.appendChild(srEl("span", null, bs.def.name));
+      t.appendChild(srEl("span", "sr-st " + st.c, st.t));
+      (function (idx) {
+        t.addEventListener("click", function () { srS.active = idx; srRenderAll(); });
+      })(i);
+      w.appendChild(t);
+    }
+  }
+
+  function srMeter(bs) {
+    var m = srEl("div", "sr-meter", null);
+    m.appendChild(srEl("div", "sr-v", srFmtV(bs.v)));
+    var band = srBand(bs.v, bs.def.rating);
+    m.appendChild(srEl("span", "sr-band " + band.cls, band.label));
+    var r = SR_STRAPS[bs.strap].r;
+    var tk = bs.strapKnown ? srTester(r) : null;
+    m.appendChild(srEl("div", "sr-where",
+      "Location: " + bs.loc.toUpperCase() + "  ·  Strap: " +
+      (tk ? bs.strap + " " + srFmtR(r) + " (" + tk.verdict + ")" : "UNTESTED") +
+      "  ·  Clip: " + (bs.clipped ? "ON" : "OFF") +
+      "  ·  Spares in drawer: " + srS.spares + "  ·  Kills on record: " + srS.kills + " of 2"));
+    return m;
+  }
+
+  function srBtnRow(buttons) {
+    var row = srEl("div", "sr-btnrow", null);
+    var i;
+    for (i = 0; i < buttons.length; i++) {
+      var b = srEl("button", "sr-btn" + (buttons[i].primary ? " primary" : ""), buttons[i].label);
+      b.type = "button";
+      b.setAttribute("data-sr", buttons[i].name);
+      if (buttons[i].disabled) b.disabled = true;
+      (function (fn) { b.addEventListener("click", fn); })(buttons[i].fn);
+      row.appendChild(b);
+    }
+    return row;
+  }
+
+  function srBoardButtons(bs, bi) {
+    var out = [];
+    if (bs.loc === "bench") {
+      out.push({ name: "walk-carpet", label: "Walk to bin (carpet, 8 s)", fn: function () { srActWalk(srS, bi, "carpet", "bin"); srRenderAll(); } });
+      out.push({ name: "walk-tile", label: "Walk to bin (tile, 14 s)", fn: function () { srActWalk(srS, bi, "tile", "bin"); srRenderAll(); } });
+      out.push({ name: "go-mat", label: "Step onto the discharge mat", fn: function () { bs.loc = "mat"; bs.clipped = false; srLog(bs, "Stepped onto the grounded discharge mat (strap unclipped)."); srRenderAll(); } });
+    } else if (bs.loc === "bin") {
+      out.push({ name: "back-carpet", label: "Walk back (carpet, 8 s)", fn: function () { srActWalk(srS, bi, "carpet", "bench"); srRenderAll(); } });
+      out.push({ name: "back-tile", label: "Walk back (tile, 14 s)", fn: function () { srActWalk(srS, bi, "tile", "bench"); srRenderAll(); } });
+      out.push({ name: "bin-mat", label: "Go to the discharge mat", fn: function () { bs.loc = "mat"; srLog(bs, "Walked to the discharge mat."); srRenderAll(); } });
+    } else {
+      out.push({ name: "mat-bench", label: "Step back to the bench", fn: function () { bs.loc = "bench"; srLog(bs, "Stepped back to the bench."); srRenderAll(); } });
+    }
+    return out;
+  }
+
+  function srBuildBoard() {
+    var bi = srS.active, bs = srS.boards[bi];
+    var w = srEls.board;
+    w.innerHTML = "";
+    w.className = bs.certified ? "sr-card done sr-pop" : "sr-card";
+
+    var blurb = srEl("p", "sr-blurb", null);
+    blurb.innerHTML = "<b>" + bs.def.tag + ": " + bs.def.name + ".</b> " + bs.def.blurb;
+    w.appendChild(blurb);
+
+    w.appendChild(srMeter(bs));
+
+    var k1 = srEl("span", "sr-k", "STEP 1 · STRAP");
+    w.appendChild(k1);
+    w.appendChild(srBtnRow([
+      { name: "test", label: "Test the wrist strap", fn: function () { srActTest(srS, bi); srRenderAll(); } },
+      { name: "swap", label: "Swap strap (" + srS.spares + " left)", disabled: srS.spares <= 0, fn: function () {
+          var r = srActSwap(srS, bi);
+          if (r && !r.ok) { srToast(r.msg); }
+          srRenderAll();
+        } }
+    ]));
+
+    var k2 = srEl("span", "sr-k", "STEP 2 · FETCH THE BOARD");
+    w.appendChild(k2);
+    w.appendChild(srEl("p", "sr-where", "You are at the " + bs.loc.toUpperCase() + ". Walking unclips the strap: carpet builds 2,000 V/s, tile builds 120 V/s."));
+    w.appendChild(srBtnRow(srBoardButtons(bs, bi)));
+
+    var k3 = srEl("span", "sr-k", "STEP 3 · BLEED DOWN AND TOUCH");
+    w.appendChild(k3);
+    w.appendChild(srBtnRow([
+      { name: "reclip", label: "Reclip the strap", disabled: bs.loc !== "bench" || bs.clipped, fn: function () { srActReclip(srS, bi); srRenderAll(); } },
+      { name: "wait1", label: "Wait 1 s", fn: function () { srActWait(srS, bi, 1); srRenderAll(); } },
+      { name: "wait5", label: "Wait 5 s", fn: function () { srActWait(srS, bi, 5); srRenderAll(); } },
+      { name: "touch", label: "Touch the board", primary: true, disabled: !bs.strapKnown, fn: function () {
+          var r = srActTouch(srS, bi);
+          if (r && !r.ok) { srToast(r.msg); return; }
+          if (r && r.event) { srToast("ESD EVENT. The board is scrapped."); }
+          srRenderAll();
+        } }
+    ]));
+
+    var log = srEl("div", "sr-log", null);
+    var i;
+    for (i = 0; i < bs.log.length; i++) {
+      var line = srEl("div", bs.log[i].indexOf("ESD EVENT") === 0 ? "sr-ev" : null, bs.log[i]);
+      log.appendChild(line);
+    }
+    log.scrollTop = log.scrollHeight;
+    w.appendChild(log);
+  }
+
+  function srToast(msg) {
+    if (typeof toast === "function") { toast(msg); return; }
+    if (typeof window !== "undefined" && window.__srToast) window.__srToast(msg);
+  }
+
+  function srDownloadCert() {
+    var lines = [];
+    var i, bs;
+    lines.push("THE STATIC ROOM · ESD HANDLING CERTIFICATION");
+    lines.push("OLD IRON refurb line · human body model 120 pF");
+    lines.push("");
+    for (i = 0; i < srS.boards.length; i++) {
+      bs = srS.boards[i];
+      lines.push(bs.def.tag + ": " + bs.def.name);
+      lines.push("  HBM rating: " + bs.def.rating + " V");
+      lines.push("  Touch voltage: " + Math.round(bs.certV) + " V");
+      lines.push("  Strap at touch: " + bs.strap + " " + srFmtR(bs.certR));
+      lines.push("  Verdict: CERTIFIED, zero discharge events");
+      lines.push("");
+    }
+    lines.push("Kills on record: " + srS.kills);
+    lines.push("Standard: strap PASS under 10 MΩ, MARGINAL 10 MΩ to 100 GΩ, FAIL at open circuit.");
+    var blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = (window.URL || window.webkitURL).createObjectURL(blob);
+    a.download = "static-room-certification.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      (window.URL || window.webkitURL).revokeObjectURL(a.href);
+      a.remove();
+    }, 4000);
+    srToast("Certification record downloaded");
+  }
+
+  function srRenderFoot() {
+    var w = srEls.foot;
+    w.innerHTML = "";
+    if (srS.failed) {
+      w.appendChild(srEl("div", "sr-fail", "BENCH FAILED: two ESD kills. Reset the bench and run it clean."));
+      w.appendChild(srBtnRow([
+        { name: "reset", label: "Reset the bench", fn: function () { srActReset(srS); srRenderAll(); } }
+      ]));
+      return;
+    }
+    var p = srEl("span", "sr-progress", null);
+    p.innerHTML = "Certified <b>" + srCertified(srS) + " of 3</b> boards · kills <b>" + srS.kills + "</b> of 2 allowed";
+    w.appendChild(p);
+    var cert = srEl("button", "sr-btn", "Download the certification record");
+    cert.type = "button";
+    cert.setAttribute("data-sr", "cert");
+    cert.disabled = srCertified(srS) < 3;
+    cert.addEventListener("click", srDownloadCert);
+    w.appendChild(cert);
+    var close = srEl("button", "sr-btn", "Close bench");
+    close.type = "button";
+    close.setAttribute("data-sr", "close");
+    close.addEventListener("click", function () {
+      document.getElementById("srOverlay").classList.remove("open");
+    });
+    w.appendChild(close);
+  }
+
+  function srRenderDone() {
+    var w = srEls.done;
+    w.innerHTML = "";
+    if (!srS.done) return;
+    var d = srEl("div", "sr-done sr-pop", null);
+    d.appendChild(srEl("h4", null, "Line certified"));
+    var p = srEl("p", null, null);
+    p.innerHTML = "All three boards handled with <b>zero discharge events</b>. You read the strap, respected the flooring, and let the physics do the work. The certification record is ready below.";
+    d.appendChild(p);
+    var i, bs;
+    for (i = 0; i < srS.boards.length; i++) {
+      bs = srS.boards[i];
+      var z = srEl("p", "sr-zline", null);
+      z.innerHTML = "<b>" + bs.def.tag + ":</b> touched at " + srFmtV(bs.certV) + " against a " +
+        bs.def.rating.toLocaleString("en-US") + " V rating, strap " + bs.strap + " " + srFmtR(bs.certR);
+      d.appendChild(z);
+    }
+    w.appendChild(d);
+  }
+
+  function srRenderAll() {
+    srRenderTabs();
+    srBuildBoard();
+    srRenderDone();
+    srRenderFoot();
+  }
+
+  /* ---------------- build ---------------- */
+
+  function srBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("srBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = SR_CSS.join("\n");
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "srBtn";
+    b.className = "secondary";
+    b.textContent = "Run the Static Room";
+    b.addEventListener("click", function () {
+      document.getElementById("srOverlay").classList.add("open");
+    });
+    box.appendChild(b);
+
+    var ov = document.createElement("div");
+    ov.className = "sr-overlay";
+    ov.id = "srOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Static Room");
+
+    var panel = document.createElement("div");
+    panel.className = "sr-panel";
+    panel.appendChild(srEl("h3", null, "The Static Room"));
+    panel.appendChild(srEl("p", "sr-spec", "ESD PHYSICS · 3 BOARDS · HBM"));
+
+    var sub = srEl("p", "sr-sub", null);
+    sub.innerHTML = "The <b>OLD IRON</b> refurb line handles boards that die if you look at them wrong, electrically speaking. " +
+      "Your body is a 120 pF capacitor: walking on carpet charges it at 2,000 volts per second, tile at 120. " +
+      "A good wrist strap bleeds that charge in under a millisecond; a dirty one takes seconds; a dead one never does. " +
+      "For each board, <b>test the strap</b>, <b>walk to the bin</b>, <b>reclip and wait</b> until the meter clears the board's HBM rating, " +
+      "then <b>touch</b>. Two discharge events fail the bench.";
+    panel.appendChild(sub);
+
+    srEls.tabs = srEl("div", "sr-tabs");
+    panel.appendChild(srEls.tabs);
+
+    srEls.board = srEl("div", null);
+    panel.appendChild(srEls.board);
+
+    srEls.done = srEl("div", null);
+    panel.appendChild(srEls.done);
+
+    srEls.foot = srEl("div", "sr-foot");
+    panel.appendChild(srEls.foot);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    srS = srNewState();
+    srRenderAll();
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", srBuild);
+    } else {
+      srBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      SR: {
+        C: SR_C, MAT_R: SR_MAT_R, WALKS: SR_WALKS, STRAPS: SR_STRAPS, BOARDS: SR_BOARDS,
+        charge: srCharge, bleed: srBleed, tau: srTau, tester: srTester, band: srBand,
+        touch: srTouch, energyMJ: srEnergyMJ,
+        newState: srNewState, newBoardState: srNewBoardState, certified: srCertified,
+        bleedR: srBleedR, test: srActTest, swap: srActSwap, walk: srActWalk,
+        reclip: srActReclip, wait: srActWait, touchAct: srActTouch, reset: srActReset
+      }
+    });
+  }
+
+})();
