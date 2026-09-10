@@ -17987,3 +17987,741 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+
+/* ============================================================
+   THE POST ROOM
+   Old Iron POST beep-code diagnostics: a dead intake machine, a
+   piezo speaker, a timing diagram, and a chart. Read the pattern,
+   match the fault, power down before you touch anything, apply
+   the fix, and earn the POST. Silence is a code too.
+   Self-contained, appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- data: the atomic mechanism ---------------- */
+
+  /* Beep timings in milliseconds, the actual physical signal from a
+     motherboard piezo speaker. Short and long are distinguished by
+     duration, never by pitch, so the timing diagram is exact. */
+  var PR_SHORT = 180, PR_LONG = 600, PR_GAP = 220, PR_TONE = 1400;
+
+  var PR_CODES = [
+    { id: "1L2S",   longs: 1, shorts: 2, title: "1 long, 2 short",
+      meaning: "Video adapter fault", fix: "reseat-gpu" },
+    { id: "1L3S",   longs: 1, shorts: 3, title: "1 long, 3 short",
+      meaning: "Base memory fault", fix: "reseat-dimms" },
+    { id: "5S",     longs: 0, shorts: 5, title: "5 short",
+      meaning: "Processor fault", fix: "reseat-cpu" },
+    { id: "8S",     longs: 0, shorts: 8, title: "8 short",
+      meaning: "Display memory fault", fix: "reseat-gpu" },
+    { id: "CONT",   longs: 0, shorts: 0, title: "Continuous short beeps",
+      meaning: "Power supply fault", fix: "replace-psu", continuous: true },
+    { id: "NOBEEP", longs: 0, shorts: 0, title: "No beeps, fans spin",
+      meaning: "POST never starts", fix: "clear-cmos", silent: true }
+  ];
+
+  var PR_FIXES = [
+    { id: "reseat-gpu",   label: "Reseat the graphics card" },
+    { id: "reseat-dimms", label: "Reseat the DIMMs" },
+    { id: "reseat-cpu",   label: "Reseat the CPU, inspect for bent pins" },
+    { id: "replace-psu",  label: "Replace the PSU, verify ATX connectors" },
+    { id: "clear-cmos",   label: "Clear the CMOS jumper, then retry" },
+    { id: "flash-bios",   label: "Reflash the BIOS from USB" }
+  ];
+
+  var PR_TRIALS = [
+    { id: "t1", name: "TRIAL 1: INTAKE-114", code: "1L2S",
+      story: "A mid-tower from a law office. It powers up, the fans spin, the screen stays dark, and the speaker complains. Power it on and listen: the pattern is the whole diagnosis. Read it off the timing diagram, match it against the chart, then power down before you touch anything." },
+    { id: "t2", name: "TRIAL 2: INTAKE-209", code: "1L3S",
+      story: "A CAD workstation with two sticks of DDR4, working last week, dark this week. Same ritual: power on, read the pattern, match the chart. The board will not reach video until the real fault is fixed, and a live board is never serviced." },
+    { id: "t3", name: "TRIAL 3: INTAKE-337", code: "NOBEEP",
+      story: "The tricky one. Fans spin, the drive light flickers, the screen is dark, and the speaker says nothing at all. Silence is a code too: the chart has a row for it. Name the silence, then earn the POST." }
+  ];
+
+  var PR_POST_OK = [
+    "POST OK",
+    "MEMORY: 16384 MB DDR4-3200",
+    "VIDEO: DETECTED",
+    "KEYBOARD: DETECTED",
+    "PRESS DEL TO ENTER SETUP"
+  ];
+
+  /* ---------------- pure logic (no DOM) ---------------- */
+
+  function prCodeById(id) {
+    for (var i = 0; i < PR_CODES.length; i++) if (PR_CODES[i].id === id) return PR_CODES[i];
+    return null;
+  }
+
+  function prFixLabel(id) {
+    for (var i = 0; i < PR_FIXES.length; i++) if (PR_FIXES[i].id === id) return PR_FIXES[i].label;
+    return "unknown fix";
+  }
+
+  function prNewTrial(def) {
+    return { def: def, on: false, heard: false, diag: null, fix: null,
+             certified: false, strikes: 0 };
+  }
+
+  function prNewState() {
+    var trials = [];
+    for (var i = 0; i < PR_TRIALS.length; i++) trials.push(prNewTrial(PR_TRIALS[i]));
+    return { trials: trials, ti: 0, strikes: 0, failed: false, done: false };
+  }
+
+  function prCur(s) { return s.trials[s.ti]; }
+
+  /* POWER ON: the machine attempts POST and the speaker reports the
+     fault code. An unfixed machine always fails to POST; the pattern
+     is the diagnosis. Returns the code played. */
+  function prActPowerOn(s) {
+    var t = prCur(s);
+    if (t.certified) return { ok: false, msg: "This machine already POSTs. Move to the next trial." };
+    if (t.on) return { ok: false, msg: "The machine is already on." };
+    t.on = true;
+    t.heard = true;
+    return { ok: true, code: t.def.code };
+  }
+
+  function prActPowerOff(s) {
+    var t = prCur(s);
+    if (!t.on) return { ok: false, msg: "The machine is already off." };
+    t.on = false;
+    return { ok: true };
+  }
+
+  /* APPLY FIX. Returns {ok, strike, msg}. Strikes are consumed for a
+     safety violation, a wrong diagnosis, or a wrong fix. Prompts that
+     cost nothing: nothing selected yet, or the trial already done. */
+  function prActApplyFix(s, diagId, fixId) {
+    var t = prCur(s);
+    if (t.certified) return { ok: false, strike: false, msg: "Already certified." };
+    if (t.on) {
+      return { ok: false, strike: true, why: "safety",
+        msg: "SAFETY VIOLATION: the board is live. Never service a powered machine. Power off first, then apply the fix." };
+    }
+    if (!t.heard) return { ok: false, strike: false, msg: "Power the machine on first and read its beeps." };
+    if (!diagId) return { ok: false, strike: false, msg: "Pick a diagnosis from the chart first." };
+    if (!fixId) return { ok: false, strike: false, msg: "Pick a fix action first." };
+    var code = prCodeById(t.def.code);
+    if (diagId !== code.id) {
+      var heard = prCodeById(diagId);
+      return { ok: false, strike: true, why: "diag",
+        msg: "Wrong diagnosis. " + heard.title + " means \"" + heard.meaning +
+             "\". This machine played " + code.title + " (" + code.meaning +
+             "). Count the long and short beeps on the timing diagram again." };
+    }
+    if (fixId !== code.fix) {
+      return { ok: false, strike: true, why: "fix",
+        msg: "Diagnosis right, fix wrong. \"" + code.meaning +
+             "\" is fixed by: " + prFixLabel(code.fix) + "." };
+    }
+    t.certified = true;
+    var all = true, i;
+    for (i = 0; i < s.trials.length; i++) if (!s.trials[i].certified) all = false;
+    if (all) s.done = true;
+    return { ok: true, strike: false, msg: "Fix applied. Power on to verify." };
+  }
+
+  function prActStrike(s) {
+    s.strikes++;
+    if (s.strikes >= 3) { s.failed = true; }
+    return s.failed;
+  }
+
+  function prResetTrial(s) {
+    s.trials[s.ti] = prNewTrial(s.trials[s.ti].def);
+  }
+
+  function prResetAll(s) {
+    var keep = prNewState();
+    s.trials = keep.trials; s.ti = 0; s.strikes = 0; s.failed = false; s.done = false;
+  }
+
+  /* ---------------- css ---------------- */
+
+  var PR_CSS = [
+    ".pr-overlay{position:fixed;inset:0;background:rgba(4,7,7,.94);z-index:90;display:none;overflow-y:auto;padding:18px 12px;}",
+    ".pr-overlay.open{display:block;}",
+    ".pr-panel{max-width:1020px;margin:0 auto;background:var(--panel);border:1px solid var(--line);padding:20px;}",
+    ".pr-panel h3{font-family:var(--font-d);font-size:22px;letter-spacing:.02em;margin:0 0 4px;text-transform:uppercase;}",
+    ".pr-spec{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--ember);margin:0 0 10px;}",
+    ".pr-story{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 12px;max-width:74ch;}",
+    ".pr-story b{color:var(--paper);}",
+    ".pr-tabs{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px;}",
+    ".pr-tab{min-height:48px;padding:10px 14px;background:transparent;border:1px solid var(--line);color:var(--paper);font-family:var(--font-d);font-size:12px;letter-spacing:.04em;cursor:pointer;text-transform:uppercase;}",
+    ".pr-tab[aria-pressed=\"true\"]{border-color:var(--ember);color:var(--ember);}",
+    ".pr-tab .pr-pill{display:block;font-family:var(--font-m);font-size:10px;letter-spacing:.1em;margin-top:4px;color:var(--steel);}",
+    ".pr-tab .pr-pill.ok{color:var(--ember);}",
+    ".pr-machine{display:flex;flex-wrap:wrap;align-items:center;gap:10px;border:1px solid var(--line);padding:12px 14px;margin:0 0 12px;}",
+    ".pr-status{font-family:var(--font-m);font-size:12px;letter-spacing:.1em;padding:8px 12px;border:1px solid var(--line);}",
+    ".pr-status.on{border-color:var(--ember);color:var(--ember);}",
+    ".pr-status.off{color:var(--steel);}",
+    ".pr-machine .pr-hint{font-size:12px;color:var(--steel);}",
+    ".pr-chart{border:1px solid var(--line);margin:0 0 12px;}",
+    ".pr-chart h4,.pr-diagbox h4,.pr-pick h4{font-family:var(--font-m);font-size:11px;letter-spacing:.16em;color:var(--paper);margin:0;padding:10px 12px;border-bottom:1px solid var(--line);}",
+    ".pr-chart table{width:100%;border-collapse:collapse;font-size:12.5px;}",
+    ".pr-chart th{font-family:var(--font-m);font-size:10px;letter-spacing:.14em;color:var(--steel);text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);}",
+    ".pr-chart td{padding:8px 12px;border-bottom:1px solid var(--line);color:var(--paper);vertical-align:top;}",
+    ".pr-chart tr:last-child td{border-bottom:none;}",
+    ".pr-chart td.pr-codecell{font-family:var(--font-m);color:var(--ember);white-space:nowrap;}",
+    ".pr-diagbox{border:1px solid var(--line);margin:0 0 12px;}",
+    ".pr-diagram{display:flex;align-items:flex-end;gap:10px;min-height:76px;padding:16px 12px;}",
+    ".pr-beep{display:flex;flex-direction:column;align-items:center;gap:6px;}",
+    ".pr-bar{background:var(--line);height:18px;}",
+    ".pr-bar.short{width:26px;}",
+    ".pr-bar.long{width:78px;}",
+    ".pr-beep.lit .pr-bar{background:var(--ember);}",
+    ".pr-beep span{font-family:var(--font-m);font-size:10px;letter-spacing:.1em;color:var(--steel);}",
+    ".pr-beep.lit span{color:var(--ember);}",
+    ".pr-diagempty{padding:16px 12px;color:var(--steel);font-size:12.5px;}",
+    ".pr-pick{border:1px solid var(--line);margin:0 0 12px;}",
+    ".pr-opts{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px;}",
+    "@media (max-width:640px){.pr-opts{grid-template-columns:1fr;}}",
+    ".pr-opt{display:flex;align-items:flex-start;gap:10px;min-height:48px;padding:10px 12px;border:1px solid var(--line);cursor:pointer;font-size:12.5px;line-height:1.5;}",
+    ".pr-opt input{margin-top:3px;accent-color:var(--ember);width:18px;height:18px;flex:none;}",
+    ".pr-opt.sel{border-color:var(--ember);}",
+    ".pr-opt .pr-oc{font-family:var(--font-m);color:var(--ember);display:block;font-size:11px;letter-spacing:.08em;}",
+    ".pr-actions{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px;}",
+    ".pr-btn{min-height:48px;padding:12px 18px;background:transparent;border:1px solid var(--line);color:var(--paper);font-family:var(--font-d);font-size:12px;letter-spacing:.06em;cursor:pointer;text-transform:uppercase;}",
+    ".pr-btn:hover:not(:disabled){border-color:var(--ember);color:var(--ember);}",
+    ".pr-btn:disabled{opacity:.35;cursor:default;}",
+    ".pr-btn.primary{border-color:var(--ember);color:var(--ember);}",
+    ".pr-btn:focus-visible,.pr-tab:focus-visible,.pr-opt input:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".pr-log{border:1px solid var(--line);padding:12px;font-family:var(--font-m);font-size:12px;line-height:1.8;min-height:120px;max-height:260px;overflow-y:auto;margin:0 0 12px;color:var(--paper);}",
+    ".pr-log .bad{color:var(--ember);}",
+    ".pr-log .good{color:var(--paper);}",
+    ".pr-log .dim{color:var(--steel);}",
+    ".pr-post{background:#0a0f0a;border:1px solid var(--ember);padding:16px;font-family:var(--font-m);font-size:13px;line-height:2;color:var(--paper);margin:0 0 12px;}",
+    ".pr-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}",
+    ".pr-progress{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--steel);margin-right:auto;}",
+    ".pr-strikes{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--steel);}",
+    ".pr-strikes.hot{color:var(--ember);}"
+  ];
+
+  /* ---------------- dom helpers ---------------- */
+
+  var prS = null, prEls = {}, prAudio = null, prMuted = false, prTimers = [];
+
+  function prEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function prLog(html, cls) {
+    var d = prEl("div", cls || null);
+    d.innerHTML = html;
+    prEls.log.appendChild(d);
+    prEls.log.scrollTop = prEls.log.scrollHeight;
+  }
+
+  function prClearTimers() {
+    var i;
+    for (i = 0; i < prTimers.length; i++) clearTimeout(prTimers[i]);
+    prTimers = [];
+  }
+
+  /* ---------------- audio: the piezo speaker ---------------- */
+
+  function prCtx() {
+    if (!prAudio) {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      prAudio = new AC();
+    }
+    if (prAudio.state === "suspended") prAudio.resume();
+    return prAudio;
+  }
+
+  /* Build the timed beep sequence for a code: [[freq, startMs, durMs]]. */
+  function prSequence(codeId) {
+    var c = prCodeById(codeId), seq = [], t = 0, i;
+    if (c.silent) return seq;
+    if (c.continuous) {
+      for (i = 0; i < 8; i++) { seq.push([PR_TONE, t, PR_SHORT]); t += PR_SHORT + PR_GAP; }
+      return seq;
+    }
+    for (i = 0; i < c.longs; i++) { seq.push([PR_TONE, t, PR_LONG]); t += PR_LONG + PR_GAP; }
+    for (i = 0; i < c.shorts; i++) { seq.push([PR_TONE, t, PR_SHORT]); t += PR_SHORT + PR_GAP; }
+    return seq;
+  }
+
+  function prPlay(codeId, onBeat) {
+    var seq = prSequence(codeId);
+    if (!seq.length) return;
+    if (prMuted) { if (onBeat) onBeat(-1); return; }
+    var ctx = prCtx();
+    if (!ctx) { if (onBeat) onBeat(-1); return; }
+    var t0 = ctx.currentTime + 0.05, i, osc, g;
+    var reduced = (typeof pgReduced !== "undefined") && pgReduced;
+    for (i = 0; i < seq.length; i++) {
+      (function (ix) {
+        osc = ctx.createOscillator();
+        g = ctx.createGain();
+        osc.type = "square";
+        osc.frequency.value = seq[ix][0];
+        var start = t0 + seq[ix][1] / 1000, dur = seq[ix][2] / 1000;
+        g.gain.setValueAtTime(0.0001, start);
+        g.gain.exponentialRampToValueAtTime(0.18, start + 0.01);
+        g.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+        osc.connect(g); g.connect(ctx.destination);
+        osc.start(start); osc.stop(start + dur + 0.02);
+        if (onBeat) {
+          var ms = (start - ctx.currentTime) * 1000;
+          prTimers.push(setTimeout(function () { onBeat(ix); }, reduced ? 0 : ms));
+        }
+      })(i);
+    }
+  }
+
+  /* ---------------- render ---------------- */
+
+  function prRenderTabs() {
+    prEls.tabs.innerHTML = "";
+    var i, t;
+    for (i = 0; i < prS.trials.length; i++) {
+      (function (ix) {
+        t = prS.trials[ix];
+        var b = prEl("button", "pr-tab", null);
+        b.setAttribute("aria-pressed", ix === prS.ti ? "true" : "false");
+        b.appendChild(document.createTextNode(t.def.name + " "));
+        var pill = prEl("span", "pr-pill" + (t.certified ? " ok" : ""),
+          t.certified ? "CERTIFIED" : "AWAITING POST");
+        b.appendChild(pill);
+        b.addEventListener("click", function () { prS.ti = ix; prClearTimers(); prRenderAll(); });
+        prEls.tabs.appendChild(b);
+      })(i);
+    }
+  }
+
+  function prRenderMachine() {
+    var t = prCur(prS);
+    prEls.status.className = "pr-status " + (t.on ? "on" : "off");
+    prEls.status.textContent = t.on ? "STATUS: ON, FANS SPINNING" : "STATUS: OFF";
+    prEls.hint.textContent = t.certified
+      ? "This machine POSTs. Move to the next trial."
+      : (t.on ? "The speaker has reported. Read the pattern, then power off before any fix."
+              : "Press POWER ON to attempt POST and hear the speaker.");
+    prEls.powerOn.disabled = t.on || t.certified || prS.failed;
+    prEls.powerOff.disabled = !t.on;
+    prEls.replay.disabled = !t.heard || !t.on || t.certified;
+    prEls.applyFix.disabled = t.certified || prS.failed;
+  }
+
+  function prRenderDiagram() {
+    var t = prCur(prS), box = prEls.diagram;
+    box.innerHTML = "";
+    if (!t.heard) {
+      box.appendChild(prEl("div", "pr-diagempty",
+        "No pattern yet. Power the machine on and the speaker will report."));
+      return;
+    }
+    var c = prCodeById(t.def.code), i, j = 0;
+    function bar(kind, label) {
+      var w = prEl("div", "pr-beep", null);
+      var b = prEl("div", "pr-bar " + kind, null);
+      w.appendChild(b);
+      w.appendChild(prEl("span", null, label));
+      w.setAttribute("data-beat", String(j++));
+      box.appendChild(w);
+    }
+    if (c.silent) {
+      box.appendChild(prEl("div", "pr-diagempty",
+        "Silence on the line: no beeps at all while the fans spin. That is the code."));
+      return;
+    }
+    if (c.continuous) {
+      for (i = 0; i < 8; i++) bar("short", "S");
+      box.appendChild(prEl("div", "pr-diagempty", "Pattern repeats while power is applied."));
+      return;
+    }
+    for (i = 0; i < c.longs; i++) bar("long", "LONG");
+    for (i = 0; i < c.shorts; i++) bar("short", "SHORT");
+  }
+
+  function prLightBeats(codeId) {
+    prClearTimers();
+    var beats = prEls.diagram.querySelectorAll(".pr-beep");
+    var i;
+    function lit(ix) {
+      var k;
+      for (k = 0; k < beats.length; k++) beats[k].classList.remove("lit");
+      if (ix >= 0 && beats[ix]) beats[ix].classList.add("lit");
+    }
+    var reduced = (typeof pgReduced !== "undefined") && pgReduced;
+    if (reduced) {
+      for (i = 0; i < beats.length; i++) beats[i].classList.add("lit");
+      return;
+    }
+    prPlay(codeId, lit);
+  }
+
+  function prRenderChart() {
+    var tbl = prEls.chartBody;
+    tbl.innerHTML = "";
+    var i, c;
+    for (i = 0; i < PR_CODES.length; i++) {
+      c = PR_CODES[i];
+      var tr = document.createElement("tr");
+      var td1 = prEl("td", "pr-codecell", c.title);
+      var td2 = prEl("td", null, c.meaning + ": " + prFixLabel(c.fix) + ".");
+      tr.appendChild(td1); tr.appendChild(td2);
+      tbl.appendChild(tr);
+    }
+  }
+
+  function prRenderPicks() {
+    var t = prCur(prS), i, c, f;
+    prEls.diagOpts.innerHTML = "";
+    prEls.fixOpts.innerHTML = "";
+    for (i = 0; i < PR_CODES.length; i++) {
+      (function (code) {
+        var lab = prEl("label", "pr-opt" + (t.diag === code.id ? " sel" : ""), null);
+        var inp = document.createElement("input");
+        inp.type = "radio"; inp.name = "pr-diag"; inp.value = code.id;
+        inp.checked = t.diag === code.id;
+        inp.disabled = t.certified || prS.failed;
+        inp.addEventListener("change", function () {
+          t.diag = code.id;
+          var l = lab.parentNode.querySelectorAll(".pr-opt");
+          for (var k = 0; k < l.length; k++) l[k].classList.remove("sel");
+          lab.classList.add("sel");
+        });
+        lab.appendChild(inp);
+        var tx = prEl("span", null, null);
+        tx.appendChild(prEl("span", "pr-oc", code.title));
+        tx.appendChild(document.createTextNode(code.meaning));
+        lab.appendChild(tx);
+        prEls.diagOpts.appendChild(lab);
+      })(PR_CODES[i]);
+    }
+    for (i = 0; i < PR_FIXES.length; i++) {
+      (function (fx) {
+        var lab = prEl("label", "pr-opt" + (t.fix === fx.id ? " sel" : ""), null);
+        var inp = document.createElement("input");
+        inp.type = "radio"; inp.name = "pr-fix"; inp.value = fx.id;
+        inp.checked = t.fix === fx.id;
+        inp.disabled = t.certified || prS.failed;
+        inp.addEventListener("change", function () {
+          t.fix = fx.id;
+          var l = lab.parentNode.querySelectorAll(".pr-opt");
+          for (var k = 0; k < l.length; k++) l[k].classList.remove("sel");
+          lab.classList.add("sel");
+        });
+        lab.appendChild(inp);
+        lab.appendChild(prEl("span", null, fx.label));
+        prEls.fixOpts.appendChild(lab);
+      })(PR_FIXES[i]);
+    }
+  }
+
+  function prRenderFoot() {
+    var n = 0, i;
+    for (i = 0; i < prS.trials.length; i++) if (prS.trials[i].certified) n++;
+    prEls.progress.textContent = n + "/3 TRIALS CERTIFIED";
+    prEls.strikes.textContent = "STRIKES: " + prS.strikes + "/3";
+    prEls.strikes.className = "pr-strikes" + (prS.strikes > 0 ? " hot" : "");
+    prEls.dl.disabled = !prS.done;
+  }
+
+  function prRenderAll() {
+    prRenderTabs();
+    prEls.story.innerHTML = "";
+    var t = prCur(prS);
+    prEls.story.appendChild(document.createTextNode(t.def.story));
+    prRenderMachine();
+    prRenderDiagram();
+    prRenderChart();
+    prRenderPicks();
+    prRenderFoot();
+  }
+
+  /* ---------------- actions ---------------- */
+
+  function prOnPowerOn() {
+    var r = prActPowerOn(prS);
+    if (!r.ok) { toast(r.msg); return; }
+    var c = prCodeById(r.code);
+    prLog("<span class='dim'>POWER ON: fans spin, drive light flickers.</span>", null);
+    if (c.silent) {
+      prLog("<span class='bad'>SPEAKER: silence. No beeps at all.</span>", null);
+    } else if (c.continuous) {
+      prLog("<span class='bad'>SPEAKER: continuous short beeps, repeating.</span>", null);
+    } else {
+      prLog("<span class='bad'>SPEAKER: " + c.title + ".</span>", null);
+    }
+    prRenderAll();
+    prLightBeats(r.code);
+  }
+
+  function prOnReplay() {
+    var t = prCur(prS);
+    if (!t.heard || !t.on) return;
+    prLightBeats(t.def.code);
+    toast("Replaying the beep pattern");
+  }
+
+  function prOnPowerOff() {
+    var r = prActPowerOff(prS);
+    if (!r.ok) { toast(r.msg); return; }
+    prClearTimers();
+    prLog("<span class='dim'>POWER OFF: board is dark. Safe to service.</span>", null);
+    prRenderAll();
+  }
+
+  function prOnApplyFix() {
+    var t = prCur(prS);
+    var r = prActApplyFix(prS, t.diag, t.fix);
+    if (!r.ok && !r.strike) { toast(r.msg); return; }
+    if (r.strike) {
+      var dead = prActStrike(prS);
+      prLog("<span class='bad'>STRIKE " + prS.strikes + "/3: " + r.msg + "</span>", null);
+      if (dead) {
+        prLog("<span class='bad'>BENCH FAILED: three strikes. Reset the bench to run the diagnostics again.</span>", null);
+        toast("Bench failed: three strikes");
+      } else {
+        toast("Strike " + prS.strikes + " of 3");
+      }
+      prRenderAll();
+      return;
+    }
+    prLog("<span class='good'>" + r.msg + "</span>", null);
+    prLog("<span class='dim'>POWER ON to verify the repair...</span>", null);
+    prRenderAll();
+    var i, line;
+    var box = prEl("div", "pr-post", null);
+    for (i = 0; i < PR_POST_OK.length; i++) {
+      line = prEl("div", null, PR_POST_OK[i]);
+      box.appendChild(line);
+    }
+    prEls.diagram.innerHTML = "";
+    prEls.diagram.appendChild(box);
+    prEls.status.className = "pr-status on";
+    prEls.status.textContent = "STATUS: ON, POST OK";
+    prLog("<span class='good'>VERIFY: single short beep, POST screen up. Trial certified.</span>", null);
+    if (prS.done) {
+      prLog("<span class='good'>ALL THREE MACHINES POST. The POST Room is qualified.</span>", null);
+      toast("Bench complete: all three machines POST");
+    }
+    prRenderFoot();
+    prRenderTabs();
+  }
+
+  function prOnResetTrial() {
+    prClearTimers();
+    prResetTrial(prS);
+    prLog("<span class='dim'>Trial reset. Strikes stand.</span>", null);
+    prRenderAll();
+  }
+
+  function prOnResetBench() {
+    prClearTimers();
+    prResetAll(prS);
+    prEls.log.innerHTML = "";
+    prLog("<span class='dim'>Bench reset. Three dead machines wait on the intake line.</span>", null);
+    prRenderAll();
+  }
+
+  function prDownload() {
+    var lines = ["THE POST ROOM: QUALIFICATION RECORD",
+      "OLD IRON refurb line, POST beep-code diagnostics", ""];
+    var i, t, c;
+    for (i = 0; i < prS.trials.length; i++) {
+      t = prS.trials[i];
+      c = prCodeById(t.def.code);
+      lines.push((i + 1) + ". " + t.def.name.replace("TRIAL " + (i + 1) + ": ", "") +
+        ": " + c.title + " -> " + c.meaning + ", fix: " + prFixLabel(c.fix) +
+        " [" + (t.certified ? "CERTIFIED" : "OPEN") + "]");
+    }
+    lines.push("", "Discipline: power off before any fix. Three strikes fail the bench.");
+    lines.push("Strikes taken: " + prS.strikes);
+    var blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "post-room-qualification.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { document.body.removeChild(a); }, 500);
+    toast("Qualification record downloaded");
+  }
+
+  /* ---------------- build ---------------- */
+
+  function prBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("prBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = PR_CSS.join("\n");
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "prBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The POST Room";
+    b.addEventListener("click", prOpen);
+    box.appendChild(b);
+
+    var ov = document.createElement("div");
+    ov.className = "pr-overlay";
+    ov.id = "prOverlay";
+    var panel = prEl("div", "pr-panel", null);
+    panel.appendChild(prEl("h3", null, "The POST Room"));
+    panel.appendChild(prEl("p", "pr-spec", "BEEP CODES · 3 MACHINES · OLD IRON"));
+    panel.appendChild(prEl("p", "pr-story",
+      "Three dead machines on the OLD IRON intake line, one piezo speaker each. The beep pattern <b>is</b> " +
+      "the diagnosis: read it off the timing diagram, match it against the chart, <b>power down</b> before " +
+      "you touch anything, and apply the fix that earns a POST. Three strikes and the bench resets."));
+
+    prEls.tabs = prEl("div", "pr-tabs", null);
+    panel.appendChild(prEls.tabs);
+
+    prEls.story = prEl("p", "pr-story", null);
+    panel.appendChild(prEls.story);
+
+    var mach = prEl("div", "pr-machine", null);
+    prEls.status = prEl("div", "pr-status off", "STATUS: OFF");
+    prEls.status.setAttribute("role", "status");
+    mach.appendChild(prEls.status);
+    prEls.hint = prEl("span", "pr-hint", null);
+    mach.appendChild(prEls.hint);
+    panel.appendChild(mach);
+
+    var chart = prEl("div", "pr-chart", null);
+    chart.appendChild(prEl("h4", null, "BEEP CODE CHART (AMI-STYLE)"));
+    var tbl = document.createElement("table");
+    var thead = document.createElement("thead");
+    var trh = document.createElement("tr");
+    trh.appendChild(prEl("th", null, "PATTERN"));
+    trh.appendChild(prEl("th", null, "MEANING AND FIX"));
+    thead.appendChild(trh);
+    tbl.appendChild(thead);
+    prEls.chartBody = document.createElement("tbody");
+    tbl.appendChild(prEls.chartBody);
+    chart.appendChild(tbl);
+    panel.appendChild(chart);
+
+    var dbox = prEl("div", "pr-diagbox", null);
+    dbox.appendChild(prEl("h4", null, "TIMING DIAGRAM"));
+    prEls.diagram = prEl("div", "pr-diagram", null);
+    dbox.appendChild(prEls.diagram);
+    panel.appendChild(dbox);
+
+    var acts = prEl("div", "pr-actions", null);
+    prEls.powerOn = prEl("button", "pr-btn primary", "POWER ON");
+    prEls.powerOn.addEventListener("click", prOnPowerOn);
+    acts.appendChild(prEls.powerOn);
+    prEls.replay = prEl("button", "pr-btn", "REPLAY BEEPS");
+    prEls.replay.addEventListener("click", prOnReplay);
+    acts.appendChild(prEls.replay);
+    prEls.powerOff = prEl("button", "pr-btn", "POWER OFF");
+    prEls.powerOff.addEventListener("click", prOnPowerOff);
+    acts.appendChild(prEls.powerOff);
+    var mute = prEl("button", "pr-btn", "MUTE: OFF");
+    mute.setAttribute("aria-pressed", "false");
+    mute.addEventListener("click", function () {
+      prMuted = !prMuted;
+      mute.textContent = "MUTE: " + (prMuted ? "ON" : "OFF");
+      mute.setAttribute("aria-pressed", prMuted ? "true" : "false");
+    });
+    acts.appendChild(mute);
+    panel.appendChild(acts);
+
+    var dpick = prEl("div", "pr-pick", null);
+    dpick.appendChild(prEl("h4", null, "1. DIAGNOSIS: MATCH THE PATTERN"));
+    prEls.diagOpts = prEl("div", "pr-opts", null);
+    prEls.diagOpts.setAttribute("role", "radiogroup");
+    prEls.diagOpts.setAttribute("aria-label", "Diagnosis");
+    dpick.appendChild(prEls.diagOpts);
+    panel.appendChild(dpick);
+
+    var fpick = prEl("div", "pr-pick", null);
+    fpick.appendChild(prEl("h4", null, "2. FIX: POWER OFF FIRST, THEN APPLY"));
+    prEls.fixOpts = prEl("div", "pr-opts", null);
+    prEls.fixOpts.setAttribute("role", "radiogroup");
+    prEls.fixOpts.setAttribute("aria-label", "Fix action");
+    fpick.appendChild(prEls.fixOpts);
+    panel.appendChild(fpick);
+
+    var acts2 = prEl("div", "pr-actions", null);
+    prEls.applyFix = prEl("button", "pr-btn primary", "APPLY FIX");
+    prEls.applyFix.addEventListener("click", prOnApplyFix);
+    acts2.appendChild(prEls.applyFix);
+    var rst = prEl("button", "pr-btn", "RESET TRIAL");
+    rst.addEventListener("click", prOnResetTrial);
+    acts2.appendChild(rst);
+    var rstAll = prEl("button", "pr-btn", "RESET BENCH");
+    rstAll.addEventListener("click", prOnResetBench);
+    acts2.appendChild(rstAll);
+    panel.appendChild(acts2);
+
+    prEls.log = prEl("div", "pr-log", null);
+    prEls.log.setAttribute("role", "log");
+    prEls.log.setAttribute("aria-live", "polite");
+    panel.appendChild(prEls.log);
+
+    var foot = prEl("div", "pr-foot", null);
+    prEls.progress = prEl("span", "pr-progress", "0/3 TRIALS CERTIFIED");
+    foot.appendChild(prEls.progress);
+    prEls.strikes = prEl("span", "pr-strikes", "STRIKES: 0/3");
+    foot.appendChild(prEls.strikes);
+    prEls.dl = prEl("button", "pr-btn primary", "DOWNLOAD QUALIFICATION RECORD");
+    prEls.dl.disabled = true;
+    prEls.dl.addEventListener("click", prDownload);
+    foot.appendChild(prEls.dl);
+    var close = prEl("button", "pr-btn", "CLOSE THE BENCH");
+    close.addEventListener("click", prClose);
+    foot.appendChild(close);
+    panel.appendChild(foot);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    prEls.overlay = ov;
+    ov.addEventListener("click", function (ev) { if (ev.target === ov) prClose(); });
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && prEls.overlay.classList.contains("open")) prClose();
+    });
+
+    prS = prNewState();
+    prRenderAll();
+    prLog("<span class='dim'>Three dead machines wait on the intake line. Pick a trial, power it on, and read the speaker.</span>", null);
+  }
+
+  function prOpen() {
+    if (!prEls.overlay) prBuild();
+    prEls.overlay.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+
+  function prClose() {
+    if (prEls.overlay) prEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", prBuild);
+    } else {
+      prBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      PR: {
+        CODES: PR_CODES, FIXES: PR_FIXES, TRIALS: PR_TRIALS,
+        SHORT: PR_SHORT, LONG: PR_LONG, GAP: PR_GAP,
+        codeById: prCodeById, fixLabel: prFixLabel,
+        newState: prNewState, newTrial: prNewTrial, cur: prCur,
+        actPowerOn: prActPowerOn, actPowerOff: prActPowerOff,
+        actApplyFix: prActApplyFix, actStrike: prActStrike,
+        resetTrial: prResetTrial, resetAll: prResetAll,
+        sequence: prSequence, state: function () { return prS; }
+      }
+    });
+  }
+})();

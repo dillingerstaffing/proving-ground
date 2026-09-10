@@ -606,7 +606,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "27", name: "The DIMM Bay", btn: "dmBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "Memory installation for the OLD IRON refurb line: keyed slots that physically refuse the wrong generation, matched pairs for dual channel, retention clips that must both latch. Pick, seat, and POST three machines.",
     how: "Pick matching DDR4 UDIMMs from the tray, seat them in the A2/B2 slots, then power on for POST.",
-    spec: "DDR KEYING \u00B7 DUAL CHANNEL \u00B7 3 MACHINES" }
+    spec: "DDR KEYING \u00B7 DUAL CHANNEL \u00B7 3 MACHINES" },
+  { section: "oldiron", n: "28", name: "The POST Room", btn: "prBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "Three dead intake machines and one piezo speaker each. Read the beep pattern off the timing diagram, match it against the chart, power down before you touch anything, and apply the fix that earns a POST.",
+    how: "Power on, read the beeps, match the chart, power off, then apply the matching fix. Three strikes and the bench resets.",
+    spec: "BEEP CODES \u00B7 3 MACHINES \u00B7 POST" }
 ];
 
 var pgFilter = "all";
@@ -1007,9 +1011,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=f3758e5c9b" defer></script>
-<script src="rvdata.js?v=f3758e5c9b" defer></script>
-<script src="riscv-lab.js?v=f3758e5c9b" defer></script>
-<script src="features.js?v=f3758e5c9b" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=2272753e8f" defer></script>
+<script src="rvdata.js?v=2272753e8f" defer></script>
+<script src="riscv-lab.js?v=2272753e8f" defer></script>
+<script src="features.js?v=2272753e8f" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
