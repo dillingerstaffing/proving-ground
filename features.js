@@ -21116,3 +21116,687 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+/* Bench 32: The Decoupling Bay (shipped 2026-09-10). */
+"use strict";
+/* Bench 32: The Decoupling Bay. A real lumped-element power-delivery network
+   (PDN) transient simulation. The visitor places decoupling capacitors in
+   three mounting zones and must hold a 1.0 V core rail inside a 100 mV droop
+   budget through three load steps. Teaches one atomic mechanism: only charge
+   stored close to the die, behind little enough inductance, can answer a fast
+   load edge; the regulator is fast but not instant. */
+(function () {
+  var DC_CSS = [
+    ".dc-overlay{position:fixed;inset:0;z-index:60;display:none;align-items:flex-start;justify-content:center;background:rgba(8,8,10,.82);padding:18px 12px;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".dc-overlay.open{display:flex}",
+    ".dc-panel{width:min(860px,100%);background:var(--panel,#141416);border:1px solid var(--line,#2a2a2e);border-radius:10px;color:var(--paper,#f2efe9);font-family:'Space Grotesk',system-ui,sans-serif;margin:2vh auto;max-height:96vh;display:flex;flex-direction:column}",
+    ".dc-head{padding:16px 18px 10px;border-bottom:1px solid var(--line,#2a2a2e)}",
+    ".dc-head h3{margin:0 0 4px;font-size:20px;letter-spacing:.02em}",
+    ".dc-spec{margin:0 0 8px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ember,#ff5a1f);letter-spacing:.12em}",
+    ".dc-why{margin:0 0 8px;font-size:13.5px;line-height:1.55;color:#d8d4cc}",
+    ".dc-worked{margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#2a2a2e);border-left:3px solid var(--ember,#ff5a1f);border-radius:0 6px 6px 0;background:rgba(255,90,31,.05);font-size:13px;line-height:1.6}",
+    ".dc-worked b{color:#fff}",
+    ".dc-failmodes{margin:0 0 4px;font-size:12.5px;line-height:1.5;color:#a9a49a}",
+    ".dc-body{padding:12px 18px;overflow-y:auto}",
+    ".dc-tabs{display:flex;gap:8px;margin:2px 0 12px;flex-wrap:wrap}",
+    ".dc-tab{flex:1;min-width:140px;min-height:48px;border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;padding:8px 6px;text-align:center}",
+    ".dc-tab .dc-tname{display:block;font-size:13px;font-weight:600}",
+    ".dc-tab .dc-tprof{display:block;font-size:11px;color:#a9a49a;margin-top:2px}",
+    ".dc-tab[aria-selected='true']{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.1)}",
+    ".dc-tab.done{border-color:#3fa34d}",
+    ".dc-tab.done .dc-tname::after{content:' \\2713';color:#3fa34d}",
+    ".dc-legend{width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:11.5px;margin:0 0 12px}",
+    ".dc-legend th{text-align:left;color:#a9a49a;font-weight:400;padding:4px 8px 4px 0;border-bottom:1px solid var(--line,#2a2a2e)}",
+    ".dc-legend td{padding:5px 8px 5px 0;border-bottom:1px solid rgba(42,42,46,.5);color:#d8d4cc}",
+    ".dc-zones{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}",
+    "@media (max-width:640px){.dc-zones{grid-template-columns:1fr}}",
+    ".dc-zone{border:1px solid var(--line,#2a2a2e);border-radius:8px;padding:10px}",
+    ".dc-zone h4{margin:0 0 2px;font-size:13px}",
+    ".dc-zone .dc-zsub{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#a9a49a;margin-bottom:8px}",
+    ".dc-chips{display:flex;flex-direction:column;gap:6px;min-height:30px;margin-bottom:8px}",
+    ".dc-chip{display:flex;align-items:center;justify-content:space-between;gap:8px;border:1px solid var(--ember,#ff5a1f);border-radius:8px;padding:6px 8px 6px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;min-height:48px;background:rgba(255,90,31,.06)}",
+    ".dc-chip button{border:1px solid var(--ember,#ff5a1f);background:transparent;color:var(--paper,#f2efe9);border-radius:6px;min-height:44px;padding:6px 12px;cursor:pointer;font-size:11px;font-family:'IBM Plex Mono',monospace}",
+    ".dc-addrow{display:flex;flex-wrap:wrap;gap:6px}",
+    ".dc-add{border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:6px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;padding:8px 6px;min-height:48px;cursor:pointer;flex:1;min-width:64px}",
+    ".dc-add:hover{border-color:var(--ember,#ff5a1f)}",
+    ".dc-add:disabled{opacity:.35;cursor:not-allowed}",
+    ".dc-empty{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6d6961}",
+    ".dc-ctrl{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;border:1px solid var(--line,#2a2a2e);border-radius:8px;padding:12px;margin-bottom:12px}",
+    ".dc-pred{flex:1;min-width:200px}",
+    ".dc-pred label{display:block;font-size:12px;margin-bottom:6px;color:#d8d4cc}",
+    ".dc-pred output{font-family:'IBM Plex Mono',monospace;color:var(--ember,#ff5a1f)}",
+    ".dc-pred input{width:100%;min-height:48px;accent-color:var(--ember,#ff5a1f)}",
+    ".dc-run{min-height:52px;padding:0 26px;background:var(--ember,#ff5a1f);border:none;border-radius:8px;color:#101012;font-weight:700;font-size:15px;letter-spacing:.04em;cursor:pointer;font-family:'Space Grotesk',system-ui,sans-serif}",
+    ".dc-run:disabled{opacity:.4;cursor:not-allowed}",
+    ".dc-refbtn{min-height:52px;padding:0 18px;background:transparent;border:1px dashed var(--ember,#ff5a1f);border-radius:8px;color:var(--ember,#ff5a1f);font-weight:600;font-size:13px;cursor:pointer;font-family:'Space Grotesk',system-ui,sans-serif}",
+    ".dc-result{border:1px solid var(--line,#2a2a2e);border-radius:8px;padding:12px;margin-bottom:12px}",
+    ".dc-result h4{margin:0 0 8px;font-size:14px}",
+    ".dc-verdict{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;margin:8px 0}",
+    ".dc-verdict.pass{color:#3fa34d}",
+    ".dc-verdict.fail{color:var(--ember,#ff5a1f)}",
+    ".dc-nums{display:flex;flex-wrap:wrap;gap:14px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#d8d4cc;margin:6px 0}",
+    ".dc-nums b{color:#fff}",
+    ".dc-call{font-size:12.5px;color:#a9a49a;margin:6px 0 0}",
+    ".dc-call b{color:var(--ember,#ff5a1f)}",
+    "canvas.dc-wave{width:100%;height:220px;display:block;background:#0c0c0e;border:1px solid var(--line,#2a2a2e);border-radius:6px;margin-top:8px}",
+    ".dc-log{border:1px solid var(--line,#2a2a2e);border-radius:8px;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6;max-height:150px;overflow-y:auto;color:#c9c4b9;margin-bottom:4px}",
+    ".dc-log .dim{color:#6d6961}",
+    ".dc-log .good{color:#3fa34d}",
+    ".dc-log .bad{color:var(--ember,#ff5a1f)}",
+    ".dc-foot{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px 18px;border-top:1px solid var(--line,#2a2a2e)}",
+    ".dc-progress{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#d8d4cc}",
+    ".dc-strikes{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#a9a49a}",
+    ".dc-btn{border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;min-height:48px;padding:0 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Space Grotesk',system-ui,sans-serif}",
+    ".dc-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".dc-btn.primary{background:var(--ember,#ff5a1f);border:none;color:#101012}",
+    ".dc-refhint{border:1px dashed var(--ember,#ff5a1f);border-radius:8px;padding:10px 12px;font-size:12.5px;line-height:1.6;color:#d8d4cc;margin-bottom:12px}",
+    ".dc-refhint code{font-family:'IBM Plex Mono',monospace;color:var(--ember,#ff5a1f);font-size:12px}",
+    ".dc-panel button:focus-visible,.dc-panel input:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}"
+  ];
+
+  /* ---- physics constants (shared with the node test hook) ---- */
+  var DC_VNOM = 1.0;            // rail nominal, volts
+  var DC_DT = 0.25e-9;          // integration step, seconds
+  var DC_T = 3e-6;              // simulated window, seconds
+  var DC_CDIE = 2e-9;           // on-die capacitance, farads
+  var DC_VRM_DELAY = 80e-9;     // regulator control-loop latency, seconds
+  var DC_VRM_SLEW = 120e6;      // regulator slew limit, A/s
+  var DC_DROOP_BUDGET = 100;    // millivolts of droop allowed
+  var DC_VMAX = 1.12;           // ringing ceiling, volts
+
+  var DC_CAPS = [
+    { id: "CER-1U",    C: 1e-6,    ESL: 0.3e-9, ESR: 4e-3,  role: "fastest edge, shallow" },
+    { id: "CER-10U",   C: 10e-6,   ESL: 0.4e-9, ESR: 3e-3,  role: "fast edge, medium depth" },
+    { id: "TAN-47U",   C: 47e-6,   ESL: 0.6e-9, ESR: 10e-3, role: "mid reservoir" },
+    { id: "ELY-220U",  C: 220e-6,  ESL: 5e-9,   ESR: 20e-3, role: "deep reservoir" },
+    { id: "BLK-1000U", C: 1000e-6, ESL: 10e-9,  ESR: 30e-3, role: "bulk, slowest" }
+  ];
+  var DC_ZONES = [
+    { id: "NEAR", label: "NEAR", sub: "on the package, 0.05 nH path", L: 0.05e-9, max: 6 },
+    { id: "MID",  label: "MID",  sub: "board, close, 0.5 nH path",   L: 0.5e-9,  max: 6 },
+    { id: "FAR",  label: "FAR",  sub: "board edge, 4 nH path",       L: 4e-9,    max: 4 }
+  ];
+  var DC_TOTAL_MAX = 16;
+
+  function dcCapDef(id) {
+    for (var k = 0; k < DC_CAPS.length; k++) if (DC_CAPS[k].id === id) return DC_CAPS[k];
+    return null;
+  }
+  function dcZoneDef(id) {
+    for (var k = 0; k < DC_ZONES.length; k++) if (DC_ZONES[k].id === id) return DC_ZONES[k];
+    return null;
+  }
+
+  /* Load profiles: piecewise-linear current steps. t in seconds, I in amps. */
+  function dcRamp(t, t0, tr, i0, i1) {
+    if (t < t0) return i0;
+    if (t < t0 + tr) return i0 + (i1 - i0) * (t - t0) / tr;
+    return i1;
+  }
+  var DC_TRIALS = [
+    { n: 1, name: "WAKE BURST", prof: "0 to 15 A in 100 ns",
+      why: "One core wakes from sleep. The edge is fast but the current is modest: a few ceramics near the die plus one mid reservoir should hold it.",
+      iload: function (t) { return dcRamp(t, 50e-9, 100e-9, 0, 15); } },
+    { n: 2, name: "TURBO STEP", prof: "0 to 35 A in 60 ns",
+      why: "Turbo kicks in: more than twice the current in nearly half the time. The edge needs a wall of near ceramics, and the sustained draw needs real mid depth plus bulk behind it.",
+      iload: function (t) { return dcRamp(t, 50e-9, 60e-9, 0, 35); } },
+    { n: 3, name: "DOUBLE STEP", prof: "0 to 12 A in 80 ns, then to 28 A",
+      why: "Two steps 400 ns apart: the network must answer the first edge, then answer again before it has fully recovered. Depth matters as much as speed.",
+      iload: function (t) {
+        var i = dcRamp(t, 50e-9, 80e-9, 0, 12);
+        if (t >= 450e-9) i = dcRamp(t, 450e-9, 80e-9, 12, 28);
+        return i;
+      } }
+  ];
+
+  /* Reference networks, revealed after 3 strikes. Verified in the smoke suite. */
+  var DC_REF = [
+    [["CER-10U","NEAR"],["CER-10U","NEAR"],["TAN-47U","MID"],["ELY-220U","FAR"]],
+    [["CER-10U","NEAR"],["CER-10U","NEAR"],["CER-10U","NEAR"],["CER-10U","NEAR"],
+     ["CER-1U","NEAR"],["CER-1U","NEAR"],
+     ["TAN-47U","MID"],["TAN-47U","MID"],["TAN-47U","MID"],["TAN-47U","MID"],["TAN-47U","MID"],["TAN-47U","MID"],
+     ["ELY-220U","FAR"],["BLK-1000U","FAR"]],
+    [["CER-10U","NEAR"],["CER-10U","NEAR"],["CER-10U","NEAR"],
+     ["TAN-47U","MID"],["TAN-47U","MID"],["TAN-47U","MID"],
+     ["ELY-220U","FAR"],["BLK-1000U","FAR"]]
+  ];
+
+  /* ---- the transient solver: lumped RLC per capacitor branch, a slew-limited
+     regulator with control-loop delay, and on-die capacitance at the load node.
+     Symplectic Euler (currents first, then voltages) keeps it stable. ---- */
+  function dcSim(placement, trialIdx) {
+    var n = placement.length;
+    var L = [], R = [], C = [];
+    for (var k = 0; k < n; k++) {
+      var cd = dcCapDef(placement[k].type), zd = dcZoneDef(placement[k].zone);
+      L.push(cd.ESL + zd.L); R.push(cd.ESR); C.push(cd.C);
+    }
+    var iload = DC_TRIALS[trialIdx].iload;
+    var steps = Math.round(DC_T / DC_DT);
+    var V = DC_VNOM, Isup = 0, Ii = [], Vc = [];
+    for (k = 0; k < n; k++) { Ii.push(0); Vc.push(DC_VNOM); }
+    var vmin = V, vmax = V, tmin = 0, tmax = 0;
+    var trace = [];
+    var peakShare = [];
+    for (k = 0; k < n; k++) peakShare.push(0);
+    for (var s = 0; s < steps; s++) {
+      var t = s * DC_DT;
+      var Il = iload(t);
+      var tgt = iload(Math.max(0, t - DC_VRM_DELAY));
+      var dI = tgt - Isup, mx = DC_VRM_SLEW * DC_DT;
+      Isup += Math.max(-mx, Math.min(mx, dI));
+      for (k = 0; k < n; k++) Ii[k] += ((V - Vc[k] - R[k] * Ii[k]) / L[k]) * DC_DT;
+      var dV = (Isup - Il) / DC_CDIE;
+      for (k = 0; k < n; k++) {
+        dV -= Ii[k] / DC_CDIE;
+        Vc[k] += (Ii[k] / C[k]) * DC_DT;
+        var out = -Ii[k];
+        if (out > peakShare[k]) peakShare[k] = out;
+      }
+      V += dV * DC_DT;
+      if (V < vmin) { vmin = V; tmin = t; }
+      if (V > vmax) { vmax = V; tmax = t; }
+      if ((s % 40) === 0) trace.push(V);
+    }
+    return { vmin: vmin, vmax: vmax, tmin: tmin, tmax: tmax,
+             droop: (DC_VNOM - vmin) * 1000, trace: trace, peakShare: peakShare };
+  }
+
+  function dcVerdict(r) {
+    if (r.vmax > DC_VMAX)
+      return { ok: false, tag: "RINGING",
+               text: "RINGING: the rail peaked at " + r.vmax.toFixed(3) + " V, above the " +
+                     DC_VMAX.toFixed(2) + " V ceiling. The network is under-damped: capacitance without enough resistance nearby rings like a bell." };
+    if (r.droop > DC_DROOP_BUDGET)
+      return { ok: false, tag: "DROOP",
+               text: "OUT OF SPEC: the rail fell " + r.droop.toFixed(0) + " mV, past the " +
+                     DC_DROOP_BUDGET + " mV budget. More charge, closer to the die, or a faster (lower-inductance) path is needed." };
+    return { ok: true, tag: "IN SPEC",
+             text: "IN SPEC: worst droop " + r.droop.toFixed(1) + " mV against a " + DC_DROOP_BUDGET +
+                   " mV budget, peak " + r.vmax.toFixed(3) + " V. The rail held." };
+  }
+
+  /* ---- bench state ---- */
+  function dcNewTrial() {
+    return { placement: [], attempts: 0, strikes: 0, certified: false,
+             best: null, pred: 150, last: null, refShown: false };
+  }
+  function dcNewState() {
+    return { trials: [dcNewTrial(), dcNewTrial(), dcNewTrial()], cur: 0 };
+  }
+  var dcS = dcNewState();
+  var dcEls = {};
+
+  function dcEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  function dcLog(html, cls) {
+    var d = dcEl("div", cls || null);
+    d.innerHTML = html;
+    dcEls.log.appendChild(d);
+    dcEls.log.scrollTop = dcEls.log.scrollHeight;
+  }
+  function dcCertifiedCount() {
+    var c = 0;
+    for (var i = 0; i < 3; i++) if (dcS.trials[i].certified) c++;
+    return c;
+  }
+  function dcZoneCount(tr, zid) {
+    var c = 0;
+    for (var k = 0; k < tr.placement.length; k++)
+      if (tr.placement[k].zone === zid) c++;
+    return c;
+  }
+  function dcCountOf(tr, type, zone) {
+    var c = 0;
+    for (var k = 0; k < tr.placement.length; k++)
+      if (tr.placement[k].type === type && tr.placement[k].zone === zone) c++;
+    return c;
+  }
+
+  function dcBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("dcBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = DC_CSS.join("\n");
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "dcBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Decoupling Bay";
+    b.addEventListener("click", dcOpen);
+    box.appendChild(b);
+
+    var ov = dcEl("div", "dc-overlay");
+    ov.id = "dcOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Decoupling Bay");
+    var panel = dcEl("div", "dc-panel");
+
+    var head = dcEl("div", "dc-head");
+    head.appendChild(dcEl("h3", null, "The Decoupling Bay"));
+    head.appendChild(dcEl("p", "dc-spec", "TAPEOUT // POWER-DELIVERY NETWORK LAB"));
+    head.appendChild(dcEl("p", "dc-why",
+      "A core that wakes up can demand 35 amps in 60 nanoseconds. The voltage regulator " +
+      "sits centimeters away and needs about 80 ns just to notice, so for the first instant " +
+      "the only energy available is the charge already stored next to the die. Decoupling " +
+      "capacitors are that local charge: pick the right mix, put each one close enough to " +
+      "matter, and hold the 1.0 V rail inside its 100 mV droop budget."));
+    var worked = dcEl("p", "dc-worked");
+    worked.innerHTML =
+      "<b>Worked example, trial 1:</b> the load steps 0 to 15 A in 100 ns, so the edge alone " +
+      "needs about 750 nC (half of 15 A times 100 ns). A 10 uF ceramic at 1.0 V holds 10,000 nC, " +
+      "but the rail may only fall 100 mV, so each cap can release just 1,000 nC before breaking " +
+      "the budget. Worse, ramping 7.5 A per cap in 100 ns through 0.45 nH of path costs " +
+      "<b>V = L x dI/dt = 34 mV</b> of the budget before any charge is even delivered. Through " +
+      "14 nH (a bulk cap at the board edge) the same edge would cost over a volt: it physically " +
+      "cannot answer in time. Speed is inductance; depth is capacitance. You need both.";
+    head.appendChild(worked);
+    head.appendChild(dcEl("p", "dc-failmodes",
+      "Failure modes, stated plainly: no capacitors and the rail collapses on the first edge. " +
+      "Bulk capacitors far away watch the edge happen without participating. Small ceramics alone " +
+      "answer the edge, then run dry while the regulator is still waking up. And capacitance with " +
+      "too little resistance nearby can ring the rail above 1.12 V."));
+    panel.appendChild(head);
+
+    var body = dcEl("div", "dc-body");
+    dcEls.tabs = dcEl("div", "dc-tabs");
+    dcEls.tabs.setAttribute("role", "tablist");
+    body.appendChild(dcEls.tabs);
+
+    dcEls.trialWhy = dcEl("p", "dc-failmodes");
+    body.appendChild(dcEls.trialWhy);
+
+    var leg = dcEl("table", "dc-legend");
+    leg.setAttribute("aria-label", "Capacitor types");
+    var trh = dcEl("tr");
+    ["TYPE", "CAPACITANCE", "ESL", "ESR", "ROLE"].forEach(function (h) {
+      trh.appendChild(dcEl("th", null, h));
+    });
+    leg.appendChild(trh);
+    DC_CAPS.forEach(function (c) {
+      var tr = dcEl("tr");
+      tr.appendChild(dcEl("td", null, c.id));
+      var uf = c.C * 1e6;
+      tr.appendChild(dcEl("td", null, (uf >= 1000 ? (uf / 1000) + " mF" : uf + " uF")));
+      tr.appendChild(dcEl("td", null, (c.ESL * 1e9).toFixed(1) + " nH"));
+      tr.appendChild(dcEl("td", null, (c.ESR * 1e3).toFixed(0) + " mOhm"));
+      tr.appendChild(dcEl("td", null, c.role));
+      leg.appendChild(tr);
+    });
+    body.appendChild(leg);
+
+    dcEls.zones = dcEl("div", "dc-zones");
+    body.appendChild(dcEls.zones);
+    dcEls.refHint = dcEl("div", "dc-refhint");
+    dcEls.refHint.style.display = "none";
+    body.appendChild(dcEls.refHint);
+
+    var ctrl = dcEl("div", "dc-ctrl");
+    var predWrap = dcEl("div", "dc-pred");
+    var plab = dcEl("label", null, "Predict the worst droop, then run: ");
+    dcEls.predOut = dcEl("output", null, "150 mV");
+    plab.appendChild(dcEls.predOut);
+    predWrap.appendChild(plab);
+    dcEls.pred = dcEl("input");
+    dcEls.pred.type = "range";
+    dcEls.pred.min = "0";
+    dcEls.pred.max = "400";
+    dcEls.pred.step = "5";
+    dcEls.pred.value = "150";
+    dcEls.pred.setAttribute("aria-label", "Predicted worst droop in millivolts");
+    dcEls.pred.addEventListener("input", function () {
+      dcEls.predOut.textContent = dcEls.pred.value + " mV";
+    });
+    predWrap.appendChild(dcEls.pred);
+    ctrl.appendChild(predWrap);
+    dcEls.run = dcEl("button", "dc-run", "RUN LOAD STEP");
+    dcEls.run.addEventListener("click", dcOnRun);
+    ctrl.appendChild(dcEls.run);
+    dcEls.refBtn = dcEl("button", "dc-refbtn", "LOAD REFERENCE NETWORK");
+    dcEls.refBtn.style.display = "none";
+    dcEls.refBtn.addEventListener("click", dcLoadRef);
+    ctrl.appendChild(dcEls.refBtn);
+    body.appendChild(ctrl);
+
+    dcEls.result = dcEl("div", "dc-result");
+    dcEls.result.style.display = "none";
+    body.appendChild(dcEls.result);
+
+    dcEls.log = dcEl("div", "dc-log");
+    dcEls.log.setAttribute("aria-live", "polite");
+    body.appendChild(dcEls.log);
+    panel.appendChild(body);
+
+    var foot = dcEl("div", "dc-foot");
+    dcEls.progress = dcEl("span", "dc-progress", "CERTIFIED: 0/3");
+    foot.appendChild(dcEls.progress);
+    dcEls.strikes = dcEl("span", "dc-strikes", "STRIKES: 0/3");
+    foot.appendChild(dcEls.strikes);
+    var resetBench = dcEl("button", "dc-btn", "RESET BENCH");
+    resetBench.addEventListener("click", function () {
+      dcS = dcNewState();
+      dcRenderAll();
+      dcLog("<span class='dim'>Bench reset. All trials open, strikes cleared.</span>", null);
+    });
+    foot.appendChild(resetBench);
+    dcEls.cert = dcEl("button", "dc-btn primary", "DOWNLOAD CERTIFICATE");
+    dcEls.cert.style.display = "none";
+    dcEls.cert.addEventListener("click", dcDownloadCert);
+    foot.appendChild(dcEls.cert);
+    var close = dcEl("button", "dc-btn", "CLOSE THE BENCH");
+    close.addEventListener("click", dcClose);
+    foot.appendChild(close);
+    panel.appendChild(foot);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    dcEls.overlay = ov;
+    ov.addEventListener("click", function (ev) { if (ev.target === ov) dcClose(); });
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && dcEls.overlay.classList.contains("open")) dcClose();
+    });
+
+    dcRenderAll();
+    dcLog("<span class='dim'>A live 1.0 V rail, three load steps, five capacitor types. " +
+      "Open trial 1, add a couple of ceramics near the die, call the droop, and run it. " +
+      "Running with an empty board is allowed: watch what the edge does with no local charge.</span>", null);
+  }
+
+  /* ---- rendering ---- */
+  function dcRenderTabs() {
+    dcEls.tabs.innerHTML = "";
+    DC_TRIALS.forEach(function (tr, i) {
+      var st = dcS.trials[i];
+      var b = dcEl("button", "dc-tab" + (st.certified ? " done" : ""));
+      b.setAttribute("role", "tab");
+      b.setAttribute("aria-selected", dcS.cur === i ? "true" : "false");
+      var nm = dcEl("span", "dc-tname", "TRIAL " + tr.n + ": " + tr.name);
+      var pf = dcEl("span", "dc-tprof", tr.prof);
+      b.appendChild(nm); b.appendChild(pf);
+      b.addEventListener("click", function () { dcS.cur = i; dcRenderAll(); });
+      dcEls.tabs.appendChild(b);
+    });
+    dcEls.trialWhy.textContent = "Trial " + DC_TRIALS[dcS.cur].n + ": " + DC_TRIALS[dcS.cur].why;
+  }
+
+  function dcRenderZones() {
+    var z = dcEls.zones;
+    z.innerHTML = "";
+    var tr = dcS.trials[dcS.cur];
+    var locked = tr.certified;
+    DC_ZONES.forEach(function (zd) {
+      var panel = dcEl("div", "dc-zone");
+      panel.appendChild(dcEl("h4", null, zd.label + " ZONE"));
+      panel.appendChild(dcEl("div", "dc-zsub",
+        zd.sub + "  |  " + dcZoneCount(tr, zd.id) + "/" + zd.max + " placed"));
+      var chips = dcEl("div", "dc-chips");
+      var any = false;
+      DC_CAPS.forEach(function (c) {
+        var cnt = dcCountOf(tr, c.id, zd.id);
+        if (cnt === 0) return;
+        any = true;
+        var chip = dcEl("div", "dc-chip");
+        chip.appendChild(dcEl("span", null, c.id + "  x" + cnt));
+        var rm = dcEl("button", null, "REMOVE ONE");
+        rm.setAttribute("aria-label", "Remove one " + c.id + " from the " + zd.label + " zone");
+        rm.disabled = locked;
+        (function (cid, zid) {
+          rm.addEventListener("click", function () {
+            dcRemoveCap(cid, zid);
+          });
+        })(c.id, zd.id);
+        chip.appendChild(rm);
+        chips.appendChild(chip);
+      });
+      if (!any) chips.appendChild(dcEl("span", "dc-empty", "empty: the edge hits bare die"));
+      panel.appendChild(chips);
+      var addrow = dcEl("div", "dc-addrow");
+      DC_CAPS.forEach(function (c) {
+        var a = dcEl("button", "dc-add", "+ " + c.id);
+        a.setAttribute("aria-label", "Add " + c.id + " to " + zd.label + " zone");
+        a.disabled = locked ||
+          dcZoneCount(tr, zd.id) >= zd.max ||
+          tr.placement.length >= DC_TOTAL_MAX;
+        (function (cid, zid) {
+          a.addEventListener("click", function () { dcAddCap(cid, zid); });
+        })(c.id, zd.id);
+        addrow.appendChild(a);
+      });
+      panel.appendChild(addrow);
+      z.appendChild(panel);
+    });
+    /* reference hint */
+    if (tr.refShown && !tr.certified) {
+      dcEls.refHint.style.display = "";
+      var parts = DC_REF[dcS.cur].map(function (p) { return p[0] + "@" + p[1]; });
+      dcEls.refHint.innerHTML =
+        "Reference network, proven in simulation to hold this trial: " +
+        "<code>" + parts.join(", ") + "</code>. " +
+        "Place it yourself, or press LOAD REFERENCE NETWORK.";
+      dcEls.refBtn.style.display = "";
+    } else {
+      dcEls.refHint.style.display = "none";
+      dcEls.refBtn.style.display = "none";
+    }
+  }
+
+  function dcRenderFoot() {
+    var n = dcCertifiedCount();
+    dcEls.progress.textContent = "CERTIFIED: " + n + "/3";
+    dcEls.strikes.textContent = "STRIKES: " + dcS.trials[dcS.cur].strikes + "/3 (this trial)";
+    dcEls.cert.style.display = n === 3 ? "" : "none";
+  }
+
+  function dcRenderAll() {
+    dcRenderTabs();
+    dcRenderZones();
+    dcRenderFoot();
+    var tr = dcS.trials[dcS.cur];
+    dcEls.pred.value = String(tr.pred);
+    dcEls.predOut.textContent = tr.pred + " mV";
+    dcEls.run.disabled = tr.certified;
+    if (tr.last) dcRenderResult(tr); else dcEls.result.style.display = "none";
+  }
+
+  function dcAddCap(type, zone) {
+    var tr = dcS.trials[dcS.cur];
+    if (tr.certified) return;
+    var zd = dcZoneDef(zone);
+    if (dcZoneCount(tr, zone) >= zd.max || tr.placement.length >= DC_TOTAL_MAX) return;
+    tr.placement.push({ type: type, zone: zone });
+    dcRenderZones();
+  }
+  function dcRemoveCap(type, zone) {
+    var tr = dcS.trials[dcS.cur];
+    if (tr.certified) return;
+    for (var k = 0; k < tr.placement.length; k++) {
+      if (tr.placement[k].type === type && tr.placement[k].zone === zone) {
+        tr.placement.splice(k, 1);
+        break;
+      }
+    }
+    dcRenderZones();
+  }
+  function dcLoadRef() {
+    var tr = dcS.trials[dcS.cur];
+    if (tr.certified) return;
+    tr.placement = DC_REF[dcS.cur].map(function (p) { return { type: p[0], zone: p[1] }; });
+    dcLog("<span class='dim'>Reference network loaded. Predict the droop and run it: " +
+      "watch how the near ceramics take the edge while the bulk covers the tail.</span>", null);
+    dcRenderAll();
+  }
+
+  /* ---- run + verdict ---- */
+  function dcOnRun() {
+    var ti = dcS.cur;
+    var tr = dcS.trials[ti];
+    if (tr.certified) return;
+    tr.pred = parseInt(dcEls.pred.value, 10) || 0;
+    tr.attempts++;
+    var t0 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+    var r = dcSim(tr.placement, ti);
+    var t1 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+    tr.last = r;
+    var v = dcVerdict(r);
+    var callDiff = Math.abs(tr.pred - r.droop);
+    var calledIt = callDiff <= 30;
+    if (v.ok) {
+      tr.certified = true;
+      tr.best = r.droop;
+      dcLog("<span class='good'>TRIAL " + DC_TRIALS[ti].n + " CERTIFIED</span> in " +
+        (t1 - t0).toFixed(1) + " ms of simulated time: droop " + r.droop.toFixed(1) +
+        " mV, peak " + r.vmax.toFixed(3) + " V." +
+        (calledIt ? " <b>Called it:</b> predicted " + tr.pred + " mV." :
+          " Predicted " + tr.pred + " mV, actual " + r.droop.toFixed(0) + " mV."), null);
+    } else {
+      tr.strikes++;
+      dcLog("<span class='bad'>TRIAL " + DC_TRIALS[ti].n + " " + v.tag + "</span>: " + v.text +
+        " Strike " + tr.strikes + "/3." +
+        (calledIt ? " <b>Called it:</b> predicted " + tr.pred + " mV." :
+          " Predicted " + tr.pred + " mV, actual " + r.droop.toFixed(0) + " mV."), null);
+      if (tr.strikes >= 3 && !tr.refShown) {
+        tr.refShown = true;
+        dcLog("<span class='dim'>Three strikes: the reference network for this trial is now shown above. " +
+          "Study why it works before you load it.</span>", null);
+      }
+    }
+    dcRenderAll();
+    if (dcCertifiedCount() === 3) {
+      dcLog("<span class='good'>BENCH COMPLETE: all three rails held. Download the certificate.</span>", null);
+    }
+  }
+
+  function dcRenderResult(tr) {
+    var box = dcEls.result;
+    box.style.display = "";
+    box.innerHTML = "";
+    var r = tr.last;
+    var v = dcVerdict(r);
+    box.appendChild(dcEl("h4", null, "TRIAL " + DC_TRIALS[dcS.cur].n + " RESULT"));
+    var vd = dcEl("div", "dc-verdict " + (v.ok ? "pass" : "fail"), v.tag + ": " + v.text);
+    box.appendChild(vd);
+    var nums = dcEl("div", "dc-nums");
+    nums.innerHTML =
+      "worst droop <b>" + r.droop.toFixed(1) + " mV</b> (budget " + DC_DROOP_BUDGET + " mV) &nbsp; " +
+      "lowest rail <b>" + r.vmin.toFixed(3) + " V</b> &nbsp; " +
+      "peak <b>" + r.vmax.toFixed(3) + " V</b> (ceiling " + DC_VMAX.toFixed(2) + " V) &nbsp; " +
+      "caps placed <b>" + tr.placement.length + "</b>";
+    box.appendChild(nums);
+    var cv = document.createElement("canvas");
+    cv.className = "dc-wave";
+    cv.setAttribute("aria-label", "Rail voltage waveform for trial " + DC_TRIALS[dcS.cur].n);
+    box.appendChild(cv);
+    dcDrawWave(cv, r);
+    var callDiff = Math.abs(tr.pred - r.droop);
+    var call = dcEl("p", "dc-call");
+    call.innerHTML = "You predicted <b>" + tr.pred + " mV</b>, the sim measured <b>" +
+      r.droop.toFixed(0) + " mV</b>: " +
+      (callDiff <= 30 ? "<b>called it</b> (within 30 mV)." : "off by " + callDiff.toFixed(0) + " mV. " +
+      (r.droop > tr.pred ? "The network gave up more charge than you expected." : "The network held better than you expected."));
+    box.appendChild(call);
+  }
+
+  function dcDrawWave(cv, r) {
+    var dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+    var W = cv.clientWidth || 600, H = 220;
+    cv.width = W * dpr; cv.height = H * dpr;
+    var ctx = cv.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    var vLo = 0.82, vHi = 1.16;
+    function X(t) { return 34 + (t / DC_T) * (W - 48); }
+    function Y(v) { return H - 14 - ((v - vLo) / (vHi - vLo)) * (H - 28); }
+    ctx.clearRect(0, 0, W, H);
+    /* spec band */
+    ctx.fillStyle = "rgba(63,163,77,0.10)";
+    var yA = Y(Math.min(DC_VMAX, vHi)), yB = Y(Math.max(DC_VNOM - DC_DROOP_BUDGET / 1000, vLo));
+    ctx.fillRect(34, yA, W - 48, yB - yA);
+    ctx.strokeStyle = "#2a2a2e"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(34, Y(DC_VNOM)); ctx.lineTo(W - 14, Y(DC_VNOM)); ctx.stroke();
+    ctx.fillStyle = "#6d6961"; ctx.font = "10px 'IBM Plex Mono',monospace";
+    ctx.fillText("1.00", 6, Y(1.0) + 3);
+    ctx.fillText("0.90", 6, Y(0.9) + 3);
+    ctx.fillText("1.12", 6, Y(1.12) + 3);
+    ctx.fillText("0us", 34, H - 2); ctx.fillText("3us", W - 34, H - 2);
+    /* trace */
+    var tr = r.trace, n = tr.length;
+    ctx.strokeStyle = "#ff5a1f"; ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (var i = 0; i < n; i++) {
+      var t = (i / (n - 1)) * DC_T;
+      var vv = Math.max(vLo, Math.min(vHi, tr[i]));
+      if (i === 0) ctx.moveTo(X(t), Y(vv)); else ctx.lineTo(X(t), Y(vv));
+    }
+    ctx.stroke();
+    /* min/max markers */
+    ctx.fillStyle = "#ff5a1f";
+    ctx.beginPath(); ctx.arc(X(r.tmin), Y(Math.max(vLo, Math.min(vHi, r.vmin))), 4, 0, 7); ctx.fill();
+    ctx.fillStyle = "#f2efe9";
+    ctx.beginPath(); ctx.arc(X(r.tmax), Y(Math.max(vLo, Math.min(vHi, r.vmax))), 4, 0, 7); ctx.fill();
+    ctx.fillStyle = "#a9a49a";
+    ctx.fillText("min " + r.vmin.toFixed(3) + "V", Math.min(X(r.tmin) + 8, W - 110), Y(Math.max(vLo, r.vmin)) - 6);
+    ctx.fillText("max " + r.vmax.toFixed(3) + "V", Math.min(X(r.tmax) + 8, W - 110), Y(Math.min(vHi, r.vmax)) + 14);
+  }
+
+  function dcDownloadCert() {
+    var lines = [];
+    lines.push("THE PROVING GROUND // THE DECOUPLING BAY");
+    lines.push("Power-delivery network qualification certificate");
+    lines.push("Rail: 1.0 V nominal, " + DC_DROOP_BUDGET + " mV droop budget, " + DC_VMAX.toFixed(2) + " V ringing ceiling");
+    lines.push("Date: " + new Date().toISOString());
+    lines.push("");
+    DC_TRIALS.forEach(function (tr, i) {
+      var st = dcS.trials[i];
+      lines.push("TRIAL " + tr.n + " " + tr.name + " (" + tr.prof + "): " +
+        (st.certified ? "CERTIFIED, worst droop " + st.best.toFixed(1) + " mV" : "not certified"));
+      var parts = st.placement.map(function (p) { return p.type + "@" + p.zone; });
+      lines.push("  network: " + (parts.join(", ") || "(empty)"));
+      lines.push("  attempts: " + st.attempts);
+    });
+    var blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "decoupling-bay-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  function dcOpen() {
+    if (!dcEls.overlay) dcBuild();
+    dcEls.overlay.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+  function dcClose() {
+    if (dcEls.overlay) dcEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", dcBuild);
+    } else {
+      dcBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      DC: {
+        VNOM: DC_VNOM, DROOP_BUDGET: DC_DROOP_BUDGET, VMAX: DC_VMAX,
+        CAPS: DC_CAPS, ZONES: DC_ZONES, TRIALS: DC_TRIALS, REF: DC_REF,
+        TOTAL_MAX: DC_TOTAL_MAX,
+        sim: dcSim, verdict: dcVerdict,
+        newState: dcNewState, newTrial: dcNewTrial,
+        zoneCount: dcZoneCount, countOf: dcCountOf,
+        certifiedCount: dcCertifiedCount, state: function () { return dcS; }
+      }
+    });
+  }
+})();
