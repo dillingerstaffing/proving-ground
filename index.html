@@ -505,7 +505,11 @@ var PG_BENCHES = [
   { section: "tapeout", n: "11", name: "The Link Lab", btn: "llBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "PCIe link training for GPU bring-up: a real SerDes channel model with hidden lane faults, crosstalk, and EQ presets. Train each card's link and certify only what you can sign.",
     how: "Pick width, speed, and EQ preset, run training, certify the honest link.",
-    spec: "SERDES \u00B7 16 LANES \u00B7 3 CARDS" }
+    spec: "SERDES \u00B7 16 LANES \u00B7 3 CARDS" },
+  { section: "silicon", n: "12", name: "The Scheduler Bay", btn: "scbBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "An xv6-style scheduler lab: tune Round Robin, Lottery, and Multi-Level Feedback Queue against three shop workloads, beat the house baseline, ship the certificate.",
+    how: "Pick a policy, set the quantum and queues, run the simulation, beat par on all three trials.",
+    spec: "3 POLICIES \u00B7 3 WORKLOADS" }
 ];
 
 var pgFilter = "all";
@@ -814,8 +818,8 @@ if (document.readyState === "loading") {
   pgBoot();
 }
 </script>
-<script src="rvcore.js?v=d23c176" defer></script>
-<script src="rvdata.js?v=d23c176" defer></script>
-<script src="features.js?v=d23c176" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=ec84f07" defer></script>
+<script src="rvdata.js?v=ec84f07" defer></script>
+<script src="features.js?v=ec84f07" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

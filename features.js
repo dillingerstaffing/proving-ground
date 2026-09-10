@@ -7701,3 +7701,732 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
 })();
+
+(function () {
+  "use strict";
+/* The Scheduler Bay: pure scheduler core (no DOM). Node-testable. */
+function scbMulberry32(seed) {
+  var a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    var t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* Trial process sets. bursts: cpu/io alternating, starts AND ends with cpu. */
+var SCB_TRIALS = [
+  {
+    id: "t1", name: "COMPILE FARM", seed: 1101,
+    blurb: "Six CPU-bound compile jobs land at staggered times. No IO to hide behind.",
+    base: { policy: "rr", quantum: 20 }, par: 2.0,
+    procs: [
+      { name: "cc1", cls: "batch", arrival: 0,  bursts: [120] },
+      { name: "cc2", cls: "batch", arrival: 5,  bursts: [90] },
+      { name: "ld1", cls: "batch", arrival: 10, bursts: [150] },
+      { name: "cc3", cls: "batch", arrival: 15, bursts: [80] },
+      { name: "as1", cls: "batch", arrival: 20, bursts: [110] },
+      { name: "ld2", cls: "batch", arrival: 25, bursts: [95] }
+    ]
+  },
+  {
+    id: "t2", name: "SHELL VS COMPILE", seed: 2202,
+    blurb: "Two interactive shells share the box with four long compiles. Keep the shells snappy.",
+    base: { policy: "rr", quantum: 20 }, par: 9.0,
+    procs: [
+      { name: "sh1", cls: "inter", arrival: 0,  bursts: [8, 40, 8, 40, 8, 40, 8] },
+      { name: "sh2", cls: "inter", arrival: 12, bursts: [6, 35, 6, 35, 6, 35, 6] },
+      { name: "cc1", cls: "batch", arrival: 0,  bursts: [160] },
+      { name: "cc2", cls: "batch", arrival: 8,  bursts: [130] },
+      { name: "ld1", cls: "batch", arrival: 18, bursts: [150] },
+      { name: "cc3", cls: "batch", arrival: 28, bursts: [120] }
+    ]
+  },
+  {
+    id: "t3", name: "IO STORM", seed: 3303,
+    blurb: "Eight IO-bound daemons hammer short bursts. Keep the CPU fed, never idle with work waiting.",
+    base: { policy: "rr", quantum: 20 }, par: -1.5,
+    procs: [
+      { name: "d1", cls: "inter", arrival: 0,  bursts: [6, 30, 6, 30, 6, 30, 6, 30, 6] },
+      { name: "d2", cls: "inter", arrival: 6,  bursts: [5, 26, 5, 26, 5, 26, 5, 26, 5] },
+      { name: "d3", cls: "inter", arrival: 12, bursts: [7, 32, 7, 32, 7, 32, 7, 32, 7] },
+      { name: "d4", cls: "inter", arrival: 18, bursts: [6, 28, 6, 28, 6, 28, 6, 28, 6] },
+      { name: "d5", cls: "inter", arrival: 24, bursts: [5, 30, 5, 30, 5, 30, 5, 30, 5] },
+      { name: "d6", cls: "inter", arrival: 30, bursts: [7, 26, 7, 26, 7, 26, 7, 26, 7] },
+      { name: "d7", cls: "inter", arrival: 36, bursts: [6, 34, 6, 34, 6, 34, 6, 34, 6] },
+      { name: "d8", cls: "inter", arrival: 42, bursts: [5, 28, 5, 28, 5, 28, 5, 28, 5] }
+    ]
+  }
+];
+
+/* Run one schedule. cfg: {policy, quantum, queues, boost, interW}.
+   Returns { metrics, timeline } where timeline[t] = proc index or -1. */
+function scbRun(trial, cfg) {
+  var rng = scbMulberry32(trial.seed ^ 0x5bd1e995);
+  var n = trial.procs.length;
+  var P = trial.procs.map(function (d, i) {
+    var cpu = 0, io = 0;
+    for (var k = 0; k < d.bursts.length; k += 2) cpu += d.bursts[k];
+    for (var j = 1; j < d.bursts.length; j += 2) io += d.bursts[j];
+    return {
+      idx: i, name: d.name, cls: d.cls, arrival: d.arrival,
+      bursts: d.bursts.slice(), cpu: cpu, io: io,
+      bi: 0, rem: d.bursts[0], unblockAt: -1,
+      queue: 0, qRem: 0, arrived: false, done: false,
+      waitAcc: 0, firstRun: -1, completion: -1,
+      tickets: d.cls === "inter" ? cfg.interW : 1
+    };
+  });
+  var quantum = Math.max(1, cfg.quantum | 0);
+  var queues = cfg.policy === "mlfq" ? Math.min(4, Math.max(2, cfg.queues | 0)) : 1;
+  var boost = Math.max(20, cfg.boost | 0);
+  var mlfqQ = [];
+  for (var q = 0; q < queues; q++) mlfqQ.push([]);
+  var ready = []; /* rr + lotto pool */
+  var running = -1;
+  var sliceRem = 0;
+  var timeline = [];
+  var maxTicks = 8000;
+  var t = 0, doneCount = 0;
+
+  function admit() {
+    for (var i = 0; i < n; i++) {
+      var p = P[i];
+      if (!p.arrived && !p.done && p.arrival <= t) {
+        p.arrived = true;
+        if (cfg.policy === "mlfq") { p.queue = 0; p.qRem = quantum; mlfqQ[0].push(i); }
+        else ready.push(i);
+      }
+    }
+  }
+  function unblock() {
+    for (var i = 0; i < n; i++) {
+      var p = P[i];
+      if (p.arrived && !p.done && p.unblockAt === t) {
+        p.unblockAt = -1;
+        if (cfg.policy === "mlfq") { p.queue = 0; p.qRem = quantum; mlfqQ[0].push(i); }
+        else ready.push(i);
+      }
+    }
+  }
+  function mlfqQuantum(level) { return quantum * (1 << level); }
+  function pick() {
+    if (cfg.policy === "mlfq") {
+      for (var l = 0; l < queues; l++) {
+        if (mlfqQ[l].length) {
+          var pi = mlfqQ[l].shift();
+          P[pi].qRem = mlfqQuantum(l);
+          return pi;
+        }
+      }
+      return -1;
+    }
+    if (cfg.policy === "lotto") {
+      var tot = 0, k;
+      for (k = 0; k < ready.length; k++) tot += P[ready[k]].tickets;
+      if (!tot) return -1;
+      var draw = rng() * tot, acc = 0;
+      for (k = 0; k < ready.length; k++) {
+        acc += P[ready[k]].tickets;
+        if (draw < acc) { var w = ready.splice(k, 1)[0]; sliceRem = quantum; return w; }
+      }
+      var last = ready.pop(); sliceRem = quantum; return last;
+    }
+    /* rr */
+    if (!ready.length) return -1;
+    var r = ready.shift();
+    P[r].qRem = quantum;
+    return r;
+  }
+  function preempt(pi, expired) {
+    var p = P[pi];
+    if (cfg.policy === "mlfq") {
+      var nl = Math.min(queues - 1, p.queue + (expired ? 1 : 0));
+      p.queue = nl; p.qRem = mlfqQuantum(nl);
+      mlfqQ[nl].push(pi);
+    } else if (cfg.policy === "rr") {
+      p.qRem = quantum; ready.push(pi);
+    } else {
+      ready.push(pi);
+    }
+  }
+  function boostAll() {
+    var all = [];
+    for (var l = 0; l < queues; l++) { all = all.concat(mlfqQ[l]); mlfqQ[l] = []; }
+    if (running !== -1) { all.push(running); running = -1; }
+    for (var i = 0; i < all.length; i++) { P[all[i]].queue = 0; mlfqQ[0].push(all[i]); }
+  }
+
+  while (doneCount < n && t < maxTicks) {
+    admit();
+    unblock();
+    if (cfg.policy === "mlfq" && t > 0 && t % boost === 0) boostAll();
+    if (running === -1) running = pick();
+    if (running !== -1) {
+      var p = P[running];
+      if (p.firstRun === -1) p.firstRun = t;
+      p.rem--; p.qRem--;
+      if (cfg.policy === "lotto") sliceRem--;
+      timeline[t] = running;
+      /* waiting accrues for everyone ready but not running */
+      var k, x;
+      if (cfg.policy === "mlfq") {
+        for (var l = 0; l < queues; l++) for (k = 0; k < mlfqQ[l].length; k++) P[mlfqQ[l][k]].waitAcc++;
+      } else {
+        for (k = 0; k < ready.length; k++) P[ready[k]].waitAcc++;
+      }
+      var burstDone = p.rem === 0;
+      var quantUp = cfg.policy === "lotto" ? sliceRem <= 0 : p.qRem <= 0;
+      if (burstDone) {
+        p.bi++;
+        if (p.bi >= p.bursts.length) {
+          p.done = true; p.completion = t + 1; doneCount++; running = -1;
+        } else {
+          p.unblockAt = t + 1 + p.bursts[p.bi]; /* io burst, wake at its end */
+          p.bi++; p.rem = p.bursts[p.bi];
+          running = -1;
+        }
+      } else if (quantUp) {
+        var ri = running; running = -1;
+        preempt(ri, true);
+      }
+    } else {
+      timeline[t] = -1;
+    }
+    t++;
+  }
+  var turn = 0, wait = 0, resp = 0, runTicks = 0;
+  for (var i = 0; i < n; i++) {
+    var pp = P[i];
+    var c = pp.done ? pp.completion : t;
+    turn += c - pp.arrival;
+    wait += pp.waitAcc;
+    resp += (pp.firstRun === -1 ? c : pp.firstRun) - pp.arrival;
+  }
+  for (var u = 0; u < timeline.length; u++) if (timeline[u] !== -1) runTicks++;
+  var starved = 0;
+  for (var s = 0; s < n; s++) if (!P[s].done) starved++;
+  var cls = { inter: { t: 0, n: 0, r: 0 }, batch: { t: 0, n: 0, r: 0 } };
+  for (var ci = 0; ci < n; ci++) {
+    var qq = P[ci], c2 = qq.done ? qq.completion : t;
+    var g = cls[qq.cls];
+    g.t += c2 - qq.arrival; g.n++;
+    g.r += (qq.firstRun === -1 ? c2 : qq.firstRun) - qq.arrival;
+  }
+  return {
+    procs: P, timeline: timeline, ticks: t,
+    avgTurn: turn / n, avgWait: wait / n, avgResp: resp / n,
+    clsTurn: { inter: cls.inter.n ? cls.inter.t / cls.inter.n : 0,
+               batch: cls.batch.n ? cls.batch.t / cls.batch.n : 0 },
+    clsResp: { inter: cls.inter.n ? cls.inter.r / cls.inter.n : 0,
+               batch: cls.batch.n ? cls.batch.r / cls.batch.n : 0 },
+    cpuUtil: t ? runTicks / t : 0, starved: starved, completed: doneCount
+  };
+}
+
+function scbScore(base, res) {
+  if (base.avgTurn <= 0) return 0;
+  return ((base.avgTurn - res.avgTurn) / base.avgTurn) * 100;
+}
+
+
+/* ================= The Scheduler Bay: UI ================= */
+
+var SCB_COLORS = ["#ff5a1f", "#7dd0ff", "#7de0a8", "#ffd27d", "#c79bff", "#ff7db0", "#8affd8", "#ffb27d"];
+
+function scbVerdict(trial, cfg) {
+  var base = scbRun(trial, trial.base);
+  var res = scbRun(trial, cfg);
+  var score = scbScore(base, res);
+  var respCeil = base.avgResp * 3;
+  var guardResp = res.avgResp <= respCeil + 1e-9;
+  var starve = res.starved === 0;
+  var passed = starve && guardResp && score >= trial.par;
+  return { base: base, res: res, score: score, respCeil: respCeil,
+           guardResp: guardResp, starve: starve, passed: passed };
+}
+
+function scbFeedback(trial, cfg, v) {
+  var L = [];
+  var b = v.base, r = v.res;
+  if (!v.starve) {
+    L.push("STARVATION: " + r.starved + " job(s) never finished. Every job must complete or the trial fails.");
+  }
+  if (!v.guardResp) {
+    L.push("FIRST-RESPONSE CEILING blown: avg first response " + r.avgResp.toFixed(1) +
+      " ticks vs ceiling " + v.respCeil.toFixed(1) + ". Long quanta win turnaround, " +
+      "but a job that never gets a first slice looks hung.");
+  }
+  if (v.score < trial.par) {
+    if (trial.id === "t1") {
+      L.push("Turnaround " + r.avgTurn.toFixed(1) + " vs baseline " + b.avgTurn.toFixed(1) +
+        " (need +" + trial.par.toFixed(1) + "%). Batch jobs reward long slices: push the quantum up, " +
+        "or run an MLFQ whose top queue has room, but mind the response ceiling.");
+    } else if (trial.id === "t2") {
+      if (cfg.policy === "rr") {
+        L.push("Plain round robin treats shells and compiles alike, and the shells drown. " +
+          "MLFQ keeps interactive jobs on the top queue; lottery tickets weight them instead.");
+      } else {
+        L.push("Turnaround " + r.avgTurn.toFixed(1) + " vs baseline " + b.avgTurn.toFixed(1) +
+          " (need +" + trial.par.toFixed(1) + "%). Shells live on the top queue: " +
+          "smaller top quantum, or more tickets for the interactive class.");
+      }
+    } else {
+      L.push("The storm is already near optimal: score " + v.score.toFixed(2) +
+        "% (need " + trial.par.toFixed(1) + "%). Keep it simple. MLFQ demotion punishes short IO jobs, " +
+        "so prefer few queues or plain round robin.");
+    }
+  } else {
+    L.push("PAR BEATEN: " + (v.score >= 0 ? "+" : "") + v.score.toFixed(2) +
+      "% turnaround vs the shop baseline. Trial logged.");
+  }
+  return L;
+}
+
+var SCB_CSS = [
+  ".scb-overlay{position:fixed;inset:0;z-index:9995;background:rgba(5,8,10,.94);display:none;}",
+  ".scb-overlay.open{display:flex;}",
+  ".scb-panel{flex:1;min-height:0;width:100%;max-width:900px;margin:0 auto;display:flex;flex-direction:column;background:#0a0c0e;border:1px solid var(--line);overflow:hidden;}",
+  "@media(min-width:700px){.scb-panel{border-radius:4px;}}",
+  ".scb-bar{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line);flex:none;flex-wrap:wrap;background:var(--panel);}",
+  ".scb-title{font-family:var(--font-d);font-size:13px;font-weight:700;letter-spacing:.14em;color:var(--paper);white-space:nowrap;}",
+  ".scb-title b{color:var(--ember);}",
+  ".scb-close{font-family:var(--font-m);font-size:12px;font-weight:700;letter-spacing:.08em;min-height:48px;min-width:48px;padding:12px 18px;border-radius:4px;border:1px solid var(--ember);background:var(--ember);color:#0a0c0e;cursor:pointer;margin-left:auto;}",
+  ".scb-close:active{transform:scale(.96);}",
+  ".scb-body{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px;}",
+  ".scb-sub{font-family:var(--font-m);font-size:11px;color:var(--steel);letter-spacing:.04em;line-height:1.8;margin:0 0 12px;}",
+  ".scb-sub b{color:var(--paper);font-weight:600;letter-spacing:.08em;font-size:10px;}",
+  ".scb-sub a{color:var(--ice);}",
+  ".scb-cards{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:12px;}",
+  "@media(min-width:700px){.scb-cards{grid-template-columns:repeat(3,1fr);}}",
+  ".scb-card{border:1px solid var(--line);border-radius:4px;padding:14px;background:var(--panel);}",
+  ".scb-card h5{margin:0 0 6px;font-family:var(--font-d);font-size:14px;color:var(--paper);}",
+  ".scb-card p{margin:0 0 10px;font-size:12px;color:var(--steel);line-height:1.6;}",
+  ".scb-card .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}",
+  ".scb-pstat{font-family:var(--font-m);font-size:10px;font-weight:700;letter-spacing:.12em;padding:6px 12px;border-radius:2px;border:1px solid var(--line);color:var(--steel);}",
+  ".scb-pstat.pass{color:var(--mint);border-color:rgba(125,224,168,.5);}",
+  ".scb-pstat.fail{color:var(--bad);border-color:rgba(255,122,122,.5);}",
+  ".scb-best{font-family:var(--font-m);font-size:10px;color:var(--dim);letter-spacing:.06em;}",
+  ".scb-mini{font-family:var(--font-m);font-size:11px;font-weight:700;letter-spacing:.06em;min-height:48px;padding:12px 16px;border-radius:4px;border:1px solid rgba(242,237,227,.2);background:var(--panel-2);color:var(--paper);cursor:pointer;}",
+  ".scb-mini:active{transform:scale(.96);}",
+  ".scb-mini.go{background:var(--ember);border-color:var(--ember);color:#0a0c0e;}",
+  ".scb-work{border:1px solid var(--line);border-radius:4px;background:var(--panel);padding:14px;margin-bottom:12px;}",
+  ".scb-work h4{margin:0 0 4px;font-family:var(--font-d);font-size:15px;color:var(--paper);}",
+  ".scb-brief{font-size:12px;color:var(--steel);line-height:1.7;margin:0 0 4px;max-width:70ch;}",
+  ".scb-target{font-family:var(--font-m);font-size:11px;color:var(--dim);line-height:1.7;margin:0 0 4px;}",
+  ".scb-target b{color:var(--paper);}",
+  ".scb-sec{font-family:var(--font-m);font-size:10px;font-weight:700;letter-spacing:.14em;color:var(--dim);margin:14px 0 8px;}",
+  ".scb-seg{display:inline-flex;border:1px solid var(--line);border-radius:4px;overflow:hidden;max-width:100%;}",
+  ".scb-segbtn{font-family:var(--font-m);font-size:11px;font-weight:700;letter-spacing:.08em;min-height:48px;min-width:88px;padding:12px 18px;background:var(--panel-2);color:var(--steel);border:none;cursor:pointer;}",
+  ".scb-segbtn + .scb-segbtn{border-left:1px solid var(--line);}",
+  ".scb-segbtn.on{background:var(--ember);color:#0a0c0e;}",
+  ".scb-segbtn:active{transform:scale(.96);}",
+  ".scb-ctl{margin:12px 0;}",
+  ".scb-ctl label{display:flex;justify-content:space-between;align-items:baseline;font-family:var(--font-m);font-size:11px;font-weight:700;letter-spacing:.08em;color:var(--steel);margin-bottom:6px;}",
+  ".scb-ctl label output{color:var(--ember);font-size:13px;}",
+  ".scb-ctl input[type=range]{width:100%;min-height:48px;accent-color:var(--ember);}",
+  ".scb-go{font-family:var(--font-d);font-size:12px;font-weight:700;letter-spacing:.08em;min-height:48px;padding:12px 20px;border-radius:4px;border:1px solid var(--ember);background:var(--ember);color:#0a0c0e;cursor:pointer;margin-top:6px;}",
+  ".scb-go:active{transform:scale(.96);}",
+  ".scb-res{margin-top:14px;border-top:1px solid var(--line);padding-top:12px;}",
+  ".scb-res.pop{animation:scbpop 200ms ease-out;}",
+  "@keyframes scbpop{from{transform:scale(.985);opacity:.4;}to{transform:scale(1);opacity:1;}}",
+  "@media(prefers-reduced-motion:reduce){.scb-res.pop{animation:none;}}",
+  ".scb-metric{display:flex;gap:8px;align-items:baseline;justify-content:space-between;flex-wrap:wrap;font-family:var(--font-m);font-size:11px;color:var(--steel);padding:8px 0;border-bottom:1px dashed var(--line);}",
+  ".scb-metric .k{font-weight:700;letter-spacing:.1em;color:var(--dim);font-size:10px;}",
+  ".scb-metric .v{color:var(--paper);font-size:13px;}",
+  ".scb-metric .d{font-size:10px;letter-spacing:.06em;}",
+  ".scb-metric .ok{color:var(--mint);font-weight:700;}",
+  ".scb-metric .no{color:var(--bad);font-weight:700;}",
+  ".scb-verdict{font-family:var(--font-d);font-size:14px;font-weight:700;letter-spacing:.1em;margin:12px 0 4px;color:var(--paper);}",
+  ".scb-verdict.pass{color:var(--mint);}",
+  ".scb-verdict.fail{color:var(--bad);}",
+  ".scb-fb{list-style:none;margin:8px 0 0;padding:0;font-family:var(--font-m);font-size:11px;line-height:1.8;color:var(--steel);}",
+  ".scb-fb li{border-left:2px solid var(--ember);padding-left:10px;margin-bottom:6px;}",
+  ".scb-gantt{width:100%;height:44px;display:block;border:1px solid var(--line);border-radius:3px;margin-top:10px;background:#0a0c0e;}",
+  ".scb-legend{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;font-family:var(--font-m);font-size:10px;color:var(--steel);letter-spacing:.04em;}",
+  ".scb-legend span{display:inline-flex;align-items:center;gap:5px;}",
+  ".scb-legend i{width:10px;height:10px;border-radius:2px;display:inline-block;}",
+  ".scb-cert{border:1px solid rgba(125,224,168,.5);border-radius:4px;background:var(--panel);padding:14px;margin-bottom:12px;}",
+  ".scb-cert h4{margin:0 0 6px;font-family:var(--font-d);font-size:15px;color:var(--mint);letter-spacing:.08em;}",
+  ".scb-cert p{margin:0 0 10px;font-size:12px;color:var(--steel);line-height:1.7;}",
+  ".scb-overlay :focus-visible{outline:2px solid var(--ember);outline-offset:2px;}"
+];
+
+function scb$(id) { return document.getElementById(id); }
+function scbEl(tag, cls, text) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined && text !== null) e.textContent = text;
+  return e;
+}
+function scbDownload(text, name) {
+  var blob = new Blob([text], { type: "text/plain" });
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+
+var SCB_ST = {};
+var SCB_CUR = "t1";
+var SCB_CFGS = {};
+SCB_TRIALS.forEach(function (t) {
+  SCB_ST[t.id] = { best: -Infinity, passed: false, bestCfg: null };
+  SCB_CFGS[t.id] = { policy: "rr", quantum: 20, queues: 3, boost: 300, interW: 8 };
+});
+
+function scbTrial(id) {
+  for (var i = 0; i < SCB_TRIALS.length; i++) if (SCB_TRIALS[i].id === id) return SCB_TRIALS[i];
+  return SCB_TRIALS[0];
+}
+function scbCfgStr(c) {
+  var s = c.policy.toUpperCase() + " q" + c.quantum;
+  if (c.policy === "mlfq") s += " k" + c.queues + " boost" + c.boost;
+  if (c.policy === "lotto") s += " iw" + c.interW;
+  return s;
+}
+
+function scbRenderCards() {
+  var cards = scb$("scbCards");
+  if (!cards) return;
+  cards.innerHTML = "";
+  SCB_TRIALS.forEach(function (t) {
+    var st = SCB_ST[t.id];
+    var card = scbEl("div", "scb-card");
+    card.appendChild(scbEl("h5", null, t.name));
+    var p = scbEl("p", null, t.blurb);
+    card.appendChild(p);
+    var row = scbEl("div", "row");
+    var stat = scbEl("span", "scb-pstat " + (st.passed ? "pass" : "fail"),
+      st.passed ? "PASSED" : "PENDING");
+    row.appendChild(stat);
+    var best = scbEl("span", "scb-best",
+      st.best === -Infinity ? "no runs yet" :
+      "best " + (st.best >= 0 ? "+" : "") + st.best.toFixed(2) + "% (" + scbCfgStr(st.bestCfg) + ")");
+    row.appendChild(best);
+    card.appendChild(row);
+    var row2 = scbEl("div", "row");
+    row2.style.marginTop = "10px";
+    var open = scbEl("button", "scb-mini", SCB_CUR === t.id ? "OPEN (CURRENT)" : "OPEN");
+    open.type = "button";
+    (function (id) {
+      open.addEventListener("click", function () { scbOpenTrial(id); });
+    })(t.id);
+    row2.appendChild(open);
+    card.appendChild(row2);
+    cards.appendChild(card);
+  });
+}
+
+function scbSeg(labels, values, cur, aria, onPick) {
+  var g = scbEl("div", "scb-seg");
+  g.setAttribute("role", "group");
+  g.setAttribute("aria-label", aria);
+  values.forEach(function (v, i) {
+    var b = scbEl("button", "scb-segbtn" + (v === cur ? " on" : ""), labels[i]);
+    b.type = "button";
+    b.setAttribute("aria-pressed", v === cur ? "true" : "false");
+    (function (val) {
+      b.addEventListener("click", function () { onPick(val); });
+    })(v);
+    g.appendChild(b);
+  });
+  return g;
+}
+
+function scbSlider(labelText, min, max, step, val, unit, onInput) {
+  var wrap = scbEl("div", "scb-ctl");
+  var lab = document.createElement("label");
+  var nm = scbEl("span", null, labelText);
+  var out = document.createElement("output");
+  out.textContent = val + unit;
+  lab.appendChild(nm); lab.appendChild(out);
+  var inp = document.createElement("input");
+  inp.type = "range"; inp.min = min; inp.max = max; inp.step = step; inp.value = val;
+  inp.setAttribute("aria-label", labelText);
+  inp.addEventListener("input", function () {
+    out.textContent = inp.value + unit;
+    onInput(parseInt(inp.value, 10));
+  });
+  wrap.appendChild(lab); wrap.appendChild(inp);
+  return wrap;
+}
+
+function scbOpenTrial(id) {
+  SCB_CUR = id;
+  scbRenderCards();
+  var t = scbTrial(id);
+  var cfg = SCB_CFGS[id];
+  var work = scb$("scbWork");
+  work.innerHTML = "";
+  work.appendChild(scbEl("h4", null, t.name));
+  var brief = scbEl("p", "scb-brief", t.blurb);
+  work.appendChild(brief);
+  var base = scbRun(t, t.base);
+  var tgt = scbEl("p", "scb-target", "");
+  tgt.innerHTML = "PAR: beat the shop baseline (RR q20) turnaround by <b>+" +
+    t.par.toFixed(1) + "%</b>. Baseline turnaround <b>" + base.avgTurn.toFixed(1) +
+    "</b> ticks. First-response ceiling <b>" + (base.avgResp * 3).toFixed(1) +
+    "</b> ticks. Zero starvation. Deterministic sim, seed " + t.seed + ".";
+  work.appendChild(tgt);
+
+  work.appendChild(scbEl("div", "scb-sec", "SCHEDULER POLICY"));
+  work.appendChild(scbSeg(
+    ["ROUND ROBIN", "LOTTERY", "MLFQ"], ["rr", "lotto", "mlfq"], cfg.policy,
+    "Scheduler policy",
+    function (v) { cfg.policy = v; scbOpenTrial(id); }
+  ));
+
+  work.appendChild(scbSlider("TIME QUANTUM", 2, 64, 1, cfg.quantum, " ticks",
+    function (v) { cfg.quantum = v; }));
+
+  if (cfg.policy === "mlfq") {
+    work.appendChild(scbEl("div", "scb-sec", "MLFQ QUEUES"));
+    work.appendChild(scbSeg(["2", "3", "4"], [2, 3, 4], cfg.queues, "MLFQ queue count",
+      function (v) { cfg.queues = v; scbOpenTrial(id); }));
+    work.appendChild(scbSlider("PRIORITY BOOST EVERY", 50, 800, 50, cfg.boost, " ticks",
+      function (v) { cfg.boost = v; }));
+  }
+  if (cfg.policy === "lotto") {
+    work.appendChild(scbSlider("INTERACTIVE TICKETS", 1, 16, 1, cfg.interW, "x",
+      function (v) { cfg.interW = v; }));
+    var note = scbEl("p", "scb-brief",
+      "Batch jobs always hold 1 ticket. Interactive jobs hold the tickets above.");
+    work.appendChild(note);
+  }
+
+  var go = scbEl("button", "scb-go", "RUN SCHEDULER");
+  go.type = "button";
+  go.addEventListener("click", function () { scbRunTrial(id); });
+  work.appendChild(go);
+
+  var res = scbEl("div", "scb-res");
+  res.id = "scbRes";
+  work.appendChild(res);
+  try { work.scrollIntoView({ block: "start", behavior: "smooth" }); } catch (e) {}
+}
+
+function scbDrawGantt(cv, res, trial) {
+  try {
+    var ctx = cv.getContext("2d");
+    if (!ctx || typeof ctx.fillRect !== "function") return;
+    var W = cv.width, H = cv.height;
+    ctx.fillStyle = "#0a0c0e";
+    ctx.fillRect(0, 0, W, H);
+    var ticks = res.ticks || 1;
+    var tl = res.timeline;
+    for (var t = 0; t < tl.length; t++) {
+      var pi = tl[t];
+      var x = Math.floor(t / ticks * W);
+      var w = Math.max(1, Math.ceil(1 / ticks * W));
+      ctx.fillStyle = pi === -1 ? "#20262c" : SCB_COLORS[pi % SCB_COLORS.length];
+      ctx.fillRect(x, 6, w, H - 12);
+    }
+  } catch (e) { /* canvas unavailable: legend still carries the info */ }
+}
+
+function scbRunTrial(id) {
+  var t = scbTrial(id);
+  var cfg = SCB_CFGS[id];
+  var v = scbVerdict(t, cfg);
+  var st = SCB_ST[id];
+  if (v.score > st.best) { st.best = v.score; st.bestCfg = { policy: cfg.policy, quantum: cfg.quantum, queues: cfg.queues, boost: cfg.boost, interW: cfg.interW }; }
+  if (v.passed) st.passed = true;
+  scbRenderCards();
+
+  var res = scb$("scbRes");
+  res.innerHTML = "";
+  res.classList.remove("pop");
+  void res.offsetWidth;
+  res.classList.add("pop");
+
+  function metric(k, yours, baseTxt, verdictOk, verdictTxt) {
+    var row = scbEl("div", "scb-metric");
+    row.appendChild(scbEl("span", "k", k));
+    var mid = scbEl("span", null, "");
+    mid.innerHTML = "<span class=\"v\">" + yours + "</span> <span class=\"d\">" + baseTxt + "</span>";
+    row.appendChild(mid);
+    row.appendChild(scbEl("span", "d " + (verdictOk ? "ok" : "no"), verdictTxt));
+    res.appendChild(row);
+  }
+  var sTxt = (v.score >= 0 ? "+" : "") + v.score.toFixed(2) + "% vs baseline";
+  metric("AVG TURNAROUND", v.res.avgTurn.toFixed(1) + " ticks",
+    "baseline " + v.base.avgTurn.toFixed(1) + ", par +" + t.par.toFixed(1) + "%",
+    v.score >= t.par, (v.score >= t.par ? "PASS " : "FAIL ") + sTxt);
+  metric("FIRST RESPONSE", v.res.avgResp.toFixed(1) + " ticks",
+    "ceiling " + v.respCeil.toFixed(1) + " ticks",
+    v.guardResp, v.guardResp ? "PASS within ceiling" : "FAIL ceiling blown");
+  metric("STARVATION", v.res.starved === 0 ? "0 jobs stuck" : v.res.starved + " jobs stuck",
+    "all " + t.procs.length + " jobs must finish",
+    v.starve, v.starve ? "PASS complete" : "FAIL starved");
+
+  var banner = scbEl("div", "scb-verdict " + (v.passed ? "pass" : "fail"),
+    v.passed ? "TRIAL PASSED" : "NOT YET");
+  res.appendChild(banner);
+
+  var fb = scbEl("ul", "scb-fb");
+  scbFeedback(t, cfg, v).forEach(function (line) {
+    var li = scbEl("li", null, "");
+    li.textContent = line;
+    fb.appendChild(li);
+  });
+  res.appendChild(fb);
+
+  var cv = document.createElement("canvas");
+  cv.className = "scb-gantt";
+  cv.width = 640; cv.height = 44;
+  cv.setAttribute("role", "img");
+  cv.setAttribute("aria-label", "Gantt chart of the schedule, one lane, colored per job");
+  res.appendChild(cv);
+  var leg = scbEl("div", "scb-legend");
+  t.procs.forEach(function (p, i) {
+    var s = scbEl("span", null, "");
+    var sw = document.createElement("i");
+    sw.style.background = SCB_COLORS[i % SCB_COLORS.length];
+    s.appendChild(sw);
+    s.appendChild(document.createTextNode(p.name + " (" + p.cls + ")"));
+    leg.appendChild(s);
+  });
+  res.appendChild(leg);
+  scbDrawGantt(cv, v.res, t);
+
+  scbRenderCert();
+  try { toast(v.passed ? "Trial passed." : "Run logged. Adjust and run again."); } catch (e) {}
+}
+
+function scbCertText() {
+  var lines = [];
+  lines.push("THE SCHEDULER BAY");
+  lines.push("Proving Ground scheduler qualification certificate");
+  lines.push("Date: " + new Date().toISOString().slice(0, 10));
+  lines.push("");
+  var tot = 0, par = 0;
+  SCB_TRIALS.forEach(function (t) {
+    var st = SCB_ST[t.id];
+    tot += st.best; par += t.par;
+    lines.push(t.name + ": best " + (st.best >= 0 ? "+" : "") + st.best.toFixed(2) +
+      "% vs par +" + t.par.toFixed(1) + "% (" + scbCfgStr(st.bestCfg) + ")" +
+      (st.passed ? "  PASSED" : "  OPEN"));
+  });
+  lines.push("");
+  lines.push("Total " + (tot >= 0 ? "+" : "") + tot.toFixed(2) + "% vs par +" + par.toFixed(1) + "%.");
+  lines.push("Deterministic tick simulation. Seeds: " +
+    SCB_TRIALS.map(function (t) { return t.id + "=" + t.seed; }).join(", ") + ".");
+  lines.push("The bench accepts this scheduler.");
+  return lines.join("\n");
+}
+
+function scbRenderCert() {
+  var box = scb$("scbCertBox");
+  box.innerHTML = "";
+  var done = SCB_TRIALS.every(function (t) { return SCB_ST[t.id].passed; });
+  if (!done) return;
+  box.style.display = "";
+  box.appendChild(scbEl("h4", null, "SCHEDULER CERTIFIED"));
+  var tot = 0, par = 0;
+  SCB_TRIALS.forEach(function (t) { tot += SCB_ST[t.id].best; par += t.par; });
+  var p = scbEl("p", null, "");
+  p.textContent = "All three workloads beaten against the shop baseline. Total " +
+    (tot >= 0 ? "+" : "") + tot.toFixed(2) + "% vs par +" + par.toFixed(1) +
+    "%. The bench accepts this scheduler.";
+  box.appendChild(p);
+  var dl = scbEl("button", "scb-mini go", "DOWNLOAD CERTIFICATE");
+  dl.type = "button";
+  dl.addEventListener("click", function () {
+    scbDownload(scbCertText(), "scheduler-bay-certificate.txt");
+    try { toast("Certificate downloaded."); } catch (e) {}
+  });
+  box.appendChild(dl);
+  box.classList.add("show");
+}
+
+/* ---------------- shell ---------------- */
+
+function scbBuildShell() {
+  var css = document.createElement("style");
+  css.textContent = SCB_CSS.join("\n");
+  document.head.appendChild(css);
+
+  var box = document.querySelector(".dossier .actions");
+  if (box && !scb$("scbBtn")) {
+    var b = scbEl("button", "secondary", "Run the Scheduler Bay");
+    b.id = "scbBtn";
+    b.addEventListener("click", function () { scb$("scbOverlay").classList.add("open"); });
+    box.appendChild(b);
+  }
+
+  var ov = scbEl("div", "scb-overlay");
+  ov.id = "scbOverlay";
+  var panel = scbEl("div", "scb-panel");
+  ov.appendChild(panel);
+  document.body.appendChild(ov);
+
+  var bar = scbEl("div", "scb-bar");
+  var title = scbEl("div", "scb-title", "");
+  title.innerHTML = "THE SCHEDULER <b>BAY</b>";
+  var close = scbEl("button", "scb-close", "CLOSE");
+  close.setAttribute("aria-label", "Close the Scheduler Bay");
+  bar.appendChild(title); bar.appendChild(close);
+  panel.appendChild(bar);
+
+  var body = scbEl("div", "scb-body");
+  var sub = scbEl("p", "scb-sub", "");
+  sub.innerHTML = "<b>HOW IT WORKS</b> Three real schedulers (Round Robin, Lottery, " +
+    "Multi-Level Feedback Queue) run a deterministic tick simulation of each workload. " +
+    "Pick a policy, tune its knobs, run the sim, beat the shop baseline on all three trials. " +
+    "Built for the RISC-V and xv6 systems work in the " +
+    "<a href=\"https://dillingerstaffing.github.io/portfolio/\" target=\"_blank\" rel=\"noopener\">portfolio</a>.";
+  body.appendChild(sub);
+
+  var cards = scbEl("div", "scb-cards");
+  cards.id = "scbCards";
+  body.appendChild(cards);
+
+  var work = scbEl("div", "scb-work");
+  work.id = "scbWork";
+  body.appendChild(work);
+
+  var certBox = scbEl("div", "scb-cert");
+  certBox.id = "scbCertBox";
+  certBox.style.display = "none";
+  body.appendChild(certBox);
+
+  panel.appendChild(body);
+
+  close.addEventListener("click", function () { ov.classList.remove("open"); });
+  ov.addEventListener("click", function (e) { if (e.target === ov) ov.classList.remove("open"); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && ov.classList.contains("open")) ov.classList.remove("open");
+  });
+
+  scbRenderCards();
+  scbOpenTrial("t1");
+}
+
+function scbInit() {
+  if (typeof document === "undefined") return;
+  if (!document.querySelector(".dossier .actions")) return;
+  scbBuildShell();
+}
+if (typeof document !== "undefined") {
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", scbInit);
+  } else {
+    scbInit();
+  }
+}
+
+/* node test hook: harmless in the browser */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = Object.assign(module.exports || {}, {
+    SCB: {
+      run: scbRun, score: scbScore, verdict: scbVerdict, feedback: scbFeedback,
+      TRIALS: SCB_TRIALS, mulberry32: scbMulberry32
+    }
+  });
+}
+
+})();
