@@ -597,7 +597,11 @@ var PG_BENCHES = [
   { section: "silicon", n: "25", name: "The Fence Line", btn: "flBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "Two harts share memory and the silicon may complete their accesses out of order. Place FENCE instructions in each litmus program so the forbidden outcome becomes unreachable. A hands-on lab for the RISC-V weak memory model.",
     how: "Read each litmus program, place fences in the slots, run the outcome explorer, then certify all three trials.",
-    spec: "RVWMO \u00B7 3 LITMUS TRIALS" }
+    spec: "RVWMO \u00B7 3 LITMUS TRIALS" },
+  { section: "silicon", n: "26", name: "The Decode Bench", btn: "dbBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "A raw 32-bit instruction word off the fetch bus. Split it into its RISC-V fields with the format maps, read the opcode table, and reassemble the sign-extended immediate. Decode all three words with zero field errors.",
+    how: "Pick the format from the opcode, fill every field from the word's bit positions, enter the sign-extended immediate, check the decode.",
+    spec: "RV32I FIELDS \u00B7 3 WORDS" }
 ];
 
 var pgFilter = "all";

@@ -16759,3 +16759,609 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+
+/* ================= THE DECODE BENCH (BENCH 26) =================
+   An atomic first-principles bench for the RISC-V focus: a raw 32-bit
+   instruction word off the fetch bus. Pick its format (R/I/S/B/U/J),
+   split it into fields from the bit positions, read the opcode table,
+   and reassemble the sign-extended immediate. Three words, three strikes
+   per word, zero field errors to qualify. */
+(function () {
+  "use strict";
+
+  /* Ground truth pool. The bench encodes the displayed word from these
+     fields with dbEnc, so the word always matches the answers exactly. */
+  var DB_POOL = [
+    { asm: "add x3, x1, x2",    fmt: "R", opcode: 51, rd: 3, rs1: 1, rs2: 2, f3: 0, f7: 0 },
+    { asm: "sub x5, x6, x7",    fmt: "R", opcode: 51, rd: 5, rs1: 6, rs2: 7, f3: 0, f7: 32 },
+    { asm: "xor x9, x10, x11",  fmt: "R", opcode: 51, rd: 9, rs1: 10, rs2: 11, f3: 4, f7: 0 },
+    { asm: "srl x4, x5, x6",    fmt: "R", opcode: 51, rd: 4, rs1: 5, rs2: 6, f3: 5, f7: 0 },
+    { asm: "addi x5, x6, -1",   fmt: "I", opcode: 19, rd: 5, rs1: 6, f3: 0, imm: -1 },
+    { asm: "andi x10, x11, 2047", fmt: "I", opcode: 19, rd: 10, rs1: 11, f3: 7, imm: 2047 },
+    { asm: "lw x8, 16(x9)",     fmt: "I", opcode: 3, rd: 8, rs1: 9, f3: 2, imm: 16 },
+    { asm: "jalr x1, 0(x5)",    fmt: "I", opcode: 103, rd: 1, rs1: 5, f3: 0, imm: 0 },
+    { asm: "sw x4, -8(x5)",     fmt: "S", opcode: 35, rs1: 5, rs2: 4, f3: 2, imm: -8 },
+    { asm: "sh x3, 100(x7)",    fmt: "S", opcode: 35, rs1: 7, rs2: 3, f3: 1, imm: 100 },
+    { asm: "beq x1, x2, -12",   fmt: "B", opcode: 99, rs1: 1, rs2: 2, f3: 0, imm: -12 },
+    { asm: "bge x7, x8, 32",    fmt: "B", opcode: 99, rs1: 7, rs2: 8, f3: 5, imm: 32 },
+    { asm: "lui x12, 0x12345",  fmt: "U", opcode: 55, rd: 12, imm: 0x12345 },
+    { asm: "auipc x3, 0x100",   fmt: "U", opcode: 23, rd: 3, imm: 0x100 },
+    { asm: "jal x1, 2048",      fmt: "J", opcode: 111, rd: 1, imm: 2048 }
+  ];
+  var DB_G1 = [0, 1, 2, 3];
+  var DB_G2 = [4, 5, 6, 7, 8, 9];
+  var DB_G3 = [10, 11, 12, 13, 14];
+
+  var DB_FMTS = ["R", "I", "S", "B", "U", "J"];
+  var DB_FIELDS = {
+    R: ["opcode", "rd", "rs1", "rs2", "funct3", "funct7"],
+    I: ["opcode", "rd", "rs1", "funct3", "imm"],
+    S: ["opcode", "rs1", "rs2", "funct3", "imm"],
+    B: ["opcode", "rs1", "rs2", "funct3", "imm"],
+    U: ["opcode", "rd", "imm"],
+    J: ["opcode", "rd", "imm"]
+  };
+  var DB_IMM_NOTE = {
+    I: "imm bits 11-0, signed decimal",
+    S: "imm bits 11-0, signed decimal",
+    B: "branch offset, signed decimal (always even)",
+    U: "imm bits 31-12, unsigned decimal",
+    J: "jump offset, signed decimal (always even)"
+  };
+  var DB_MAPS = [
+    ["R", "31-25 funct7 | 24-20 rs2 | 19-15 rs1 | 14-12 funct3 | 11-7 rd | 6-0 opcode"],
+    ["I", "31-20 imm[11:0] | 19-15 rs1 | 14-12 funct3 | 11-7 rd | 6-0 opcode"],
+    ["S", "31-25 imm[11:5] | 24-20 rs2 | 19-15 rs1 | 14-12 funct3 | 11-7 imm[4:0] | 6-0 opcode"],
+    ["B", "31 imm[12] | 30-25 imm[10:5] | 24-20 rs2 | 19-15 rs1 | 14-12 funct3 | 11-8 imm[4:1] | 7 imm[11] | 6-0 opcode"],
+    ["U", "31-12 imm[31:12] | 11-7 rd | 6-0 opcode"],
+    ["J", "31 imm[20] | 30-21 imm[10:1] | 20 imm[11] | 19-12 imm[19:12] | 11-7 rd | 6-0 opcode"]
+  ];
+  var DB_OPCODES = [
+    [19, "OP-IMM", "I"], [3, "LOAD", "I"], [103, "JALR", "I"],
+    [51, "OP", "R"], [35, "STORE", "S"], [99, "BRANCH", "B"],
+    [55, "LUI", "U"], [23, "AUIPC", "U"], [111, "JAL", "J"]
+  ];
+
+  /* ---------------- bit math ---------------- */
+
+  function dbSX(v, bits) {
+    v = v | 0;
+    if ((v >>> (bits - 1)) & 1) return v - (1 << bits);
+    return v;
+  }
+
+  /* Encode a pool entry into its 32-bit word. The displayed word always
+     comes from this function, so ground truth and stimulus agree. */
+  function dbEnc(e) {
+    var w;
+    if (e.fmt === "R") {
+      w = (e.f7 << 25) | (e.rs2 << 20) | (e.rs1 << 15) | (e.f3 << 12) | (e.rd << 7) | e.opcode;
+    } else if (e.fmt === "I") {
+      w = (((e.imm & 0xFFF) << 20) | (e.rs1 << 15) | (e.f3 << 12) | (e.rd << 7) | e.opcode);
+    } else if (e.fmt === "S") {
+      var s12 = e.imm & 0xFFF;
+      w = ((((s12 >>> 5) & 0x7F) << 25) | (e.rs2 << 20) | (e.rs1 << 15) | (e.f3 << 12) | ((s12 & 0x1F) << 7) | e.opcode);
+    } else if (e.fmt === "B") {
+      var b13 = e.imm & 0x1FFF;
+      w = ((((b13 >>> 12) & 1) << 31) | (((b13 >>> 5) & 0x3F) << 25) | (e.rs2 << 20) |
+           (e.rs1 << 15) | (e.f3 << 12) | (((b13 >>> 1) & 0xF) << 8) | (((b13 >>> 11) & 1) << 7) | e.opcode);
+    } else if (e.fmt === "U") {
+      w = (((e.imm & 0xFFFFF) << 12) | (e.rd << 7) | e.opcode);
+    } else {
+      var j21 = e.imm & 0x1FFFFF;
+      w = ((((j21 >>> 20) & 1) << 31) | (((j21 >>> 1) & 0x3FF) << 21) | (((j21 >>> 11) & 1) << 20) |
+           (((j21 >>> 12) & 0xFF) << 12) | (e.rd << 7) | e.opcode);
+    }
+    return w >>> 0;
+  }
+
+  /* Decode a word into its fields, per the RV32I format maps. Used by the
+     node test hook to verify the encoder round-trips every pool entry. */
+  function dbDec(w, fmt) {
+    w = w >>> 0;
+    var d = { opcode: w & 0x7F };
+    if (fmt === "R") {
+      d.rd = (w >>> 7) & 0x1F; d.f3 = (w >>> 12) & 0x7; d.rs1 = (w >>> 15) & 0x1F;
+      d.rs2 = (w >>> 20) & 0x1F; d.f7 = (w >>> 25) & 0x7F;
+    } else if (fmt === "I") {
+      d.rd = (w >>> 7) & 0x1F; d.f3 = (w >>> 12) & 0x7; d.rs1 = (w >>> 15) & 0x1F;
+      d.imm = dbSX((w >>> 20) & 0xFFF, 12);
+    } else if (fmt === "S") {
+      d.rs1 = (w >>> 15) & 0x1F; d.rs2 = (w >>> 20) & 0x1F; d.f3 = (w >>> 12) & 0x7;
+      d.imm = dbSX((((w >>> 25) & 0x7F) << 5) | ((w >>> 7) & 0x1F), 12);
+    } else if (fmt === "B") {
+      d.rs1 = (w >>> 15) & 0x1F; d.rs2 = (w >>> 20) & 0x1F; d.f3 = (w >>> 12) & 0x7;
+      d.imm = dbSX((((w >>> 31) & 1) << 12) | (((w >>> 7) & 1) << 11) | (((w >>> 25) & 0x3F) << 5) | (((w >>> 8) & 0xF) << 1), 13);
+    } else if (fmt === "U") {
+      d.rd = (w >>> 7) & 0x1F; d.imm = (w >>> 12) & 0xFFFFF;
+    } else {
+      d.rd = (w >>> 7) & 0x1F;
+      d.imm = dbSX((((w >>> 31) & 1) << 20) | (((w >>> 12) & 0xFF) << 12) | (((w >>> 20) & 1) << 11) | (((w >>> 21) & 0x3FF) << 1), 21);
+    }
+    return d;
+  }
+
+  /* ---------------- state ---------------- */
+
+  function dbPick(group) {
+    return DB_POOL[group[Math.floor(Math.random() * group.length)]];
+  }
+
+  function dbNewTrial(entry) {
+    return {
+      entry: entry, word: dbEnc(entry),
+      fmt: null, inputs: {}, marks: {},
+      attempts: 0, certified: false
+    };
+  }
+
+  function dbNewState() {
+    return {
+      trials: [dbNewTrial(dbPick(DB_G1)), dbNewTrial(dbPick(DB_G2)), dbNewTrial(dbPick(DB_G3))],
+      ti: 0, failed: false, done: false
+    };
+  }
+
+  var dbS = null;
+  var dbEls = {};
+
+  /* ---------------- css ---------------- */
+
+  var DB_CSS = [
+    ".db-overlay{position:fixed;inset:0;background:rgba(4,7,7,.94);z-index:90;display:none;overflow-y:auto;padding:18px 12px;}",
+    ".db-overlay.open{display:block;}",
+    ".db-panel{max-width:1020px;margin:0 auto;background:var(--panel);border:1px solid var(--line);padding:20px;}",
+    ".db-panel h3{font-family:var(--font-d);font-size:22px;letter-spacing:.02em;margin:0 0 4px;text-transform:uppercase;}",
+    ".db-spec{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--ember);margin:0 0 10px;}",
+    ".db-sub{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 10px;max-width:72ch;}",
+    ".db-sub b{color:var(--paper);}",
+    ".db-tabs{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px;}",
+    ".db-tab{min-height:48px;padding:10px 14px;background:transparent;border:1px solid var(--line);color:var(--paper);font-family:var(--font-d);font-size:12px;letter-spacing:.04em;cursor:pointer;text-transform:uppercase;}",
+    ".db-tab .db-st{display:block;font-family:var(--font-m);font-size:10px;letter-spacing:.1em;margin-top:4px;}",
+    ".db-tab .db-st.todo{color:var(--dim);}",
+    ".db-tab .db-st.live{color:var(--ember);}",
+    ".db-tab .db-st.done{color:#7fd67f;}",
+    ".db-tab[aria-selected=\"true\"]{border-color:var(--ember);}",
+    ".db-word{border:1px solid var(--line);padding:14px;margin:0 0 12px;background:rgba(255,255,255,.02);}",
+    ".db-word .db-k{font-family:var(--font-m);font-size:10px;letter-spacing:.14em;color:var(--dim);margin:0 0 6px;}",
+    ".db-hex{font-family:var(--font-m);font-size:26px;color:var(--paper);letter-spacing:.06em;margin:0 0 8px;}",
+    ".db-bits{font-family:var(--font-m);font-size:12px;line-height:1.9;color:var(--steel);overflow-x:auto;white-space:pre;}",
+    ".db-bits .db-ruler{color:var(--ember);}",
+    ".db-ref{font-family:var(--font-m);font-size:11px;color:var(--dim);line-height:1.9;margin:0 0 12px;padding:10px 12px;border:1px solid var(--line);}",
+    ".db-ref b{color:var(--paper);font-weight:600;}",
+    ".db-ref .db-fmt{color:var(--ember);font-weight:600;}",
+    ".db-frow{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px;}",
+    ".db-fmtbtn{min-height:48px;padding:10px 18px;background:transparent;border:1px solid var(--line);color:var(--paper);font-family:var(--font-d);font-size:13px;letter-spacing:.06em;cursor:pointer;}",
+    ".db-fmtbtn[aria-pressed=\"true\"]{border-color:var(--ember);color:var(--ember);}",
+    ".db-field{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);margin:0 0 6px;flex-wrap:wrap;}",
+    ".db-field .db-fl{flex:1 1 200px;min-width:0;}",
+    ".db-field .db-fl b{font-family:var(--font-m);font-size:12px;letter-spacing:.1em;color:var(--paper);}",
+    ".db-field .db-fl span{display:block;font-family:var(--font-m);font-size:10px;color:var(--dim);letter-spacing:.06em;margin-top:2px;}",
+    ".db-field input{width:130px;min-height:48px;background:var(--ink);color:var(--paper);border:1px solid var(--line);font-family:var(--font-m);font-size:15px;padding:8px 10px;}",
+    ".db-tag{font-family:var(--font-m);font-size:10px;letter-spacing:.12em;padding:6px 10px;border:1px solid var(--line);color:var(--dim);white-space:nowrap;}",
+    ".db-tag.right{color:#7fd67f;border-color:#7fd67f;}",
+    ".db-tag.wrong{color:var(--ember);border-color:var(--ember);}",
+    ".db-btnrow{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;}",
+    ".db-btn{min-height:48px;padding:12px 18px;font-family:var(--font-d);font-size:12px;letter-spacing:.06em;text-transform:uppercase;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--paper);}",
+    ".db-btn.primary{background:var(--ember);border-color:var(--ember);color:#0a0a0a;font-weight:700;}",
+    ".db-btn:disabled{opacity:.4;cursor:not-allowed;}",
+    ".db-strikes{font-family:var(--font-m);font-size:11px;letter-spacing:.1em;color:var(--dim);margin:0 0 12px;}",
+    ".db-strikes b{color:var(--ember);font-weight:600;}",
+    ".db-asm{font-family:var(--font-m);font-size:12.5px;color:var(--paper);border:1px solid var(--line);padding:10px 12px;margin:0 0 6px;}",
+    ".db-asm b{color:#7fd67f;font-weight:600;}",
+    ".db-fail{border:1px solid var(--ember);padding:18px;margin:0 0 12px;}",
+    ".db-fail h4{font-family:var(--font-d);font-size:18px;color:var(--ember);margin:0 0 8px;text-transform:uppercase;letter-spacing:.03em;}",
+    ".db-fail p{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 10px;}",
+    ".db-done{border:1px solid var(--ember);padding:18px;margin:0 0 12px;}",
+    ".db-done h4{font-family:var(--font-d);font-size:18px;color:var(--ember);margin:0 0 8px;text-transform:uppercase;letter-spacing:.03em;}",
+    ".db-done p{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 8px;}",
+    ".db-done p b{color:var(--paper);}",
+    ".db-foot{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0 0;}",
+    ".db-progress{font-family:var(--font-m);font-size:11.5px;color:var(--dim);letter-spacing:.08em;margin-right:auto;}",
+    ".db-progress b{color:var(--paper);font-weight:600;}",
+    "@keyframes dbpop{0%{transform:scale(.96);}100%{transform:scale(1);}}",
+    ".db-pop{animation:dbpop 200ms ease-out;}",
+    "@media (prefers-reduced-motion: reduce){.db-pop{animation:none;}}",
+    ".db-panel button:focus-visible,.db-panel input:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}"
+  ];
+
+  function dbEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== null && text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  function dbHex(w) {
+    return "0x" + (w >>> 0).toString(16).toUpperCase().padStart(8, "0");
+  }
+
+  function dbBits(w) {
+    var b = (w >>> 0).toString(2).padStart(32, "0");
+    var nibs = [], ruler = [];
+    for (var i = 0; i < 8; i++) {
+      nibs.push(b.slice(i * 4, i * 4 + 4));
+      ruler.push(String(31 - i * 4).padEnd(4, " "));
+    }
+    return { ruler: ruler.join(" "), bits: nibs.join(" ") };
+  }
+
+  /* ---------------- render ---------------- */
+
+  function dbCertifiedCount(s) {
+    var n = 0, i;
+    for (i = 0; i < s.trials.length; i++) if (s.trials[i].certified) n++;
+    return n;
+  }
+
+  function dbRenderTabs() {
+    var host = dbEls.tabs;
+    host.innerHTML = "";
+    dbS.trials.forEach(function (ts, i) {
+      var b = dbEl("button", "db-tab", null);
+      b.setAttribute("aria-selected", i === dbS.ti ? "true" : "false");
+      var st = "TODO", cls = "todo";
+      if (ts.certified) { st = "CERTIFIED"; cls = "done"; }
+      else if (i === dbS.ti) { st = "ACTIVE"; cls = "live"; }
+      b.innerHTML = "WORD " + (i + 1) + "<span class=\"db-st " + cls + "\">" + st + "</span>";
+      b.addEventListener("click", function () {
+        if (!dbS.trials[i].certified && !dbS.done && !dbS.failed) {
+          dbS.ti = i;
+          dbRenderAll();
+        }
+      });
+      host.appendChild(b);
+    });
+  }
+
+  function dbRenderTrial() {
+    var host = dbEls.trial;
+    host.innerHTML = "";
+    if (dbS.done) { dbRenderDoneInto(host); return; }
+    if (dbS.failed) { dbRenderFailInto(host); return; }
+    var ts = dbS.trials[dbS.ti];
+    var bt = dbBits(ts.word);
+
+    var word = dbEl("div", "db-word", null);
+    word.appendChild(dbEl("p", "db-k", "WORD " + (dbS.ti + 1) + " OF 3, CAPTURED OFF THE FETCH BUS"));
+    word.appendChild(dbEl("p", "db-hex", dbHex(ts.word)));
+    var bits = dbEl("p", "db-bits", null);
+    bits.innerHTML = "<span class=\"db-ruler\">" + bt.ruler + "</span><br>" + bt.bits;
+    word.appendChild(bits);
+    host.appendChild(word);
+
+    var ref = dbEl("div", "db-ref", null);
+    var html = "<b>FORMAT MAPS</b> (bit positions, read left to right, 31 to 0)<br>";
+    DB_MAPS.forEach(function (m) {
+      html += "<span class=\"db-fmt\">" + m[0] + "</span>  " + m[1] + "<br>";
+    });
+    html += "<br><b>OPCODE TABLE</b> (enter opcodes in decimal)<br>";
+    DB_OPCODES.forEach(function (o) {
+      html += o[0] + " = " + o[1] + " (" + o[2] + ")&nbsp;&nbsp;";
+    });
+    html += "<br><br><b>THE IMMEDIATE</b>: sign-extend from its top bit, so a 1 there makes the value negative. B and J offsets are always even. U immediates are unsigned.";
+    ref.innerHTML = html;
+    host.appendChild(ref);
+
+    host.appendChild(dbEl("p", "db-strikes", "STEP 1: PICK THE FORMAT FROM THE OPCODE"));
+    var frow = dbEl("div", "db-frow", null);
+    DB_FMTS.forEach(function (f) {
+      var b = dbEl("button", "db-fmtbtn", f + "-TYPE");
+      b.id = "dbFmt-" + f;
+      b.setAttribute("aria-pressed", ts.fmt === f ? "true" : "false");
+      b.addEventListener("click", function () {
+        if (ts.certified) return;
+        ts.fmt = f; ts.marks = {};
+        dbRenderAll();
+      });
+      frow.appendChild(b);
+    });
+    host.appendChild(frow);
+
+    if (ts.fmt) {
+      host.appendChild(dbEl("p", "db-strikes", "STEP 2: FILL EVERY FIELD FROM THE WORD, THEN CHECK"));
+      DB_FIELDS[ts.fmt].forEach(function (fname) {
+        host.appendChild(dbFieldRow(ts, fname));
+      });
+    } else {
+      host.appendChild(dbEl("p", "db-strikes", "STEP 2 APPEARS AFTER YOU PICK A FORMAT"));
+    }
+
+    if (ts.certified) {
+      var asm = dbEl("p", "db-asm", null);
+      asm.innerHTML = "<b>CERTIFIED.</b> The silicon reads this word as: " + ts.entry.asm;
+      host.appendChild(asm);
+    }
+
+    var row = dbEl("div", "db-btnrow", null);
+    var check = dbEl("button", "db-btn primary", "CHECK THE DECODE");
+    check.id = "dbCheck-" + dbS.ti;
+    check.disabled = ts.certified;
+    check.addEventListener("click", function () { dbActCheck(dbS.ti); });
+    row.appendChild(check);
+    var clear = dbEl("button", "db-btn", "CLEAR ENTRIES");
+    clear.disabled = ts.certified;
+    clear.addEventListener("click", function () {
+      ts.inputs = {}; ts.marks = {};
+      dbRenderAll();
+    });
+    row.appendChild(clear);
+    host.appendChild(row);
+
+    var sk = dbEl("p", "db-strikes", null);
+    sk.innerHTML = "STRIKES: <b>" + ts.attempts + " / 3</b>. Three wrong decodes on one word fails the bench.";
+    host.appendChild(sk);
+  }
+
+  function dbFieldMeta(fname, fmt) {
+    if (fname === "opcode") return { label: "OPCODE", sub: "bits 6-0, decimal 0-127" };
+    if (fname === "rd") return { label: "RD", sub: "bits 11-7, register 0-31" };
+    if (fname === "rs1") return { label: "RS1", sub: "bits 19-15, register 0-31" };
+    if (fname === "rs2") return { label: "RS2", sub: "bits 24-20, register 0-31" };
+    if (fname === "funct3") return { label: "FUNCT3", sub: "bits 14-12, decimal 0-7" };
+    if (fname === "funct7") return { label: "FUNCT7", sub: "bits 31-25, decimal 0-127" };
+    return { label: "IMM", sub: DB_IMM_NOTE[fmt] || "" };
+  }
+
+  function dbFieldRow(ts, fname) {
+    var meta = dbFieldMeta(fname, ts.fmt);
+    var row = dbEl("div", "db-field", null);
+    var lab = dbEl("div", "db-fl", null);
+    lab.innerHTML = "<b>" + meta.label + "</b><span>" + meta.sub + "</span>";
+    row.appendChild(lab);
+    var inp = document.createElement("input");
+    inp.type = "number";
+    inp.id = "dbIn-" + ts.fmt + "-" + fname + "-" + dbS.ti;
+    inp.setAttribute("aria-label", meta.label + ", " + meta.sub);
+    if (ts.inputs[fname] !== undefined) inp.value = ts.inputs[fname];
+    inp.addEventListener("input", function () {
+      ts.inputs[fname] = inp.value;
+      delete ts.marks[fname];
+      var tag = row.querySelector(".db-tag");
+      if (tag) { tag.textContent = "PENDING"; tag.className = "db-tag"; }
+      inp.removeAttribute("aria-invalid");
+    });
+    row.appendChild(inp);
+    var tag = dbEl("span", "db-tag", "PENDING");
+    if (ts.marks[fname] === "right") { tag.textContent = "RIGHT"; tag.className = "db-tag right"; }
+    else if (ts.marks[fname] === "wrong") { tag.textContent = "WRONG"; tag.className = "db-tag wrong"; inp.setAttribute("aria-invalid", "true"); }
+    row.appendChild(tag);
+    return row;
+  }
+
+  function dbRenderDoneInto(host) {
+    var d = dbEl("div", "db-done db-pop", null);
+    d.appendChild(dbEl("h4", null, "Bench qualified"));
+    var p = dbEl("p", null, null);
+    p.innerHTML = "All three words decoded with <b>zero field errors</b>. The fetch bus holds no secrets for you.";
+    d.appendChild(p);
+    dbS.trials.forEach(function (ts, i) {
+      var z = dbEl("p", "db-asm", null);
+      z.innerHTML = dbHex(ts.word) + " = " + ts.entry.asm;
+      d.appendChild(z);
+    });
+    var row = dbEl("div", "db-btnrow", null);
+    var dl = dbEl("button", "db-btn primary", "DOWNLOAD QUALIFICATION RECORD");
+    dl.addEventListener("click", dbDownloadCert);
+    row.appendChild(dl);
+    var again = dbEl("button", "db-btn", "DECODE A NEW WORD SET");
+    again.addEventListener("click", function () {
+      dbS = dbNewState();
+      dbRenderAll();
+    });
+    row.appendChild(again);
+    d.appendChild(row);
+    host.appendChild(d);
+  }
+
+  function dbRenderFailInto(host) {
+    var d = dbEl("div", "db-fail db-pop", null);
+    d.appendChild(dbEl("h4", null, "Bench failed"));
+    var p = dbEl("p", null, null);
+    p.innerHTML = "Three wrong decodes on one word. The bench scraps the set: rebuild and decode fresh words.";
+    d.appendChild(p);
+    var row = dbEl("div", "db-btnrow", null);
+    var rb = dbEl("button", "db-btn primary", "REBUILD THE WORD SET");
+    rb.addEventListener("click", function () {
+      dbS = dbNewState();
+      dbRenderAll();
+      toast("Fresh word set on the bench.");
+    });
+    row.appendChild(rb);
+    d.appendChild(row);
+    host.appendChild(d);
+  }
+
+  function dbRenderFoot() {
+    dbEls.foot.innerHTML = "";
+    var prog = dbEl("p", "db-progress", null);
+    prog.innerHTML = "CERTIFIED <b>" + dbCertifiedCount(dbS) + " / 3</b>";
+    dbEls.foot.appendChild(prog);
+    var close = dbEl("button", "db-btn", "CLOSE THE BENCH");
+    close.addEventListener("click", function () {
+      document.getElementById("dbOverlay").classList.remove("open");
+    });
+    dbEls.foot.appendChild(close);
+  }
+
+  function dbRenderAll() {
+    dbRenderTabs();
+    dbRenderTrial();
+    dbRenderFoot();
+  }
+
+  /* ---------------- actions ---------------- */
+
+  function dbTruth(e) {
+    var t = { fmt: e.fmt, opcode: e.opcode };
+    if (e.rd !== undefined) t.rd = e.rd;
+    if (e.rs1 !== undefined) t.rs1 = e.rs1;
+    if (e.rs2 !== undefined) t.rs2 = e.rs2;
+    if (e.f3 !== undefined) t.funct3 = e.f3;
+    if (e.f7 !== undefined) t.funct7 = e.f7;
+    if (e.imm !== undefined) t.imm = e.imm;
+    return t;
+  }
+
+  function dbParseNum(raw) {
+    if (raw === null || raw === undefined) return null;
+    var s = String(raw).trim();
+    if (s === "") return null;
+    if (!/^-?\d+$/.test(s)) return null;
+    return parseInt(s, 10);
+  }
+
+  function dbActCheck(ti) {
+    var ts = dbS.trials[ti];
+    if (ts.certified || dbS.failed || dbS.done) return;
+    if (!ts.fmt) {
+      toast("Pick a format first.");
+      return;
+    }
+    /* Read the live inputs into state. */
+    DB_FIELDS[ts.fmt].forEach(function (fname) {
+      var inp = document.getElementById("dbIn-" + ts.fmt + "-" + fname + "-" + ti);
+      ts.inputs[fname] = inp ? inp.value : "";
+    });
+    var truth = dbTruth(ts.entry);
+    var allRight = true;
+    if (ts.fmt !== truth.fmt) {
+      allRight = false;
+      toast("Wrong format. Read the opcode table again.");
+    } else {
+      DB_FIELDS[ts.fmt].forEach(function (fname) {
+        var v = dbParseNum(ts.inputs[fname]);
+        if (v === null || v !== truth[fname]) {
+          ts.marks[fname] = "wrong";
+          allRight = false;
+        } else {
+          ts.marks[fname] = "right";
+        }
+      });
+    }
+    if (allRight) {
+      ts.certified = true;
+      toast("Word " + (ti + 1) + " decoded: " + ts.entry.asm + ".");
+      if (dbCertifiedCount(dbS) === dbS.trials.length) {
+        dbS.done = true;
+        dbS.ti = 0;
+      } else {
+        for (var i = 0; i < dbS.trials.length; i++) {
+          if (!dbS.trials[i].certified) { dbS.ti = i; break; }
+        }
+      }
+    } else {
+      ts.attempts++;
+      if (ts.attempts >= 3) {
+        dbS.failed = true;
+        toast("Three wrong decodes. The bench is failed.");
+      } else {
+        toast("Decode has errors. " + (3 - ts.attempts) + " strike" + (3 - ts.attempts === 1 ? "" : "s") + " left on this word.");
+      }
+    }
+    dbRenderAll();
+  }
+
+  function dbDownloadCert() {
+    var lines = [];
+    lines.push("THE DECODE BENCH · RV32I INSTRUCTION DECODE QUALIFICATION");
+    lines.push("Raw 32-bit words split into fields, immediates sign-extended");
+    lines.push("");
+    dbS.trials.forEach(function (ts, i) {
+      var t = dbTruth(ts.entry);
+      lines.push((i + 1) + ". " + dbHex(ts.word) + " = " + ts.entry.asm);
+      lines.push("   format " + t.fmt + ", opcode " + t.opcode +
+        (t.rd !== undefined ? ", rd x" + t.rd : "") +
+        (t.rs1 !== undefined ? ", rs1 x" + t.rs1 : "") +
+        (t.rs2 !== undefined ? ", rs2 x" + t.rs2 : "") +
+        (t.funct3 !== undefined ? ", funct3 " + t.funct3 : "") +
+        (t.funct7 !== undefined ? ", funct7 " + t.funct7 : "") +
+        (t.imm !== undefined ? ", imm " + t.imm : ""));
+      lines.push("   verdict: CERTIFIED, zero field errors");
+      lines.push("");
+    });
+    lines.push("THE DECODE BENCH: QUALIFIED");
+    var blob = new Blob(["The Decode Bench qualification record\n\n" + lines.join("\n") + "\n"], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "decode-bench-qualification.txt";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);
+    toast("Qualification record downloaded");
+  }
+
+  /* ---------------- build ---------------- */
+
+  function dbBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("dbBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = DB_CSS.join("\n");
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "dbBtn";
+    b.className = "secondary";
+    b.textContent = "Run the Decode Bench";
+    b.addEventListener("click", function () {
+      document.getElementById("dbOverlay").classList.add("open");
+    });
+    box.appendChild(b);
+
+    var ov = document.createElement("div");
+    ov.className = "db-overlay";
+    ov.id = "dbOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Decode Bench");
+
+    var panel = document.createElement("div");
+    panel.className = "db-panel";
+    panel.appendChild(dbEl("h3", null, "The Decode Bench"));
+    panel.appendChild(dbEl("p", "db-spec", "RV32I FIELDS · 3 WORDS"));
+
+    var sub = dbEl("p", "db-sub", null);
+    sub.innerHTML = "A raw 32-bit instruction word, captured off the fetch bus. " +
+      "Split it into its <b>RISC-V fields</b> with the format maps below, read the " +
+      "<b>opcode table</b>, and reassemble the <b>sign-extended immediate</b>. " +
+      "Decode all three words with zero field errors to qualify.";
+    panel.appendChild(sub);
+
+    dbEls.tabs = dbEl("div", "db-tabs", null);
+    panel.appendChild(dbEls.tabs);
+
+    dbEls.trial = dbEl("div", null);
+    panel.appendChild(dbEls.trial);
+
+    dbEls.foot = dbEl("div", "db-foot", null);
+    panel.appendChild(dbEls.foot);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    dbS = dbNewState();
+    dbRenderAll();
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", dbBuild);
+    } else {
+      dbBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      DB: {
+        POOL: DB_POOL, FMTS: DB_FMTS, FIELDS: DB_FIELDS,
+        enc: dbEnc, dec: dbDec, sx: dbSX,
+        newState: dbNewState, truth: dbTruth, parseNum: dbParseNum,
+        actCheck: dbActCheck, state: function () { return dbS; }
+      }
+    });
+  }
+})();
