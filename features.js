@@ -6835,12 +6835,12 @@ if (typeof module !== "undefined" && module.exports) {
 
     work.appendChild(llEl("div", "ll-sec", "LINK WIDTH"));
     llSeg(work, ["x16", "x8", "x4"], LL_WIDTHS.indexOf(st.width), function (i) {
-      st.width = LL_WIDTHS[i]; st.trained = false; st.results = null; llOpenTrial(id);
+      st.width = LL_WIDTHS[i]; llRevokeIfPassed(id); st.trained = false; st.results = null; llOpenTrial(id);
     }, "Link width");
 
     work.appendChild(llEl("div", "ll-sec", "LINK SPEED"));
     llSeg(work, LL_SPEEDS.map(function (s) { return s.name; }), st.speed, function (i) {
-      st.speed = i; st.trained = false; st.results = null; llOpenTrial(id);
+      st.speed = i; llRevokeIfPassed(id); st.trained = false; st.results = null; llOpenTrial(id);
     }, "Link speed");
 
     work.appendChild(llEl("div", "ll-sec", "TX EQUALIZATION PRESET"));
@@ -6854,7 +6854,7 @@ if (typeof module !== "undefined" && module.exports) {
       sel.appendChild(o);
     });
     sel.addEventListener("change", function () {
-      st.preset = parseInt(sel.value, 10); st.trained = false; st.results = null; llOpenTrial(id);
+      st.preset = parseInt(sel.value, 10); llRevokeIfPassed(id); st.trained = false; st.results = null; llOpenTrial(id);
     });
     work.appendChild(sel);
 
@@ -6925,7 +6925,17 @@ if (typeof module !== "undefined" && module.exports) {
 
   function llRunTraining(id) {
     var t = llTrial(id), st = LL_ST[id];
-    if (st.training || st.passed) return;
+    if (st.training) return;
+    /* Retraining a signed trial revokes the signature: the new link is a
+       different link. The old behavior (silent no-op) stranded users who
+       certified below par with no way to improve. */
+    var wasPassed = st.passed;
+    if (wasPassed) {
+      st.passed = false; st.score = 0;
+      var cbx = ll$("llCertBox");
+      if (cbx) cbx.classList.remove("show");
+      llRenderCards(ll$("llCards"));
+    }
     st.training = true;
     st.attempts += 1;
     var speed = LL_SPEEDS[st.speed], preset = LL_PRESETS[st.preset];
@@ -6938,6 +6948,10 @@ if (typeof module !== "undefined" && module.exports) {
 
     llTrace(id, "<b>Training start:</b> x" + st.width + " " + speed.name + " (" + speed.gt +
       " GT/s), EQ " + preset.name + " (" + preset.pre + " dB preshoot, " + preset.de + " dB de-emphasis).");
+    if (wasPassed) {
+      llTrace(id, "<b>Certification revoked:</b> retraining voids the earlier signature. " +
+        "Certify again once the new link trains clean.");
+    }
 
     var phases = ["DETECT", "POLLING", "CONFIG"];
     var reduced = llReduced();
@@ -7020,6 +7034,8 @@ if (typeof module !== "undefined" && module.exports) {
       llTrace(id, "<b>Certified:</b> x" + st.width + " " + speed.name + ", EQ " + preset.name +
         ". Link score <b>" + st.score + "</b> (par " + t.par + ").");
       toast("Link certified: " + t.name + " at x" + st.width + " " + speed.name + ".");
+      var cbtn = ll$("llCert-" + id);
+      if (cbtn) cbtn.disabled = true;
     } else {
       st.strikes += 1;
       st.trained = false;
@@ -7032,6 +7048,18 @@ if (typeof module !== "undefined" && module.exports) {
     llRenderCards(ll$("llCards"));
     var done = LL_TRIALS.every(function (x) { return LL_ST[x.id].passed; });
     if (done) llShowCert();
+  }
+
+  /* A signed trial whose knobs change no longer describes the link on the
+     bench, so the signature is voided instead of going stale. */
+  function llRevokeIfPassed(id) {
+    var st = LL_ST[id];
+    if (!st.passed) return;
+    st.passed = false; st.score = 0;
+    var cb = ll$("llCertBox");
+    if (cb) cb.classList.remove("show");
+    llRenderCards(ll$("llCards"));
+    toast("Certification revoked: the link changed on " + llTrial(id).name + ".");
   }
 
   /* ---------------- certificate ---------------- */
