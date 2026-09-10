@@ -9683,7 +9683,7 @@ if (typeof module !== "undefined" && module.exports) {
         " frames, zero errors, exact framing.<small>Qualify this hart to sign it off.</small>";
     } else {
       v.className = "wr-verdict fail";
-      v.innerHTML = g.why.replace(/^FAIL: /, "FAIL: ").replace(/^DECODED CLEAN/, "HOLD: ") +
+      v.innerHTML = g.why.replace(/^FAIL: /, "FAIL: ").replace(/^DECODED CLEAN,/, "HOLD:") +
         "<small>Adjust the receiver and capture again.</small>";
     }
     wrDrawScope(dec);
