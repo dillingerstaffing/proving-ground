@@ -7096,3 +7096,608 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
 })();
+/* ================= THE LINK LAB (BENCH 11) =================
+   PCIe link training qualification for GPU bring-up. A real SerDes
+   channel model lives under the hood: per-lane insertion loss,
+   crosstalk aggressors, hard lane opens, speed-dependent loss
+   budgets, and nine EQ presets that buy back dB. Three cards go
+   on the bench. Train each link, read the per-lane BER against
+   the 1e-12 budget, and certify only the link you can honestly
+   sign. Built for the TAPEOUT bring-up bench. */
+
+(function () {
+  "use strict";
+
+  /* ---------------- pure core: no DOM ---------------- */
+
+  function llMulberry32(a) {
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  var LL_SPEEDS = [
+    { key: "g3", name: "Gen3", gt: 8,  budget: 14 },
+    { key: "g4", name: "Gen4", gt: 16, budget: 11 },
+    { key: "g5", name: "Gen5", gt: 32, budget: 8 }
+  ];
+
+  var LL_PRESETS = [
+    { name: "P0", pre: 0,    de: 0    },
+    { name: "P1", pre: 0,    de: -1   },
+    { name: "P2", pre: 0,    de: -2.5 },
+    { name: "P3", pre: 0,    de: -3.5 },
+    { name: "P4", pre: 0,    de: -4.5 },
+    { name: "P5", pre: 0,    de: -6   },
+    { name: "P6", pre: -1.5, de: -3.5 },
+    { name: "P7", pre: -1.5, de: -4.5 },
+    { name: "P8", pre: -2,   de: -6   }
+  ];
+
+  function llEqGain(pi) {
+    var p = LL_PRESETS[pi];
+    var g = (-p.de) * 0.9 + (-p.pre) * 0.6;
+    return g > 6 ? 6 : g;
+  }
+
+  function llMakeLanes(def) {
+    var rng = llMulberry32(def.seed);
+    var lanes = [];
+    for (var i = 0; i < 16; i++) {
+      var loss = def.base + rng() * def.jit;
+      var hot = def.hot.indexOf(i) !== -1;
+      if (hot) loss += 2.5;
+      lanes.push({ idx: i, loss: loss, fault: def.faults.indexOf(i) !== -1, hot: hot });
+    }
+    return lanes;
+  }
+
+  /* Per-lane result: margin in dB against the 1e-12 BER budget. */
+  function llLaneResult(lane, xtalk, speed, pi) {
+    if (lane.fault) return { idx: lane.idx, margin: -99, pass: false, fault: true, berExp: 0 };
+    var xt = (xtalk > 0 && (lane.idx % 2 === 1) && speed.gt >= 16) ? xtalk : 0;
+    var margin = Math.round((llEqGain(pi) + speed.budget - lane.loss - xt) * 100) / 100;
+    var pass = margin >= 0;
+    var berExp = -(12 + Math.floor(margin));
+    return { idx: lane.idx, margin: margin, pass: pass, fault: false, berExp: berExp };
+  }
+
+  function llTrainCard(trial, width, speedIdx, presetIdx) {
+    var lanes = llMakeLanes(trial);
+    var speed = LL_SPEEDS[speedIdx];
+    var out = [];
+    for (var i = 0; i < width; i++) out.push(llLaneResult(lanes[i], trial.xtalk, speed, presetIdx));
+    return out;
+  }
+
+  function llCertify(results) {
+    for (var i = 0; i < results.length; i++) if (!results[i].pass) return false;
+    return results.length > 0;
+  }
+
+  function llScore(width, gt) { return width * gt; }
+
+  var LL_TRIALS = [
+    { id: "c1", name: "Trial 1: Golden Sample", seed: 1101, base: 4.0, jit: 1.4,
+      faults: [], hot: [], xtalk: 0, par: 512,
+      brief: "Reference card on short traces. Clean lanes train at full rate. Bring this one home at x16 Gen5." },
+    { id: "c2", name: "Trial 2: The Marginal Lot", seed: 2202, base: 8.6, jit: 1.4,
+      faults: [14], hot: [5, 10], xtalk: 0, par: 256,
+      brief: "One lane is a hard open and two run hot. Find the widest link you can honestly sign. Signing a dead lane is a field flap." },
+    { id: "c3", name: "Trial 3: Riser Rescue", seed: 3303, base: 13.6, jit: 1.6,
+      faults: [], hot: [], xtalk: 2.6, par: 128,
+      brief: "A long ribbon riser loads every lane with loss, and aggressor lanes bite at Gen4 and up. Slow the link before you blame the card." }
+  ];
+
+  var LL_WIDTHS = [16, 8, 4];
+
+  /* ---------------- CSS ---------------- */
+
+  var LL_CSS = [
+    ".ll-overlay{position:fixed;inset:0;z-index:9995;background:rgba(5,8,10,.94);display:none;}",
+    ".ll-overlay.open{display:flex;}",
+    ".ll-panel{flex:1;min-height:0;width:100%;max-width:900px;margin:0 auto;display:flex;flex-direction:column;background:#0a0c0e;border:1px solid var(--line);overflow:hidden;}",
+    "@media(min-width:700px){.ll-panel{border-radius:4px;}}",
+    ".ll-bar{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line);flex:none;flex-wrap:wrap;background:var(--panel);}",
+    ".ll-title{font-family:var(--font-d);font-size:13px;font-weight:700;letter-spacing:.14em;color:var(--paper);white-space:nowrap;}",
+    ".ll-title b{color:var(--ember);}",
+    ".ll-close{font-family:var(--font-m);font-size:12px;font-weight:700;letter-spacing:.08em;min-height:48px;min-width:48px;padding:12px 18px;border-radius:4px;border:1px solid var(--ember);background:var(--ember);color:#0a0c0e;cursor:pointer;margin-left:auto;}",
+    ".ll-close:active{transform:scale(.96);}",
+    ".ll-body{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px;}",
+    ".ll-sub{font-family:var(--font-m);font-size:11px;color:var(--steel);letter-spacing:.04em;line-height:1.8;margin:0 0 12px;}",
+    ".ll-sub b{color:var(--paper);font-weight:600;letter-spacing:.08em;font-size:10px;}",
+    ".ll-sub a{color:var(--ice);}",
+    ".ll-cards{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:12px;}",
+    "@media(min-width:700px){.ll-cards{grid-template-columns:repeat(3,1fr);}}",
+    ".ll-card{border:1px solid var(--line);border-radius:4px;padding:14px;background:var(--panel);}",
+    ".ll-card h5{margin:0 0 6px;font-family:var(--font-d);font-size:14px;color:var(--paper);}",
+    ".ll-card p{margin:0 0 10px;font-size:12px;color:var(--steel);line-height:1.6;}",
+    ".ll-card .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}",
+    ".ll-pstat{font-family:var(--font-m);font-size:10px;font-weight:700;letter-spacing:.12em;padding:6px 12px;border-radius:2px;border:1px solid var(--line);color:var(--steel);}",
+    ".ll-pstat.pass{color:var(--mint);border-color:rgba(125,224,168,.5);}",
+    ".ll-pstat.fail{color:var(--bad);border-color:rgba(255,122,122,.5);}",
+    ".ll-mini{font-family:var(--font-m);font-size:11px;font-weight:700;letter-spacing:.06em;min-height:48px;padding:12px 16px;border-radius:4px;border:1px solid rgba(242,237,227,.2);background:var(--panel-2);color:var(--paper);cursor:pointer;}",
+    ".ll-mini:active{transform:scale(.96);}",
+    ".ll-mini.go{background:var(--ember);border-color:var(--ember);color:#0a0c0e;}",
+    ".ll-work{border:1px solid var(--line);border-radius:4px;background:var(--panel);padding:14px;margin-bottom:12px;}",
+    ".ll-work h4{margin:0 0 4px;font-family:var(--font-d);font-size:15px;color:var(--paper);}",
+    ".ll-brief{font-size:12px;color:var(--steel);line-height:1.7;margin:0 0 4px;max-width:70ch;}",
+    ".ll-sec{font-family:var(--font-m);font-size:10px;font-weight:700;letter-spacing:.14em;color:var(--dim);margin:14px 0 8px;}",
+    ".ll-seg{display:inline-flex;border:1px solid var(--line);border-radius:4px;overflow:hidden;}",
+    ".ll-seg button{font-family:var(--font-m);font-size:11px;font-weight:700;letter-spacing:.08em;min-height:48px;min-width:88px;padding:12px 18px;background:var(--panel-2);color:var(--steel);border:none;cursor:pointer;}",
+    ".ll-seg button + button{border-left:1px solid var(--line);}",
+    ".ll-seg button.on{background:var(--ember);color:#0a0c0e;}",
+    ".ll-seg button:active{transform:scale(.96);}",
+    ".ll-select{font-family:var(--font-m);font-size:12px;min-height:48px;padding:12px;background:var(--panel-2);color:var(--paper);border:1px solid var(--line);border-radius:4px;max-width:100%;}",
+    ".ll-ctlrow{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;}",
+    ".ll-go{font-family:var(--font-d);font-size:12px;font-weight:700;letter-spacing:.08em;min-height:48px;padding:12px 20px;border-radius:4px;border:1px solid var(--ember);background:var(--ember);color:#0a0c0e;cursor:pointer;}",
+    ".ll-go:disabled{opacity:.35;cursor:default;}",
+    ".ll-go:active:not(:disabled){transform:scale(.96);}",
+    ".ll-go.ghost{background:none;color:var(--ember);}",
+    ".ll-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:10px 0;}",
+    "@media(min-width:700px){.ll-grid{grid-template-columns:repeat(8,minmax(0,1fr));}}",
+    ".ll-lane{border:1px solid var(--line);border-radius:3px;padding:8px 6px;background:var(--ink);text-align:center;min-width:0;}",
+    ".ll-lane .ln{display:block;font-family:var(--font-m);font-size:10px;font-weight:700;color:var(--dim);letter-spacing:.08em;}",
+    ".ll-lane .st{display:block;font-family:var(--font-m);font-size:9px;font-weight:700;letter-spacing:.06em;margin-top:4px;color:var(--steel);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}",
+    ".ll-lane .ber{display:block;font-family:var(--font-m);font-size:9px;color:var(--dim);margin-top:2px;}",
+    ".ll-lane.off{opacity:.35;}",
+    ".ll-lane.off .st{color:var(--dim);}",
+    ".ll-lane.busy{border-color:var(--ice);}",
+    ".ll-lane.busy .st{color:var(--ice);}",
+    ".ll-lane.ok{border-color:rgba(125,224,168,.55);}",
+    ".ll-lane.ok .st{color:var(--mint);}",
+    ".ll-lane.bad{border-color:rgba(255,122,122,.6);}",
+    ".ll-lane.bad .st{color:var(--bad);}",
+    ".ll-trace{list-style:none;margin:10px 0 0;padding:0;font-family:var(--font-m);font-size:11px;line-height:1.9;color:var(--steel);}",
+    ".ll-trace li{border-left:2px solid var(--ember);padding-left:10px;margin-bottom:6px;}",
+    ".ll-trace li b{color:var(--paper);}",
+    ".ll-trace .ok{color:var(--mint);font-weight:700;}",
+    ".ll-trace .no{color:var(--bad);font-weight:700;}",
+    ".ll-sum{font-family:var(--font-m);font-size:11px;color:var(--steel);line-height:1.8;margin:8px 0 0;}",
+    ".ll-sum b{color:var(--paper);}",
+    ".ll-cert{display:none;border:1px solid rgba(125,224,168,.5);border-radius:4px;padding:16px;background:rgba(125,224,168,.05);margin-top:14px;}",
+    ".ll-cert.show{display:block;}",
+    ".ll-cert h4{margin:0 0 6px;font-family:var(--font-d);color:var(--ember);letter-spacing:.1em;font-size:15px;}",
+    ".ll-cert p{margin:0 0 12px;font-size:12px;color:var(--steel);line-height:1.7;}",
+    "button:focus-visible,.ll-select:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    "@media (prefers-reduced-motion:reduce){.ll-panel *{transition:none !important;}}"
+  ];
+
+  /* ---------------- DOM helpers ---------------- */
+
+  function ll$(id) { return document.getElementById(id); }
+  function llEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  function llReduced() {
+    return typeof window !== "undefined" && window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  /* ---------------- state ---------------- */
+
+  var LL_ST = {};
+  LL_TRIALS.forEach(function (t) {
+    LL_ST[t.id] = { width: 16, speed: 2, preset: 0, results: null, trained: false,
+                    passed: false, strikes: 0, attempts: 0, training: false, score: 0 };
+  });
+  var LL_ACTIVE = "c1";
+
+  function llTrial(id) {
+    for (var i = 0; i < LL_TRIALS.length; i++) if (LL_TRIALS[i].id === id) return LL_TRIALS[i];
+    return LL_TRIALS[0];
+  }
+
+  function llDownload(text, name) {
+    var blob = new Blob([text], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = (window.URL || window.webkitURL).createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      (window.URL || window.webkitURL).revokeObjectURL(a.href);
+      a.remove();
+    }, 500);
+  }
+
+  function llBerText(r) {
+    if (r.fault) return "no link";
+    return "1e" + r.berExp;
+  }
+
+  /* ---------------- trial cards and workspace ---------------- */
+
+  function llRenderCards(host) {
+    host.innerHTML = "";
+    LL_TRIALS.forEach(function (t) {
+      var st = LL_ST[t.id];
+      var card = llEl("div", "ll-card");
+      card.appendChild(llEl("h5", null, t.name));
+      card.appendChild(llEl("p", null, t.brief));
+      var row = llEl("div", "row");
+      var pill = llEl("span", "ll-pstat" + (st.passed ? " pass" : (st.strikes > 0 ? " fail" : "")), "");
+      pill.id = "llStat-" + t.id;
+      pill.textContent = st.passed ? "LINK CERTIFIED" : (st.strikes > 0 ? "FIELD FLAP" : "NOT RUN");
+      row.appendChild(pill);
+      var open = llEl("button", "ll-mini go", "OPEN");
+      open.type = "button";
+      open.setAttribute("aria-label", "Open " + t.name);
+      (function (id) {
+        open.addEventListener("click", function () { llOpenTrial(id); });
+      })(t.id);
+      row.appendChild(open);
+      card.appendChild(row);
+      host.appendChild(card);
+    });
+  }
+
+  function llSeg(host, options, current, onPick, aria) {
+    var seg = llEl("div", "ll-seg");
+    seg.setAttribute("role", "group");
+    if (aria) seg.setAttribute("aria-label", aria);
+    options.forEach(function (opt, i) {
+      var b = llEl("button", null, opt);
+      b.type = "button";
+      if (i === current) b.classList.add("on");
+      (function (idx) {
+        b.addEventListener("click", function () { onPick(idx); });
+      })(i);
+      seg.appendChild(b);
+    });
+    host.appendChild(seg);
+  }
+
+  function llOpenTrial(id) {
+    LL_ACTIVE = id;
+    var t = llTrial(id), st = LL_ST[id];
+    var work = ll$("llWork");
+    work.innerHTML = "";
+    work.appendChild(llEl("h4", null, t.name));
+    work.appendChild(llEl("p", "ll-brief", t.brief));
+
+    work.appendChild(llEl("div", "ll-sec", "LINK WIDTH"));
+    llSeg(work, ["x16", "x8", "x4"], LL_WIDTHS.indexOf(st.width), function (i) {
+      st.width = LL_WIDTHS[i]; st.trained = false; st.results = null; llOpenTrial(id);
+    }, "Link width");
+
+    work.appendChild(llEl("div", "ll-sec", "LINK SPEED"));
+    llSeg(work, LL_SPEEDS.map(function (s) { return s.name; }), st.speed, function (i) {
+      st.speed = i; st.trained = false; st.results = null; llOpenTrial(id);
+    }, "Link speed");
+
+    work.appendChild(llEl("div", "ll-sec", "TX EQUALIZATION PRESET"));
+    var sel = llEl("select", "ll-select");
+    sel.id = "llPreset-" + id;
+    sel.setAttribute("aria-label", "TX equalization preset");
+    LL_PRESETS.forEach(function (p, i) {
+      var o = llEl("option", null, p.name + ": " + p.pre + " dB preshoot, " + p.de + " dB de-emphasis");
+      o.value = String(i);
+      if (i === st.preset) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.addEventListener("change", function () {
+      st.preset = parseInt(sel.value, 10); st.trained = false; st.results = null; llOpenTrial(id);
+    });
+    work.appendChild(sel);
+
+    var row = llEl("div", "ll-ctlrow");
+    var run = llEl("button", "ll-go", "RUN TRAINING");
+    run.id = "llRun-" + id;
+    run.type = "button";
+    if (st.training) run.disabled = true;
+    run.addEventListener("click", function () { llRunTraining(id); });
+    row.appendChild(run);
+    var cert = llEl("button", "ll-go ghost", "CERTIFY LINK");
+    cert.id = "llCert-" + id;
+    cert.type = "button";
+    cert.disabled = !st.trained || st.passed;
+    cert.addEventListener("click", function () { llCertifyTrial(id); });
+    row.appendChild(cert);
+    work.appendChild(row);
+
+    var grid = llEl("div", "ll-grid");
+    grid.id = "llGrid-" + id;
+    grid.setAttribute("role", "list");
+    grid.setAttribute("aria-label", "Lane training status");
+    for (var i = 0; i < 16; i++) {
+      var cell = llEl("div", "ll-lane" + (i < st.width ? "" : " off"));
+      cell.id = "llLane-" + id + "-" + i;
+      cell.setAttribute("role", "listitem");
+      cell.appendChild(llEl("span", "ln", "L" + (i < 10 ? "0" + i : i)));
+      var stx = llEl("span", "st", i < st.width ? "IDLE" : "OFF");
+      stx.id = "llLaneSt-" + id + "-" + i;
+      cell.appendChild(stx);
+      var ber = llEl("span", "ber", "");
+      ber.id = "llLaneBer-" + id + "-" + i;
+      cell.appendChild(ber);
+      grid.appendChild(cell);
+    }
+    work.appendChild(grid);
+
+    var sum = llEl("p", "ll-sum", "");
+    sum.id = "llSum-" + id;
+    work.appendChild(sum);
+
+    var trace = llEl("ul", "ll-trace");
+    trace.id = "llTrace-" + id;
+    work.appendChild(trace);
+
+    if (st.trained && st.results) llRenderResults(id);
+  }
+
+  function llSetLane(id, i, cls, status, ber) {
+    var cell = ll$("llLane-" + id + "-" + i);
+    if (!cell) return;
+    cell.className = "ll-lane" + (cls ? " " + cls : "");
+    var stx = ll$("llLaneSt-" + id + "-" + i);
+    if (stx) stx.textContent = status;
+    var b = ll$("llLaneBer-" + id + "-" + i);
+    if (b) b.textContent = ber || "";
+  }
+
+  /* ---------------- training run ---------------- */
+
+  function llTrace(id, html) {
+    var ul = ll$("llTrace-" + id);
+    if (!ul) return;
+    var li = llEl("li", null, "");
+    li.innerHTML = html;
+    ul.appendChild(li);
+  }
+
+  function llRunTraining(id) {
+    var t = llTrial(id), st = LL_ST[id];
+    if (st.training || st.passed) return;
+    st.training = true;
+    st.attempts += 1;
+    var speed = LL_SPEEDS[st.speed], preset = LL_PRESETS[st.preset];
+    var trace = ll$("llTrace-" + id);
+    if (trace) trace.innerHTML = "";
+    var sum = ll$("llSum-" + id);
+    if (sum) sum.innerHTML = "";
+    var certBtn = ll$("llCert-" + id);
+    if (certBtn) certBtn.disabled = true;
+
+    llTrace(id, "<b>Training start:</b> x" + st.width + " " + speed.name + " (" + speed.gt +
+      " GT/s), EQ " + preset.name + " (" + preset.pre + " dB preshoot, " + preset.de + " dB de-emphasis).");
+
+    var phases = ["DETECT", "POLLING", "CONFIG"];
+    var reduced = llReduced();
+    var step = reduced ? 0 : 70;
+
+    function phaseTick(ph, done) {
+      var i = 0;
+      function next() {
+        if (i >= st.width) { done(); return; }
+        llSetLane(id, i, "busy", phases[ph], "");
+        i++;
+        if (step) setTimeout(next, step); else next();
+      }
+      next();
+    }
+
+    function finalize() {
+      st.results = llTrainCard(t, st.width, st.speed, st.preset);
+      st.trained = true;
+      st.training = false;
+      llRenderResults(id);
+      var run = ll$("llRun-" + id);
+      if (run) run.disabled = false;
+    }
+
+    if (reduced) {
+      finalize();
+      return;
+    }
+    phaseTick(0, function () {
+      llTrace(id, "<b>DETECT:</b> receiver detect on all " + st.width + " lanes.");
+      phaseTick(1, function () {
+        llTrace(id, "<b>POLLING:</b> bit lock and symbol lock across the link.");
+        phaseTick(2, function () {
+          llTrace(id, "<b>CONFIG:</b> EQ negotiation complete, entering L0.");
+          finalize();
+        });
+      });
+    });
+  }
+
+  function llRenderResults(id) {
+    var t = llTrial(id), st = LL_ST[id];
+    if (!st.results) return;
+    var pass = 0, worstExp = -99, worstLane = -1, minMargin = 99, worstM = -1;
+    st.results.forEach(function (r) {
+      if (r.pass) pass++;
+      if (!r.fault && r.berExp > worstExp) { worstExp = r.berExp; worstLane = r.idx; }
+      if (r.margin < minMargin) { minMargin = r.margin; worstM = r.idx; }
+    });
+    st.results.forEach(function (r) {
+      var label = "L" + (r.idx < 10 ? "0" + r.idx : r.idx);
+      llSetLane(id, r.idx, r.pass ? "ok" : "bad", r.fault ? "NO LINK" : (r.pass ? "L0 PASS" : "LANE FAIL"),
+        r.fault ? "open" : llBerText(r));
+    });
+    var speed = LL_SPEEDS[st.speed];
+    var sum = ll$("llSum-" + id);
+    if (sum) {
+      sum.innerHTML = "Result: <b>" + pass + "/" + st.results.length + " lanes in L0</b>. " +
+        "Worst BER <b>1e" + worstExp + "</b> on L" + (worstLane < 10 ? "0" + worstLane : worstLane) +
+        " (budget 1e-12). Min margin <b>" + minMargin.toFixed(1) + " dB</b> on L" +
+        (worstM < 10 ? "0" + worstM : worstM) + ".";
+    }
+    var allOk = llCertify(st.results);
+    llTrace(id, allOk
+      ? "<b>L0:</b> <span class=\"ok\">" + pass + "/" + st.results.length + " lanes up.</span> Link is certifiable at x" + st.width + " " + speed.name + "."
+      : "<b>L0:</b> <span class=\"no\">" + (st.results.length - pass) + " lane(s) failed.</span> Certifying this link would be a field flap. Retune width, speed, or EQ and retrain.");
+    var certBtn = ll$("llCert-" + id);
+    if (certBtn) certBtn.disabled = st.passed;
+  }
+
+  function llCertifyTrial(id) {
+    var t = llTrial(id), st = LL_ST[id];
+    if (!st.trained || st.passed || !st.results) return;
+    var speed = LL_SPEEDS[st.speed];
+    if (llCertify(st.results)) {
+      st.passed = true;
+      st.score = llScore(st.width, speed.gt);
+      var preset = LL_PRESETS[st.preset];
+      llTrace(id, "<b>Certified:</b> x" + st.width + " " + speed.name + ", EQ " + preset.name +
+        ". Link score <b>" + st.score + "</b> (par " + t.par + ").");
+      toast("Link certified: " + t.name + " at x" + st.width + " " + speed.name + ".");
+    } else {
+      st.strikes += 1;
+      st.trained = false;
+      st.results = null;
+      llTrace(id, "<b class=\"no\">Certification rejected.</b> A failing lane was signed, the card flapped in the field. Strike " +
+        st.strikes + ". The trial resets: retrain with an honest link.");
+      toast("Certification rejected: field flap. Strike " + st.strikes + ".");
+      llOpenTrial(id);
+    }
+    llRenderCards(ll$("llCards"));
+    var done = LL_TRIALS.every(function (x) { return LL_ST[x.id].passed; });
+    if (done) llShowCert();
+  }
+
+  /* ---------------- certificate ---------------- */
+
+  function llTotalScore() {
+    var s = 0, par = 0;
+    LL_TRIALS.forEach(function (t) { s += LL_ST[t.id].score; par += t.par; });
+    return { score: s, par: par };
+  }
+
+  function llCertText() {
+    var tot = llTotalScore();
+    var L = [];
+    L.push("THE LINK LAB: LINK QUALIFICATION CERTIFICATE");
+    L.push("=============================================");
+    L.push("The holder trained and certified three PCIe links on real");
+    L.push("SerDes channel models (insertion loss, crosstalk, lane opens,");
+    L.push("EQ presets) against the 1e-12 BER budget:");
+    LL_TRIALS.forEach(function (t) {
+      var st = LL_ST[t.id];
+      var speed = LL_SPEEDS[st.speed], preset = LL_PRESETS[st.preset];
+      L.push("  " + t.name + ": x" + st.width + " " + speed.name + ", EQ " + preset.name +
+        " ... PASS (score " + st.score + ", par " + t.par + ", attempts " + st.attempts +
+        ", strikes " + st.strikes + ")");
+    });
+    L.push("");
+    L.push("Total link score " + tot.score + " of par " + tot.par + ".");
+    L.push("No dead lane was signed. Every certified lane holds 1e-12 BER.");
+    L.push("Qualified for the TAPEOUT GPU bring-up bench.");
+    L.push("Date: " + new Date().toISOString().slice(0, 10));
+    return L.join("\n");
+  }
+
+  function llShowCert() {
+    var box = ll$("llCertBox");
+    if (!box) return;
+    var tot = llTotalScore();
+    box.innerHTML = "";
+    box.appendChild(llEl("h4", null, "QUALIFICATION COMPLETE"));
+    var p = llEl("p", null, "");
+    p.textContent = "All three cards certified against the 1e-12 BER budget. Total link score " +
+      tot.score + " of par " + tot.par + ". The bring-up bench accepts these cards.";
+    box.appendChild(p);
+    var dl = llEl("button", "ll-mini go", "DOWNLOAD CERTIFICATE");
+    dl.type = "button";
+    dl.addEventListener("click", function () {
+      llDownload(llCertText(), "link-lab-certificate.txt");
+      toast("Certificate downloaded.");
+    });
+    box.appendChild(dl);
+    box.classList.add("show");
+  }
+
+  /* ---------------- shell ---------------- */
+
+  function llBuildShell() {
+    var css = document.createElement("style");
+    css.textContent = LL_CSS.join("\n");
+    document.head.appendChild(css);
+
+    var box = document.querySelector(".dossier .actions");
+    if (box && !ll$("llBtn")) {
+      var b = llEl("button", "secondary", "Run the Link Lab");
+      b.id = "llBtn";
+      b.addEventListener("click", function () { ll$("llOverlay").classList.add("open"); });
+      box.appendChild(b);
+    }
+
+    var ov = llEl("div", "ll-overlay");
+    ov.id = "llOverlay";
+    var panel = llEl("div", "ll-panel");
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    var bar = llEl("div", "ll-bar");
+    var title = llEl("div", "ll-title", "");
+    title.innerHTML = "THE LINK <b>LAB</b>";
+    var close = llEl("button", "ll-close", "CLOSE [x]");
+    bar.appendChild(title); bar.appendChild(close);
+    panel.appendChild(bar);
+
+    var body = llEl("div", "ll-body");
+    var sub = llEl("p", "ll-sub", "");
+    sub.innerHTML = "<b>HOW IT WORKS</b> Every lane hides an insertion-loss number. " +
+      "Link speed sets the loss you can afford (Gen3 is forgiving, Gen5 is not), " +
+      "crosstalk aggressors bite at Gen4 and up, and TX EQ presets buy back dB. " +
+      "Train the link, read each lane's BER against the 1e-12 budget, then certify " +
+      "only the link you can honestly sign. " +
+      "Built for the <a href=\"https://dillingerstaffing.github.io/tapeout/\" target=\"_blank\" rel=\"noopener\">TAPEOUT bring-up bench</a>.";
+    body.appendChild(sub);
+
+    var cards = llEl("div", "ll-cards");
+    cards.id = "llCards";
+    body.appendChild(cards);
+    llRenderCards(cards);
+
+    var work = llEl("div", "ll-work");
+    work.id = "llWork";
+    body.appendChild(work);
+
+    var certBox = llEl("div", "ll-cert");
+    certBox.id = "llCertBox";
+    body.appendChild(certBox);
+
+    panel.appendChild(body);
+
+    close.addEventListener("click", function () { ov.classList.remove("open"); });
+    ov.addEventListener("click", function (e) { if (e.target === ov) ov.classList.remove("open"); });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && ov.classList.contains("open")) ov.classList.remove("open");
+    });
+
+    llOpenTrial("c1");
+  }
+
+  function llInit() {
+    if (typeof document === "undefined") return;
+    if (!document.querySelector(".dossier .actions")) return;
+    llBuildShell();
+  }
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", llInit);
+    } else {
+      llInit();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      LL: {
+        mulberry32: llMulberry32, makeLanes: llMakeLanes, laneResult: llLaneResult,
+        train: llTrainCard, certify: llCertify, score: llScore, eqGain: llEqGain,
+        TRIALS: LL_TRIALS, SPEEDS: LL_SPEEDS, PRESETS: LL_PRESETS, WIDTHS: LL_WIDTHS
+      }
+    });
+  }
+
+})();
