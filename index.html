@@ -578,7 +578,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "21", name: "The Crimp Bay", btn: "cbBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "Hand-crimped Cat5e for the OLD IRON bench network: seat eight conductors to the T568 standard, read the cable tester, certify three cables at a full gigabit.",
     how: "Seat all eight conductors per the T568 table, run the tester, and certify three cables with zero faults.",
-    spec: "T568B/A \u00B7 8P8C \u00B7 3 CABLES" }
+    spec: "T568B/A \u00B7 8P8C \u00B7 3 CABLES" },
+  { section: "oldiron", n: "22", name: "The Rail Room", btn: "rrBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "PSU rail qualification for the OLD IRON refurb line: plug in, power up, and probe the 24-pin ATX connector with a live meter model. Read every rail against the ATX tolerance table and certify three supplies.",
+    how: "Set the meter dial, plant both probes on the connector, record all five required rails, and call the verdict on all three PSUs.",
+    spec: "ATX 24-PIN \u00B7 DMM \u00B7 3 PSUS" }
 ];
 
 var pgFilter = "all";
@@ -946,9 +950,9 @@ if (document.readyState === "loading") {
   pgBoot();
 }
 </script>
-<script src="rvcore.js?v=2254432e72" defer></script>
-<script src="rvdata.js?v=2254432e72" defer></script>
-<script src="riscv-lab.js?v=2254432e72" defer></script>
-<script src="features.js?v=2254432e72" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=8186c5729c" defer></script>
+<script src="rvdata.js?v=8186c5729c" defer></script>
+<script src="riscv-lab.js?v=8186c5729c" defer></script>
+<script src="features.js?v=8186c5729c" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

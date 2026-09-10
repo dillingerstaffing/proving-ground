@@ -13891,3 +13891,842 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
 })();
+/* ============================================================
+   THE RAIL ROOM
+   Old Iron bench 22: PSU rail qualification with a real DMM
+   model under the hood. Plug in the mains, assert PS_ON, set the
+   dial, plant COM and V+ on the 24-pin ATX connector, and read
+   every rail against the ATX tolerance table. Three supplies:
+   one healthy, one with a 12V rail under the floor, one with a
+   marginal 5V rail and excessive ripple. Record all five
+   required rails per PSU, call PASS / HOLD / FAIL, and print the
+   certification record. Self-contained, appended at the end of
+   features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- data: ATX24 pinout, tolerances, PSUs ---------------- */
+
+  var RR_PINS = [
+    { n: 1,  color: "orange", net: "3V3",    sig: "3.3V" },
+    { n: 2,  color: "orange", net: "3V3",    sig: "3.3V" },
+    { n: 3,  color: "black",  net: "GND",    sig: "GND" },
+    { n: 4,  color: "red",    net: "5V",     sig: "5V" },
+    { n: 5,  color: "black",  net: "GND",    sig: "GND" },
+    { n: 6,  color: "red",    net: "5V",     sig: "5V" },
+    { n: 7,  color: "black",  net: "GND",    sig: "GND" },
+    { n: 8,  color: "gray",   net: "PWR_OK", sig: "PWR_OK" },
+    { n: 9,  color: "purple", net: "5VSB",   sig: "5VSB" },
+    { n: 10, color: "yellow", net: "12V",    sig: "12V" },
+    { n: 11, color: "yellow", net: "12V",    sig: "12V" },
+    { n: 12, color: "orange", net: "3V3",    sig: "3.3V" },
+    { n: 13, color: "orange", net: "3V3",    sig: "3.3V" },
+    { n: 14, color: "blue",   net: "N12V",   sig: "-12V" },
+    { n: 15, color: "black",  net: "GND",    sig: "GND" },
+    { n: 16, color: "green",  net: "PSON",   sig: "PS_ON#" },
+    { n: 17, color: "black",  net: "GND",    sig: "GND" },
+    { n: 18, color: "black",  net: "GND",    sig: "GND" },
+    { n: 19, color: "black",  net: "GND",    sig: "GND" },
+    { n: 20, color: "none",   net: "NC",     sig: "n/c" },
+    { n: 21, color: "red",    net: "5V",     sig: "5V" },
+    { n: 22, color: "red",    net: "5V",     sig: "5V" },
+    { n: 23, color: "red",    net: "5V",     sig: "5V" },
+    { n: 24, color: "black",  net: "GND",    sig: "GND" }
+  ];
+
+  var RR_SWATCH = {
+    orange: "#e07b1a", red: "#d64545", yellow: "#e0b81a", black: "#202226",
+    gray: "#9aa0a6", purple: "#8a4baf", blue: "#2f6fd0", green: "#3fa34d",
+    none: "transparent"
+  };
+
+  /* ATX tolerance table: lo/hi in volts, ripple ceiling in mV peak-to-peak */
+  var RR_TOL = [
+    { net: "12V",    label: "+12V",  lo: 11.40,  hi: 12.60,  rip: 120, note: "" },
+    { net: "5V",     label: "+5V",   lo: 4.75,   hi: 5.25,   rip: 50,  note: "" },
+    { net: "3V3",    label: "+3.3V", lo: 3.135,  hi: 3.465,  rip: 50,  note: "" },
+    { net: "5VSB",   label: "+5VSB", lo: 4.75,   hi: 5.25,   rip: 50,  note: "live with mains plugged in, PSU off" },
+    { net: "N12V",   label: "-12V",  lo: -13.20, hi: -10.80, rip: 120, note: "" },
+    { net: "PWR_OK", label: "PWR_OK", lo: 2.4,   hi: 5.25,   rip: null, note: "TTL high, asserts 100 to 500 ms after rails stabilize" }
+  ];
+
+  var RR_REQ = ["12V", "5V", "3V3", "5VSB", "PWR_OK"];
+
+  var RR_DIALS = [
+    { id: "OFF",  label: "OFF" },
+    { id: "V20",  label: "V DC 20" },
+    { id: "V200", label: "V DC 200" },
+    { id: "VAC",  label: "V AC 200" },
+    { id: "A",    label: "A DC (fused)" },
+    { id: "CONT", label: "CONT" }
+  ];
+
+  var RR_PSUS = [
+    { tag: "PSU-A", name: "Stock 450W",
+      blurb: "A stock 450W pull from a decommissioned office box. The traveler claims it is healthy. Trust, but verify: the refurb line ships nothing on a claim.",
+      r12: 12.04, r5: 5.02, r33: 3.31, rn12: -11.95, vsb: 5.03, pg: 4.92,
+      q12: 35, q5: 25, q33: 22, qsb: 20,
+      verdict: "PASS",
+      why: "Every rail sits inside its ATX window with margin, ripple is under the ceiling on all rails, and PWR_OK asserts cleanly after power-up. This one ships." },
+    { tag: "PSU-B", name: "Recond 550W",
+      blurb: "A reconditioned 550W unit. The traveler says the last box it fed would boot, then die the moment the GPU spun up. The 12V rail is where graphics cards live.",
+      r12: 10.92, r5: 5.01, r33: 3.30, rn12: -12.05, vsb: 5.04, pg: 4.90,
+      q12: 90, q5: 28, q33: 24, qsb: 20,
+      verdict: "FAIL",
+      why: "The 12V rail reads 10.92V against an 11.40V floor. A rail outside its window is a failed rail, no matter how healthy the rest look. This one goes to the scrap cage." },
+    { tag: "PSU-C", name: "Pull 600W",
+      blurb: "A 600W pull from a dusty tower. All rails light up and PWR_OK asserts, but the 5V line looks nervous on the shop scope. An average is not the whole story.",
+      r12: 12.10, r5: 4.79, r33: 3.34, rn12: -11.90, vsb: 5.02, pg: 4.88,
+      q12: 40, q5: 130, q33: 25, qsb: 22,
+      verdict: "HOLD",
+      why: "The 5V rail averages 4.79V, inside the 4.75 to 5.25 window, but it rides the floor and its 130mV ripple breaks the 50mV ceiling. In-spec average with out-of-spec ripple is a hold for load testing, not a pass." }
+  ];
+
+  /* ---------------- pure logic ---------------- */
+
+  function rrPin(pinN) { return RR_PINS[pinN - 1]; }
+
+  /* Voltage and ripple (mV peak-to-peak) at a pin. st: { mains, pson } */
+  function rrPinVolt(psu, pinN, st) {
+    var net = rrPin(pinN).net;
+    if (!st.mains) return { v: 0, q: 0 };
+    if (net === "5VSB") return { v: psu.vsb, q: psu.qsb };
+    if (!st.pson) {
+      if (net === "PSON") return { v: 5.0, q: 10 };
+      return { v: 0, q: 0 };
+    }
+    switch (net) {
+      case "12V":    return { v: psu.r12,  q: psu.q12 };
+      case "5V":     return { v: psu.r5,   q: psu.q5 };
+      case "3V3":    return { v: psu.r33,  q: psu.q33 };
+      case "N12V":   return { v: psu.rn12, q: psu.q12 };
+      case "PWR_OK": return { v: psu.pg,   q: 8 };
+      case "PSON":   return { v: 0.04,     q: 5 };
+      case "GND":    return { v: 0,        q: 2 };
+      default:       return { v: 0,        q: 4 };
+    }
+  }
+
+  /* Differential measurement: red minus black. */
+  function rrMeasure(psu, redN, blackN, st) {
+    var r = rrPinVolt(psu, redN, st), b = rrPinVolt(psu, blackN, st);
+    return { v: r.v - b.v, q: Math.max(r.q, b.q) };
+  }
+
+  function rrWobble(q) {
+    return (q / 2) * Math.sin(2 * Math.PI * Date.now() / 900) / 1000;
+  }
+
+  function rrTolOf(net) {
+    for (var i = 0; i < RR_TOL.length; i++) {
+      if (RR_TOL[i].net === net) return RR_TOL[i];
+    }
+    return null;
+  }
+
+  /* Meter display model. Returns { main, unit, sub }. */
+  function rrDisp(psu, s) {
+    if (s.fuse) return { main: "FUSE", unit: "", sub: "Fuse open. Replace it to keep measuring." };
+    if (s.dial === "OFF") return { main: "----", unit: "", sub: "Meter is off." };
+    if (!s.com || !s.red) return { main: "----", unit: "", sub: "Plant both probes on the connector." };
+    var m = rrMeasure(psu, s.red, s.com, s);
+    var wob = rrWobble(m.q);
+    if (s.dial === "V20") {
+      if (Math.abs(m.v) > 20) return { main: "OL", unit: "V DC", sub: "Over range on the 20V scale." };
+      return { main: (m.v + wob).toFixed(2), unit: "V DC", sub: "RIPPLE " + m.q + "mV P-P" };
+    }
+    if (s.dial === "V200") {
+      if (Math.abs(m.v) > 200) return { main: "OL", unit: "V DC", sub: "Over range." };
+      return { main: (m.v + wob).toFixed(1), unit: "V DC", sub: "RIPPLE " + m.q + "mV P-P" };
+    }
+    if (s.dial === "VAC") {
+      return { main: (Math.abs(wob) * 2).toFixed(2), unit: "V AC",
+        sub: "AC mode on a DC rail reads near zero. Wrong mode for rails." };
+    }
+    if (s.dial === "A") {
+      return { main: (m.v / 10).toFixed(2), unit: "A DC",
+        sub: "Current mode is a near-short across the probes." };
+    }
+    var same = (rrPin(s.red).net === rrPin(s.com).net);
+    if (same) return { main: "BEEP", unit: "", sub: "0.3 ohm. Same net on both probes." };
+    return { main: "OL", unit: "", sub: "Open. Different nets." };
+  }
+
+  /* A DMM in current mode is a near-short: across a live rail it blows. */
+  function rrMaybeBlowFuse(psu, s) {
+    if (s.fuse || s.dial !== "A" || !s.com || !s.red) return false;
+    var m = rrMeasure(psu, s.red, s.com, s);
+    if (Math.abs(m.v) > 1) {
+      s.fuse = true;
+      s.com = 0; s.red = 0; s.readings = [];
+      return true;
+    }
+    return false;
+  }
+
+  function rrCanRecord(s) {
+    return !s.fuse && s.com && s.red && (s.dial === "V20" || s.dial === "V200");
+  }
+
+  function rrRecord(psu, s) {
+    var m = rrMeasure(psu, s.red, s.com, s);
+    var net = rrPin(s.red).net;
+    var entry = { red: s.red, black: s.com, net: net, v: m.v, q: m.q };
+    var done = false;
+    for (var i = 0; i < s.readings.length; i++) {
+      if (s.readings[i].net === net) { s.readings[i] = entry; done = true; }
+    }
+    if (!done) s.readings.push(entry);
+    return entry;
+  }
+
+  function rrMissing(s) {
+    return RR_REQ.filter(function (net) {
+      return !s.readings.some(function (r) { return r.net === net; });
+    });
+  }
+
+  function rrVerdict(psu, s, v) {
+    s.verdict = v;
+    s.judged = (v === psu.verdict);
+  }
+
+  /* ---------------- CSS ---------------- */
+
+  var RR_CSS = [
+    ".rr-overlay{position:fixed;inset:0;background:rgba(4,7,7,.94);z-index:90;display:none;overflow-y:auto;padding:18px 12px;}",
+    ".rr-overlay.open{display:block;}",
+    ".rr-panel{max-width:1020px;margin:0 auto;background:var(--panel);border:1px solid var(--line);padding:20px;}",
+    ".rr-panel h3{font-family:var(--font-d);font-size:24px;margin:0 0 4px;text-transform:uppercase;letter-spacing:.02em;color:var(--ember);}",
+    ".rr-spec{font-family:var(--font-m);font-size:10.5px;color:var(--dim);letter-spacing:.1em;margin:0 0 10px;}",
+    ".rr-sub{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 14px;max-width:72ch;}",
+    ".rr-sub b{color:var(--paper);font-weight:600;}",
+    ".rr-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 12px;}",
+    "@media(max-width:760px){.rr-tabs{grid-template-columns:1fr;}}",
+    ".rr-tab{border:1px solid var(--line);background:var(--panel-2);padding:10px 12px;min-height:48px;text-align:left;cursor:pointer;color:var(--paper);font-family:var(--font-d);font-size:13px;}",
+    ".rr-tab .rr-tag{font-family:var(--font-m);font-size:10.5px;color:var(--dim);display:block;letter-spacing:.08em;}",
+    ".rr-tab .rr-st{font-family:var(--font-m);font-size:10.5px;letter-spacing:.08em;display:block;margin-top:2px;}",
+    ".rr-tab[aria-selected=\"true\"]{border-color:var(--ember);}",
+    ".rr-st.todo{color:var(--dim);}.rr-st.done{color:var(--mint);}",
+    ".rr-blurb{border:1px dashed var(--line);padding:10px 12px;margin:0 0 12px;font-size:12.5px;line-height:1.7;color:var(--steel);}",
+    ".rr-blurb b{color:var(--paper);}",
+    ".rr-k{font-family:var(--font-m);font-size:10.5px;color:var(--dim);letter-spacing:.1em;display:block;margin:0 0 8px;}",
+    ".rr-tol{width:100%;border-collapse:collapse;font-family:var(--font-m);font-size:11px;margin:0 0 14px;color:var(--steel);}",
+    ".rr-tol th,.rr-tol td{border:1px solid var(--line);padding:6px 8px;text-align:left;}",
+    ".rr-tol th{color:var(--dim);font-weight:400;letter-spacing:.08em;font-size:10px;}",
+    ".rr-tol td b{color:var(--paper);font-weight:400;}",
+    ".rr-deck{border:1px solid var(--line);background:var(--panel-2);padding:12px;margin:0 0 14px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;}",
+    ".rr-deck .rr-dlabel{font-family:var(--font-m);font-size:10.5px;color:var(--dim);letter-spacing:.1em;width:100%;}",
+    ".rr-btn{border:1px solid var(--line);background:var(--panel);color:var(--paper);padding:12px 18px;min-height:48px;cursor:pointer;font-family:var(--font-d);font-size:13px;}",
+    ".rr-btn.pri{border-color:var(--ember);color:var(--ember);}",
+    ".rr-btn.on{border-color:var(--mint);color:var(--mint);}",
+    ".rr-btn.warn{border-color:var(--bad);color:var(--bad);}",
+    ".rr-btn:hover{border-color:var(--ember);}",
+    ".rr-btn:disabled{opacity:.45;cursor:default;}",
+    ".rr-btn:focus-visible,.rr-pin:focus-visible,.rr-tab:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".rr-pins{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:0 0 14px;}",
+    ".rr-pin{border:1px solid var(--line);background:var(--panel-2);color:var(--paper);min-height:48px;padding:8px 10px;cursor:pointer;font-family:var(--font-m);font-size:12px;display:flex;align-items:center;gap:10px;text-align:left;}",
+    ".rr-pin .rr-pn{color:var(--dim);font-size:10.5px;letter-spacing:.06em;min-width:34px;}",
+    ".rr-pin .rr-ps{color:var(--paper);}",
+    ".rr-pin .rr-probe{margin-left:auto;font-size:10px;letter-spacing:.08em;padding:3px 8px;border:1px solid var(--line);color:var(--dim);}",
+    ".rr-pin .rr-probe.com{border-color:var(--paper);color:var(--paper);}",
+    ".rr-pin .rr-probe.red{border-color:var(--ember);color:var(--ember);}",
+    ".rr-pin:hover{border-color:var(--ember);}",
+    ".rr-sw{display:inline-block;width:14px;height:14px;border:1px solid var(--line);flex:none;}",
+    ".rr-meter{border:1px solid var(--line);background:#0a0d0d;padding:14px;margin:0 0 14px;}",
+    ".rr-disp{font-family:var(--font-m);font-size:44px;color:var(--ember);letter-spacing:.04em;line-height:1.1;}",
+    ".rr-disp .rr-unit{font-size:16px;color:var(--dim);margin-left:8px;}",
+    ".rr-dsub{font-family:var(--font-m);font-size:11px;color:var(--dim);letter-spacing:.08em;margin-top:6px;}",
+    ".rr-dprobes{font-family:var(--font-m);font-size:11px;color:var(--steel);margin-top:6px;}",
+    ".rr-meterrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;}",
+    ".rr-reqchips{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px;}",
+    ".rr-chip{font-family:var(--font-m);font-size:10.5px;letter-spacing:.08em;padding:8px 10px;border:1px solid var(--line);color:var(--dim);}",
+    ".rr-chip.got{border-color:var(--mint);color:var(--mint);}",
+    ".rr-log{width:100%;border-collapse:collapse;font-family:var(--font-m);font-size:11px;margin:0 0 14px;color:var(--steel);}",
+    ".rr-log th,.rr-log td{border:1px solid var(--line);padding:6px 8px;text-align:left;}",
+    ".rr-log th{color:var(--dim);font-weight:400;letter-spacing:.08em;font-size:10px;}",
+    ".rr-log td.ok{color:var(--mint);}.rr-log td.flt{color:var(--bad);}",
+    ".rr-vbtns{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px;}",
+    ".rr-vres{border:1px solid var(--line);padding:12px 14px;margin:0 0 12px;font-size:13px;line-height:1.7;}",
+    ".rr-vres h4{margin:0 0 6px;font-size:15px;text-transform:uppercase;letter-spacing:.03em;font-family:var(--font-d);}",
+    ".rr-vres.pass{border-color:var(--mint);}.rr-vres.pass h4{color:var(--mint);}",
+    ".rr-vres.hold{border-color:var(--ember);}.rr-vres.hold h4{color:var(--ember);}",
+    ".rr-vres.fail{border-color:var(--bad);}.rr-vres.fail h4{color:var(--bad);}",
+    ".rr-vres p{margin:0;color:var(--steel);font-size:12.5px;}",
+    ".rr-vres .rr-why{margin-top:8px;}",
+    ".rr-foot{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;align-items:center;}",
+    ".rr-progress{font-family:var(--font-m);font-size:11.5px;color:var(--steel);margin-right:auto;}",
+    ".rr-progress b{color:var(--paper);}"
+  ].join("\n");
+
+  /* ---------------- state ---------------- */
+
+  var rrS = null;
+  var rrEls = {};
+
+  function rrNewState() {
+    return {
+      pi: 0,
+      psus: RR_PSUS.map(function () {
+        return { mains: false, pson: false, dial: "V20", arm: "COM",
+                 com: 0, red: 0, readings: [], verdict: null, judged: null,
+                 fuse: false };
+      })
+    };
+  }
+  function rrPsu() { return RR_PSUS[rrS.pi]; }
+  function rrPS() { return rrS.psus[rrS.pi]; }
+
+  function rrEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function rrCertified() {
+    return rrS.psus.filter(function (s) { return s.judged === true; }).length;
+  }
+
+  /* ---------------- render ---------------- */
+
+  function rrRenderTabs() {
+    var w = rrEls.tabs;
+    w.innerHTML = "";
+    RR_PSUS.forEach(function (p, i) {
+      var s = rrS.psus[i];
+      var b = rrEl("button", "rr-tab");
+      b.type = "button";
+      b.setAttribute("data-rr", "tab");
+      b.setAttribute("data-i", String(i));
+      b.setAttribute("aria-selected", i === rrS.pi ? "true" : "false");
+      b.appendChild(rrEl("span", "rr-tag", p.tag + " - " + p.name));
+      b.appendChild(rrEl("span", "rr-st " + (s.judged === true ? "done" : "todo"),
+        s.judged === true ? "CERTIFIED " + s.verdict : "UNCERTIFIED"));
+      b.addEventListener("click", function () {
+        rrS.pi = i;
+        rrRenderAll();
+      });
+      w.appendChild(b);
+    });
+  }
+
+  function rrRenderBlurb() {
+    var w = rrEls.blurb;
+    w.innerHTML = "";
+    var p = rrPsu();
+    w.appendChild(rrEl("b", null, p.tag + " - " + p.name + ". "));
+    w.appendChild(rrEl("span", null, p.blurb));
+  }
+
+  function rrBuildTol() {
+    var t = document.createElement("table");
+    t.className = "rr-tol";
+    var thead = document.createElement("thead");
+    var hr = document.createElement("tr");
+    ["RAIL", "MIN", "MAX", "RIPPLE MAX", "NOTE"].forEach(function (h) {
+      var th = document.createElement("th");
+      th.textContent = h;
+      hr.appendChild(th);
+    });
+    thead.appendChild(hr);
+    t.appendChild(thead);
+    var tb = document.createElement("tbody");
+    RR_TOL.forEach(function (r) {
+      var tr = document.createElement("tr");
+      [["b", r.label],
+       ["", r.lo.toFixed(r.net === "3V3" ? 3 : 2) + "V"],
+       ["", r.hi.toFixed(r.net === "3V3" ? 3 : 2) + "V"],
+       ["", r.rip == null ? "-" : r.rip + "mV P-P"],
+       ["", r.note]].forEach(function (cell) {
+        var td = document.createElement("td");
+        if (cell[0] === "b") {
+          var bb = document.createElement("b");
+          bb.textContent = cell[1];
+          td.appendChild(bb);
+        } else {
+          td.textContent = cell[1];
+        }
+        tr.appendChild(td);
+      });
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    return t;
+  }
+
+  function rrRenderDeck() {
+    var w = rrEls.deck;
+    w.innerHTML = "";
+    var s = rrPS();
+
+    var mains = rrEl("button", "rr-btn" + (s.mains ? " on" : ""));
+    mains.type = "button";
+    mains.setAttribute("data-rr", "mains");
+    mains.textContent = "Mains: " + (s.mains ? "plugged in" : "unplugged");
+    mains.addEventListener("click", function () {
+      s.mains = !s.mains;
+      if (!s.mains) s.pson = false;
+      rrRenderAll();
+    });
+    w.appendChild(mains);
+
+    var power = rrEl("button", "rr-btn" + (s.pson ? " on" : ""));
+    power.type = "button";
+    power.setAttribute("data-rr", "power");
+    power.textContent = "Power: " + (s.pson ? "on (PS_ON low)" : "off (PS_ON high)");
+    power.disabled = !s.mains;
+    power.addEventListener("click", function () {
+      if (!s.mains) return;
+      s.pson = !s.pson;
+      rrRenderAll();
+    });
+    w.appendChild(power);
+
+    w.appendChild(rrEl("span", "rr-dlabel", "Meter dial"));
+    RR_DIALS.forEach(function (d) {
+      var b = rrEl("button", "rr-btn" + (s.dial === d.id ? " pri" : "") +
+        (d.id === "A" ? " warn" : ""));
+      b.type = "button";
+      b.setAttribute("data-rr", "dial");
+      b.setAttribute("data-id", d.id);
+      b.textContent = d.label;
+      b.setAttribute("aria-pressed", s.dial === d.id ? "true" : "false");
+      b.addEventListener("click", function () {
+        s.dial = d.id;
+        if (rrMaybeBlowFuse(rrPsu(), s)) {
+          toast("Fuse blown: current mode across a live rail is a short. Readings cleared.");
+        }
+        rrRenderAll();
+      });
+      w.appendChild(b);
+    });
+
+    w.appendChild(rrEl("span", "rr-dlabel", "Probe to plant next"));
+    var armC = rrEl("button", "rr-btn" + (s.arm === "COM" ? " pri" : ""));
+    armC.type = "button";
+    armC.setAttribute("data-rr", "armcom");
+    armC.textContent = "COM (black)";
+    armC.setAttribute("aria-pressed", s.arm === "COM" ? "true" : "false");
+    armC.addEventListener("click", function () { s.arm = "COM"; rrRenderAll(); });
+    w.appendChild(armC);
+    var armR = rrEl("button", "rr-btn" + (s.arm === "RED" ? " pri" : ""));
+    armR.type = "button";
+    armR.setAttribute("data-rr", "armred");
+    armR.textContent = "V+ (red)";
+    armR.setAttribute("aria-pressed", s.arm === "RED" ? "true" : "false");
+    armR.addEventListener("click", function () { s.arm = "RED"; rrRenderAll(); });
+    w.appendChild(armR);
+    var lift = rrEl("button", "rr-btn");
+    lift.type = "button";
+    lift.setAttribute("data-rr", "lift");
+    lift.textContent = "Lift probes";
+    lift.addEventListener("click", function () {
+      s.com = 0; s.red = 0; s.arm = "COM";
+      rrRenderAll();
+    });
+    w.appendChild(lift);
+
+    if (s.fuse) {
+      var fuse = rrEl("button", "rr-btn warn");
+      fuse.type = "button";
+      fuse.setAttribute("data-rr", "fuse");
+      fuse.textContent = "Replace fuse";
+      fuse.addEventListener("click", function () {
+        s.fuse = false;
+        toast("Fuse replaced. Set the dial to V DC before probing again.");
+        rrRenderAll();
+      });
+      w.appendChild(fuse);
+    }
+  }
+
+  function rrRenderPins() {
+    var w = rrEls.pins;
+    w.innerHTML = "";
+    var s = rrPS();
+    for (var row = 0; row < 12; row++) {
+      [row + 1, row + 13].forEach(function (pinN) {
+        var pin = rrPin(pinN);
+        var b = rrEl("button", "rr-pin");
+        b.type = "button";
+        b.setAttribute("data-rr", "pin");
+        b.setAttribute("data-i", String(pinN));
+        var probe = (s.com === pinN) ? "com" : (s.red === pinN ? "red" : "");
+        b.setAttribute("aria-label", "Pin " + pinN + ", " + pin.sig +
+          " rail, " + pin.color + " wire" +
+          (probe === "com" ? ". COM probe planted." : probe === "red" ? ". V+ probe planted." : "."));
+        b.appendChild(rrEl("span", "rr-pn", "P" + pinN));
+        var sw = rrEl("span", "rr-sw");
+        sw.style.background = RR_SWATCH[pin.color] || "transparent";
+        b.appendChild(sw);
+        b.appendChild(rrEl("span", "rr-ps", pin.sig));
+        var badge = rrEl("span", "rr-probe " + probe,
+          probe === "com" ? "COM" : probe === "red" ? "V+" : "");
+        b.appendChild(badge);
+        b.addEventListener("click", function () {
+          rrPlantProbe(pinN);
+        });
+        w.appendChild(b);
+      });
+    }
+  }
+
+  function rrPlantProbe(pinN) {
+    var s = rrPS();
+    if (s.arm === "COM") {
+      if (s.com === pinN) { s.com = 0; }
+      else { s.com = pinN; s.arm = "RED"; }
+    } else {
+      if (s.red === pinN) { s.red = 0; }
+      else { s.red = pinN; }
+    }
+    if (s.red && s.com && s.red === s.com) s.red = 0;
+    if (rrMaybeBlowFuse(rrPsu(), s)) {
+      toast("Fuse blown: current mode across a live rail is a short. Readings cleared.");
+    }
+    rrRenderAll();
+  }
+
+  function rrRenderMeter() {
+    var w = rrEls.meter;
+    w.innerHTML = "";
+    rrEls.dMain = rrEl("div", "rr-disp");
+    rrEls.dUnit = rrEl("span", "rr-unit");
+    rrEls.dMain.appendChild(rrEls.dUnit);
+    w.appendChild(rrEls.dMain);
+    rrEls.dSub = rrEl("div", "rr-dsub");
+    w.appendChild(rrEls.dSub);
+    rrEls.dProbes = rrEl("div", "rr-dprobes");
+    w.appendChild(rrEls.dProbes);
+    var row = rrEl("div", "rr-meterrow");
+    var rec = rrEl("button", "rr-btn pri");
+    rec.type = "button";
+    rec.setAttribute("data-rr", "record");
+    rec.textContent = "Record reading";
+    rec.addEventListener("click", function () {
+      var s = rrPS();
+      if (!rrCanRecord(s)) {
+        toast("Set the dial to V DC and plant both probes first.");
+        return;
+      }
+      var e = rrRecord(rrPsu(), s);
+      toast("Recorded " + e.net + ": " + e.v.toFixed(2) + "V (P" + e.red + " ref P" + e.black + ").");
+      rrRenderAll();
+    });
+    row.appendChild(rec);
+    w.appendChild(row);
+    rrTick();
+  }
+
+  function rrTick() {
+    if (!rrS || !rrEls.dMain) return;
+    var s = rrPS();
+    var d = rrDisp(rrPsu(), s);
+    rrEls.dMain.textContent = d.main;
+    rrEls.dMain.appendChild(rrEls.dUnit);
+    rrEls.dUnit.textContent = d.unit || "";
+    rrEls.dSub.textContent = d.sub || "";
+    rrEls.dProbes.textContent = "COM " + (s.com ? "on P" + s.com : "not planted") +
+      "   V+ " + (s.red ? "on P" + s.red : "not planted");
+  }
+
+  function rrNetLabel(net) {
+    var t = rrTolOf(net);
+    return t ? t.label : net;
+  }
+
+  function rrRenderReq() {
+    var w = rrEls.req;
+    w.innerHTML = "";
+    var s = rrPS();
+    var miss = {};
+    rrMissing(s).forEach(function (n) { miss[n] = true; });
+    RR_REQ.forEach(function (net) {
+      var got = !miss[net];
+      var chip = rrEl("span", "rr-chip" + (got ? " got" : ""), null);
+      if (got) {
+        var r = s.readings.filter(function (x) { return x.net === net; })[0];
+        chip.textContent = rrNetLabel(net) + ": " + r.v.toFixed(2) + "V RECORDED";
+      } else {
+        chip.textContent = rrNetLabel(net) + ": MISSING";
+      }
+      w.appendChild(chip);
+    });
+  }
+
+  function rrRenderLog() {
+    var w = rrEls.log;
+    w.innerHTML = "";
+    var s = rrPS();
+    if (!s.readings.length) {
+      w.appendChild(rrEl("p", "rr-dsub", "No readings recorded yet."));
+      return;
+    }
+    var t = document.createElement("table");
+    t.className = "rr-log";
+    var thead = document.createElement("thead");
+    var hr = document.createElement("tr");
+    ["#", "RED PIN", "REF PIN", "RAIL", "VOLTS", "RIPPLE", "IN SPEC"].forEach(function (h) {
+      var th = document.createElement("th");
+      th.textContent = h;
+      hr.appendChild(th);
+    });
+    thead.appendChild(hr);
+    t.appendChild(thead);
+    var tb = document.createElement("tbody");
+    s.readings.forEach(function (r, i) {
+      var tr = document.createElement("tr");
+      var tol = rrTolOf(r.net);
+      var inSpec = true;
+      if (tol) {
+        inSpec = (r.v >= tol.lo - 1e-9 && r.v <= tol.hi + 1e-9) &&
+          (tol.rip == null || r.q <= tol.rip);
+      }
+      [["", String(i + 1)],
+       ["", "P" + r.red],
+       ["", "P" + r.black],
+       ["b", rrNetLabel(r.net)],
+       ["", r.v.toFixed(2) + "V"],
+       ["", r.q + "mV P-P"],
+       [inSpec ? "ok" : "flt", inSpec ? "YES" : "NO"]].forEach(function (cell) {
+        var td = document.createElement("td");
+        if (cell[0] === "b") {
+          var bb = document.createElement("b");
+          bb.textContent = cell[1];
+          td.appendChild(bb);
+        } else {
+          td.textContent = cell[1];
+          if (cell[0]) td.className = cell[0];
+        }
+        tr.appendChild(td);
+      });
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    w.appendChild(t);
+  }
+
+  function rrRenderVerdict() {
+    var w = rrEls.vres;
+    w.innerHTML = "";
+    var s = rrPS();
+    var p = rrPsu();
+    var vb = rrEls.vbtns;
+    vb.innerHTML = "";
+    ["PASS", "HOLD", "FAIL"].forEach(function (v) {
+      var b = rrEl("button", "rr-btn" + (v === "PASS" ? " on" : v === "FAIL" ? " warn" : " pri"));
+      b.type = "button";
+      b.setAttribute("data-rr", "verdict");
+      b.setAttribute("data-v", v);
+      b.textContent = "Verdict: " + v;
+      b.disabled = rrMissing(s).length > 0 || s.judged != null;
+      b.addEventListener("click", function () {
+        rrVerdict(p, s, v);
+        rrRenderAll();
+      });
+      vb.appendChild(b);
+    });
+
+    if (s.judged == null) {
+      var miss = rrMissing(s);
+      if (miss.length) {
+        w.appendChild(rrEl("p", "rr-dsub",
+          "Record all five required rails to unlock the verdict: " +
+          miss.map(rrNetLabel).join(", ") + " still missing."));
+      } else {
+        w.appendChild(rrEl("p", "rr-dsub",
+          "All five rails recorded. Call it: PASS ships the unit, HOLD sends it to load testing, FAIL sends it to the scrap cage."));
+      }
+      return;
+    }
+
+    var box = rrEl("div", "rr-vres " + (s.judged ? s.verdict.toLowerCase() : "fail"));
+    var h = rrEl("h4", null, s.judged ? "CERTIFIED: " + s.verdict : "VOID: THE CORRECT CALL WAS " + p.verdict);
+    box.appendChild(h);
+    var why = rrEl("p", "rr-why", p.why);
+    box.appendChild(why);
+    w.appendChild(box);
+    if (!s.judged) {
+      var rerun = rrEl("button", "rr-btn pri");
+      rerun.type = "button";
+      rerun.setAttribute("data-rr", "rerun");
+      rerun.textContent = "Re-run this PSU";
+      rerun.addEventListener("click", function () {
+        var ns = rrS.psus[rrS.pi];
+        ns.readings = []; ns.verdict = null; ns.judged = null;
+        ns.fuse = false; ns.com = 0; ns.red = 0; ns.arm = "COM";
+        rrRenderAll();
+      });
+      w.appendChild(rerun);
+    }
+  }
+
+  function rrRenderFoot() {
+    var w = rrEls.foot;
+    w.innerHTML = "";
+    var n = rrCertified();
+    var p = rrEl("span", "rr-progress");
+    p.appendChild(rrEl("b", null, n + " of 3"));
+    p.appendChild(rrEl("span", null, " PSUs certified"));
+    w.appendChild(p);
+    var cert = rrEl("button", "rr-btn", "Download the certification record");
+    cert.type = "button";
+    cert.setAttribute("data-rr", "cert");
+    cert.disabled = n < 3;
+    cert.addEventListener("click", rrDownloadCert);
+    w.appendChild(cert);
+    var close = rrEl("button", "rr-btn", "Close bench");
+    close.type = "button";
+    close.setAttribute("data-rr", "close");
+    close.addEventListener("click", function () {
+      document.getElementById("rrOverlay").classList.remove("open");
+    });
+    w.appendChild(close);
+  }
+
+  function rrDownloadCert() {
+    var lines = [];
+    lines.push("THE RAIL ROOM - PSU CERTIFICATION RECORD");
+    lines.push("OLD IRON refurb line, 24-pin ATX rail qualification");
+    lines.push("");
+    RR_PSUS.forEach(function (p, i) {
+      var s = rrS.psus[i];
+      lines.push(p.tag + " " + p.name + ": " + (s.verdict || "UNCERTIFIED"));
+      s.readings.forEach(function (r) {
+        lines.push("  " + rrNetLabel(r.net) + " @ P" + r.red + " (ref P" + r.black + "): " +
+          r.v.toFixed(2) + "V, ripple " + r.q + "mV P-P");
+      });
+      lines.push("");
+    });
+    var blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = (window.URL || window.webkitURL).createObjectURL(blob);
+    a.download = "rail-room-certification.txt";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { (window.URL || window.webkitURL).revokeObjectURL(a.href); }, 4000);
+    toast("Certification record downloaded");
+  }
+
+  function rrRenderAll() {
+    rrRenderTabs();
+    rrRenderBlurb();
+    rrRenderDeck();
+    rrRenderPins();
+    rrRenderMeter();
+    rrRenderReq();
+    rrRenderLog();
+    rrRenderVerdict();
+    rrRenderFoot();
+  }
+
+  /* ---------------- build ---------------- */
+
+  function rrBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("rrBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = RR_CSS;
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "rrBtn";
+    b.className = "secondary";
+    b.textContent = "Run the Rail Room";
+    b.addEventListener("click", function () {
+      document.getElementById("rrOverlay").classList.add("open");
+    });
+    box.appendChild(b);
+
+    var ov = document.createElement("div");
+    ov.className = "rr-overlay";
+    ov.id = "rrOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Rail Room");
+
+    var panel = document.createElement("div");
+    panel.className = "rr-panel";
+    panel.appendChild(rrEl("h3", null, "The Rail Room"));
+    panel.appendChild(rrEl("p", "rr-spec", "ATX 24-PIN - DMM - 3 PSUS"));
+
+    var sub = rrEl("p", "rr-sub");
+    sub.innerHTML = "The <b>OLD IRON</b> refurb line ships no PSU on a claim. " +
+      "Plug in the mains, press power, and set the meter to V DC. Plant the black COM probe " +
+      "on a ground pin, walk the red probe across the rails, and record <b>12V, 5V, 3.3V, 5VSB, and PWR_OK</b>. " +
+      "Then call the verdict: <b>PASS</b> ships the unit, <b>HOLD</b> sends it to load testing, <b>FAIL</b> sends it to the scrap cage. " +
+      "A meter in current mode across a live rail is a blown fuse; continuity mode beeps on a shared net.";
+    panel.appendChild(sub);
+
+    rrEls.tabs = rrEl("div", "rr-tabs");
+    panel.appendChild(rrEls.tabs);
+
+    rrEls.blurb = rrEl("p", "rr-blurb");
+    panel.appendChild(rrEls.blurb);
+
+    panel.appendChild(rrEl("span", "rr-k", "ATX tolerance table"));
+    panel.appendChild(rrBuildTol());
+
+    panel.appendChild(rrEl("span", "rr-k", "Bench controls"));
+    rrEls.deck = rrEl("div", "rr-deck");
+    panel.appendChild(rrEls.deck);
+
+    panel.appendChild(rrEl("span", "rr-k", "24-pin ATX connector, front view"));
+    rrEls.pins = rrEl("div", "rr-pins");
+    panel.appendChild(rrEls.pins);
+
+    panel.appendChild(rrEl("span", "rr-k", "Meter"));
+    rrEls.meter = rrEl("div", "rr-meter");
+    panel.appendChild(rrEls.meter);
+
+    panel.appendChild(rrEl("span", "rr-k", "Required rails"));
+    rrEls.req = rrEl("div", "rr-reqchips");
+    panel.appendChild(rrEls.req);
+
+    rrEls.log = rrEl("div", null);
+    panel.appendChild(rrEls.log);
+
+    panel.appendChild(rrEl("span", "rr-k", "Verdict"));
+    rrEls.vbtns = rrEl("div", "rr-vbtns");
+    panel.appendChild(rrEls.vbtns);
+    rrEls.vres = rrEl("div", null);
+    panel.appendChild(rrEls.vres);
+
+    rrEls.foot = rrEl("div", "rr-foot");
+    panel.appendChild(rrEls.foot);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    rrS = rrNewState();
+    rrRenderAll();
+
+    if (typeof setInterval !== "undefined") {
+      setInterval(rrTick, 300);
+    }
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", rrBuild);
+    } else {
+      rrBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      RR: {
+        PINS: RR_PINS, TOL: RR_TOL, PSUS: RR_PSUS, REQUIRED: RR_REQ, DIALS: RR_DIALS,
+        pinVolt: rrPinVolt, measure: rrMeasure, disp: rrDisp, tolOf: rrTolOf,
+        newState: rrNewState, record: rrRecord, missing: rrMissing,
+        maybeBlowFuse: rrMaybeBlowFuse, verdict: rrVerdict, canRecord: rrCanRecord
+      }
+    });
+  }
+
+})();
