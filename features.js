@@ -12546,3 +12546,655 @@ if (typeof module !== "undefined" && module.exports) {
   st.textContent = css;
   document.head.appendChild(st);
 })();
+/* ============================================================
+   THE TRIAGE DESK
+   Old Iron intake triage: three dead machines, five disciplined
+   steps each (IDENTIFY, THEORIZE, TEST, RESOLVE, DOCUMENT).
+   Order is enforced: you cannot test before you theorize and you
+   cannot fix before a test confirms the hypothesis. Score starts
+   at 100 per machine and mistakes cost points. Close all three
+   tickets with an average of 70 or better to print the service
+   ticket. Self-contained, appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  var TD_STEPS = ["IDENTIFY", "THEORIZE", "TEST", "RESOLVE", "DOCUMENT"];
+
+  var TD_MACHINES = [
+    {
+      tag: "INTAKE-1042",
+      name: "OptiPlex 9020 Tower",
+      sn: "S/N 8F2KQ12",
+      ticket: "Dead on arrival. No lights, no fans, no sign of life. The donor says a storm knocked out the street last night.",
+      evidence: [
+        { label: "Look at the front-panel LED", result: "Dark. No amber, no white. Completely unlit." },
+        { label: "Press and hold the power button", result: "Nothing. No fan twitch, no click from the PSU, no relay sound." },
+        { label: "Check the rear of the PSU", result: "Wall cable firmly seated. The rear rocker switch is ON." },
+        { label: "Sniff the rear exhaust vents", result: "Faint burnt-plastic smell near the PSU exhaust." }
+      ],
+      symptoms: ["No power at all", "Fans spin, no POST", "Random reboots", "Distorted display"],
+      symptom: 0,
+      hyps: [
+        "The storm surge killed the PSU",
+        "The motherboard is dead",
+        "The wall cable is unplugged",
+        "The CMOS battery died"
+      ],
+      hyp: 0,
+      tests: [
+        { label: "Meter the wall outlet with the DMM", result: "120.4 V AC at the outlet. The wall is fine, so the fault is inside the box.", good: false },
+        { label: "Swap in the known-good bench PSU", result: "Board LEDs light up and the fans spin. The original PSU is the fault.", good: true },
+        { label: "Reseat the 24-pin ATX connector", result: "The connector was seated fine. Still dead.", good: false }
+      ],
+      fixes: [
+        "Replace the PSU with a 290 W or better unit",
+        "Replace the motherboard",
+        "Replace the CMOS battery"
+      ],
+      fix: 0,
+      notes: [
+        "PSU failed after a surge event. Replaced with a 290 W unit. Booted to BIOS, ran a 15-minute stress, passed. Cleared for resale.",
+        "It was dead. Fixed it.",
+        "Replaced the motherboard. The unit now powers on."
+      ],
+      note: 0
+    },
+    {
+      tag: "INTAKE-1043",
+      name: "Supermicro 1U Render Node",
+      sn: "S/N SM9X44TA",
+      ticket: "Reboots itself every 20 to 30 minutes while the render queue runs. Sits idle for days without a hiccup.",
+      evidence: [
+        { label: "Open the lid, look at the heatsinks", result: "Both CPU heatsinks wear a dust blanket like felt. Air cannot pass through." },
+        { label: "Check the BMC sensor page", result: "CPU1 reads 96 C at idle. The fan wall is pinned at 100 percent." },
+        { label: "Read the system event log", result: "Four thermal-trip entries in the last two hours, all of them under load." },
+        { label: "Feel the rear exhaust", result: "Hot air, weak flow. One fan grill is clogged solid with dust." }
+      ],
+      symptoms: ["No power at all", "Fans spin, no POST", "Random reboots", "Distorted display"],
+      symptom: 2,
+      hyps: [
+        "The CPUs are cooking under dust",
+        "The PSU is dropping rails under load",
+        "A DIMM is failing when warm",
+        "The OS install is corrupt"
+      ],
+      hyp: 0,
+      tests: [
+        { label: "Run it with the lid off and a desk fan aimed in", result: "Stays up for two hours under full load. Heat is the trigger.", good: true },
+        { label: "Swap in the known-good bench PSU", result: "Still reboots at the 25-minute mark. The rails were clean anyway.", good: false },
+        { label: "Run memtest86 overnight", result: "The RAM passes clean, zero errors.", good: false }
+      ],
+      fixes: [
+        "Pull the sinks, clean them, repaste, reseat",
+        "Replace the PSU",
+        "Reinstall the OS"
+      ],
+      fix: 0,
+      notes: [
+        "Dust-choked heatsinks, 96 C at idle. Cleaned and repasted both CPUs, idle now 41 C. Burned in 4 hours under full load with no reboots.",
+        "Reboots fixed.",
+        "Replaced the PSU. The node seems stable."
+      ],
+      note: 0
+    },
+    {
+      tag: "INTAKE-1044",
+      name: "HP Z420 Workstation",
+      sn: "S/N 2UA4120B7K",
+      ticket: "Fans spin up loud, no picture on screen. It beeps at power-on: long, long, short, then repeats the pattern.",
+      evidence: [
+        { label: "Count the beeps at power-on", result: "Two long, one short, repeating. That is the board's memory beep code." },
+        { label: "Check the display cable and monitor", result: "Cable seated. The monitor works fine on another box." },
+        { label: "Open it and look at the DIMMs", result: "Four DIMMs installed. One has a scorch mark near its edge connector." },
+        { label: "Check the board diagnostic LEDs", result: "The red memory LED on the board is lit." }
+      ],
+      symptoms: ["No power at all", "Fans spin, no POST", "Random reboots", "Distorted display"],
+      symptom: 1,
+      hyps: [
+        "A DIMM is dead or shorted",
+        "The GPU is dead",
+        "The CPU is not seated",
+        "The display cable is bad"
+      ],
+      hyp: 0,
+      tests: [
+        { label: "Strip to one DIMM in slot A2, rotate the sticks", result: "The box POSTs with sticks 1 through 3. Stick 4 kills it every single time.", good: true },
+        { label: "Swap in the spare GPU", result: "Still no POST, same beep pattern.", good: false },
+        { label: "Reseat the CPU", result: "No change. The beeps persist.", good: false }
+      ],
+      fixes: [
+        "Retire stick 4, ship with the 3 good sticks tested",
+        "Replace the GPU",
+        "Replace the motherboard"
+      ],
+      fix: 0,
+      notes: [
+        "DIMM 4 shorted, scorch mark on the edge connector. Retired it. The remaining 24 GB passes two memtest passes. Cleared for resale.",
+        "Bad RAM. Replaced.",
+        "Replaced the GPU. The beeps are gone."
+      ],
+      note: 0
+    }
+  ];
+
+  var TD_CSS = [
+    ".td-overlay{position:fixed;inset:0;background:rgba(4,7,7,.94);z-index:90;display:none;overflow-y:auto;padding:18px 12px;}",
+    ".td-overlay.open{display:block;}",
+    ".td-panel{max-width:1020px;margin:0 auto;background:var(--panel);border:1px solid var(--line);padding:20px;}",
+    ".td-panel h3{font-family:var(--font-d);font-size:24px;margin:0 0 4px;text-transform:uppercase;letter-spacing:.02em;color:var(--ember);}",
+    ".td-sub{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 14px;max-width:72ch;}",
+    ".td-sub b{color:var(--paper);font-weight:600;}",
+    ".td-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 12px;}",
+    "@media(max-width:760px){.td-tabs{grid-template-columns:1fr;}}",
+    ".td-tab{border:1px solid var(--line);background:var(--panel-2);padding:10px 12px;min-height:48px;text-align:left;cursor:pointer;color:var(--paper);font-family:var(--font-d);font-size:13px;}",
+    ".td-tab .td-tag{font-family:var(--font-m);font-size:10.5px;color:var(--dim);display:block;letter-spacing:.08em;}",
+    ".td-tab .td-st{font-family:var(--font-m);font-size:10.5px;letter-spacing:.08em;display:block;margin-top:2px;}",
+    ".td-tab[aria-selected=\"true\"]{border-color:var(--ember);}",
+    ".td-st.pending{color:var(--dim);}.td-st.open{color:var(--amber);}.td-st.online{color:var(--ice);}.td-st.closed{color:var(--mint);}",
+    ".td-steps{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 14px;}",
+    ".td-step{font-family:var(--font-m);font-size:10.5px;letter-spacing:.1em;padding:8px 10px;border:1px solid var(--line);color:var(--dim);}",
+    ".td-step.cur{color:var(--ember);border-color:var(--ember);}",
+    ".td-step.done{color:var(--mint);border-color:var(--mint);}",
+    ".td-ticket{border:1px solid var(--line);background:var(--panel-2);padding:12px 14px;margin:0 0 12px;font-size:13px;line-height:1.65;}",
+    ".td-ticket .td-k{font-family:var(--font-m);font-size:10.5px;color:var(--dim);letter-spacing:.1em;display:block;margin-bottom:4px;}",
+    ".td-ev{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:0 0 12px;}",
+    "@media(max-width:760px){.td-ev{grid-template-columns:1fr;}}",
+    ".td-findings{border:1px dashed var(--line);padding:10px 12px;margin:0 0 12px;font-size:12.5px;}",
+    ".td-findings .td-k{font-family:var(--font-m);font-size:10.5px;color:var(--dim);letter-spacing:.1em;display:block;margin-bottom:6px;}",
+    ".td-findings ul{margin:0;padding-left:18px;color:var(--steel);line-height:1.7;}",
+    ".td-findings b{color:var(--paper);font-weight:600;}",
+    ".td-opts{display:grid;gap:8px;margin:0 0 12px;}",
+    ".td-opt{border:1px solid var(--line);background:var(--panel-2);color:var(--paper);padding:12px 14px;min-height:48px;text-align:left;cursor:pointer;font-family:var(--font-d);font-size:13.5px;line-height:1.5;}",
+    ".td-opt:hover{border-color:var(--ember);}",
+    ".td-opt:disabled{opacity:.45;cursor:default;}",
+    ".td-opt.struck{text-decoration:line-through;}",
+    ".td-opt.good{border-color:var(--mint);}",
+    ".td-opt:focus-visible,.td-tab:focus-visible,.td-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".td-banner{border:1px solid var(--mint);color:var(--mint);padding:10px 12px;font-size:13px;margin:0 0 12px;}",
+    ".td-stats{display:flex;gap:16px;flex-wrap:wrap;font-family:var(--font-m);font-size:11.5px;color:var(--steel);margin:0 0 12px;}",
+    ".td-stats b{color:var(--paper);}",
+    ".td-log{border:1px solid var(--line);padding:10px 12px;font-family:var(--font-m);font-size:11px;line-height:1.8;color:var(--steel);max-height:150px;overflow-y:auto;margin:0 0 12px;}",
+    ".td-log .bad{color:var(--bad);}.td-log .good{color:var(--mint);}.td-log .dim{color:var(--dim);}",
+    ".td-verdict{border:1px solid var(--ember);padding:14px;margin:14px 0 0;}",
+    ".td-verdict h4{margin:0 0 6px;font-size:16px;text-transform:uppercase;letter-spacing:.03em;}",
+    ".td-verdict.pass h4{color:var(--mint);}.td-verdict.fail h4{color:var(--bad);}",
+    ".td-verdict p{font-size:13px;color:var(--steel);margin:0 0 10px;line-height:1.7;}",
+    ".td-verdict table{font-family:var(--font-m);font-size:11.5px;color:var(--steel);border-collapse:collapse;margin:0 0 10px;}",
+    ".td-verdict td,.td-verdict th{border:1px solid var(--line);padding:6px 10px;text-align:left;}",
+    ".td-verdict th{color:var(--dim);font-weight:400;letter-spacing:.08em;font-size:10px;}",
+    ".td-foot{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;}",
+    ".td-btn{border:1px solid var(--line);background:var(--panel-2);color:var(--paper);padding:12px 18px;min-height:48px;cursor:pointer;font-family:var(--font-d);font-size:13px;}",
+    ".td-btn.pri{border-color:var(--ember);color:var(--ember);}",
+    ".td-btn:hover{border-color:var(--ember);}",
+    ".td-hint{font-size:12px;color:var(--dim);margin:0 0 12px;}"
+  ].join("\n");
+
+  var tdS = null;      /* { mi, m:[per-machine state], log:[per-machine log lines] } */
+  var tdEls = {};      /* live DOM refs */
+
+  function tdNewState() {
+    return {
+      mi: 0,
+      m: TD_MACHINES.map(function () {
+        return { step: 0, score: 100, mins: 0, seen: [], tried: [], confirmed: false, status: "PENDING" };
+      }),
+      log: TD_MACHINES.map(function () { return []; })
+    };
+  }
+
+  function tdEsc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function tdLog(mi, cls, msg) {
+    tdS.log[mi].push({ cls: cls, msg: msg });
+  }
+
+  function tdMachine(i) { return TD_MACHINES[i]; }
+  function tdMS(i) { return tdS.m[i]; }
+
+  function tdStatusOf(i) {
+    var s = tdS.m[i];
+    if (s.step >= 5) return "CLOSED";
+    if (s.step >= 3 && s.step < 5) return "FIXED";
+    if (s.step > 0 || s.seen.length > 0) return "OPEN";
+    return "PENDING";
+  }
+
+  function tdOpt(parent, label, attrs, fn) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "td-opt";
+    b.setAttribute("data-td", "opt");
+    if (attrs) {
+      for (var k in attrs) b.setAttribute("data-" + k, attrs[k]);
+    }
+    b.textContent = label;
+    b.addEventListener("click", fn);
+    parent.appendChild(b);
+    return b;
+  }
+
+  function tdRender() {
+    var mi = tdS.mi, m = tdMachine(mi), s = tdMS(mi);
+
+    /* tabs */
+    var tabs = tdEls.tabs; tabs.innerHTML = "";
+    TD_MACHINES.forEach(function (mm, i) {
+      var st = tdStatusOf(i);
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "td-tab";
+      b.setAttribute("aria-selected", i === mi ? "true" : "false");
+      b.setAttribute("data-td", "tab");
+      b.setAttribute("data-i", String(i));
+      b.innerHTML = "<span class=\"td-tag\">" + tdEsc(mm.tag) + " " + tdEsc(mm.sn) + "</span>" +
+        tdEsc(mm.name) +
+        "<span class=\"td-st " + st.toLowerCase() + "\">" + st + "</span>";
+      b.addEventListener("click", function () { tdS.mi = i; tdRender(); });
+      tabs.appendChild(b);
+    });
+
+    /* stepper */
+    var sp = tdEls.steps; sp.innerHTML = "";
+    TD_STEPS.forEach(function (name, i) {
+      var d = document.createElement("div");
+      d.className = "td-step" + (i < s.step ? " done" : "") + (i === s.step && s.step < 5 ? " cur" : "");
+      d.textContent = (i + 1) + ". " + name + (i < s.step ? " OK" : "");
+      if (i === s.step && s.step < 5) d.setAttribute("aria-current", "step");
+      sp.appendChild(d);
+    });
+
+    /* stats */
+    tdEls.stats.innerHTML =
+      "SCORE <b>" + s.score + "</b> &nbsp; SHOP TIME <b>" + s.mins + " MIN</b> &nbsp; TICKET <b>" +
+      tdEsc(m.tag) + "</b> &nbsp; STATUS <b>" + tdStatusOf(mi) + "</b>";
+
+    /* stage */
+    var stage = tdEls.stage; stage.innerHTML = "";
+    if (s.step >= 5) {
+      var done = document.createElement("p");
+      done.className = "td-banner";
+      done.textContent = "Ticket closed. Score " + s.score + ". Move to the next machine or check the verdict below.";
+      stage.appendChild(done);
+    } else {
+      var ticket = document.createElement("div");
+      ticket.className = "td-ticket";
+      ticket.innerHTML = "<span class=\"td-k\">SERVICE TICKET</span>" + tdEsc(m.ticket);
+      stage.appendChild(ticket);
+      if (s.step === 0) tdStageIdentify(stage, mi, m, s);
+      else if (s.step === 1) tdStageTheorize(stage, mi, m, s);
+      else if (s.step === 2) tdStageTest(stage, mi, m, s);
+      else if (s.step === 3) tdStageResolve(stage, mi, m, s);
+      else tdStageDocument(stage, mi, m, s);
+    }
+
+    /* log */
+    var log = tdEls.log; log.innerHTML = "";
+    tdS.log[mi].forEach(function (e) {
+      var p = document.createElement("div");
+      if (e.cls) p.className = e.cls;
+      p.textContent = e.msg;
+      log.appendChild(p);
+    });
+    log.scrollTop = log.scrollHeight;
+
+    tdRenderVerdict();
+  }
+
+  function tdStageIdentify(stage, mi, m, s) {
+    var h = document.createElement("p");
+    h.className = "td-hint";
+    h.textContent = "Step 1 of 5, IDENTIFY. Inspect the machine (at least two checks), then name the symptom class.";
+    stage.appendChild(h);
+
+    var ev = document.createElement("div");
+    ev.className = "td-ev";
+    m.evidence.forEach(function (e, i) {
+      var seen = s.seen.indexOf(i) !== -1;
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "td-opt";
+      b.setAttribute("data-td", "ev");
+      b.setAttribute("data-i", String(i));
+      b.disabled = seen;
+      b.textContent = (seen ? "Checked: " : "Check: ") + e.label;
+      b.addEventListener("click", function () {
+        s.seen.push(i); s.mins += 5;
+        tdLog(mi, "", "INSPECT " + e.label + " -> " + e.result);
+        toast("Finding recorded");
+        tdRender();
+      });
+      ev.appendChild(b);
+    });
+    stage.appendChild(ev);
+
+    if (s.seen.length > 0) {
+      var f = document.createElement("div");
+      f.className = "td-findings";
+      var ul = "<ul>";
+      s.seen.forEach(function (i) {
+        ul += "<li><b>" + tdEsc(m.evidence[i].label) + ":</b> " + tdEsc(m.evidence[i].result) + "</li>";
+      });
+      ul += "</ul>";
+      f.innerHTML = "<span class=\"td-k\">FINDINGS</span>" + ul;
+      stage.appendChild(f);
+    }
+
+    var opts = document.createElement("div");
+    opts.className = "td-opts";
+    var ready = s.seen.length >= 2;
+    if (!ready) {
+      var wait = document.createElement("p");
+      wait.className = "td-hint";
+      wait.textContent = "Run at least " + (2 - s.seen.length) + " more inspection check(s) before calling the symptom.";
+      opts.appendChild(wait);
+    }
+    m.symptoms.forEach(function (label, i) {
+      var b = tdOpt(opts, label, { step: "identify", i: String(i) }, function () {
+        if (i === m.symptom) {
+          s.step = 1; tdLog(mi, "good", "IDENTIFY: symptom class \"" + label + "\" confirmed.");
+          toast("Symptom identified");
+        } else {
+          s.score = Math.max(0, s.score - 10);
+          tdLog(mi, "bad", "IDENTIFY: \"" + label + "\" is wrong. -10. Look at your findings again.");
+          toast("Wrong symptom class, -10");
+          b.classList.add("struck"); b.disabled = true;
+        }
+        tdRender();
+      });
+      b.disabled = !ready;
+    });
+    stage.appendChild(opts);
+  }
+
+  function tdStageTheorize(stage, mi, m, s) {
+    var h = document.createElement("p");
+    h.className = "td-hint";
+    h.textContent = "Step 2 of 5, THEORIZE. Pick the one hypothesis that best fits the evidence. Guessing costs points.";
+    stage.appendChild(h);
+    var opts = document.createElement("div");
+    opts.className = "td-opts";
+    m.hyps.forEach(function (label, i) {
+      tdOpt(opts, label, { step: "theorize", i: String(i) }, function (ev) {
+        if (i === m.hyp) {
+          s.step = 2; tdLog(mi, "good", "THEORIZE: \"" + label + "\" accepted. Now prove it with a test.");
+          toast("Hypothesis accepted");
+          tdRender();
+        } else {
+          s.score = Math.max(0, s.score - 10);
+          tdLog(mi, "bad", "THEORIZE: \"" + label + "\" does not fit the evidence. -10.");
+          toast("Hypothesis rejected, -10");
+          ev.target.classList.add("struck"); ev.target.disabled = true;
+          tdRender();
+        }
+      });
+    });
+    stage.appendChild(opts);
+  }
+
+  function tdStageTest(stage, mi, m, s) {
+    var h = document.createElement("p");
+    h.className = "td-hint";
+    h.textContent = "Step 3 of 5, TEST. Run tests to confirm or kill the hypothesis. Each test costs 10 shop minutes. The wrong tests cost 5 points.";
+    stage.appendChild(h);
+    var opts = document.createElement("div");
+    opts.className = "td-opts";
+    m.tests.forEach(function (t, i) {
+      var done = s.tried.indexOf(i) !== -1;
+      var b = tdOpt(opts, (done ? "Ran: " : "Run: ") + t.label, { step: "test", i: String(i) }, function (ev) {
+        if (done) return;
+        s.tried.push(i); s.mins += 10;
+        tdLog(mi, t.good ? "good" : "", "TEST \"" + t.label + "\" -> " + t.result);
+        if (t.good) {
+          s.confirmed = true;
+          toast("Hypothesis confirmed");
+        } else {
+          s.score = Math.max(0, s.score - 5);
+          tdLog(mi, "bad", "That test ruled nothing in. -5.");
+          toast("Inconclusive test, -5");
+          ev.target.classList.add("struck");
+        }
+        tdRender();
+      });
+      b.disabled = done;
+      opts.appendChild(b);
+    });
+    stage.appendChild(opts);
+    if (s.confirmed) {
+      var bn = document.createElement("p");
+      bn.className = "td-banner";
+      bn.textContent = "Hypothesis confirmed by test. The fault is proven, move to RESOLVE.";
+      stage.appendChild(bn);
+      var go = document.createElement("button");
+      go.type = "button";
+      go.className = "td-btn pri";
+      go.setAttribute("data-td", "to-resolve");
+      go.textContent = "Move to RESOLVE";
+      go.addEventListener("click", function () { s.step = 3; tdRender(); });
+      stage.appendChild(go);
+    }
+  }
+
+  function tdStageResolve(stage, mi, m, s) {
+    var h = document.createElement("p");
+    h.className = "td-hint";
+    h.textContent = "Step 4 of 5, RESOLVE. Apply the fix the evidence proved. A wrong fix costs 15 points and the ticket stays open.";
+    stage.appendChild(h);
+    var opts = document.createElement("div");
+    opts.className = "td-opts";
+    m.fixes.forEach(function (label, i) {
+      tdOpt(opts, label, { step: "resolve", i: String(i) }, function (ev) {
+        if (i === m.fix) {
+          s.step = 4; s.mins += 20;
+          tdLog(mi, "good", "RESOLVE: \"" + label + "\" applied. The machine is back ONLINE. Document the work.");
+          toast("Machine back online");
+          tdRender();
+        } else {
+          s.score = Math.max(0, s.score - 15);
+          tdLog(mi, "bad", "RESOLVE: \"" + label + "\" changed nothing. -15. The test already told you the fault.");
+          toast("Wrong fix, -15");
+          ev.target.classList.add("struck"); ev.target.disabled = true;
+          tdRender();
+        }
+      });
+    });
+    stage.appendChild(opts);
+  }
+
+  function tdStageDocument(stage, mi, m, s) {
+    var h = document.createElement("p");
+    h.className = "td-hint";
+    h.textContent = "Step 5 of 5, DOCUMENT. A ticket is not closed until the note is complete: what was wrong, what fixed it, and the proof.";
+    stage.appendChild(h);
+    var opts = document.createElement("div");
+    opts.className = "td-opts";
+    m.notes.forEach(function (label, i) {
+      tdOpt(opts, label, { step: "document", i: String(i) }, function (ev) {
+        if (i === m.note) {
+          s.step = 5; s.mins += 5;
+          tdLog(mi, "good", "DOCUMENT: service note accepted. Ticket " + m.tag + " CLOSED at score " + s.score + ".");
+          toast("Ticket closed");
+          tdRender();
+        } else {
+          s.score = Math.max(0, s.score - 5);
+          tdLog(mi, "bad", "DOCUMENT: that note is incomplete or blames the wrong part. -5. The next tech reads this.");
+          toast("Note rejected, -5");
+          ev.target.classList.add("struck"); ev.target.disabled = true;
+          tdRender();
+        }
+      });
+    });
+    stage.appendChild(opts);
+  }
+
+  function tdRenderVerdict() {
+    var v = tdEls.verdict;
+    v.innerHTML = "";
+    v.className = "td-verdict";
+    v.style.display = "none";
+    var all = tdS.m.every(function (s) { return s.step >= 5; });
+    if (!all) return;
+    v.style.display = "block";
+    var total = 0;
+    tdS.m.forEach(function (s) { total += s.score; });
+    var avg = Math.round(total / tdS.m.length);
+    var pass = avg >= 70;
+    v.classList.add(pass ? "pass" : "fail");
+
+    var rows = "";
+    TD_MACHINES.forEach(function (m, i) {
+      var s = tdS.m[i];
+      rows += "<tr><td>" + tdEsc(m.tag) + "</td><td>" + tdEsc(m.name) + "</td><td>" +
+        s.score + "</td><td>" + s.mins + " MIN</td></tr>";
+    });
+    v.innerHTML =
+      "<h4>" + (pass ? "Rack cleared" : "Rack rework") + "</h4>" +
+      "<table><tr><th>TICKET</th><th>MACHINE</th><th>SCORE</th><th>TIME</th></tr>" + rows + "</table>" +
+      "<p>Average score <b style=\"color:var(--paper)\">" + avg + "</b>. " +
+      (pass
+        ? "All three tickets are closed with a passing average. The service ticket is ready to print."
+        : "The average is under 70. The shop does not ship rework. Reopen the rack and run the method properly.") +
+      "</p>";
+
+    var foot = document.createElement("div");
+    foot.className = "td-foot";
+    if (pass) {
+      var pr = document.createElement("button");
+      pr.type = "button";
+      pr.className = "td-btn pri";
+      pr.setAttribute("data-td", "print");
+      pr.textContent = "Print the service ticket";
+      pr.addEventListener("click", tdPrintTicket);
+      foot.appendChild(pr);
+    }
+    var rs = document.createElement("button");
+    rs.type = "button";
+    rs.className = "td-btn";
+    rs.setAttribute("data-td", "reset");
+    rs.textContent = "Reopen the rack";
+    rs.addEventListener("click", function () {
+      tdS = tdNewState();
+      toast("Rack reopened");
+      tdRender();
+    });
+    foot.appendChild(rs);
+    v.appendChild(foot);
+  }
+
+  function tdPrintTicket() {
+    var lines = [];
+    lines.push("THE TRIAGE DESK - SERVICE TICKET");
+    lines.push("OLD IRON intake rack - disciplined triage record");
+    lines.push("==================================================");
+    TD_MACHINES.forEach(function (m, i) {
+      var s = tdS.m[i];
+      lines.push("");
+      lines.push(m.tag + " - " + m.name + " (" + m.sn + ")");
+      lines.push("Symptom:   " + m.symptoms[m.symptom]);
+      lines.push("Cause:     " + m.hyps[m.hyp]);
+      lines.push("Fix:       " + m.fixes[m.fix]);
+      lines.push("Service note: " + m.notes[m.note]);
+      lines.push("Score: " + s.score + " - Shop time: " + s.mins + " min");
+    });
+    lines.push("");
+    lines.push("Closed by the bench. Identify, theorize, test, resolve, document.");
+    var blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = (window.URL || window.webkitURL).createObjectURL(blob);
+    a.download = "triage-desk-service-ticket.txt";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { (window.URL || window.webkitURL).revokeObjectURL(a.href); }, 4000);
+    toast("Service ticket downloaded");
+  }
+
+  function tdBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("tdBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = TD_CSS;
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "tdBtn";
+    b.className = "secondary";
+    b.textContent = "Run the Triage Desk";
+    b.addEventListener("click", function () {
+      document.getElementById("tdOverlay").classList.add("open");
+    });
+    box.appendChild(b);
+
+    var ov = document.createElement("div");
+    ov.className = "td-overlay";
+    ov.id = "tdOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Triage Desk");
+
+    var panel = document.createElement("div");
+    panel.className = "td-panel";
+    panel.innerHTML =
+      "<h3>The Triage Desk</h3>" +
+      "<p class=\"td-sub\">The intake bench for <b>OLD IRON</b>: three dead machines, five disciplined steps each. " +
+      "<b>Identify</b> the symptom from real inspections, <b>theorize</b> the cause, <b>test</b> to prove it, " +
+      "<b>resolve</b> with the right fix, and <b>document</b> the work. The steps run in order, guessing costs points, " +
+      "and the rack only ships with an average score of 70 or better.</p>";
+    ov.appendChild(panel);
+
+    tdEls.tabs = document.createElement("div");
+    tdEls.tabs.className = "td-tabs";
+    panel.appendChild(tdEls.tabs);
+
+    tdEls.steps = document.createElement("div");
+    tdEls.steps.className = "td-steps";
+    panel.appendChild(tdEls.steps);
+
+    tdEls.stats = document.createElement("div");
+    tdEls.stats.className = "td-stats";
+    panel.appendChild(tdEls.stats);
+
+    tdEls.stage = document.createElement("div");
+    panel.appendChild(tdEls.stage);
+
+    var logWrap = document.createElement("div");
+    var logK = document.createElement("p");
+    logK.className = "td-hint";
+    logK.textContent = "Shop log";
+    logWrap.appendChild(logK);
+    tdEls.log = document.createElement("div");
+    tdEls.log.className = "td-log";
+    tdEls.log.setAttribute("aria-live", "polite");
+    logWrap.appendChild(tdEls.log);
+    panel.appendChild(logWrap);
+
+    tdEls.verdict = document.createElement("div");
+    panel.appendChild(tdEls.verdict);
+
+    var foot = document.createElement("div");
+    foot.className = "td-foot";
+    var close = document.createElement("button");
+    close.type = "button";
+    close.className = "td-btn";
+    close.textContent = "Close bench";
+    close.addEventListener("click", function () {
+      document.getElementById("tdOverlay").classList.remove("open");
+    });
+    foot.appendChild(close);
+    panel.appendChild(foot);
+
+    document.body.appendChild(ov);
+
+    tdS = tdNewState();
+    tdLog(0, "dim", "Rack received. Three tickets waiting. Pick a machine and start identifying.");
+    tdRender();
+  }
+
+  if (typeof document !== "undefined" && document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", tdBuild);
+  } else if (typeof document !== "undefined") {
+    tdBuild();
+  }
+})();

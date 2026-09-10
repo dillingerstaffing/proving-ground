@@ -570,7 +570,11 @@ var PG_BENCHES = [
   { section: "tapeout", n: "19", name: "The Reflow Bay", btn: "rfBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "Reflow-oven qualification for the TAPEOUT bring-up lab: real SAC305 thermal physics, a damp-storage board, and a 4 oz copper sink. Tune the profile, bake what needs baking, ship all three boards.",
     how: "Set ramp, soak, peak, and dwell, run the profile, read the joint traces, and qualify all three boards.",
-    spec: "REFLOW PHYSICS \u00B7 3 BOARDS" }
+    spec: "REFLOW PHYSICS \u00B7 3 BOARDS" },
+  { section: "oldiron", n: "20", name: "The Triage Desk", btn: "tdBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "Refurb intake triage: three dead machines, five disciplined steps each. Identify, theorize, test, resolve, document, then print the service ticket.",
+    how: "Inspect each machine, work the five steps in order, and close all three tickets with a passing score.",
+    spec: "5-STEP METHOD \u00B7 3 MACHINES" }
 ];
 
 var pgFilter = "all";
@@ -938,9 +942,9 @@ if (document.readyState === "loading") {
   pgBoot();
 }
 </script>
-<script src="rvcore.js?v=6672e067cd" defer></script>
-<script src="rvdata.js?v=6672e067cd" defer></script>
-<script src="riscv-lab.js?v=6672e067cd" defer></script>
-<script src="features.js?v=6672e067cd" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=932ef43cfc" defer></script>
+<script src="rvdata.js?v=932ef43cfc" defer></script>
+<script src="riscv-lab.js?v=932ef43cfc" defer></script>
+<script src="features.js?v=932ef43cfc" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
