@@ -8611,7 +8611,7 @@ if (typeof module !== "undefined" && module.exports) {
     var I0 = LK_I00 * (LK_ICP[icpIdx] / 50) / (LK_C[cIdx] / 200);
     var rng = lkMulberry32(card.seed);
     var phr = 0, phv = 0, acc = 0, vc = 0;
-    var lastOut = -1, bad = 0;
+    var lastOut = -1;
     var outj = [], trace = [];
     for (var n = 0; n < LK_STEPS; n++) {
       var fvn = (rng() - 0.5) * 2 * card.fvco;
@@ -8623,13 +8623,6 @@ if (typeof module !== "undefined" && module.exports) {
       vc = P0 * err + I0 * acc;
       if (vc > 1.5) vc = 1.5; else if (vc < -1.5) vc = -1.5;
       if (err >= LK_WIN || err <= -LK_WIN) lastOut = n;
-      if (err > 0.25 || err < -0.25) {
-        bad++;
-        if (bad > 400) {
-          return { unstable: true, lock: LK_STEPS, jit: 999, trace: [], pass: false,
-                   budget: card.budget, jmax: card.jmax };
-        }
-      } else { bad = 0; }
       var odev = (phv / LK_N) - (n + 1) * LK_FREF;
       outj.push(odev);
       if (outj.length > 500) outj.shift();
@@ -8640,7 +8633,7 @@ if (typeof module !== "undefined" && module.exports) {
     rms = Math.sqrt(rms / outj.length);
     var lock = lastOut + 1, jit = rms * 1000;
     return {
-      unstable: false, lock: lock, jit: Math.round(jit * 10) / 10, trace: trace,
+      lock: lock, jit: Math.round(jit * 10) / 10, trace: trace,
       pass: lock <= card.budget && jit <= card.jmax,
       budget: card.budget, jmax: card.jmax
     };
@@ -8959,14 +8952,14 @@ if (typeof module !== "undefined" && module.exports) {
 
     var m1 = lkEl("div", "lk-metric", "");
     m1.appendChild(lkEl("h5", null, "LOCK TIME"));
-    var v1 = lkEl("div", "v", res.unstable ? "NEVER" : String(res.lock));
+    var v1 = lkEl("div", "v", String(res.lock));
     m1.appendChild(v1);
     m1.appendChild(lkEl("div", "b", "budget " + res.budget + " steps"));
     rbox.appendChild(m1);
 
     var m2 = lkEl("div", "lk-metric", "");
     m2.appendChild(lkEl("h5", null, "JITTER"));
-    m2.appendChild(lkEl("div", "v", res.unstable ? "--" : res.jit + " ps"));
+    m2.appendChild(lkEl("div", "v", res.jit + " ps"));
     m2.appendChild(lkEl("div", "b", "budget " + res.jmax + " ps"));
     rbox.appendChild(m2);
 
@@ -8983,8 +8976,7 @@ if (typeof module !== "undefined" && module.exports) {
         ". Qualify the card to sign it off.</small>";
     } else {
       v.className = "lk-verdict fail";
-      var why = res.unstable ? "the loop never settled" :
-        (res.lock > res.budget ? "lock too slow" : "jitter over budget");
+      var why = res.lock > res.budget ? "lock too slow" : "jitter over budget";
       v.innerHTML = "FAIL: " + why + ".<small>Move the knobs and run again.</small>";
     }
     /* textContent already set via innerHTML for formatting; keep it honest */
