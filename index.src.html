@@ -610,7 +610,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "28", name: "The POST Room", btn: "prBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "Three dead intake machines and one piezo speaker each. Read the beep pattern off the timing diagram, match it against the chart, power down before you touch anything, and apply the fix that earns a POST.",
     how: "Power on, read the beeps, match the chart, power off, then apply the matching fix. Three strikes and the bench resets.",
-    spec: "BEEP CODES \u00B7 3 MACHINES \u00B7 POST" }
+    spec: "BEEP CODES \u00B7 3 MACHINES \u00B7 POST" },
+  { section: "tapeout", n: "29", name: "The Trace Room", btn: "trBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+    desc: "Controlled-impedance sizing for the TAPEOUT R&D lab: one copper trace, one fab stackup, one width slider. Size each trace so its whole etch-tolerance band lands inside the target window and qualify all three.",
+    how: "Drag the width until the etch band sits inside the target window, then qualify the trace. Three strikes fail the bench.",
+    spec: "IMPEDANCE \u00B7 ETCH TOLERANCE \u00B7 3 TRACES" }
 ];
 
 var pgFilter = "all";

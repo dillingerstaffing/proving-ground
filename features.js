@@ -18725,3 +18725,608 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+/* ============================================================
+   THE TRACE ROOM
+   TAPEOUT R&D controlled-impedance qualification: one copper
+   trace, one fab stackup, one width slider. Size the trace so the
+   whole etch-tolerance band lands inside the target window.
+   Teaches the microstrip impedance mechanism (IPC-2141 form) with
+   a worked example, then makes the player apply it on two harder
+   stackups. Three traces qualify, three strikes fail the bench.
+   Self-contained, appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- data: the atomic mechanism ---------------- */
+
+  /* Microstrip characteristic impedance, IPC-2141 approximation.
+     w, h, t in mils; er dimensionless. Wider trace: lower Z0.
+     Taller dielectric: higher Z0. Heavier copper: lower Z0. */
+  function trZ0(w, h, t, er) {
+    return 87 / Math.sqrt(er + 1.41) * Math.log(5.98 * h / (0.8 * w + t));
+  }
+
+  /* Etch tolerance band: the fab etches the width to w*(1+/-etch), and
+     impedance falls as width rises, so the band is
+     [Z0(wide), Z0(narrow)]. */
+  function trBand(job, w) {
+    var z0 = trZ0(w, job.h, job.t, job.er);
+    var lo = trZ0(w * (1 + job.etch), job.h, job.t, job.er);
+    var hi = trZ0(w * (1 - job.etch), job.h, job.t, job.er);
+    var specLo = job.target * (1 - job.tol);
+    var specHi = job.target * (1 + job.tol);
+    return { z0: z0, lo: lo, hi: hi, specLo: specLo, specHi: specHi,
+             inSpec: lo >= specLo && hi <= specHi };
+  }
+
+  function trFmt(x) { return (Math.round(x * 10) / 10).toFixed(1); }
+
+  var TR_JOBS = [
+    { id: "t1", name: "TRACE 1: DDR4 CLOCK", target: 50, tol: 0.10,
+      cu: "1 oz", t: 1.4, h: 8, hLabel: "8 mil", er: 4.2, erLabel: "FR-4 (er 4.2)",
+      etch: 0.10, etchLabel: "\u00B110%", fabMin: 0, startW: 10,
+      story: "A DDR4 clock needs a 50 ohm single-ended trace on the house stackup: 1 oz copper, 8 mil of FR-4. " +
+             "The fab etches \u00B110%, so the whole band has to fit inside 45 to 55 ohms, not just the nominal value. " +
+             "Worked example, check it on the slider: at 13.5 mil the math gives Z0 = 50.2 ohms and the etch band runs " +
+             "47.1 to 53.6, inside the window. Find your own width that qualifies." },
+    { id: "t2", name: "TRACE 2: SDI VIDEO", target: 75, tol: 0.10,
+      cu: "1 oz", t: 1.4, h: 8, hLabel: "8 mil", er: 4.2, erLabel: "FR-4 (er 4.2)",
+      etch: 0.10, etchLabel: "\u00B110%", fabMin: 5, startW: 10,
+      story: "A 75 ohm SDI video trace on the same stackup. Higher target impedance means a narrower trace, and narrow " +
+             "traces feel etch tolerance harder: a 10% etch swing moves the impedance more when the trace is thin. " +
+             "The fab will not etch below 5.0 mil; the slider can go there, but the DRC check will stop you with no penalty." },
+    { id: "t3", name: "TRACE 3: HDI MEMORY BUS", target: 50, tol: 0.10,
+      cu: "1/2 oz", t: 0.7, h: 5, hLabel: "5 mil", er: 4.2, erLabel: "FR-4 (er 4.2)",
+      etch: 0.08, etchLabel: "\u00B18%", fabMin: 0, startW: 12,
+      story: "The hard one. A 50 ohm HDI memory bus on half-ounce copper over 5 mil of FR-4. Thin dielectric means a " +
+             "narrow trace for 50 ohms, and on a narrow trace even \u00B18% etch eats most of the window. " +
+             "The qualifying window is about one mil wide. Hunt carefully: the band edges, not the nominal, decide." }
+  ];
+
+  /* ---------------- pure logic (no DOM) ---------------- */
+
+  function trJobById(id) {
+    for (var i = 0; i < TR_JOBS.length; i++) if (TR_JOBS[i].id === id) return TR_JOBS[i];
+    return null;
+  }
+
+  function trNewTrial(job) {
+    return { job: job, width: job.startW, certified: false };
+  }
+
+  function trNewState() {
+    var trials = [];
+    for (var i = 0; i < TR_JOBS.length; i++) trials.push(trNewTrial(TR_JOBS[i]));
+    return { trials: trials, ti: 0, strikes: 0, failed: false, done: false };
+  }
+
+  function trCur(s) { return s.trials[s.ti]; }
+
+  function trSetWidth(s, w) {
+    var t = trCur(s);
+    if (t.certified) return t.width;
+    w = Math.max(3, Math.min(30, Math.round(w * 4) / 4));
+    t.width = w;
+    return w;
+  }
+
+  /* QUALIFY TRACE. Returns {ok, strike, drc, msg}. DRC violations and
+     prompts cost nothing; a band outside the window costs a strike. */
+  function trQualify(s, w) {
+    var t = trCur(s), job = t.job;
+    if (s.failed) return { ok: false, strike: false, msg: "The bench has failed. Reset the bench to try again." };
+    if (t.certified) return { ok: false, strike: false, msg: "This trace is already qualified. Move to the next trace." };
+    if (job.fabMin && w < job.fabMin) {
+      return { ok: false, strike: false, drc: true,
+        msg: "DRC STOP, no penalty: the fab will not etch below " + trFmt(job.fabMin) +
+             " mil. " + trFmt(w) + " mil is unmanufacturable. Widen the trace." };
+    }
+    var b = trBand(job, w);
+    if (b.inSpec) {
+      t.certified = true;
+      t.width = w;
+      t.band = b;
+      var all = true, i;
+      for (i = 0; i < s.trials.length; i++) if (!s.trials[i].certified) all = false;
+      if (all) s.done = true;
+      return { ok: true, strike: false,
+        msg: "QUALIFIED: " + trFmt(w) + " mil gives Z0 = " + trFmt(b.z0) +
+             " ohms, etch band " + trFmt(b.lo) + " to " + trFmt(b.hi) +
+             ", inside " + trFmt(b.specLo) + " to " + trFmt(b.specHi) + "." };
+    }
+    var msg;
+    if (b.hi > b.specHi) {
+      msg = "Band " + trFmt(b.lo) + " to " + trFmt(b.hi) + " ohms misses the " +
+            trFmt(b.specLo) + " to " + trFmt(b.specHi) + " window on the HIGH side by " +
+            trFmt(b.hi - b.specHi) + " ohms. Wider traces read lower: add width.";
+    } else {
+      msg = "Band " + trFmt(b.lo) + " to " + trFmt(b.hi) + " ohms misses the " +
+            trFmt(b.specLo) + " to " + trFmt(b.specHi) + " window on the LOW side by " +
+            trFmt(b.specLo - b.lo) + " ohms. Narrower traces read higher: cut width.";
+    }
+    return { ok: false, strike: true, msg: msg };
+  }
+
+  function trActStrike(s) {
+    s.strikes++;
+    if (s.strikes >= 3) s.failed = true;
+    return s.failed;
+  }
+
+  function trResetTrial(s) {
+    var job = trCur(s).job;
+    s.trials[s.ti] = trNewTrial(job);
+  }
+
+  function trResetAll(s) {
+    var keep = trNewState();
+    s.trials = keep.trials; s.ti = 0; s.strikes = 0; s.failed = false; s.done = false;
+  }
+
+  function trRecord(s) {
+    var lines = ["THE TRACE ROOM: CONTROLLED IMPEDANCE QUALIFICATION RECORD",
+      "TAPEOUT R&D, microstrip sizing per IPC-2141 approximation", ""];
+    var i, t, j, b;
+    for (i = 0; i < s.trials.length; i++) {
+      t = s.trials[i]; j = t.job;
+      if (t.certified && t.band) {
+        b = t.band;
+        lines.push((i + 1) + ". " + j.name + ": width " + trFmt(t.width) + " mil, " +
+          j.cu + " Cu, h " + j.hLabel + ", " + j.erLabel + ", etch " + j.etchLabel + ", " +
+          "Z0 " + trFmt(b.z0) + " ohms, band " + trFmt(b.lo) + ".." + trFmt(b.hi) +
+          " vs target " + j.target + " \u00B1" + Math.round(j.tol * 100) + "% [QUALIFIED]");
+      } else {
+        lines.push((i + 1) + ". " + j.name + " [OPEN]");
+      }
+    }
+    lines.push("", "Discipline: the etch band, not the nominal, must fit the window. Three strikes fail the bench.");
+    lines.push("Strikes taken: " + s.strikes);
+    return lines.join("\n");
+  }
+
+  /* ---------------- css ---------------- */
+
+  var TR_CSS = [
+    ".tr-overlay{position:fixed;inset:0;background:rgba(4,7,7,.94);z-index:90;display:none;overflow-y:auto;padding:18px 12px;}",
+    ".tr-overlay.open{display:block;}",
+    ".tr-panel{max-width:1020px;margin:0 auto;background:var(--panel);border:1px solid var(--line);padding:20px;}",
+    ".tr-panel h3{font-family:var(--font-d);font-size:22px;letter-spacing:.02em;margin:0 0 4px;text-transform:uppercase;}",
+    ".tr-spec{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--ember);margin:0 0 10px;}",
+    ".tr-how{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 12px;max-width:74ch;}",
+    ".tr-tabs{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px;}",
+    ".tr-tab{min-height:48px;padding:10px 14px;background:transparent;border:1px solid var(--line);color:var(--paper);font-family:var(--font-d);font-size:12px;letter-spacing:.04em;cursor:pointer;text-transform:uppercase;}",
+    ".tr-tab[aria-pressed=\"true\"]{border-color:var(--ember);color:var(--ember);}",
+    ".tr-tab .tr-pill{display:block;font-family:var(--font-m);font-size:10px;letter-spacing:.1em;margin-top:4px;color:var(--steel);}",
+    ".tr-tab .tr-pill.ok{color:var(--ember);}",
+    ".tr-story{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 12px;max-width:74ch;}",
+    ".tr-story b{color:var(--paper);}",
+    ".tr-stack{border:1px solid var(--line);margin:0 0 12px;}",
+    ".tr-stack h4,.tr-math h4,.tr-lab h4{font-family:var(--font-m);font-size:11px;letter-spacing:.16em;color:var(--paper);margin:0;padding:10px 12px;border-bottom:1px solid var(--line);}",
+    ".tr-stack table{width:100%;border-collapse:collapse;font-size:12.5px;}",
+    ".tr-stack td{padding:7px 12px;border-bottom:1px solid var(--line);color:var(--paper);vertical-align:top;}",
+    ".tr-stack tr:last-child td{border-bottom:none;}",
+    ".tr-stack td.tr-k{font-family:var(--font-m);font-size:11px;letter-spacing:.1em;color:var(--steel);width:42%;}",
+    ".tr-stack td.tr-v{font-family:var(--font-m);}",
+    ".tr-stack td.tr-v .ember{color:var(--ember);}",
+    ".tr-math{border:1px solid var(--line);margin:0 0 12px;}",
+    ".tr-math .tr-eq{padding:12px;font-family:var(--font-m);font-size:13px;color:var(--ember);overflow-x:auto;white-space:nowrap;}",
+    ".tr-math p{margin:0;padding:0 12px 12px;font-size:12px;color:var(--steel);line-height:1.7;}",
+    ".tr-lab{border:1px solid var(--line);margin:0 0 12px;}",
+    ".tr-sliderow{display:flex;align-items:center;gap:14px;padding:14px 12px 4px;flex-wrap:wrap;}",
+    ".tr-sliderow label{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--steel);}",
+    ".tr-sliderow input[type=range]{flex:1 1 220px;min-height:48px;accent-color:var(--ember);}",
+    ".tr-wval{font-family:var(--font-m);font-size:20px;color:var(--ember);min-width:110px;text-align:right;}",
+    ".tr-read{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:12px;}",
+    "@media (max-width:640px){.tr-read{grid-template-columns:1fr 1fr;}}",
+    ".tr-cell{border:1px solid var(--line);padding:10px 12px;}",
+    ".tr-cell .tr-ck{font-family:var(--font-m);font-size:10px;letter-spacing:.14em;color:var(--steel);margin-bottom:6px;}",
+    ".tr-cell .tr-cv{font-family:var(--font-m);font-size:15px;color:var(--paper);}",
+    ".tr-cell .tr-cv.good{color:var(--ember);}",
+    ".tr-cell .tr-cv.bad{color:var(--steel);}",
+    ".tr-bandwrap{padding:4px 12px 14px;}",
+    ".tr-bandbar{position:relative;height:44px;border:1px solid var(--line);margin-top:6px;}",
+    ".tr-specwin{position:absolute;top:0;bottom:0;border-left:1px solid var(--ember);border-right:1px solid var(--ember);background:rgba(255,90,31,.08);}",
+    ".tr-bandmark{position:absolute;top:14px;height:16px;background:var(--steel);transition:left .2s ease,width .2s ease;}",
+    ".tr-bandmark.good{background:var(--ember);}",
+    ".tr-bandticks{display:flex;justify-content:space-between;font-family:var(--font-m);font-size:10px;letter-spacing:.08em;color:var(--steel);margin-top:6px;}",
+    ".tr-bandticks .tgt{color:var(--ember);}",
+    ".tr-verdict{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;padding:0 12px 12px;}",
+    ".tr-verdict.good{color:var(--ember);}",
+    ".tr-verdict.bad{color:var(--steel);}",
+    ".tr-actions{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px;}",
+    ".tr-btn{min-height:48px;padding:12px 18px;background:transparent;border:1px solid var(--line);color:var(--paper);font-family:var(--font-d);font-size:12px;letter-spacing:.06em;cursor:pointer;text-transform:uppercase;}",
+    ".tr-btn:hover:not(:disabled){border-color:var(--ember);color:var(--ember);}",
+    ".tr-btn:disabled{opacity:.35;cursor:default;}",
+    ".tr-btn.primary{border-color:var(--ember);color:var(--ember);}",
+    ".tr-btn:focus-visible,.tr-tab:focus-visible,.tr-sliderow input:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".tr-log{border:1px solid var(--line);padding:12px;font-family:var(--font-m);font-size:12px;line-height:1.8;min-height:120px;max-height:260px;overflow-y:auto;margin:0 0 12px;color:var(--paper);}",
+    ".tr-log .bad{color:var(--ember);}",
+    ".tr-log .good{color:var(--paper);}",
+    ".tr-log .dim{color:var(--steel);}",
+    ".tr-done{background:#0a0f0a;border:1px solid var(--ember);padding:16px;font-family:var(--font-m);font-size:13px;line-height:2;color:var(--paper);margin:0 0 12px;}",
+    ".tr-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}",
+    ".tr-progress{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--steel);margin-right:auto;}",
+    ".tr-strikes{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--steel);}",
+    ".tr-strikes.hot{color:var(--ember);}",
+    "@media (prefers-reduced-motion:reduce){.tr-bandmark{transition:none;}}"
+  ];
+
+  /* ---------------- dom ---------------- */
+
+  var trS = null, trEls = {};
+
+  function trEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  function trLog(html, cls) {
+    var d = trEl("div", cls || null);
+    d.innerHTML = html;
+    trEls.log.appendChild(d);
+    trEls.log.scrollTop = trEls.log.scrollHeight;
+  }
+
+  function trBandGeom(job, w) {
+    var b = trBand(job, w);
+    var domLo = job.target * 0.65, domHi = job.target * 1.35;
+    function x(v) { return Math.max(0, Math.min(100, (v - domLo) / (domHi - domLo) * 100)); }
+    return { b: b, specL: x(b.specLo), specW: x(b.specHi) - x(b.specLo),
+             bandL: x(b.lo), bandW: Math.max(1.5, x(b.hi) - x(b.lo)),
+             tickLo: trFmt(b.specLo), tickHi: trFmt(b.specHi), tickT: trFmt(job.target) };
+  }
+
+  function trRenderTabs() {
+    trEls.tabs.innerHTML = "";
+    var i, t, b;
+    for (i = 0; i < trS.trials.length; i++) {
+      (function (idx) {
+        t = trS.trials[idx];
+        b = trEl("button", "tr-tab", t.job.name);
+        b.setAttribute("aria-pressed", idx === trS.ti ? "true" : "false");
+        var pill = trEl("span", "tr-pill" + (t.certified ? " ok" : ""),
+          t.certified ? "QUALIFIED" : "OPEN");
+        b.appendChild(pill);
+        b.addEventListener("click", function () { trS.ti = idx; trRenderAll(); });
+        trEls.tabs.appendChild(b);
+      })(i);
+    }
+  }
+
+  function trRenderJob() {
+    var t = trCur(trS), job = t.job;
+    trEls.job.innerHTML = "";
+    var story = trEl("p", "tr-story");
+    story.innerHTML = "<b>" + job.name + ".</b> " + job.story;
+    trEls.job.appendChild(story);
+
+    var stack = trEl("div", "tr-stack");
+    var h4 = trEl("h4", null, "FAB STACKUP");
+    stack.appendChild(h4);
+    var tbl = trEl("table", null);
+    var rows = [
+      ["COPPER", job.cu],
+      ["DIELECTRIC HEIGHT", job.hLabel],
+      ["MATERIAL", job.erLabel],
+      ["ETCH TOLERANCE", job.etchLabel],
+      ["TARGET", job.target + " ohms \u00B1" + Math.round(job.tol * 100) + "% (" +
+        trFmt(job.target * (1 - job.tol)) + " to " + trFmt(job.target * (1 + job.tol)) + ")"]
+    ];
+    if (job.fabMin) rows.push(["FAB MINIMUM WIDTH", trFmt(job.fabMin) + " mil"]);
+    var tb = trEl("tbody", null);
+    rows.forEach(function (r) {
+      var tr = trEl("tr", null);
+      tr.appendChild(trEl("td", "tr-k", r[0]));
+      var v = trEl("td", "tr-v", null);
+      v.textContent = r[1];
+      tr.appendChild(v);
+      tb.appendChild(tr);
+    });
+    tbl.appendChild(tb);
+    stack.appendChild(tbl);
+    trEls.job.appendChild(stack);
+
+    var math = trEl("div", "tr-math");
+    math.appendChild(trEl("h4", null, "THE MATH"));
+    var eq = trEl("div", "tr-eq", "Z0 = 87 / sqrt(er + 1.41) x ln( 5.98 x h / (0.8 x w + t) )");
+    math.appendChild(eq);
+    var note = trEl("p", null,
+      "w, h, t in mils. The fab etches the width to w \u00B1 etch, and impedance falls as width rises, " +
+      "so the etch band is [Z0(wide), Z0(narrow)]. Both edges must sit inside the target window.");
+    math.appendChild(note);
+    trEls.job.appendChild(math);
+  }
+
+  function trRenderLab() {
+    var t = trCur(trS), job = t.job;
+    var b = trBand(job, t.width);
+    trEls.wval.textContent = trFmt(t.width) + " mil";
+    if (document.activeElement !== trEls.slider) trEls.slider.value = t.width;
+    trEls.cZ0.textContent = trFmt(b.z0) + " \u03A9";
+    trEls.cBand.textContent = trFmt(b.lo) + " .. " + trFmt(b.hi) + " \u03A9";
+    trEls.cTgt.textContent = trFmt(b.specLo) + " .. " + trFmt(b.specHi) + " \u03A9";
+    var drc = job.fabMin && t.width < job.fabMin;
+    var verdict = trEls.cVerdict;
+    if (drc) {
+      verdict.textContent = "BELOW FAB MINIMUM";
+      verdict.className = "tr-cv bad";
+    } else if (b.inSpec) {
+      verdict.textContent = "IN SPEC";
+      verdict.className = "tr-cv good";
+    } else {
+      verdict.textContent = "OUT OF SPEC";
+      verdict.className = "tr-cv bad";
+    }
+    var g = trBandGeom(job, t.width);
+    trEls.specwin.style.left = g.specL + "%";
+    trEls.specwin.style.width = g.specW + "%";
+    trEls.bandmark.style.left = g.bandL + "%";
+    trEls.bandmark.style.width = g.bandW + "%";
+    trEls.bandmark.className = "tr-bandmark" + (!drc && b.inSpec ? " good" : "");
+    trEls.tickLo.textContent = g.tickLo;
+    trEls.tickT.textContent = g.tickT + " TARGET";
+    trEls.tickHi.textContent = g.tickHi;
+    var vline = trEls.verdictLine;
+    if (drc) {
+      vline.textContent = "DRC: unmanufacturable below " + trFmt(job.fabMin) + " mil. No penalty, but it will not qualify.";
+      vline.className = "tr-verdict bad";
+    } else if (b.inSpec) {
+      vline.textContent = "VERDICT: the whole etch band sits inside the window. Qualify it.";
+      vline.className = "tr-verdict good";
+    } else {
+      vline.textContent = "VERDICT: the etch band misses the window. " +
+        (b.hi > b.specHi ? "Add width." : "Cut width.");
+      vline.className = "tr-verdict bad";
+    }
+    trEls.qualify.disabled = t.certified || trS.failed || trS.done;
+    trEls.resetTrial.disabled = trS.failed || trS.done;
+  }
+
+  function trRenderFoot() {
+    var n = 0, i;
+    for (i = 0; i < trS.trials.length; i++) if (trS.trials[i].certified) n++;
+    trEls.progress.textContent = "QUALIFIED: " + n + "/3";
+    trEls.strikes.textContent = "STRIKES: " + trS.strikes + "/3";
+    trEls.strikes.className = "tr-strikes" + (trS.strikes > 0 ? " hot" : "");
+    trEls.dl.disabled = !trS.done;
+  }
+
+  function trRenderAll() {
+    trRenderTabs();
+    trRenderJob();
+    trRenderLab();
+    trRenderFoot();
+  }
+
+  function trOnQualify() {
+    var t = trCur(trS);
+    var r = trQualify(trS, t.width);
+    if (r.ok) {
+      trLog("<span class='good'>" + r.msg + "</span>", null);
+      toast("Trace qualified");
+      if (trS.done) {
+        trLog("<span class='good'>ALL THREE TRACES QUALIFY. The Trace Room is certified.</span>", null);
+        var done = trEl("div", "tr-done",
+          "CERTIFIED: three controlled-impedance traces, every etch band inside its window. " +
+          "Download the qualification record for the R&D log.");
+        trEls.panel.insertBefore(done, trEls.foot);
+      }
+    } else if (r.strike) {
+      var fatal = trActStrike(trS);
+      trLog("<span class='bad'>STRIKE " + trS.strikes + "/3: " + r.msg + "</span>", null);
+      toast("Strike " + trS.strikes + " of 3: band outside the window");
+      if (fatal) {
+        trLog("<span class='bad'>BENCH FAILED: three strikes. Reset the bench to run the qualification again.</span>", null);
+      }
+    } else {
+      trLog("<span class='dim'>" + r.msg + "</span>", null);
+      if (!r.drc) toast("Noted");
+    }
+    trRenderAll();
+  }
+
+  function trOnResetTrial() {
+    trResetTrial(trS);
+    trLog("<span class='dim'>Trace reset to its starting width.</span>", null);
+    trRenderAll();
+  }
+
+  function trOnResetBench() {
+    var ov = trEls.overlay;
+    var keepOpen = ov.classList.contains("open");
+    trResetAll(trS);
+    var done = trEls.panel.querySelector(".tr-done");
+    if (done) trEls.panel.removeChild(done);
+    trLog("<span class='dim'>Bench reset. Three traces wait for qualification.</span>", null);
+    trRenderAll();
+    if (!keepOpen) trOpen();
+  }
+
+  function trDownload() {
+    var blob = new Blob([trRecord(trS)], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "trace-room-qualification.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { document.body.removeChild(a); }, 500);
+    toast("Qualification record downloaded");
+  }
+
+  /* ---------------- build ---------------- */
+
+  function trBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("trBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = TR_CSS.join("\n");
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "trBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Trace Room";
+    b.addEventListener("click", trOpen);
+    box.appendChild(b);
+
+    var ov = document.createElement("div");
+    ov.className = "tr-overlay";
+    ov.id = "trOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Trace Room");
+
+    var panel = document.createElement("div");
+    panel.className = "tr-panel";
+    trEls.panel = panel;
+
+    panel.appendChild(trEl("h3", null, "The Trace Room"));
+    panel.appendChild(trEl("p", "tr-spec", "TAPEOUT R&D // CONTROLLED IMPEDANCE QUALIFICATION"));
+    panel.appendChild(trEl("p", "tr-how",
+      "One copper trace, one fab stackup, one width slider. Drag the width until the whole etch-tolerance " +
+      "band sits inside the target window, then qualify the trace. Three traces qualify, three strikes fail the bench."));
+
+    trEls.tabs = trEl("div", "tr-tabs");
+    panel.appendChild(trEls.tabs);
+
+    trEls.job = trEl("div", null);
+    panel.appendChild(trEls.job);
+
+    var lab = trEl("div", "tr-lab");
+    lab.appendChild(trEl("h4", null, "WIDTH LAB"));
+    var srow = trEl("div", "tr-sliderow");
+    var lbl = trEl("label", null, "TRACE WIDTH");
+    lbl.setAttribute("for", "trWidth");
+    srow.appendChild(lbl);
+    var slider = document.createElement("input");
+    slider.type = "range"; slider.id = "trWidth";
+    slider.min = "3"; slider.max = "30"; slider.step = "0.25";
+    slider.setAttribute("aria-label", "Trace width in mils");
+    slider.addEventListener("input", function () {
+      trSetWidth(trS, parseFloat(slider.value));
+      trRenderLab();
+    });
+    trEls.slider = slider;
+    srow.appendChild(slider);
+    trEls.wval = trEl("span", "tr-wval", "");
+    trEls.wval.setAttribute("aria-live", "polite");
+    srow.appendChild(trEls.wval);
+    lab.appendChild(srow);
+
+    var read = trEl("div", "tr-read");
+    read.setAttribute("aria-live", "polite");
+    function cell(key, label) {
+      var c = trEl("div", "tr-cell");
+      c.appendChild(trEl("div", "tr-ck", label));
+      var v = trEl("div", "tr-cv", "");
+      c.appendChild(v);
+      trEls[key] = v;
+      read.appendChild(c);
+    }
+    cell("cZ0", "NOMINAL Z0");
+    cell("cBand", "ETCH BAND");
+    cell("cTgt", "TARGET WINDOW");
+    cell("cVerdict", "VERDICT");
+    lab.appendChild(read);
+
+    var bandwrap = trEl("div", "tr-bandwrap");
+    var bar = trEl("div", "tr-bandbar");
+    bar.setAttribute("role", "img");
+    bar.setAttribute("aria-label", "Etch band plotted against the target window");
+    trEls.specwin = trEl("div", "tr-specwin");
+    bar.appendChild(trEls.specwin);
+    trEls.bandmark = trEl("div", "tr-bandmark");
+    bar.appendChild(trEls.bandmark);
+    bandwrap.appendChild(bar);
+    var ticks = trEl("div", "tr-bandticks");
+    trEls.tickLo = trEl("span", null, "");
+    trEls.tickT = trEl("span", "tgt", "");
+    trEls.tickHi = trEl("span", null, "");
+    ticks.appendChild(trEls.tickLo);
+    ticks.appendChild(trEls.tickT);
+    ticks.appendChild(trEls.tickHi);
+    bandwrap.appendChild(ticks);
+    lab.appendChild(bandwrap);
+    trEls.verdictLine = trEl("div", "tr-verdict bad", "");
+    lab.appendChild(trEls.verdictLine);
+    panel.appendChild(lab);
+
+    var actions = trEl("div", "tr-actions");
+    trEls.qualify = trEl("button", "tr-btn primary", "QUALIFY TRACE");
+    trEls.qualify.addEventListener("click", trOnQualify);
+    actions.appendChild(trEls.qualify);
+    trEls.resetTrial = trEl("button", "tr-btn", "RESET TRACE");
+    trEls.resetTrial.addEventListener("click", trOnResetTrial);
+    actions.appendChild(trEls.resetTrial);
+    var resetBench = trEl("button", "tr-btn", "RESET BENCH");
+    resetBench.addEventListener("click", trOnResetBench);
+    actions.appendChild(resetBench);
+    panel.appendChild(actions);
+
+    trEls.log = trEl("div", "tr-log");
+    panel.appendChild(trEls.log);
+
+    var foot = trEl("div", "tr-foot");
+    trEls.foot = foot;
+    trEls.progress = trEl("span", "tr-progress", "QUALIFIED: 0/3");
+    foot.appendChild(trEls.progress);
+    trEls.strikes = trEl("span", "tr-strikes", "STRIKES: 0/3");
+    foot.appendChild(trEls.strikes);
+    trEls.dl = trEl("button", "tr-btn primary", "DOWNLOAD QUALIFICATION RECORD");
+    trEls.dl.disabled = true;
+    trEls.dl.addEventListener("click", trDownload);
+    foot.appendChild(trEls.dl);
+    var close = trEl("button", "tr-btn", "CLOSE THE BENCH");
+    close.addEventListener("click", trClose);
+    foot.appendChild(close);
+    panel.appendChild(foot);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    trEls.overlay = ov;
+    ov.addEventListener("click", function (ev) { if (ev.target === ov) trClose(); });
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && trEls.overlay.classList.contains("open")) trClose();
+    });
+
+    trS = trNewState();
+    trRenderAll();
+    trLog("<span class='dim'>Three traces wait on the R&D bench. Open trace 1, work the width slider, and watch the etch band, not just the nominal.</span>", null);
+  }
+
+  function trOpen() {
+    if (!trEls.overlay) trBuild();
+    trEls.overlay.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+
+  function trClose() {
+    if (trEls.overlay) trEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", trBuild);
+    } else {
+      trBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      TR: {
+        JOBS: TR_JOBS,
+        z0: trZ0, band: trBand, fmt: trFmt,
+        newState: trNewState, cur: trCur, setWidth: trSetWidth,
+        qualify: trQualify, strike: trActStrike,
+        resetTrial: trResetTrial, resetAll: trResetAll,
+        record: trRecord, state: function () { return trS; }
+      }
+    });
+  }
+})();
