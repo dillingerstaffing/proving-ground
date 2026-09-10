@@ -120,12 +120,6 @@ body.pg-locked { overflow: hidden; }
 a { color: var(--ember); }
 .wrap { max-width: 1060px; margin: 0 auto; padding: 0 20px; }
 
-/* Film grain: one static layer, zero motion cost. */
-#grain {
-  position: fixed; inset: 0; z-index: 4; pointer-events: none; opacity: 0.05;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='160' height='160' filter='url(%23n)'/></svg>");
-}
-
 /* Skip link: keyboard users jump straight to the benches. */
 .skip {
   position: absolute; left: 12px; top: -60px; z-index: 200;
@@ -417,12 +411,6 @@ body.pg-any-open div[class*="-overlay"].open {
 .filter:active, .rv-btn:active, .rv-tab:active, .rv-mini:active { transform: scale(0.94); }
 .rv-close:active { transform: scale(0.96); }
 
-/* Film grain: SVG turbulence at 4 percent, instant premium finish. */
-.pg-grain {
-  position: fixed; inset: 0; z-index: 9000; pointer-events: none; opacity: 0.04;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
-}
-
 /* Motion sensitivity: honor it, always. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
@@ -431,7 +419,6 @@ body.pg-any-open div[class*="-overlay"].open {
 </head>
 <body>
 <a class="skip" href="#benches">Skip to the benches</a>
-<div id="grain" aria-hidden="true"></div>
 <div class="wrap">
 
   <header class="site-head">
@@ -917,11 +904,6 @@ function pgCloseAllOverlays() {
   fab.addEventListener("click", pgCloseAllOverlays);
   document.body.appendChild(fab);
 
-  var grain = document.createElement("div");
-  grain.className = "pg-grain";
-  grain.setAttribute("aria-hidden", "true");
-  document.body.appendChild(grain);
-
   document.addEventListener("click", function (e) {
     var t = e.target;
     if (t && t.classList && t.className.indexOf("-overlay") !== -1 &&
@@ -953,8 +935,9 @@ if (document.readyState === "loading") {
   pgBoot();
 }
 </script>
-<script src="rvcore.js?v=bac41e5931" defer></script>
-<script src="rvdata.js?v=bac41e5931" defer></script>
-<script src="features.js?v=bac41e5931" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=74c92a6179" defer></script>
+<script src="rvdata.js?v=74c92a6179" defer></script>
+<script src="riscv-lab.js?v=74c92a6179" defer></script>
+<script src="features.js?v=74c92a6179" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
