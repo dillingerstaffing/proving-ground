@@ -19397,3 +19397,793 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+/* ============================================================
+   THE RESERVATION BAY
+   Silicon bench 30. RISC-V atomicity on the bench: two harts race
+   on one shared counter under a real preemptive scheduler (25%
+   preemption chance after every instruction, plus timer-tick noise
+   that can clear a reservation spuriously). Trial 1 watches plain
+   load/add/store lose increments. Trial 2 lets the player pick the
+   fix: plain RMW, LR/SC once, LR/SC with a retry loop, or AMOADD,
+   with both harts running the pick. Trial 3 is the token vault, a
+   conditional read-modify-write that only LR/SC can express. Three
+   trials certify, three strikes fail the bench.
+   Teaches one atomic mechanism: LR/SC plus a retry loop turns any
+   read-modify-write into an atomic one, which is why the ISA keeps
+   a failable store instead of only fixed-function atomics.
+   Self-contained, appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- data: strategies and trials ---------------- */
+
+  var RS_STRATS = {
+    "plain": {
+      label: "PLAIN RMW",
+      desc: "load, add, store. Three instructions, no protection."
+    },
+    "lrsc-once": {
+      label: "LR/SC ONCE",
+      desc: "load-reserved, add, store-conditional, result ignored."
+    },
+    "lrsc-retry": {
+      label: "LR/SC + RETRY",
+      desc: "loop the LR/SC pair until the store lands."
+    },
+    "amoadd": {
+      label: "AMOADD",
+      desc: "one instruction that adds atomically."
+    }
+  };
+
+  var RS_TRIALS = [
+    { id: "t1", name: "TRIAL 1: THE LOSS", kind: "inc", n: 2000,
+      rival: "plain", strats: ["plain"], fixed: true,
+      story: "Two processor cores share one counter. Call them harts, the RISC-V word for hardware threads. " +
+             "Each hart runs the same three instructions: read the counter, add one, write it back. " +
+             "That read-modify-write is the whole bench.\n\n" +
+             "Check the failure by hand before you run anything. The counter holds 100. Hart A reads 100. " +
+             "The scheduler preempts A before it writes back, and hart B reads 100 too. Both add one. " +
+             "Both store 101. Two increments went in and the counter moved once: one increment vanished. " +
+             "That is the entire bug, and the scheduler is allowed to preempt between any two instructions.\n\n" +
+             "Run the race below: both harts do 2,000 plain increments, 4,000 expected. The sim's scheduler " +
+             "preempts after every instruction with 25% probability, exactly the model above. Before you run, " +
+             "call the outcome: exactly 4,000 survive, a few vanish, or many vanish.\n\n" +
+             "Failure modes, stated up front: a store landing on a stale read silently overwrites the other " +
+             "hart's increment. The loss is invisible: the counter just reads low. No trap, no error flag." },
+    { id: "t2", name: "TRIAL 2: PICK YOUR WEAPON", kind: "inc", n: 2000,
+      rival: "same", strats: ["plain", "lrsc-once", "lrsc-retry", "amoadd"],
+      story: "Trial 1 proved the loss is real. Now you pick the fix. Four strategies, the same race, " +
+             "and both harts run your pick, because in a real program both threads run the same code.\n\n" +
+             "LR (load-reserved) reads the address and marks it watched. SC (store-conditional) writes only " +
+             "if nobody touched the address since your LR. SC returns 0 on success and nonzero on failure, " +
+             "and a failed SC writes nothing: the store simply never happens, so your code must check the " +
+             "result. LR/SC ONCE runs the pair and ignores the result. LR/SC + RETRY loops the pair until " +
+             "the store lands. AMOADD does the add in one atomic instruction.\n\n" +
+             "The raw failure semantics are not invented: Chris verified them on real QEMU hardware emulation. " +
+             "An SC with no live reservation returns 1 and memory stays unchanged. " +
+             "(Lab: riscv-baremetal-demo/src/sc-fail.)\n\n" +
+             "Watch for: LR/SC ONCE drops failed stores silently, the same bug as plain, just rarer. " +
+             "RETRY always converges here but burns cycles on contention. AMOADD is the cheapest way to add, " +
+             "but it can only add." },
+    { id: "t3", name: "TRIAL 3: THE TOKEN VAULT", kind: "take", n: 40, stock: 8000,
+      rival: "same", strats: ["plain", "lrsc-retry"],
+      story: "Some jobs need more than an add. The token vault holds 8,000 tokens of shop credit. " +
+             "Each hart must take 100 tokens at a time, but only while at least 100 remain. That is a " +
+             "conditional read-modify-write: read the stock, check the balance, then write. No single add " +
+             "instruction can express it, and on this bench the vault register is plain memory-mapped: " +
+             "the AMO unit cannot reach it, so LR/SC is the only tool on the shelf.\n\n" +
+             "Certify condition: the vault reads exactly 0, and exactly 8,000 tokens were claimed across " +
+             "both harts. Overspend the vault or strand tokens and the trial fails." }
+  ];
+
+  /* ---------------- pure logic (no DOM) ---------------- */
+
+  function rsRand(seed) {
+    var a = seed >>> 0;
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function rsSeed(str) {
+    var h = 2166136261 >>> 0;
+    for (var i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+
+  /* The race. Two harts, one shared word, a preemptive scheduler that
+     switches harts with 25% probability after every instruction, and
+     timer-tick noise that can clear a reservation spuriously. Any store
+     to the shared word clears the other hart's reservation. The rival
+     hart runs trial.rival, or the player's strategy when "same". */
+  function rsSim(playerStrat, trial) {
+    var rng = rsRand(rsSeed("rs-" + trial.id));
+    var PREEMPT = 0.25, NOISE = 0.05;
+    var isTake = trial.kind === "take";
+    var iters = trial.n;
+    var rivalStrat = trial.rival === "same" ? playerStrat : trial.rival;
+    var mem = isTake ? trial.stock : 0;
+    var claimed = [0, 0], cycles = [0, 0], scFail = [0, 0];
+    var resv = [false, false];
+    var st = [
+      { strat: playerStrat, done: 0, phase: 0, reg: 0, scok: false },
+      { strat: rivalStrat, done: 0, phase: 0, reg: 0, scok: false }
+    ];
+
+    function insn(h) {
+      var s = st[h];
+      if (s.done >= iters) return;
+      var cost = 1, stored = false;
+      if (!isTake) {
+        if (s.strat === "amoadd") {
+          mem = mem + 1; stored = true; s.done++; cost = 2;
+        } else if (s.strat === "plain") {
+          if (s.phase === 0) s.reg = mem;
+          else if (s.phase === 1) s.reg = s.reg + 1;
+          else { mem = s.reg; stored = true; s.done++; s.phase = -1; }
+          s.phase++;
+        } else if (s.strat === "lrsc-once") {
+          if (s.phase === 0) { s.reg = mem; resv[h] = true; }
+          else if (s.phase === 1) s.reg = s.reg + 1;
+          else {
+            if (resv[h]) { mem = s.reg; stored = true; }
+            else { scFail[h]++; }
+            resv[h] = false; s.done++; s.phase = -1;
+          }
+          s.phase++;
+        } else { /* lrsc-retry */
+          if (s.phase === 0) { s.reg = mem; resv[h] = true; s.phase = 1; }
+          else if (s.phase === 1) { s.reg = s.reg + 1; s.phase = 2; }
+          else {
+            if (resv[h]) { mem = s.reg; stored = true; s.done++; s.phase = 0; }
+            else { scFail[h]++; s.phase = 0; }
+            resv[h] = false;
+          }
+        }
+      } else {
+        if (s.strat === "plain") {
+          if (s.phase === 0) s.reg = mem;
+          else if (s.phase === 1) {
+            s.scok = (s.reg >= 100);
+            s.reg = s.scok ? s.reg - 100 : s.reg;
+          } else {
+            if (s.scok) { mem = s.reg; claimed[h] += 100; stored = true; }
+            s.done++; s.phase = -1;
+          }
+          s.phase++;
+        } else { /* lrsc-retry */
+          if (s.phase === 0) { s.reg = mem; resv[h] = true; s.phase = 1; }
+          else if (s.phase === 1) {
+            s.scok = (s.reg >= 100);
+            s.reg = s.scok ? s.reg - 100 : s.reg;
+            s.phase = 2;
+          } else {
+            if (resv[h]) {
+              if (s.scok) { mem = s.reg; claimed[h] += 100; stored = true; }
+              s.done++; s.phase = 0;
+            } else { scFail[h]++; s.phase = 0; }
+            resv[h] = false;
+          }
+        }
+      }
+      if (stored) resv[1 - h] = false;
+      cycles[h] += cost;
+    }
+
+    var h = 0, guard = 0;
+    while (guard++ < 50000000) {
+      if (st[0].done >= iters && st[1].done >= iters) break;
+      if (st[h].done < iters) insn(h);
+      if (rng() < PREEMPT) {
+        h = 1 - h;
+        if (rng() < NOISE) resv[h] = false;
+      }
+    }
+    var totalClaimed = claimed[0] + claimed[1];
+    var expected = isTake ? trial.stock : 2 * iters;
+    var ok = isTake
+      ? (mem === 0 && totalClaimed === trial.stock)
+      : (mem === expected);
+    return {
+      final: mem, claimed: totalClaimed,
+      cycles: cycles[0] + cycles[1], cyclesP: cycles[0], cyclesR: cycles[1],
+      scFail: scFail[0] + scFail[1],
+      expected: expected,
+      lost: isTake ? (trial.stock - totalClaimed) : (2 * iters - mem),
+      ok: ok
+    };
+  }
+
+  function rsTrialById(id) {
+    for (var i = 0; i < RS_TRIALS.length; i++) {
+      if (RS_TRIALS[i].id === id) return RS_TRIALS[i];
+    }
+    return null;
+  }
+
+  function rsNewTrialState(trial) {
+    return { id: trial.id, strat: trial.strats[0], pred: null,
+             ran: false, res: null, certified: false };
+  }
+
+  function rsNewState() {
+    var trials = [];
+    for (var i = 0; i < RS_TRIALS.length; i++) {
+      trials.push(rsNewTrialState(RS_TRIALS[i]));
+    }
+    return { trials: trials, ti: 0, strikes: 0, failed: false, done: false };
+  }
+
+  function rsCur(s) { return s.trials[s.ti]; }
+  function rsJob(s) { return rsTrialById(rsCur(s).id); }
+
+  function rsSetStrat(s, strat) {
+    var t = rsCur(s), job = rsJob(s);
+    if (t.certified || s.failed) return t.strat;
+    for (var i = 0; i < job.strats.length; i++) {
+      if (job.strats[i] === strat) { t.strat = strat; t.ran = false; t.res = null; }
+    }
+    return t.strat;
+  }
+
+  function rsRun(s) {
+    var t = rsCur(s), job = rsJob(s);
+    if (s.failed || t.certified) return t.res;
+    t.res = rsSim(t.strat, job);
+    t.ran = true;
+    return t.res;
+  }
+
+  function rsSetPred(s, pred) {
+    var t = rsCur(s);
+    if (t.certified || s.failed) return t.pred;
+    t.pred = pred;
+    return pred;
+  }
+
+  /* CERTIFY. Returns {ok, strike, msg}. Certifying an unrun trial or an
+     uncertified prediction is a free prompt; certifying a failed result
+     costs a strike. */
+  function rsCertify(s) {
+    var t = rsCur(s), job = rsJob(s);
+    if (s.failed) {
+      return { ok: false, strike: false,
+        msg: "The bench has failed. Reset the bench to try again." };
+    }
+    if (t.certified) {
+      return { ok: false, strike: false,
+        msg: "This trial is already certified. Move to the next trial." };
+    }
+    if (!t.ran || !t.res) {
+      return { ok: false, strike: false,
+        msg: "Run the race first. The bench certifies observed results, not intentions." };
+    }
+    if (job.id === "t1" && !t.pred) {
+      return { ok: false, strike: false,
+        msg: "Call the outcome first: pick a prediction, then certify." };
+    }
+    var r = t.res;
+    /* Trial 1 is the lesson trial: it certifies observation (prediction +
+       run), not a winning result. Trials 2 and 3 certify only winning runs. */
+    if (job.id === "t1" || r.ok) {
+      t.certified = true;
+      var all = true, i;
+      for (i = 0; i < s.trials.length; i++) {
+        if (!s.trials[i].certified) all = false;
+      }
+      if (all) s.done = true;
+      return { ok: true, strike: false, msg: rsCertMsg(s, t, job, r) };
+    }
+    var msg;
+    if (job.kind === "inc") {
+      msg = "NOT CERTIFIED: " + rsFmt(r.final) + " of " + rsFmt(r.expected) +
+            " increments survived with " + RS_STRATS[t.strat].label + ". " +
+            rsFmt(r.lost) + " vanished on the wire, and the SC-failure counter " +
+            (r.scFail ? "shows " + rsFmt(r.scFail) + " dropped stores" : "never moved") +
+            ". Pick a strategy that lands every increment.";
+    } else {
+      msg = "NOT CERTIFIED: vault reads " + rsFmt(r.final) + ", " + rsFmt(r.claimed) +
+            " of " + rsFmt(job.stock) + " tokens claimed with " + RS_STRATS[t.strat].label + ". " +
+            "Tokens were double-spent and stranded. Only a conditional atomic take can close this vault.";
+    }
+    return { ok: false, strike: true, msg: msg };
+  }
+
+  function rsCertMsg(s, t, job, r) {
+    if (job.id === "t1") {
+      var hit = (t.pred === "many" && r.lost > 200) ||
+                (t.pred === "few" && r.lost > 0 && r.lost <= 200) ||
+                (t.pred === "exact" && r.lost === 0);
+      return "CERTIFIED: you watched the loss and called it. " + rsFmt(r.lost) +
+             " of " + rsFmt(r.expected) + " increments vanished, so your prediction was " +
+             (hit ? "CONFIRMED." : "MISSED, and that miss is the lesson: the loss is bigger than intuition says.");
+    }
+    if (job.id === "t2") {
+      var cmp = rsSim("amoadd", job);
+      var note = "";
+      if (t.strat === "lrsc-retry") {
+        note = " Shop note: AMOADD wins the same race in " + rsFmt(cmp.cycles) +
+               " cycles against your " + rsFmt(r.cycles) + ". For a plain add the single " +
+               "instruction beats the loop; LR/SC earns its keep in trial 3, where there is no add to issue.";
+      }
+      return "CERTIFIED: all " + rsFmt(r.expected) + " increments landed with " +
+             RS_STRATS[t.strat].label + " in " + rsFmt(r.cycles) + " cycles." + note;
+    }
+    return "CERTIFIED: vault reads 0, exactly " + rsFmt(r.claimed) + " tokens claimed, " +
+           "no overspend, no stranded credit. The conditional take is atomic.";
+  }
+
+  function rsActStrike(s) {
+    s.strikes++;
+    if (s.strikes >= 3) s.failed = true;
+    return s.failed;
+  }
+
+  function rsResetTrial(s) {
+    var job = rsJob(s);
+    s.trials[s.ti] = rsNewTrialState(job);
+  }
+
+  function rsResetAll(s) {
+    var keep = rsNewState();
+    s.trials = keep.trials; s.ti = 0; s.strikes = 0; s.failed = false; s.done = false;
+  }
+
+  function rsFmt(x) {
+    return String(x).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  }
+
+  function rsRecord(s) {
+    var lines = ["THE RESERVATION BAY: ATOMICITY QUALIFICATION RECORD",
+      "RISC-V LR/SC, two harts, preemptive scheduler (25% preemption after every",
+      "instruction, timer-tick noise that can clear a reservation spuriously)", ""];
+    var i, t, job, r;
+    for (i = 0; i < s.trials.length; i++) {
+      t = s.trials[i]; job = rsTrialById(t.id);
+      if (t.certified && t.res) {
+        r = t.res;
+        if (job.kind === "inc") {
+          lines.push((i + 1) + ". " + job.name + ": " + RS_STRATS[t.strat].label +
+            ", expected " + rsFmt(r.expected) + ", observed " + rsFmt(r.final) +
+            ", cycles " + rsFmt(r.cycles) + ", SC failures " + rsFmt(r.scFail) + " [CERTIFIED]");
+        } else {
+          lines.push((i + 1) + ". " + job.name + ": " + RS_STRATS[t.strat].label +
+            ", vault " + rsFmt(r.final) + ", claimed " + rsFmt(r.claimed) +
+            " of " + rsFmt(job.stock) + " [CERTIFIED]");
+        }
+      } else {
+        lines.push((i + 1) + ". " + job.name + " [OPEN]");
+      }
+    }
+    lines.push("", "Discipline: atomicity means a read-modify-write no other hart can interleave. " +
+      "LR/SC plus a retry loop builds one out of anything.");
+    lines.push("Strikes taken: " + s.strikes);
+    return lines.join("\n");
+  }
+
+  /* ---------------- css ---------------- */
+
+  var RS_CSS = [
+    ".rs-overlay{position:fixed;inset:0;background:rgba(4,7,7,.94);z-index:90;display:none;overflow-y:auto;padding:18px 12px;}",
+    ".rs-overlay.open{display:block;}",
+    ".rs-panel{max-width:1020px;margin:0 auto;background:var(--panel);border:1px solid var(--line);padding:20px;}",
+    ".rs-panel h3{font-family:var(--font-d);font-size:22px;letter-spacing:.02em;margin:0 0 4px;text-transform:uppercase;}",
+    ".rs-spec{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--ember);margin:0 0 10px;}",
+    ".rs-how{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 12px;max-width:74ch;}",
+    ".rs-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px;}",
+    ".rs-tab{font-family:var(--font-m);font-size:12px;letter-spacing:.08em;background:transparent;color:var(--steel);border:1px solid var(--line);padding:0 14px;min-height:48px;cursor:pointer;transition:border-color 200ms,color 200ms;}",
+    ".rs-tab.is-on{color:var(--ember);border-color:var(--ember);}",
+    ".rs-tab.is-done{color:var(--paper);}",
+    ".rs-tab:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".rs-story{color:var(--paper);font-size:13px;line-height:1.75;margin:0 0 12px;max-width:78ch;white-space:pre-line;}",
+    ".rs-story a{color:var(--ember);}",
+    ".rs-rowlabel{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--ember);margin:14px 0 8px;}",
+    ".rs-predict{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 4px;}",
+    ".rs-pred-note{font-family:var(--font-m);font-size:11.5px;color:var(--steel);margin:0 0 8px;}",
+    ".rs-strats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:6px;margin:0 0 4px;}",
+    ".rs-strat{font-family:var(--font-m);text-align:left;background:transparent;color:var(--paper);border:1px solid var(--line);padding:10px 12px;min-height:56px;cursor:pointer;transition:border-color 200ms,transform 200ms;}",
+    ".rs-strat b{display:block;font-size:12.5px;letter-spacing:.08em;color:var(--paper);margin-bottom:4px;}",
+    ".rs-strat span{display:block;font-size:11.5px;color:var(--steel);line-height:1.5;}",
+    ".rs-strat.is-on{border-color:var(--ember);}",
+    ".rs-strat.is-on b{color:var(--ember);}",
+    ".rs-strat:active{transform:scale(.98);}",
+    ".rs-strat:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".rs-btn{font-family:var(--font-m);font-size:12px;letter-spacing:.1em;background:transparent;color:var(--paper);border:1px solid var(--line);padding:0 16px;min-height:48px;cursor:pointer;transition:border-color 200ms,color 200ms,transform 200ms;}",
+    ".rs-btn:hover{border-color:var(--ember);color:var(--ember);}",
+    ".rs-btn:active{transform:scale(.97);}",
+    ".rs-btn.primary{border-color:var(--ember);color:var(--ember);}",
+    ".rs-btn.primary:hover{background:var(--ember);color:#0a0c0e;}",
+    ".rs-btn:disabled{opacity:.35;cursor:not-allowed;transform:none;}",
+    ".rs-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".rs-actions{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0;}",
+    ".rs-result{border:1px solid var(--line);background:var(--panel-2);padding:12px 14px;margin:0 0 12px;}",
+    ".rs-result h4{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--ember);margin:0 0 8px;}",
+    ".rs-rgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;}",
+    ".rs-rcell{font-family:var(--font-m);}",
+    ".rs-rcell .k{font-size:10px;letter-spacing:.12em;color:var(--steel);display:block;margin-bottom:2px;}",
+    ".rs-rcell .v{font-size:15px;color:var(--paper);}",
+    ".rs-rcell .v.bad{color:var(--ember);}",
+    ".rs-rcell .v.good{color:#7ddf8a;}",
+    ".rs-log{font-family:var(--font-m);font-size:12px;line-height:1.7;color:var(--paper);border:1px solid var(--line);background:#0a0d10;padding:12px 14px;min-height:120px;max-height:260px;overflow-y:auto;margin:0 0 12px;}",
+    ".rs-log .dim{color:var(--steel);}",
+    ".rs-log .good{color:#7ddf8a;}",
+    ".rs-log .bad{color:var(--ember);}",
+    ".rs-foot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:12px;}",
+    ".rs-progress,.rs-strikes{font-family:var(--font-m);font-size:11px;letter-spacing:.12em;color:var(--steel);}",
+    ".rs-progress b,.rs-strikes b{color:var(--paper);}",
+    ".rs-strikes b.hit{color:var(--ember);}",
+    ".rs-foot .spacer{flex:1;}",
+    "@media (prefers-reduced-motion:reduce){.rs-tab,.rs-strat,.rs-btn{transition:none;}}"
+  ];
+
+  /* ---------------- dom ---------------- */
+
+  var rsS = null;
+  var rsEls = {};
+
+  function rsEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  function rsLog(html, cls) {
+    var d = rsEl("div", cls || null);
+    d.innerHTML = html;
+    rsEls.log.appendChild(d);
+    rsEls.log.scrollTop = rsEls.log.scrollHeight;
+  }
+
+  /* ---------------- render ---------------- */
+
+  function rsRenderTabs() {
+    rsEls.tabs.innerHTML = "";
+    for (var i = 0; i < RS_TRIALS.length; i++) {
+      (function (idx) {
+        var t = rsS.trials[idx], job = RS_TRIALS[idx];
+        var b = rsEl("button", "rs-tab" +
+          (idx === rsS.ti ? " is-on" : "") +
+          (t.certified ? " is-done" : ""));
+        b.type = "button";
+        b.textContent = (t.certified ? "OK " : "") + job.name;
+        b.setAttribute("aria-pressed", idx === rsS.ti ? "true" : "false");
+        b.addEventListener("click", function () {
+          rsS.ti = idx;
+          rsRenderAll();
+        });
+        rsEls.tabs.appendChild(b);
+      })(i);
+    }
+  }
+
+  function rsRenderBody() {
+    var t = rsCur(rsS), job = rsJob(rsS);
+    rsEls.body.innerHTML = "";
+
+    var story = rsEl("p", "rs-story");
+    rsEls.body.appendChild(story);
+    /* The story carries one verified external link (t2); render it as a
+       real anchor instead of re-explaining the lab. */
+    if (job.id === "t2") {
+      var parts = job.story.split("(Lab: riscv-baremetal-demo/src/sc-fail.)");
+      story.appendChild(document.createTextNode(parts[0] + "(Lab: "));
+      var a = document.createElement("a");
+      a.href = "https://github.com/dillingerstaffing/riscv-baremetal-demo/tree/main/src/sc-fail";
+      a.textContent = "riscv-baremetal-demo/src/sc-fail";
+      a.target = "_blank";
+      a.rel = "noopener";
+      story.appendChild(a);
+      story.appendChild(document.createTextNode(".)" + (parts[1] || "")));
+    } else {
+      story.textContent = job.story;
+    }
+
+    if (job.id === "t1") {
+      rsEls.body.appendChild(rsEl("p", "rs-rowlabel", "STEP 1: CALL THE OUTCOME"));
+      var prow = rsEl("div", "rs-predict");
+      var preds = [
+        { id: "exact", label: "EXACTLY 4,000 SURVIVE" },
+        { id: "few", label: "A FEW VANISH (3,800..3,999)" },
+        { id: "many", label: "MANY VANISH (UNDER 3,800)" }
+      ];
+      preds.forEach(function (p) {
+        var b = rsEl("button", "rs-btn" + (t.pred === p.id ? " primary" : ""), p.label);
+        b.type = "button";
+        b.setAttribute("aria-pressed", t.pred === p.id ? "true" : "false");
+        b.disabled = t.certified;
+        b.addEventListener("click", function () {
+          rsSetPred(rsS, p.id);
+          rsLog("Prediction logged: <span class='dim'>" + p.label + "</span>. Now run the race.", null);
+          rsRenderAll();
+        });
+        prow.appendChild(b);
+      });
+      rsEls.body.appendChild(prow);
+      rsEls.body.appendChild(rsEl("p", "rs-pred-note",
+        t.pred ? "Prediction locked: " + t.pred.toUpperCase() + ". Run the race to check it."
+               : "No prediction yet. Pick one before you certify."));
+      rsEls.body.appendChild(rsEl("p", "rs-rowlabel", "STEP 2: RUN THE RACE"));
+    } else {
+      rsEls.body.appendChild(rsEl("p", "rs-rowlabel", "YOUR STRATEGY (BOTH HARTS RUN IT)"));
+      var srow = rsEl("div", "rs-strats");
+      job.strats.forEach(function (sid) {
+        var meta = RS_STRATS[sid];
+        var b = rsEl("button", "rs-strat" + (t.strat === sid ? " is-on" : ""));
+        b.type = "button";
+        b.setAttribute("aria-pressed", t.strat === sid ? "true" : "false");
+        b.disabled = t.certified;
+        var bb = rsEl("b", null, meta.label);
+        var ss = rsEl("span", null, meta.desc);
+        b.appendChild(bb);
+        b.appendChild(ss);
+        b.addEventListener("click", function () {
+          rsSetStrat(rsS, sid);
+          rsLog("Strategy set: <span class='dim'>" + meta.label + "</span>. Run the race.", null);
+          rsRenderAll();
+        });
+        srow.appendChild(b);
+      });
+      rsEls.body.appendChild(srow);
+      if (job.id === "t3") {
+        rsEls.body.appendChild(rsEl("p", "rs-pred-note",
+          "The AMO unit cannot reach the vault register, so it is not on the shelf."));
+      }
+    }
+
+    var run = rsEl("button", "rs-btn primary", "RUN THE RACE");
+    run.type = "button";
+    run.disabled = t.certified || rsS.failed;
+    run.addEventListener("click", rsOnRun);
+    var acts = rsEl("div", "rs-actions");
+    acts.appendChild(run);
+
+    var cert = rsEl("button", "rs-btn", "CERTIFY TRIAL");
+    cert.type = "button";
+    cert.disabled = t.certified || rsS.failed || !t.ran;
+    cert.addEventListener("click", rsOnCertify);
+    acts.appendChild(cert);
+
+    var rt = rsEl("button", "rs-btn", "RESET TRIAL");
+    rt.type = "button";
+    rt.addEventListener("click", function () {
+      rsResetTrial(rsS);
+      rsLog("<span class='dim'>Trial reset.</span>", null);
+      rsRenderAll();
+    });
+    acts.appendChild(rt);
+    rsEls.body.appendChild(acts);
+
+    rsEls.result = rsEl("div", "rs-result");
+    rsEls.body.appendChild(rsEls.result);
+    rsRenderResult();
+  }
+
+  function rsRenderResult() {
+    var t = rsCur(rsS), job = rsJob(rsS);
+    var box = rsEls.result;
+    box.innerHTML = "";
+    box.appendChild(rsEl("h4", null, "LAST RACE"));
+    var grid = rsEl("div", "rs-rgrid");
+    function cell(k, v, cls) {
+      var c = rsEl("div", "rs-rcell");
+      c.appendChild(rsEl("span", "k", k));
+      var vv = rsEl("span", "v" + (cls ? " " + cls : ""), v);
+      c.appendChild(vv);
+      grid.appendChild(c);
+    }
+    if (!t.ran || !t.res) {
+      cell("STATUS", "NO RACE YET", null);
+      box.appendChild(grid);
+      return;
+    }
+    var r = t.res;
+    if (job.kind === "inc") {
+      cell("EXPECTED", rsFmt(r.expected), null);
+      cell("OBSERVED", rsFmt(r.final), r.ok ? "good" : "bad");
+      cell("VANISHED", rsFmt(r.lost), r.ok ? null : "bad");
+    } else {
+      cell("VAULT", rsFmt(r.final), r.ok ? "good" : "bad");
+      cell("CLAIMED", rsFmt(r.claimed) + " / " + rsFmt(job.stock), r.ok ? "good" : "bad");
+      cell("UNCLAIMED", rsFmt(r.lost), r.ok ? null : "bad");
+    }
+    cell("CYCLES", rsFmt(r.cycles), null);
+    cell("SC FAILURES", rsFmt(r.scFail), null);
+    cell("STRATEGY", RS_STRATS[t.strat].label, null);
+    box.appendChild(grid);
+  }
+
+  function rsRenderFoot() {
+    var n = 0, i;
+    for (i = 0; i < rsS.trials.length; i++) if (rsS.trials[i].certified) n++;
+    rsEls.progress.innerHTML = "";
+    rsEls.progress.appendChild(document.createTextNode("CERTIFIED: "));
+    var pb = rsEl("b", null, n + "/3");
+    rsEls.progress.appendChild(pb);
+    rsEls.strikes.innerHTML = "";
+    rsEls.strikes.appendChild(document.createTextNode("STRIKES: "));
+    var sb = rsEl("b", rsS.strikes ? "hit" : null, rsS.strikes + "/3");
+    rsEls.strikes.appendChild(sb);
+    rsEls.dl.disabled = !rsS.done;
+  }
+
+  function rsRenderAll() {
+    rsRenderTabs();
+    rsRenderBody();
+    rsRenderFoot();
+  }
+
+  /* ---------------- actions ---------------- */
+
+  function rsOnRun() {
+    var t = rsCur(rsS), job = rsJob(rsS);
+    if (rsS.failed || t.certified) return;
+    var r = rsRun(rsS);
+    if (job.kind === "inc") {
+      rsLog("Race complete: <b>" + rsFmt(r.final) + "</b> of " + rsFmt(r.expected) +
+        " increments survived (" + rsFmt(r.lost) + " vanished), " +
+        rsFmt(r.cycles) + " cycles, " + rsFmt(r.scFail) + " SC failures.", null);
+    } else {
+      rsLog("Race complete: vault reads <b>" + rsFmt(r.final) + "</b>, " +
+        rsFmt(r.claimed) + " of " + rsFmt(job.stock) + " tokens claimed, " +
+        rsFmt(r.cycles) + " cycles.", null);
+    }
+    rsRenderAll();
+  }
+
+  function rsOnCertify() {
+    var r = rsCertify(rsS);
+    if (r.strike) {
+      var dead = rsActStrike(rsS);
+      rsLog("<span class='bad'>" + r.msg + " Strike " + rsS.strikes + " of 3." +
+        (dead ? " The bench has failed: three strikes. Reset the bench to try again." : "") + "</span>", null);
+    } else if (r.ok) {
+      rsLog("<span class='good'>" + r.msg + "</span>", null);
+      if (rsS.done) {
+        rsLog("<span class='good'>ALL THREE TRIALS CERTIFIED. The Reservation Bay is yours. " +
+          "Download the qualification record.</span>", null);
+      }
+    } else {
+      rsLog("<span class='dim'>" + r.msg + "</span>", null);
+    }
+    rsRenderAll();
+  }
+
+  function rsDownload() {
+    var blob = new Blob([rsRecord(rsS)], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "reservation-bay-qualification.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    }, 4000);
+    toast("Qualification record downloaded");
+  }
+
+  /* ---------------- build ---------------- */
+
+  function rsBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("rsBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = RS_CSS.join("\n");
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "rsBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Reservation Bay";
+    b.addEventListener("click", rsOpen);
+    box.appendChild(b);
+
+    var ov = document.createElement("div");
+    ov.className = "rs-overlay";
+    ov.id = "rsOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Reservation Bay");
+
+    var panel = document.createElement("div");
+    panel.className = "rs-panel";
+    rsEls.panel = panel;
+
+    panel.appendChild(rsEl("h3", null, "The Reservation Bay"));
+    panel.appendChild(rsEl("p", "rs-spec", "SILICON // RISC-V ATOMICITY LAB"));
+    panel.appendChild(rsEl("p", "rs-how",
+      "Two cores share one counter, and increments keep vanishing. Atomicity is the guarantee that a " +
+      "read-modify-write completes as one indivisible step, and LR/SC plus a retry loop is how RISC-V " +
+      "builds one out of anything. Run the losing race, call the outcome before you see it, pick the " +
+      "fix, then run the token vault where only LR/SC can work. Certify all three trials; three strikes " +
+      "fail the bench."));
+
+    rsEls.tabs = rsEl("div", "rs-tabs");
+    panel.appendChild(rsEls.tabs);
+
+    rsEls.body = rsEl("div", null);
+    panel.appendChild(rsEls.body);
+
+    rsEls.log = rsEl("div", "rs-log");
+    panel.appendChild(rsEls.log);
+
+    var foot = rsEl("div", "rs-foot");
+    rsEls.progress = rsEl("span", "rs-progress", "CERTIFIED: 0/3");
+    foot.appendChild(rsEls.progress);
+    rsEls.strikes = rsEl("span", "rs-strikes", "STRIKES: 0/3");
+    foot.appendChild(rsEls.strikes);
+    var sp = rsEl("span", "spacer");
+    foot.appendChild(sp);
+    rsEls.dl = rsEl("button", "rs-btn", "DOWNLOAD RECORD");
+    rsEls.dl.disabled = true;
+    rsEls.dl.addEventListener("click", rsDownload);
+    foot.appendChild(rsEls.dl);
+    var resetBench = rsEl("button", "rs-btn", "RESET BENCH");
+    resetBench.addEventListener("click", function () {
+      rsResetAll(rsS);
+      rsLog("<span class='dim'>Bench reset. All trials open, strikes cleared.</span>", null);
+      rsRenderAll();
+    });
+    foot.appendChild(resetBench);
+    var close = rsEl("button", "rs-btn", "CLOSE THE BENCH");
+    close.addEventListener("click", rsClose);
+    foot.appendChild(close);
+    panel.appendChild(foot);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    rsEls.overlay = ov;
+    ov.addEventListener("click", function (ev) { if (ev.target === ov) rsClose(); });
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && rsEls.overlay.classList.contains("open")) rsClose();
+    });
+
+    rsS = rsNewState();
+    rsRenderAll();
+    rsLog("<span class='dim'>Two harts, one counter, a preemptive scheduler. Open trial 1, " +
+      "call the outcome, and run the race.</span>", null);
+  }
+
+  function rsOpen() {
+    if (!rsEls.overlay) rsBuild();
+    rsEls.overlay.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+
+  function rsClose() {
+    if (rsEls.overlay) rsEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", rsBuild);
+    } else {
+      rsBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      RS: {
+        TRIALS: RS_TRIALS, STRATS: RS_STRATS,
+        sim: rsSim, fmt: rsFmt,
+        newState: rsNewState, cur: rsCur,
+        setStrat: rsSetStrat, run: rsRun, setPred: rsSetPred,
+        certify: rsCertify, strike: rsActStrike,
+        resetTrial: rsResetTrial, resetAll: rsResetAll,
+        record: rsRecord, state: function () { return rsS; }
+      }
+    });
+  }
+})();

@@ -614,7 +614,11 @@ var PG_BENCHES = [
   { section: "tapeout", n: "29", name: "The Trace Room", btn: "trBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "Controlled-impedance sizing for the TAPEOUT R&D lab: one copper trace, one fab stackup, one width slider. Size each trace so its whole etch-tolerance band lands inside the target window and qualify all three.",
     how: "Drag the width until the etch band sits inside the target window, then qualify the trace. Three strikes fail the bench.",
-    spec: "IMPEDANCE \u00B7 ETCH TOLERANCE \u00B7 3 TRACES" }
+    spec: "IMPEDANCE \u00B7 ETCH TOLERANCE \u00B7 3 TRACES" },
+  { section: "silicon", n: "30", name: "The Reservation Bay", btn: "rsBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "RISC-V atomicity on the bench: two harts race on one counter under a preemptive scheduler. Watch increments vanish, fix it with LR/SC, then run the token vault where only LR/SC can work.",
+    how: "Run the losing race, call the outcome first, pick the fix, and certify all three trials.",
+    spec: "LR/SC \u00B7 2 HARTS \u00B7 3 TRIALS" }
 ];
 
 var pgFilter = "all";
@@ -1026,9 +1030,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=8c185fa6a5" defer></script>
-<script src="rvdata.js?v=8c185fa6a5" defer></script>
-<script src="riscv-lab.js?v=8c185fa6a5" defer></script>
-<script src="features.js?v=8c185fa6a5" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=a09b03df29" defer></script>
+<script src="rvdata.js?v=a09b03df29" defer></script>
+<script src="riscv-lab.js?v=a09b03df29" defer></script>
+<script src="features.js?v=a09b03df29" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
