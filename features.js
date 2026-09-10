@@ -120,7 +120,7 @@ function rvBuild() {
   ov.innerHTML =
     '<div class="rv-panel" role="dialog" aria-label="The Silicon Anvil RISC-V test rig">' +
     "<h3>The Silicon Anvil</h3>" +
-    '<p class="rv-sub">A real RV32I core bolted to the bench. Write assembly, assemble it to machine code, step the silicon, pass the trials. Traps are free, certificates are earned: three trials on the anvil, right here.</p>' +
+    '<p class="rv-sub">A real RV32I core bolted to the bench. Every program you write is a list of machine instructions the silicon fetches, decodes, and executes one by one: this bench lets you watch that happen. Trial 1 is the whole loop in miniature: put 42 in register a0, then halt the core with ecall. Type it, assemble it, single-step it, and watch the register change. Three trials on the anvil, certificates earned.</p>' +
     '<div class="rv-trials">' + trialsHtml + "</div>" +
     '<textarea class="rv-ed" id="rvEd" spellcheck="false"></textarea>' +
     '<div class="rv-btns">' +
@@ -734,7 +734,9 @@ if (typeof document !== "undefined" && document.readyState === "loading") {
       '<p class="ws-sub">The intake bench for <b>OLD IRON</b>: every retired drive gets a method decision, ' +
       "verified passes, and a per-serial certificate before it leaves the shop. " +
       "Pick <b>Clear</b>, <b>Purge</b>, or <b>Destroy</b> per drive, run it, and watch verification. " +
-      "Bad media cannot be purged, it can only be destroyed. That is the whole puzzle.</p>";
+      "The WD Blue 2TB is the textbook case: clean SMART, no grown defects, so a single Clear pass earns its certificate. " +
+      "The Seagate Barracuda is the failure mode: a long grown-defect list means some sectors will never read again, " +
+      "and bad media cannot be purged, it can only be destroyed. That is the whole puzzle.</p>";
     ov.appendChild(panel);
     document.body.appendChild(ov);
 
@@ -1502,7 +1504,7 @@ function phBuild() {
   var panel = phEl("div", "ph-panel");
   panel.innerHTML =
     "<h3>The Pipeline Hazard Lab</h3>" +
-    '<p class="ph-sub">The Silicon Anvil proved the core computes. This bench proves it computes <b>fast</b>: a classic five-stage RV32I pipeline with real forwarding, real load-use and control stalls, and a branch predictor you can swap mid-shift. Built for the RISC-V bench behind the <a href="https://dillingerstaffing.github.io/portfolio/" target="_blank" rel="noopener">freelance portfolio</a>: every cycle here is the same machinery a client pays for.</p>';
+    '<p class="ph-sub">The Anvil runs one instruction at a time; real chips overlap five at once, like an assembly line, and the line stalls whenever one instruction needs another&#39;s result before it is ready. That stall is the whole game. Trial 3 makes it concrete: five instructions, every one chained on the last, with forwarding switched off, and the pipe burns a cycle on every link. Reorder the code, flip forwarding on, pick a predictor that learns, and watch the stalls vanish. Beat the cycle budget on all three trials.</p>';
   ov.appendChild(panel);
   document.body.appendChild(ov);
 
@@ -3087,11 +3089,10 @@ if (typeof module !== "undefined" && module.exports) {
     panel.innerHTML =
       '<button class="cf-close" id="cfClose">CLOSE [x]</button>' +
       "<h3>The Cache Forge</h3>" +
-      '<p class="cf-sub">A set-associative L1 data-cache bench for the kind of ' +
-      '<a href="https://dillingerstaffing.github.io/portfolio/" target="_blank" rel="noopener">RV32I pipeline work</a> ' +
-      "that pays the bills: real LRU replacement, real address decomposition, real AMAT math " +
-      "(hit 1 cycle, miss penalty " + CF_MISS_PENALTY + " cycles). " +
-      "Pick a workload, tune the silicon, and watch every load land: <b>cyan</b> is a hit, <b>orange</b> is a miss. " +
+      '<p class="cf-sub">Main memory is hundreds of cycles away, so the chip keeps a small, fast copy of recently used data next to the core: that copy is the cache, and every load either finds its data there (a hit, 1 cycle) or waits out the full miss penalty. ' +
+      "Trial 1 makes it concrete: a hot loop that should hit 92% of the time on almost any cache you bolt together. " +
+      "Trial 2 is the failure mode: a column walk striding 256 bytes between rows, where small blocks fetch neighbors nobody reads. " +
+      "Tune size, associativity, and block size, and watch every load land: <b>cyan</b> is a hit, <b>orange</b> is a miss. " +
       "Free-forge in EXPLORE, then qualify in TRIALS: three workloads, three pass marks, one Cache Architect certificate.</p>";
 
     /* tabs */
@@ -3785,14 +3786,14 @@ if (typeof module !== "undefined" && module.exports) {
     panel.innerHTML =
       '<button class="mb-close" id="mbClose">CLOSE [x]</button>' +
       "<h3>The Memory Bin Lab</h3>" +
-      '<p class="mb-sub">A GDDR timing qualification bench for the GPU refurb line at ' +
-      '<a href="https://dillingerstaffing.github.io/tapeout/" target="_blank" rel="noopener">TAPEOUT</a>: ' +
-      "every pulled card gets its memory re-binned before it ships. This is the bench that does it. " +
-      "Pick a module, tune the four timings, probe the command bus live " +
+      '<p class="mb-sub">Every pulled GPU gets its memory re-binned before it ships: looser timings always work but waste bandwidth, tighter timings win speed until the die starts lying. ' +
+      "Your four knobs are waits in cycles between the steps of a memory access: tCL (CAS latency), tRCD (RAS to CAS), tRP (precharge), tRAS (row active). " +
+      "Each die hides a floor per timing; set one below its floor and errors flood the command bus. " +
+      "Probe the bus live " +
       "(<b style='color:var(--acid)'>A</b>=activate, <b style='color:var(--cyan)'>R</b>=read, " +
       "<b style='color:var(--orange)'>W</b>=write, <b style='color:var(--steel)'>P</b>=precharge), " +
-      "then qualify: 4000 deterministic transactions, zero luck. Pass mark is errors inside the ECC budget " +
-      "and bandwidth on target. Your grade is pure silicon margin: cycles of headroom over the die's hidden floor. " +
+      "then qualify: 4000 deterministic transactions, zero luck, errors inside the ECC budget and bandwidth on target. " +
+      "Your grade is pure silicon margin: cycles of headroom over the die's hidden floor. " +
       "Qualify all three modules for the Memory Bin Master certificate.</p>";
 
     /* module deck */
@@ -7151,11 +7152,13 @@ if (typeof module !== "undefined" && module.exports) {
 
     var body = llEl("div", "ll-body");
     var sub = llEl("p", "ll-sub", "");
-    sub.innerHTML = "<b>HOW IT WORKS</b> Every lane hides an insertion-loss number. " +
-      "Link speed sets the loss you can afford (Gen3 is forgiving, Gen5 is not), " +
-      "crosstalk aggressors bite at Gen4 and up, and TX EQ presets buy back dB. " +
-      "Train the link, read each lane's BER against the 1e-12 budget, then certify " +
-      "only the link you can honestly sign. " +
+    sub.innerHTML = "<b>HOW IT WORKS</b> Before a GPU ships, its PCIe link must train: " +
+      "card and slot negotiate a speed every lane can actually hold, because one bad lane poisons the whole link. " +
+      "Each of the 16 lanes hides an insertion-loss number in dB, and each speed sets a loss budget: " +
+      "Gen3 tolerates 14 dB, Gen4 only 11, Gen5 a brutal 8. " +
+      "Some lanes are secretly faulty and no preset saves them: the honest answer is certifying a narrower link. " +
+      "Pick width, speed, and a TX EQ preset (it buys back dB), train the link, read each lane's margin " +
+      "against the 1e-12 BER budget, then certify only the link you can honestly sign. " +
       "Built for the <a href=\"https://dillingerstaffing.github.io/tapeout/\" target=\"_blank\" rel=\"noopener\">TAPEOUT bring-up bench</a>.";
     body.appendChild(sub);
 
@@ -7881,9 +7884,13 @@ function scbBuildShell() {
 
   var body = scbEl("div", "scb-body");
   var sub = scbEl("p", "scb-sub", "");
-  sub.innerHTML = "<b>HOW IT WORKS</b> Three real schedulers (Round Robin, Lottery, " +
-    "Multi-Level Feedback Queue) run a deterministic tick simulation of each workload. " +
-    "Pick a policy, tune its knobs, run the sim, beat the shop baseline on all three trials. " +
+  sub.innerHTML = "<b>HOW IT WORKS</b> One CPU, many hungry processes: the scheduler decides who runs next, " +
+    "and a bad choice means your shell freezes while a compile hogs the core. That is the whole job. " +
+    "Trial 2 makes it concrete: two interactive shells share the box with four long compiles, and the shells " +
+    "must stay snappy. Three real policies: Round Robin (everyone gets a fixed time slice in turn), " +
+    "Lottery (tickets buy your odds of running next), Multi-Level Feedback Queue (new jobs start at high " +
+    "priority and sink as they burn CPU). Pick a policy, tune its knobs, run the sim, " +
+    "beat the shop baseline on all three trials. " +
     "Built for the RISC-V and xv6 systems work in the " +
     "<a href=\"https://dillingerstaffing.github.io/portfolio/\" target=\"_blank\" rel=\"noopener\">portfolio</a>.";
   body.appendChild(sub);
@@ -8523,9 +8530,13 @@ function btbBuildShell() {
 
   var body = btbEl("div", "bb-body");
   var sub = btbEl("p", "bb-sub", "");
-  sub.innerHTML = "<b>HOW IT WORKS</b> You are the M-mode firmware on a fresh RISC-V hart. " +
-    "Verify each stage against its manifest, set the load addresses, lock the PMP regions, " +
-    "then boot from reset to login across three boards. One image is rotten, one map is a trap. " +
+  sub.innerHTML = "<b>HOW IT WORKS</b> You are the firmware on a fresh RISC-V hart, and the chain of trust starts with you: " +
+    "each boot stage carries a manifest, a list of hashes, and you verify every byte against it before handing over control, " +
+    "because a rotten stage owns the machine. Then you lay out the memory map (each stage gets its own load address, no overlaps), " +
+    "lock the PMP regions (hardware fences that make regions read-only or off-limits), and boot from reset to login. " +
+    "Trial 2 makes it concrete: stage 2 sat in a damp warehouse and its bytes no longer match the manifest. " +
+    "Firmware rule: never boot what you cannot verify. " +
+    "Trial 3 is the map trap: stage 2's load address sits inside stage 1's footprint. Fix it before you boot. " +
     "Built for the RISC-V and xv6 systems work in the " +
     "<a href=\"https://dillingerstaffing.github.io/portfolio/\" target=\"_blank\" rel=\"noopener\">portfolio</a>.";
   body.appendChild(sub);
@@ -8834,12 +8845,14 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(body);
 
     var sub = lkEl("p", "lk-sub", "");
-    sub.innerHTML = "<b>HOW IT WORKS</b> Each card hides a clock fault. " +
-      "Set the charge pump, resistor, and capacitor, run the loop, and read " +
-      "lock time and jitter against the card's budget. Qualify all three cards " +
-      "to sign the TAPEOUT clock certificate. " +
-      "One line of advice: a noisy VCO wants a wide loop, a far-off oscillator " +
-      "wants a strong one. " +
+    sub.innerHTML = "<b>HOW IT WORKS</b> Every chip on the GPU marches to one clock, and that clock is a PLL: " +
+      "a loop that steers a jittery oscillator until it locks onto the reference frequency. " +
+      "A clock that never locks is a card that never boots; a clock that locks but jitters is data errors under load. " +
+      "Your three knobs are the loop filter: charge pump current (how hard each correction pushes), " +
+      "resistor and capacitor (how wide and fast the loop responds). " +
+      "Card B makes it concrete: its VCO runs hot and noisy, jitter over budget, and the fix is widening the loop to quiet it. " +
+      "Card C is the other failure mode: the oscillator wakes 12 percent off frequency and you must lock it inside 600 steps. " +
+      "Read lock time and jitter against each card's budget, qualify all three, sign the TAPEOUT clock certificate. " +
       "Built for the <a href=\"https://dillingerstaffing.github.io/tapeout/\" target=\"_blank\" rel=\"noopener\">TAPEOUT bring-up bench</a>.";
     body.appendChild(sub);
 
@@ -9492,11 +9505,14 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(body);
 
     var sub = wrEl("p", "wr-sub", "");
-    sub.innerHTML = "<b>HOW IT WORKS</b> Each hart streams its message over one wire, " +
-      "real UART frames at 1 MHz on the scope. Frame 0 is always 0x55 (sync): probe it " +
-      "to measure the bit cell, match the baud, set parity and stop bits per the " +
-      "datasheet brief, then capture and decode. Zero errors on all three harts signs " +
-      "the bring-up certificate. " +
+    sub.innerHTML = "<b>HOW IT WORKS</b> Two chips can only talk if they agree on the speed of each bit " +
+      "and where each byte starts and ends: that agreement is the UART frame. One wire, real frames, " +
+      "sampled at 1 MHz on the scope. Frame 0 is always 0x55, alternating bits, the sync byte: probe it " +
+      "to measure the bit cell (at 9600 baud each bit is 104.2 us wide), match the baud, set parity and " +
+      "stop bits from the datasheet brief, then capture and decode. " +
+      "Hart B is the noise trap: spikes on the wire that a mid-bit sampler never sees. " +
+      "Hart C is the framing trap: a clean decode with the wrong stop count still fails. " +
+      "Zero errors on all three harts signs the bring-up certificate. " +
       "Built for the <a href=\"https://dillingerstaffing.github.io/portfolio/\" target=\"_blank\" rel=\"noopener\">RISC-V portfolio</a> bring-up bench.";
     body.appendChild(sub);
 
@@ -10195,11 +10211,13 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(body);
 
     var sub = ptEl("p", "pt-sub", "");
-    sub.innerHTML = "<b>HOW IT WORKS</b> Five rails must come up in dependency order, " +
-      "each Power Good before the next rail enables, with real ramp physics on every rail. " +
-      "Set the enable order and the delay between rails, run the sequence, read the scope " +
-      "and the event log, and rework exactly what the data convicts. Sign off all three " +
-      "boards to earn the bring-up certificate. " +
+    sub.innerHTML = "<b>HOW IT WORKS</b> A GPU dies if its rails come up in the wrong order: " +
+      "no rail may enable until every rail it depends on is Power Good, and one missed window holds the whole tree in reset. " +
+      "Five rails, real ramp physics, and you set the enable order and the delay between rails. " +
+      "Board A is the drill, including the one subtle rule: the sequencer counts each enable from the previous enable, not from Power Good. " +
+      "Board B is the tired VRM: a sluggish 0.8V core ramp that cannot reach Power Good inside its window. " +
+      "Board C is the sagging input: the 12V rail dips hard the instant the core VRM kicks in. " +
+      "Read the scope and the event log, rework exactly what the data convicts, sign off all three boards. " +
       "Built for <a href=\"https://dillingerstaffing.github.io/tapeout/\" target=\"_blank\" rel=\"noopener\">TAPEOUT</a> GPU bring-up.";
     body.appendChild(sub);
 
@@ -10831,10 +10849,15 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(body);
 
     var sub = thEl("p", "th-sub", "");
-    sub.innerHTML = "<b>HOW IT WORKS</b> A real PID loop drives this refurbished 1U server's fans: " +
-      "die temperature, fan spool lag, a BMC that polls the sensor every 1.5s, and honest workload steps. " +
-      "Tune P, I, and D, run the 90-second workload, and hold 65C inside the band without tripping 95C " +
-      "or blowing the noise budget. Built for <a href=\"https://dillingerstaffing.github.io/old-iron/\" " +
+    sub.innerHTML = "<b>HOW IT WORKS</b> The fans are the only thing between this 1U server and a thermal trip: " +
+      "spin too slow and the die hits 95C and shuts down, spin too hard and you blow the noise budget. " +
+      "The controller is a PID loop: P reacts to the current temperature error, I remembers past error to kill " +
+      "the last degrees of droop, D watches how fast the temperature is moving and brakes early. " +
+      "The catch is lag: fans take time to spool and the BMC polls the sensor every 1.5s, so aggressive tuning oscillates. " +
+      "Rack A is the classroom: clean heatsink, cool aisle, learn each knob here. " +
+      "Rack B is the hot aisle: 33C intake air, almost no fan headroom, the integral term does real work and overshoot is expensive. " +
+      "Rack C is the dust trap: the sink moves 25% less heat and the workload slams in 250W spikes, where derivative action earns its keep. " +
+      "Hold 65C in band through the 90-second workload on all three racks. Built for <a href=\"https://dillingerstaffing.github.io/old-iron/\" " +
       "target=\"_blank\" rel=\"noopener\">OLD IRON</a> server refurbishment.";
     body.appendChild(sub);
 
@@ -11834,9 +11857,15 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(body);
 
     var sub = esEl("p", "es-sub", "");
-    sub.innerHTML = "<b>HOW IT WORKS</b> GDDR ships with SECDED error correction: 64 data bits, " +
-      "7 parity bits, 1 overall check. Read the syndrome the hardware hands you, correct single-bit " +
-      "flips, quarantine doubles and stuck cells, then call SHIP or RMA on three VRAM modules. " +
+    sub.innerHTML = "<b>HOW IT WORKS</b> Cosmic rays flip bits in VRAM, so GDDR carries its own error correction: " +
+      "64 data bits travel with 8 check bits, and the hardware hands you a syndrome for every word you read. " +
+      "A syndrome of zero means the word is clean. A nonzero syndrome with the overall check flipped means one " +
+      "flipped bit: the syndrome names its position, correct it and move on. A nonzero syndrome with the overall " +
+      "check intact means two flipped bits, which this code can detect but never fix: quarantine the word. " +
+      "A cell that always reads wrong is stuck: no correction helps, quarantine it too. " +
+      "Module A is the classroom: mostly clean words, two transient flips, one tired cell, learn the calls here. " +
+      "Module B is the trap: one word carries an uncorrectable double-bit fault, and passing it means data corrupts silently. " +
+      "Module C is the refurb lot: two stuck cells, two doubles, only a ruthless scrubber signs it off. " +
       "Built for <a href=\"https://dillingerstaffing.github.io/tapeout/\" " +
       "target=\"_blank\" rel=\"noopener\">TAPEOUT</a> memory qualification.";
     body.appendChild(sub);
@@ -12235,10 +12264,15 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(body);
 
     var sub = rfEl("p", "rf-sub", "");
-    sub.innerHTML = "<b>HOW IT WORKS</b> Tune one oven profile for three GPU boards on the " +
-      "TAPEOUT bring-up line. Real SAC305 physics under the hood: liquidus 217 C, scorch line " +
-      "260 C, joints that lag the air. One board sat in damp storage, one carries a 4 oz copper " +
-      "sink. Bake what needs baking, read the joint traces, ship all three. Built for " +
+    sub.innerHTML = "<b>HOW IT WORKS</b> Solder paste only becomes a joint inside a temperature window: " +
+      "above 217 C the SAC305 alloy melts and wets, above 260 C the board scorches, and the joints " +
+      "lag the oven air by seconds. One profile must serve three boards. Your four knobs: ramp rate " +
+      "(how fast the air climbs), soak dwell at 160 C (let every joint equalize before the spike), " +
+      "peak temp, peak dwell (hold so lagging joints catch up and wet). " +
+      "REF-01 is the reference: clean 2-layer, dry storage. " +
+      "HVY-02 is the copper trap: a 4 oz pour that acts as a thermal sink, so the joints lag the air and need a hotter, longer peak. " +
+      "MST-03 is the damp trap: joints ramping past 2.2 C/s popcorn-crack, bake it out first. " +
+      "Bake what needs baking, read the joint traces, ship all three. Built for " +
       "<a href=\"https://dillingerstaffing.github.io/tapeout/\" target=\"_blank\" " +
       "rel=\"noopener\">TAPEOUT</a> board qualification.";
     body.appendChild(sub);
@@ -13166,7 +13200,7 @@ if (typeof module !== "undefined" && module.exports) {
     panel.className = "td-panel";
     panel.innerHTML =
       "<h3>The Triage Desk</h3>" +
-      "<p class=\"td-sub\">The intake bench for <b>OLD IRON</b>: three dead machines, five disciplined steps each. " +
+      "<p class=\"td-sub\">Dead machines arrive at the OLD IRON dock daily, and the difference between a profitable refurb line and a parts bonfire is method: three dead machines, five disciplined steps each. " +
       "<b>Identify</b> the symptom from real inspections, <b>theorize</b> the cause, <b>test</b> to prove it, " +
       "<b>resolve</b> with the right fix, and <b>document</b> the work. The steps run in order, guessing costs points, " +
       "and the rack only ships with an average score of 70 or better.</p>";
@@ -13865,9 +13899,12 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(cbEl("p", "cb-spec", "T568B/A - 8P8C - 3 CABLES"));
 
     var sub = cbEl("p", "cb-sub");
-    sub.innerHTML = "The <b>OLD IRON</b> bench network runs on hand-crimped Cat5e. " +
-      "Seat eight conductors into an 8P8C plug, match the T568 standard on the reference table, " +
+    sub.innerHTML = "The <b>OLD IRON</b> bench network runs on hand-crimped Cat5e, and a bad crimp means a bench with no network. " +
+      "Seat eight conductors into an 8P8C plug, match the T568 standard on the reference table below, " +
       "run the cable tester, and certify three cables at a full gigabit. " +
+      "PATCH-01 is the drill: wire your end to T568B, straight through, pin for pin. " +
+      "XOVER-02 teaches the crossover: your end goes T568A, so pairs 1-2 and 3-6 trade places. " +
+      "RMA-03 is the trap: a returned lead where gigabit died overnight. Run the tester, read the fault, re-terminate your end. " +
       "<b>Continuity is not correctness:</b> the pairs must be true twisted pairs or the link will not train.";
     panel.appendChild(sub);
 
@@ -14690,9 +14727,11 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(rrEl("p", "rr-spec", "ATX 24-PIN - DMM - 3 PSUS"));
 
     var sub = rrEl("p", "rr-sub");
-    sub.innerHTML = "The <b>OLD IRON</b> refurb line ships no PSU on a claim. " +
+    sub.innerHTML = "The <b>OLD IRON</b> refurb line ships no PSU on a claim: one bad rail in a customer's box is a dead machine and a return. " +
       "Plug in the mains, press power, and set the meter to V DC. Plant the black COM probe " +
       "on a ground pin, walk the red probe across the rails, and record <b>12V, 5V, 3.3V, 5VSB, and PWR_OK</b>. " +
+      "PSU-B is the lesson: its 12V rail reads 10.92V against an 11.40V floor, and one rail outside its window fails the unit no matter how healthy the rest look. " +
+      "PSU-C is subtler: the 5V average sits inside its 4.75 to 5.25V window, but 130mV of ripple breaks the 50mV ceiling, so it holds for load testing instead of passing. " +
       "Then call the verdict: <b>PASS</b> ships the unit, <b>HOLD</b> sends it to load testing, <b>FAIL</b> sends it to the scrap cage. " +
       "A meter in current mode across a live rail is a blown fuse; continuity mode beeps on a shared net.";
     panel.appendChild(sub);
@@ -15435,8 +15474,11 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(swEl("p", "sw-spec", "CIDR MATH \u00B7 3 ZONES \u00B7 BINARY PROOF"));
 
     var sub = swEl("p", "sw-sub");
-    sub.innerHTML = "The <b>OLD IRON</b> refurb shop is wiring three network zones and the switch will not forgive a bad address. " +
+    sub.innerHTML = "The <b>OLD IRON</b> refurb shop is wiring three network zones and the switch will not forgive a bad address: " +
+      "two zones carved wrong and the subnets overlap, and half the shop loses its network. " +
       "Every IPv4 address is 32 bits: the prefix length says how many belong to the network, the rest name the hosts. " +
+      "SHOP FLOOR makes it concrete: twelve desktops from 10.14.0.0/24. Twelve hosts need four host bits (2 to the 4th is 16 addresses, minus network and broadcast leaves 14 usable), " +
+      "so the answer is a /28 carved from the base block, gateway at its first usable address. " +
       "For each zone, <b>read the address</b> (network, broadcast, usable hosts, first and last usable), then <b>carve the subnet</b> " +
       "from the base block and place the gateway. Certify all three zones with zero addressing errors.";
     panel.appendChild(sub);
@@ -16712,11 +16754,15 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(flEl("p", "fl-spec", "RVWMO · 3 LITMUS TRIALS"));
 
     var sub = flEl("p", "fl-sub", null);
-    sub.innerHTML = "Two harts share memory, and the silicon may complete their accesses " +
-      "out of order. This is the heart of <b>RVWMO</b>, the RISC-V weak memory model. " +
-      "Each trial is a litmus program with one <b>forbidden outcome</b>: place " +
-      "<b>FENCE</b> instructions in the slots, run the outcome explorer, and certify " +
-      "the trial when the forbidden outcome becomes unreachable.";
+    sub.innerHTML = "Two harts share memory, and the silicon may complete their accesses out of order: " +
+      "not wrong, just reordered, so code read top to bottom can observe outcomes the program never wrote. " +
+      "That is the heart of <b>RVWMO</b>, the RISC-V weak memory model. A <b>FENCE</b> is the tool that forbids " +
+      "reordering across it, and placing one is the difference between a race and a guarantee. " +
+      "Trial 1 is the free lesson: two stores to one address, then two loads, and the second load may never observe " +
+      "an older value than the first. Run the explorer and confirm the forbidden outcome is already impossible: par is zero fences. " +
+      "The later trials need your fences. Each trial is a litmus program with one <b>forbidden outcome</b>: " +
+      "place fences in the slots, run the outcome explorer, and certify the trial when the forbidden outcome becomes unreachable. " +
+      "The rules of the game are stated plainly below; every forbidden outcome in this bench follows from them.";
     panel.appendChild(sub);
 
     var rules = flEl("div", "fl-rules", null);
@@ -17331,9 +17377,14 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(dbEl("p", "db-spec", "RV32I FIELDS · 3 WORDS"));
 
     var sub = dbEl("p", "db-sub", null);
-    sub.innerHTML = "A raw 32-bit instruction word, captured off the fetch bus. " +
-      "Split it into its <b>RISC-V fields</b> with the format maps below, read the " +
-      "<b>opcode table</b>, and reassemble the <b>sign-extended immediate</b>. " +
+    sub.innerHTML = "Every instruction the core fetches is 32 bits of raw pattern, and decoding it by hand is the fastest way to truly read machine code: " +
+      "this is what the fetch stage does every single cycle. " +
+      "Split the word into its <b>RISC-V fields</b> with the format maps below, read the " +
+      "<b>opcode table</b>, and reassemble the immediate. " +
+      "The drill, worked once: 0x002081B3 is <b>add x3, x1, x2</b>. Bits 6-0 read 0110011, opcode 51, the OP family. " +
+      "Bits 11-7 name rd = 3, bits 19-15 name rs1 = 1, bits 24-20 name rs2 = 2, and funct3 and funct7 are both zero, " +
+      "which the opcode table reads as add. Immediates are the trap: the bits are scattered across four slices " +
+      "in B-type, and the top bit extends the sign, so a negative offset stays negative. " +
       "Decode all three words with zero field errors to qualify.";
     panel.appendChild(sub);
 
@@ -17900,9 +17951,12 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(dmEl("h3", null, "The DIMM Bay"));
     panel.appendChild(dmEl("p", "dm-spec", "DDR KEYING · DUAL CHANNEL · 3 MACHINES"));
     panel.appendChild(dmEl("p", "dm-story",
-      "Memory installation for the OLD IRON refurb line. The slot key <b>physically refuses</b> the wrong " +
-      "DDR generation, dual channel needs a <b>matched pair</b> straddling the channels, and both <b>retention " +
-      "clips</b> must latch or the board never trains. Ground yourself before you touch the sticks, pick, seat, and POST three machines."));
+      "Memory installation for the OLD IRON refurb line: a board that never trains is a dead refurb, and the causes are always physical. " +
+      "The slot key <b>physically refuses</b> the wrong DDR generation, dual channel needs a <b>matched pair</b> straddling the channels, and both <b>retention " +
+      "clips</b> must latch or the board never trains. Trial 1 is the sorting drill: seven sticks in the tray, one matched pair for a DDR4 board, and the label tells you generation, form factor, and buffering. " +
+      "Trial 2 is the classic mistake: both sticks seated on channel A, BIOS reads SINGLE CHANNEL, so move one stick to straddle the channels on the primary slots. " +
+      "Trial 3 is the liar: fans spin, no video, three long beeps, and one retention clip never latched. " +
+      "Ground yourself before you touch the sticks, pick, seat, and POST three machines."));
 
     dmEls.tabs = dmEl("div", "dm-tabs", null);
     panel.appendChild(dmEls.tabs);
@@ -18580,8 +18634,10 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(prEl("h3", null, "The POST Room"));
     panel.appendChild(prEl("p", "pr-spec", "BEEP CODES · 3 MACHINES · OLD IRON"));
     panel.appendChild(prEl("p", "pr-story",
-      "Three dead machines on the OLD IRON intake line, one piezo speaker each. The beep pattern <b>is</b> " +
-      "the diagnosis: read it off the timing diagram, match it against the chart, <b>power down</b> before " +
+      "Three dead machines on the OLD IRON intake line, one piezo speaker each, and no video to read: the beep pattern <b>is</b> " +
+      "the diagnosis. INTAKE-114 is the drill: one long and two short means a video adapter fault, and the fix is reseating the graphics card. " +
+      "INTAKE-337 is the trap: the speaker says nothing at all, and silence is itself a code, POST never starts, answered with the CMOS jumper. " +
+      "Read the pattern off the timing diagram, match it against the chart, <b>power down</b> before " +
       "you touch anything, and apply the fix that earns a POST. Three strikes and the bench resets."));
 
     prEls.tabs = prEl("div", "pr-tabs", null);
@@ -19194,6 +19250,9 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(trEl("h3", null, "The Trace Room"));
     panel.appendChild(trEl("p", "tr-spec", "TAPEOUT R&D // CONTROLLED IMPEDANCE QUALIFICATION"));
     panel.appendChild(trEl("p", "tr-how",
+      "At high speed a copper trace is a transmission line, and its characteristic impedance must match the driver " +
+      "and receiver or the signal reflects back on itself: that is what controlled impedance means. Wider trace, lower " +
+      "impedance, and the fab etches \u00B110%, so you qualify the whole etch-tolerance band, not the nominal value. " +
       "One copper trace, one fab stackup, one width slider. Drag the width until the whole etch-tolerance " +
       "band sits inside the target window, then qualify the trace. Three traces qualify, three strikes fail the bench."));
 
