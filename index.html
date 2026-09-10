@@ -574,7 +574,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "20", name: "The Triage Desk", btn: "tdBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "Refurb intake triage: three dead machines, five disciplined steps each. Identify, theorize, test, resolve, document, then print the service ticket.",
     how: "Inspect each machine, work the five steps in order, and close all three tickets with a passing score.",
-    spec: "5-STEP METHOD \u00B7 3 MACHINES" }
+    spec: "5-STEP METHOD \u00B7 3 MACHINES" },
+  { section: "oldiron", n: "21", name: "The Crimp Bay", btn: "cbBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "Hand-crimped Cat5e for the OLD IRON bench network: seat eight conductors to the T568 standard, read the cable tester, certify three cables at a full gigabit.",
+    how: "Seat all eight conductors per the T568 table, run the tester, and certify three cables with zero faults.",
+    spec: "T568B/A \u00B7 8P8C \u00B7 3 CABLES" }
 ];
 
 var pgFilter = "all";
@@ -942,9 +946,9 @@ if (document.readyState === "loading") {
   pgBoot();
 }
 </script>
-<script src="rvcore.js?v=932ef43cfc" defer></script>
-<script src="rvdata.js?v=932ef43cfc" defer></script>
-<script src="riscv-lab.js?v=932ef43cfc" defer></script>
-<script src="features.js?v=932ef43cfc" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=24500b1227" defer></script>
+<script src="rvdata.js?v=24500b1227" defer></script>
+<script src="riscv-lab.js?v=24500b1227" defer></script>
+<script src="features.js?v=24500b1227" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

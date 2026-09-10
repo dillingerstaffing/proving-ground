@@ -13198,3 +13198,704 @@ if (typeof module !== "undefined" && module.exports) {
     tdBuild();
   }
 })();
+/* ============================================================
+   THE CRIMP BAY
+   Old Iron bench networking: hand-crimp Cat5e 8P8C plugs to the
+   T568 standard. Three cables: a straight-through patch lead, a
+   crossover, and a returned lead with a split-pair fault to find
+   and fix. A real cable-tester model under the hood: a continuity
+   wire map plus twisted-pair integrity per pair. Certify all three
+   at 1000BASE-T to print the certification record. Self-contained,
+   appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- data: conductors, standards, cables ---------------- */
+
+  var CB_COND = [
+    { id: "WO",  label: "white-orange", pair: "P1" },
+    { id: "O",   label: "orange",      pair: "P1" },
+    { id: "WG",  label: "white-green", pair: "P2" },
+    { id: "G",   label: "green",       pair: "P2" },
+    { id: "B",   label: "blue",        pair: "P3" },
+    { id: "WB",  label: "white-blue",  pair: "P3" },
+    { id: "WBr", label: "white-brown", pair: "P4" },
+    { id: "Br",  label: "brown",       pair: "P4" }
+  ];
+
+  var CB_T568B = ["WO", "O", "WG", "B", "WB", "G", "WBr", "Br"];
+  var CB_T568A = ["WG", "G", "WO", "B", "WB", "O", "WBr", "Br"];
+
+  /* twisted pairs as 0-based pin indices: (1,2) (3,6) (4,5) (7,8) */
+  var CB_PAIRS = [[0, 1], [2, 5], [3, 4], [6, 7]];
+
+  var CB_CABLES = [
+    { tag: "PATCH-01", name: "Patch lead", kind: "straight",
+      std: "T568B both ends",
+      blurb: "A 2 m Cat5e patch lead for the bench switch. The shop end is crimped to T568B and sealed. Wire your end to T568B, straight through, pin for pin.",
+      shop: CB_T568B.slice(), expect: CB_T568B.slice(),
+      start: [null, null, null, null, null, null, null, null] },
+    { tag: "XOVER-02", name: "Crossover", kind: "crossover",
+      std: "T568A to T568B",
+      blurb: "A crossover for a switch-to-switch uplink. The shop end is T568B and sealed; wire your end to T568A. Pairs 1-2 and 3-6 trade places, 4-5 and 7-8 stay put.",
+      shop: CB_T568B.slice(), expect: CB_T568A.slice(),
+      start: [null, null, null, null, null, null, null, null] },
+    { tag: "RMA-03", name: "Returned lead", kind: "rma",
+      std: "T568B both ends",
+      blurb: "A returned lead. The customer says gigabit died overnight and the link will not come up. The shop end is sealed at T568B. Run the tester, read the fault, re-terminate your end, and certify it.",
+      shop: CB_T568B.slice(), expect: CB_T568B.slice(),
+      start: ["WO", "O", "WG", "B", "WB", "WBr", "G", "Br"] }
+  ];
+
+  function cbCond(id) {
+    for (var i = 0; i < CB_COND.length; i++) {
+      if (CB_COND[i].id === id) return CB_COND[i];
+    }
+    return null;
+  }
+
+  /* ---------------- the cable tester: pure logic ----------------
+     userEnd/shopEnd/expect: arrays of 8 conductor ids (or null).
+     Returns per-pin rows (wire map + fault), per-pair integrity,
+     a fault list with plain-language diagnoses, and the verdict. */
+  function cbEvaluate(userEnd, shopEnd, expect) {
+    var pairOfPin = {};
+    var pairInfo = CB_PAIRS.map(function (pr, k) {
+      pairOfPin[pr[0]] = k;
+      pairOfPin[pr[1]] = k;
+      var ca = userEnd[pr[0]] || null, cbx = userEnd[pr[1]] || null;
+      var ea = expect[pr[0]], eb = expect[pr[1]];
+      var st;
+      if (!ca || !cbx) st = "OPEN";
+      else if (ca === ea && cbx === eb) st = "OK";
+      else if (ca === eb && cbx === ea) st = "REVERSED";
+      else if (cbCond(ca).pair !== cbCond(cbx).pair) st = "SPLIT";
+      else st = "MISWIRE";
+      return { pins: [pr[0] + 1, pr[1] + 1], status: st, ca: ca, cb: cbx };
+    });
+    var rows = [], faults = [];
+    /* pair-level faults are reported once per pair, because a split pair
+       can leave one pin of the pair wired correctly (as on RMA-03). */
+    pairInfo.forEach(function (pi) {
+      if (pi.status === "REVERSED") {
+        faults.push({ pin: pi.pins[0], kind: "REVERSED",
+          text: "Pins " + pi.pins[0] + " and " + pi.pins[1] + " are reversed inside the pair. The pair still twists, but the standard is pin-exact." });
+      } else if (pi.status === "SPLIT") {
+        faults.push({ pin: pi.pins[0], kind: "SPLIT",
+          text: "Split pair on pins " + pi.pins[0] + " and " + pi.pins[1] + ": " +
+            cbCond(pi.ca).label + " with " + cbCond(pi.cb).label +
+            " is not a twisted pair. Continuity passes, but crosstalk kills the link." });
+      }
+    });
+    for (var i = 0; i < 8; i++) {
+      var c = userEnd[i] || null, e = expect[i];
+      var tgt = c ? shopEnd.indexOf(c) : -1;
+      var pk = pairOfPin[i], pi = pairInfo[pk];
+      var row = {
+        pin: i + 1,
+        condLabel: c ? cbCond(c).label : "empty",
+        shopLabel: cbCond(shopEnd[i]).label,
+        map: c ? ((i + 1) + " to " + (tgt + 1)) : "open",
+        pair: pi.status, fault: null
+      };
+      if (!c) {
+        row.fault = "OPEN";
+        faults.push({ pin: i + 1, kind: "OPEN",
+          text: "Pin " + (i + 1) + " is empty. An open conductor is an open circuit." });
+      } else if (c !== e) {
+        if (pi.status === "MISWIRE") {
+          row.fault = "MISWIRE";
+          faults.push({ pin: i + 1, kind: "MISWIRE",
+            text: "Pin " + (i + 1) + " carries " + cbCond(c).label +
+              ", the standard calls for " + cbCond(e).label + "." });
+        } else {
+          /* REVERSED or SPLIT: already reported once at pair level */
+          row.fault = pi.status;
+        }
+      }
+      rows.push(row);
+    }
+    var pass = faults.length === 0;
+    return { rows: rows, pairs: pairInfo, faults: faults, pass: pass,
+      link: pass ? "1000BASE-T, LINK UP" : "NO LINK" };
+  }
+
+  /* ---------------- styles ---------------- */
+
+  var CB_CSS = [
+    ".cb-overlay{position:fixed;inset:0;background:rgba(4,7,7,.94);z-index:90;display:none;overflow-y:auto;padding:18px 12px;}",
+    ".cb-overlay.open{display:block;}",
+    ".cb-panel{max-width:1020px;margin:0 auto;background:var(--panel);border:1px solid var(--line);padding:20px;}",
+    ".cb-panel h3{font-family:var(--font-d);font-size:24px;margin:0 0 4px;text-transform:uppercase;letter-spacing:.02em;color:var(--ember);}",
+    ".cb-spec{font-family:var(--font-m);font-size:10.5px;color:var(--dim);letter-spacing:.1em;margin:0 0 10px;}",
+    ".cb-sub{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 14px;max-width:72ch;}",
+    ".cb-sub b{color:var(--paper);font-weight:600;}",
+    ".cb-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 12px;}",
+    "@media(max-width:760px){.cb-tabs{grid-template-columns:1fr;}}",
+    ".cb-tab{border:1px solid var(--line);background:var(--panel-2);padding:10px 12px;min-height:48px;text-align:left;cursor:pointer;color:var(--paper);font-family:var(--font-d);font-size:13px;}",
+    ".cb-tab .cb-tag{font-family:var(--font-m);font-size:10.5px;color:var(--dim);display:block;letter-spacing:.08em;}",
+    ".cb-tab .cb-st{font-family:var(--font-m);font-size:10.5px;letter-spacing:.08em;display:block;margin-top:2px;}",
+    ".cb-tab[aria-selected=\"true\"]{border-color:var(--ember);}",
+    ".cb-st.todo{color:var(--dim);}.cb-st.done{color:var(--mint);}",
+    ".cb-blurb{border:1px dashed var(--line);padding:10px 12px;margin:0 0 12px;font-size:12.5px;line-height:1.7;color:var(--steel);}",
+    ".cb-blurb b{color:var(--paper);}",
+    ".cb-k{font-family:var(--font-m);font-size:10.5px;color:var(--dim);letter-spacing:.1em;display:block;margin:0 0 8px;}",
+    ".cb-ref{width:100%;border-collapse:collapse;font-family:var(--font-m);font-size:11.5px;margin:0 0 14px;color:var(--steel);}",
+    ".cb-ref th,.cb-ref td{border:1px solid var(--line);padding:6px 10px;text-align:left;}",
+    ".cb-ref th{color:var(--dim);font-weight:400;letter-spacing:.08em;font-size:10px;}",
+    ".cb-ref td b{color:var(--paper);font-weight:400;}",
+    ".cb-pins{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px;margin:0 0 8px;}",
+    "@media(max-width:760px){.cb-pins{grid-template-columns:repeat(4,minmax(0,1fr));}}",
+    ".cb-pin{border:1px solid var(--line);background:var(--panel-2);color:var(--paper);min-height:56px;padding:8px 4px;cursor:pointer;font-family:var(--font-m);font-size:11px;line-height:1.5;}",
+    ".cb-pin .cb-pn{color:var(--dim);font-size:10px;letter-spacing:.08em;display:block;}",
+    ".cb-pin .cb-pc{color:var(--paper);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}",
+    ".cb-pin .cb-pc.empty{color:var(--dim);}",
+    ".cb-pin[aria-pressed=\"true\"]{border-color:var(--ember);}",
+    ".cb-pin:hover{border-color:var(--ember);}",
+    ".cb-hint{font-size:12px;color:var(--dim);margin:0 0 12px;min-height:18px;}",
+    ".cb-hint b{color:var(--ember);font-weight:600;}",
+    ".cb-tray{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0 0 12px;}",
+    "@media(max-width:760px){.cb-tray{grid-template-columns:repeat(2,minmax(0,1fr));}}",
+    ".cb-cond{border:1px solid var(--line);background:var(--panel-2);color:var(--paper);min-height:48px;padding:10px 12px;cursor:pointer;font-family:var(--font-d);font-size:13px;text-align:left;line-height:1.4;}",
+    ".cb-cond:hover{border-color:var(--ember);}",
+    ".cb-cond .cb-cs{font-family:var(--font-m);font-size:10.5px;color:var(--dim);display:block;}",
+    ".cb-sw{display:inline-block;width:14px;height:14px;border:1px solid var(--line);margin-right:8px;vertical-align:-2px;}",
+    ".cb-sw-WO{background:linear-gradient(135deg,#e8e4da 50%,#e07b1a 50%);}",
+    ".cb-sw-O{background:#e07b1a;}",
+    ".cb-sw-WG{background:linear-gradient(135deg,#e8e4da 50%,#3fa34d 50%);}",
+    ".cb-sw-G{background:#3fa34d;}",
+    ".cb-sw-B{background:#2f6fd0;}",
+    ".cb-sw-WB{background:linear-gradient(135deg,#e8e4da 50%,#2f6fd0 50%);}",
+    ".cb-sw-WBr{background:linear-gradient(135deg,#e8e4da 50%,#8a5a2b 50%);}",
+    ".cb-sw-Br{background:#8a5a2b;}",
+    ".cb-actions{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px;}",
+    ".cb-btn{border:1px solid var(--line);background:var(--panel-2);color:var(--paper);padding:12px 18px;min-height:48px;cursor:pointer;font-family:var(--font-d);font-size:13px;}",
+    ".cb-btn.pri{border-color:var(--ember);color:var(--ember);}",
+    ".cb-btn:hover{border-color:var(--ember);}",
+    ".cb-btn:disabled{opacity:.45;cursor:default;}",
+    ".cb-btn:focus-visible,.cb-pin:focus-visible,.cb-cond:focus-visible,.cb-tab:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".cb-leds{display:flex;gap:6px;margin:0 0 10px;}",
+    ".cb-led{flex:1;min-height:34px;border:1px solid var(--line);background:var(--panel-2);font-family:var(--font-m);font-size:10px;color:var(--dim);display:flex;align-items:center;justify-content:center;}",
+    ".cb-led.lit{border-color:var(--ember);color:var(--ember);}",
+    ".cb-led.good{border-color:var(--mint);color:var(--mint);}",
+    ".cb-led.bad{border-color:var(--bad);color:var(--bad);}",
+    ".cb-tres{width:100%;border-collapse:collapse;font-family:var(--font-m);font-size:11px;margin:0 0 10px;color:var(--steel);}",
+    ".cb-tres th,.cb-tres td{border:1px solid var(--line);padding:6px 8px;text-align:left;}",
+    ".cb-tres th{color:var(--dim);font-weight:400;letter-spacing:.08em;font-size:10px;}",
+    ".cb-tres td.ok{color:var(--mint);}.cb-tres td.flt{color:var(--bad);}",
+    ".cb-faults{margin:0 0 12px;padding-left:18px;color:var(--steel);font-size:12.5px;line-height:1.7;}",
+    ".cb-faults b{color:var(--bad);font-weight:600;}",
+    ".cb-verdict{border:1px solid var(--line);padding:12px 14px;margin:0 0 12px;font-size:13px;line-height:1.7;}",
+    ".cb-verdict h4{margin:0 0 6px;font-size:15px;text-transform:uppercase;letter-spacing:.03em;font-family:var(--font-d);}",
+    ".cb-verdict.pass{border-color:var(--mint);}.cb-verdict.pass h4{color:var(--mint);}",
+    ".cb-verdict.fail{border-color:var(--bad);}.cb-verdict.fail h4{color:var(--bad);}",
+    ".cb-verdict p{margin:0;color:var(--steel);font-size:12.5px;}",
+    ".cb-foot{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;align-items:center;}",
+    ".cb-progress{font-family:var(--font-m);font-size:11.5px;color:var(--steel);margin-right:auto;}",
+    ".cb-progress b{color:var(--paper);}"
+  ].join("\n");
+
+  /* ---------------- state ---------------- */
+
+  var cbS = null;
+  var cbEls = {};
+  var CB_REDUCED = (typeof window !== "undefined" && window.matchMedia) ?
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches : false;
+
+  function cbNewState() {
+    return {
+      ci: 0,
+      sel: -1,
+      testing: false,
+      cables: CB_CABLES.map(function (c) {
+        return { user: c.start.slice(), tested: false, result: null,
+          certified: false, faultsSeen: [] };
+      })
+    };
+  }
+  function cbCable() { return CB_CABLES[cbS.ci]; }
+  function cbCS() { return cbS.cables[cbS.ci]; }
+
+  function cbEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  /* ---------------- render ---------------- */
+
+  function cbRenderTabs() {
+    var w = cbEls.tabs;
+    w.innerHTML = "";
+    CB_CABLES.forEach(function (c, i) {
+      var s = cbS.cables[i];
+      var b = cbEl("button", "cb-tab");
+      b.type = "button";
+      b.setAttribute("data-cb", "tab");
+      b.setAttribute("data-i", String(i));
+      b.setAttribute("aria-selected", i === cbS.ci ? "true" : "false");
+      b.appendChild(cbEl("span", "cb-tag", c.tag + " - " + c.name));
+      b.appendChild(cbEl("span", "cb-st " + (s.certified ? "done" : "todo"),
+        s.certified ? "CERTIFIED" : "UNCERTIFIED"));
+      b.addEventListener("click", function () {
+        if (cbS.testing) return;
+        cbS.ci = i;
+        cbS.sel = -1;
+        cbRenderAll();
+      });
+      w.appendChild(b);
+    });
+  }
+
+  function cbRenderBlurb() {
+    var w = cbEls.blurb;
+    w.innerHTML = "";
+    var c = cbCable();
+    w.appendChild(cbEl("b", null, c.tag + " - " + c.name + " (" + c.std + "). "));
+    w.appendChild(cbEl("span", null, c.blurb));
+  }
+
+  function cbBuildRef() {
+    var t = document.createElement("table");
+    t.className = "cb-ref";
+    var thead = document.createElement("thead");
+    var hr = document.createElement("tr");
+    ["PIN", "T568B", "T568A"].forEach(function (h) {
+      var th = document.createElement("th");
+      th.textContent = h;
+      hr.appendChild(th);
+    });
+    thead.appendChild(hr);
+    t.appendChild(thead);
+    var tb = document.createElement("tbody");
+    for (var i = 0; i < 8; i++) {
+      var tr = document.createElement("tr");
+      var td0 = document.createElement("td");
+      td0.textContent = String(i + 1);
+      tr.appendChild(td0);
+      var td1 = document.createElement("td");
+      td1.textContent = cbCond(CB_T568B[i]).label;
+      tr.appendChild(td1);
+      var td2 = document.createElement("td");
+      td2.textContent = cbCond(CB_T568A[i]).label;
+      tr.appendChild(td2);
+      tb.appendChild(tr);
+    }
+    t.appendChild(tb);
+    return t;
+  }
+
+  function cbRenderPins() {
+    var w = cbEls.pins;
+    w.innerHTML = "";
+    var s = cbCS();
+    for (var i = 0; i < 8; i++) {
+      (function (idx) {
+        var b = cbEl("button", "cb-pin");
+        b.type = "button";
+        b.setAttribute("data-cb", "pin");
+        b.setAttribute("data-i", String(idx));
+        b.setAttribute("aria-pressed", cbS.sel === idx ? "true" : "false");
+        b.setAttribute("aria-label", "Pin " + (idx + 1) +
+          (s.user[idx] ? ", " + cbCond(s.user[idx]).label : ", empty"));
+        b.appendChild(cbEl("span", "cb-pn", "PIN " + (idx + 1)));
+        b.appendChild(cbEl("span", "cb-pc" + (s.user[idx] ? "" : " empty"),
+          s.user[idx] ? cbCond(s.user[idx]).label : "EMPTY"));
+        b.addEventListener("click", function () {
+          if (cbS.testing) return;
+          cbS.sel = (cbS.sel === idx) ? -1 : idx;
+          cbRenderPins();
+          cbRenderHint();
+        });
+        w.appendChild(b);
+      })(i);
+    }
+  }
+
+  function cbRenderHint() {
+    var s = cbCS();
+    var seated = s.user.filter(function (x) { return !!x; }).length;
+    cbEls.hint.textContent = seated + " of 8 seated. " +
+      (cbS.sel >= 0
+        ? "Selected: pin " + (cbS.sel + 1) + ". Pick a conductor from the tray to seat it."
+        : "Pick a pin, then a conductor from the tray.");
+  }
+
+  function cbRenderTray() {
+    var w = cbEls.tray;
+    w.innerHTML = "";
+    var s = cbCS();
+    CB_COND.forEach(function (cd) {
+      var pinAt = s.user.indexOf(cd.id);
+      var b = cbEl("button", "cb-cond");
+      b.type = "button";
+      b.setAttribute("data-cb", "cond");
+      b.setAttribute("data-id", cd.id);
+      var sw = cbEl("span", "cb-sw cb-sw-" + cd.id);
+      sw.setAttribute("aria-hidden", "true");
+      b.appendChild(sw);
+      b.appendChild(cbEl("span", null, cd.label));
+      b.appendChild(cbEl("span", "cb-cs",
+        pinAt >= 0 ? "seated at pin " + (pinAt + 1) : "in tray"));
+      b.addEventListener("click", function () { cbSeat(cd.id); });
+      w.appendChild(b);
+    });
+  }
+
+  function cbSeat(id) {
+    if (cbS.testing) return;
+    var s = cbCS();
+    if (cbS.sel < 0) {
+      toast("Pick a pin first, then a conductor.");
+      return;
+    }
+    var from = s.user.indexOf(id);
+    if (from === cbS.sel) return; /* seating what is already there: no change */
+    if (from >= 0) s.user[from] = null;
+    s.user[cbS.sel] = id;
+    if (s.certified) {
+      s.certified = false;
+      toast("Certification cleared, the plug changed.");
+    }
+    s.tested = false;
+    s.result = null;
+    cbRenderAll();
+  }
+
+  function cbRenderActions() {
+    var w = cbEls.actions;
+    w.innerHTML = "";
+    var clear = cbEl("button", "cb-btn", "Clear pin");
+    clear.type = "button";
+    clear.setAttribute("data-cb", "clear");
+    clear.addEventListener("click", function () {
+      if (cbS.testing) return;
+      if (cbS.sel < 0) {
+        toast("Pick a pin first.");
+        return;
+      }
+      var s = cbCS();
+      s.user[cbS.sel] = null;
+      if (s.certified) {
+        s.certified = false;
+        toast("Certification cleared, the plug changed.");
+      }
+      s.tested = false;
+      s.result = null;
+      cbRenderAll();
+    });
+    w.appendChild(clear);
+    var reset = cbEl("button", "cb-btn", "Reset cable");
+    reset.type = "button";
+    reset.setAttribute("data-cb", "reset");
+    reset.addEventListener("click", function () {
+      if (cbS.testing) return;
+      var s = cbCS(), c = cbCable();
+      s.user = c.start.slice();
+      s.tested = false;
+      s.result = null;
+      s.certified = false;
+      s.faultsSeen = [];
+      cbS.sel = -1;
+      toast("Cable reset");
+      cbRenderAll();
+    });
+    w.appendChild(reset);
+    var run = cbEl("button", "cb-btn pri", "Run the tester");
+    run.type = "button";
+    run.setAttribute("data-cb", "run");
+    run.disabled = cbS.testing;
+    run.addEventListener("click", cbRunTest);
+    w.appendChild(run);
+  }
+
+  /* ---------------- the tester run ---------------- */
+
+  function cbAppendRow(r, i) {
+    var tr = document.createElement("tr");
+    function td(txt, cls) {
+      var d = document.createElement("td");
+      d.textContent = txt;
+      if (cls) d.className = cls;
+      tr.appendChild(d);
+    }
+    td(String(r.pin));
+    td(r.condLabel, r.fault ? "flt" : "ok");
+    td(r.shopLabel);
+    td(r.map);
+    td(r.pair, r.pair === "OK" ? "ok" : "flt");
+    cbEls.tbody.appendChild(tr);
+    var led = cbEls.leds[i];
+    led.classList.remove("lit");
+    led.classList.add(r.fault ? "bad" : "good");
+  }
+
+  function cbTestStep(i) {
+    var res = cbCS().result;
+    cbEls.leds[i].classList.add("lit");
+    cbAppendRow(res.rows[i], i);
+  }
+
+  function cbRenderVerdict(w) {
+    var s = cbCS(), res = s.result, c = cbCable();
+    var v = cbEl("div", "cb-verdict " + (res.pass ? "pass" : "fail"));
+    if (res.pass) {
+      v.appendChild(cbEl("h4", null, "Certified: link up"));
+      v.appendChild(cbEl("p", null, c.tag + ": 1000BASE-T, all eight conductors to standard, all four pairs true twisted pairs."));
+      if (s.faultsSeen.length) {
+        v.appendChild(cbEl("p", null, "Faults found and cleared on this cable: " + s.faultsSeen.join("; ") + "."));
+      }
+    } else {
+      v.appendChild(cbEl("h4", null, "No link"));
+      var n = res.faults.length;
+      v.appendChild(cbEl("p", null, n + (n === 1 ? " fault" : " faults") +
+        " found. Read the table, fix the plug, and test again."));
+      var ul = cbEl("ul", "cb-faults");
+      res.faults.forEach(function (f) {
+        var li = document.createElement("li");
+        li.appendChild(cbEl("b", null, f.kind + ": "));
+        li.appendChild(cbEl("span", null, f.text));
+        ul.appendChild(li);
+      });
+      v.appendChild(ul);
+    }
+    w.appendChild(v);
+  }
+
+  function cbRenderTester() {
+    var w = cbEls.test;
+    w.innerHTML = "";
+    var s = cbCS();
+    if (!s.tested) {
+      w.appendChild(cbEl("p", "cb-hint",
+        "Wire the plug, then run the tester. The tester checks continuity pin by pin and verifies every twisted pair."));
+      return;
+    }
+    var res = s.result;
+    var leds = cbEl("div", "cb-leds");
+    leds.setAttribute("aria-hidden", "true");
+    cbEls.leds = [];
+    for (var i = 0; i < 8; i++) {
+      var d = cbEl("div", "cb-led", String(i + 1));
+      leds.appendChild(d);
+      cbEls.leds.push(d);
+    }
+    w.appendChild(leds);
+    var t = document.createElement("table");
+    t.className = "cb-tres";
+    var thead = document.createElement("thead");
+    var hr = document.createElement("tr");
+    ["PIN", "YOUR END", "SHOP END", "MAP", "PAIR"].forEach(function (h) {
+      var th = document.createElement("th");
+      th.textContent = h;
+      hr.appendChild(th);
+    });
+    thead.appendChild(hr);
+    t.appendChild(thead);
+    cbEls.tbody = document.createElement("tbody");
+    t.appendChild(cbEls.tbody);
+    w.appendChild(t);
+    if (cbS.testing) return; /* sweep steps fill the rows */
+    res.rows.forEach(function (r, i) { cbAppendRow(r, i); });
+    cbRenderVerdict(w);
+  }
+
+  function cbFinishTest() {
+    var s = cbCS();
+    cbS.testing = false;
+    if (s.result.pass && !s.certified) {
+      s.certified = true;
+      toast(cbCable().tag + " certified at 1000BASE-T");
+    }
+    cbRenderAll();
+  }
+
+  function cbRunTest() {
+    if (cbS.testing) return;
+    var s = cbCS(), c = cbCable();
+    var res = cbEvaluate(s.user, c.shop, c.expect);
+    s.result = res;
+    s.tested = true;
+    res.faults.forEach(function (f) {
+      var seen = f.kind + " at pin " + f.pin;
+      if (s.faultsSeen.indexOf(seen) === -1) s.faultsSeen.push(seen);
+    });
+    cbS.testing = true;
+    cbRenderTester();
+    if (CB_REDUCED) {
+      cbFinishTest();
+      return;
+    }
+    var i = 0;
+    (function step() {
+      if (i < 8) {
+        cbTestStep(i);
+        i++;
+        setTimeout(step, 200);
+      } else {
+        cbFinishTest();
+      }
+    })();
+  }
+
+  /* ---------------- certificate ---------------- */
+
+  function cbDownloadCert() {
+    var lines = [];
+    lines.push("THE CRIMP BAY - CABLE CERTIFICATION RECORD");
+    lines.push("OLD IRON bench network, hand-crimped Cat5e");
+    lines.push("==================================================");
+    CB_CABLES.forEach(function (c, i) {
+      var s = cbS.cables[i];
+      lines.push("");
+      lines.push(c.tag + " - " + c.name + " (" + c.std + "): " +
+        (s.certified ? "PASS at 1000BASE-T" : "NOT CERTIFIED"));
+      if (s.faultsSeen.length) {
+        lines.push("  Faults found and cleared: " + s.faultsSeen.join("; "));
+      }
+    });
+    lines.push("");
+    lines.push("Continuity is not correctness: every pair verified as a true twisted pair.");
+    lines.push("Certified at the bench.");
+    var blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = (window.URL || window.webkitURL).createObjectURL(blob);
+    a.download = "crimp-bay-certification-record.txt";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { (window.URL || window.webkitURL).revokeObjectURL(a.href); }, 4000);
+    toast("Certification record downloaded");
+  }
+
+  /* ---------------- footer ---------------- */
+
+  function cbRenderFoot() {
+    var w = cbEls.foot;
+    w.innerHTML = "";
+    var n = cbS.cables.filter(function (s) { return s.certified; }).length;
+    var p = cbEl("span", "cb-progress");
+    p.appendChild(cbEl("b", null, n + " of 3"));
+    p.appendChild(cbEl("span", null, " cables certified"));
+    w.appendChild(p);
+    var cert = cbEl("button", "cb-btn", "Download the certification record");
+    cert.type = "button";
+    cert.setAttribute("data-cb", "cert");
+    cert.disabled = n < 3;
+    cert.addEventListener("click", cbDownloadCert);
+    w.appendChild(cert);
+    var close = cbEl("button", "cb-btn", "Close bench");
+    close.type = "button";
+    close.setAttribute("data-cb", "close");
+    close.addEventListener("click", function () {
+      document.getElementById("cbOverlay").classList.remove("open");
+    });
+    w.appendChild(close);
+  }
+
+  function cbRenderAll() {
+    cbRenderTabs();
+    cbRenderBlurb();
+    cbRenderPins();
+    cbRenderHint();
+    cbRenderTray();
+    cbRenderActions();
+    cbRenderTester();
+    cbRenderFoot();
+  }
+
+  /* ---------------- build ---------------- */
+
+  function cbBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("cbBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = CB_CSS;
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "cbBtn";
+    b.className = "secondary";
+    b.textContent = "Run the Crimp Bay";
+    b.addEventListener("click", function () {
+      document.getElementById("cbOverlay").classList.add("open");
+    });
+    box.appendChild(b);
+
+    var ov = document.createElement("div");
+    ov.className = "cb-overlay";
+    ov.id = "cbOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Crimp Bay");
+
+    var panel = document.createElement("div");
+    panel.className = "cb-panel";
+    panel.appendChild(cbEl("h3", null, "The Crimp Bay"));
+    panel.appendChild(cbEl("p", "cb-spec", "T568B/A - 8P8C - 3 CABLES"));
+
+    var sub = cbEl("p", "cb-sub");
+    sub.innerHTML = "The <b>OLD IRON</b> bench network runs on hand-crimped Cat5e. " +
+      "Seat eight conductors into an 8P8C plug, match the T568 standard on the reference table, " +
+      "run the cable tester, and certify three cables at a full gigabit. " +
+      "<b>Continuity is not correctness:</b> the pairs must be true twisted pairs or the link will not train.";
+    panel.appendChild(sub);
+
+    cbEls.tabs = cbEl("div", "cb-tabs");
+    panel.appendChild(cbEls.tabs);
+
+    cbEls.blurb = cbEl("p", "cb-blurb");
+    panel.appendChild(cbEls.blurb);
+
+    panel.appendChild(cbEl("span", "cb-k", "T568 reference, pinout for both ends"));
+    panel.appendChild(cbBuildRef());
+
+    panel.appendChild(cbEl("span", "cb-k", "Your plug, pins 1 to 8"));
+    cbEls.pins = cbEl("div", "cb-pins");
+    panel.appendChild(cbEls.pins);
+
+    cbEls.hint = cbEl("p", "cb-hint");
+    panel.appendChild(cbEls.hint);
+
+    panel.appendChild(cbEl("span", "cb-k", "Conductor tray"));
+    cbEls.tray = cbEl("div", "cb-tray");
+    panel.appendChild(cbEls.tray);
+
+    cbEls.actions = cbEl("div", "cb-actions");
+    panel.appendChild(cbEls.actions);
+
+    panel.appendChild(cbEl("span", "cb-k", "Cable tester"));
+    cbEls.test = cbEl("div", null);
+    panel.appendChild(cbEls.test);
+
+    cbEls.foot = cbEl("div", "cb-foot");
+    panel.appendChild(cbEls.foot);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    cbS = cbNewState();
+    cbRenderAll();
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", cbBuild);
+    } else {
+      cbBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      CB: {
+        CONDUCTORS: CB_COND, T568B: CB_T568B, T568A: CB_T568A,
+        PAIRS: CB_PAIRS, CABLES: CB_CABLES, evaluate: cbEvaluate, cond: cbCond
+      }
+    });
+  }
+
+})();
