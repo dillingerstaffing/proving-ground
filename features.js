@@ -11746,3 +11746,780 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
 })();
+
+/* Bench 18: The Scrub Bay. SECDED ECC qualification for TAPEOUT GDDR.
+   Real Hamming(72,64) extended code: encode 8 bytes, inject faults,
+   read the syndrome, scrub the words. Three VRAM modules stand or fall. */
+(function () {
+  "use strict";
+
+  /* ---------------- pure core: no DOM ---------------- */
+
+  var ES_CHECK = [1, 2, 4, 8, 16, 32, 64]; /* parity positions, 1-based */
+  var ES_QPOS = 72; /* overall parity position */
+
+  function esIsCheck(p) { return ES_CHECK.indexOf(p) !== -1; }
+
+  function esDataPos() {
+    var out = [];
+    for (var p = 1; p <= 71; p++) { if (!esIsCheck(p)) out.push(p); }
+    return out; /* 64 data positions, 1-based */
+  }
+  var ES_DATAPOS = esDataPos();
+
+  /* bits: array[72] of 0/1, index 0 holds position 1 */
+  function esEncode(data) { /* data: array[64] of 0/1 */
+    var b = new Array(72);
+    var i, j, c, p, x, q;
+    for (i = 0; i < 72; i++) b[i] = 0;
+    for (i = 0; i < 64; i++) b[ES_DATAPOS[i] - 1] = data[i] & 1;
+    for (c = 0; c < 7; c++) {
+      p = ES_CHECK[c]; x = 0;
+      for (j = 1; j <= 71; j++) {
+        if (j === p) continue;
+        if (j & p) x ^= b[j - 1];
+      }
+      b[p - 1] = x;
+    }
+    q = 0;
+    for (j = 0; j < 71; j++) q ^= b[j];
+    b[71] = q;
+    return b;
+  }
+
+  function esDecode(bits) {
+    var s = 0, c, p, j, x, q = 0;
+    for (c = 0; c < 7; c++) {
+      p = ES_CHECK[c]; x = 0;
+      for (j = 1; j <= 71; j++) { if (j & p) x ^= bits[j - 1]; }
+      if (x) s |= p;
+    }
+    for (j = 0; j < 72; j++) q ^= bits[j];
+    if (q === 1) {
+      if (s === 0) return { syndrome: s, parityOk: false, verdict: "single", pos: ES_QPOS };
+      return { syndrome: s, parityOk: false, verdict: "single", pos: s };
+    }
+    if (s === 0) return { syndrome: s, parityOk: true, verdict: "clean" };
+    return { syndrome: s, parityOk: true, verdict: "double" };
+  }
+
+  function esRng(seed) {
+    var s = seed >>> 0;
+    return function () {
+      s = (Math.imul(s, 1103515245) + 12345) & 0x7fffffff;
+      return s / 0x80000000;
+    };
+  }
+
+  var ES_MODULES = [
+    { id: "A", name: "MODULE A, THE CLEAN ROOM", seed: 1801,
+      mix: { none: 5, transient: 2, stuck: 1, double: 0 },
+      brief: "The golden module: honest silicon, mostly clean words, two transient flips from the universe, one tired cell. Learn the calls here." },
+    { id: "B", name: "MODULE B, THE MARGINAL LOT", seed: 1802,
+      mix: { none: 4, transient: 2, stuck: 1, double: 1 },
+      brief: "The marginal lot: one word carries an uncorrectable double-bit fault. Pass it and data corrupts silently." },
+    { id: "C", name: "MODULE C, THE REFURB LOT", seed: 1803,
+      mix: { none: 3, transient: 1, stuck: 2, double: 2 },
+      brief: "The refurb lot: pulled from retired servers. Two stuck cells, two double-bit faults. Only a ruthless scrubber signs this one off." }
+  ];
+
+  function esHexByte(n) {
+    var h = "0123456789ABCDEF";
+    return h[(n >> 4) & 15] + h[n & 15];
+  }
+
+  function esGenModule(def) {
+    var rng = esRng(def.seed);
+    var faults = [], t;
+    for (t = 0; t < def.mix.none; t++) faults.push("none");
+    for (t = 0; t < def.mix.transient; t++) faults.push("transient");
+    for (t = 0; t < def.mix.stuck; t++) faults.push("stuck");
+    for (t = 0; t < def.mix.double; t++) faults.push("double");
+    /* Fisher-Yates with the seeded rng: deterministic per module */
+    for (t = faults.length - 1; t > 0; t--) {
+      var k = Math.floor(rng() * (t + 1));
+      var tmp = faults[t]; faults[t] = faults[k]; faults[k] = tmp;
+    }
+    var words = faults.map(function (type) {
+      var bytes = [], i;
+      for (i = 0; i < 8; i++) bytes.push(Math.floor(rng() * 256));
+      var data = [];
+      for (i = 0; i < 8; i++) {
+        var by = bytes[i];
+        for (var bit = 7; bit >= 0; bit--) data.push((by >> bit) & 1);
+      }
+      var bits = esEncode(data);
+      var fault = { type: type };
+      var history = 0;
+      if (type === "transient" || type === "stuck") {
+        fault.pos = 1 + Math.floor(rng() * 72);
+        bits[fault.pos - 1] ^= 1;
+        history = type === "stuck" ? 2 + Math.floor(rng() * 3) : Math.floor(rng() * 2);
+      } else if (type === "double") {
+        fault.posA = 1 + Math.floor(rng() * 72);
+        do { fault.posB = 1 + Math.floor(rng() * 72); } while (fault.posB === fault.posA);
+        bits[fault.posA - 1] ^= 1;
+        bits[fault.posB - 1] ^= 1;
+      }
+      return { bytes: bytes, bits: bits, fault: fault, history: history,
+               resolved: false, note: "", awaitQuarantine: false };
+    });
+    return { def: def, words: words, score: 0, verdict: null, verdictOk: null };
+  }
+
+  /* One adjudication. Returns {delta, note, stuckAgain}. */
+  function esAdjudicate(word, action, pos) {
+    var f = word.fault;
+    if (action === "pass") {
+      if (f.type === "none")
+        return { delta: 100, note: "Clean word, passed. +100." };
+      if (f.type === "double")
+        return { delta: -150, note: "You passed an uncorrectable double-bit error. That is silent corruption. -150." };
+      return { delta: -50,
+        note: "Missed a correctable error at bit " + f.pos + ". The scrub log records it. -50." };
+    }
+    if (action === "quarantine") {
+      if (word.awaitQuarantine)
+        return { delta: 50, note: "Stuck cell offlined after the re-read proved it. +50." };
+      if (f.type === "double")
+        return { delta: 100, note: "Double-bit error offlined before it could corrupt data. +100." };
+      if (f.type === "stuck")
+        return { delta: 100,
+          note: "Stuck cell at bit " + f.pos + " offlined. The history (" + word.history +
+                " prior corrections) told the story. +100." };
+      if (f.type === "transient")
+        return { delta: 25, note: "Safe, but wasteful: a transient flip did not need offlining. +25." };
+      return { delta: -25, note: "That word was clean. Capacity wasted. -25." };
+    }
+    /* action === "correct" */
+    if (f.type === "none")
+      return { delta: -50, note: "There was no error. You flipped good bit " + pos + ". -50." };
+    if (f.type === "double")
+      return { delta: -100,
+        note: "Miscorrection: the fault was double-bit, and you flipped a third bit. -100." };
+    if (pos !== f.pos)
+      return { delta: -100,
+        note: "Miscorrection: the flipped bit was " + f.pos + ", you corrected " + pos + ". -100." };
+    if (f.type === "transient")
+      return { delta: 100, note: "Bit " + pos + " corrected, re-read is clean. +100." };
+    return { delta: 50, stuckAgain: true,
+      note: "Bit " + pos + " corrected, but the re-read shows the same bit flipped again. " +
+            "This cell is stuck. QUARANTINE it now. +50 so far." };
+  }
+
+  function esShouldShip(mod) {
+    var bad = 0, i;
+    for (i = 0; i < mod.words.length; i++) {
+      var t = mod.words[i].fault.type;
+      if (t === "stuck" || t === "double") bad++;
+    }
+    return bad <= 1;
+  }
+
+  function esFaultLabel(f) {
+    if (f.type === "none") return "no fault";
+    if (f.type === "transient") return "transient single-bit at " + f.pos;
+    if (f.type === "stuck") return "stuck cell at bit " + f.pos;
+    return "double-bit at " + f.posA + " and " + f.posB;
+  }
+
+  /* ---------------- DOM ---------------- */
+
+  function esEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null && text !== "") e.textContent = text;
+    return e;
+  }
+  function es$(id) { return document.getElementById(id); }
+
+  var esMods = null, esModIdx = 0, esWordIdx = 0;
+  var esEnc = { data: [0x3F, 0xA5, 0x00, 0x11, 0xC8, 0x42, 0x77, 0xE0], flips: {} };
+
+  var ES_CSS = [
+    ".es-overlay{position:fixed;inset:0;background:rgba(8,8,10,.82);z-index:9000;display:none;overflow-y:auto;padding:24px 16px;}",
+    ".es-overlay.open{display:block;}",
+    ".es-panel{max-width:900px;margin:0 auto;background:#101014;border:1px solid #2a2a30;border-radius:12px;color:#f2f0eb;font-family:'Space Grotesk',system-ui,sans-serif;}",
+    ".es-bar{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid #2a2a30;}",
+    ".es-title{font-size:20px;letter-spacing:.14em;font-weight:700;}",
+    ".es-title b{color:#ff5a1f;}",
+    ".es-close{background:none;border:1px solid #3a3a42;color:#f2f0eb;border-radius:8px;min-height:48px;padding:0 18px;font-family:'IBM Plex Mono',monospace;font-size:13px;cursor:pointer;}",
+    ".es-close:hover{border-color:#ff5a1f;}",
+    ".es-close:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".es-body{padding:22px;}",
+    ".es-sub{font-size:14px;line-height:1.6;color:#b9b6ae;margin:0 0 20px;}",
+    ".es-sub b{color:#f2f0eb;}",
+    ".es-sub a{color:#ff5a1f;}",
+    ".es-sec{font-size:12px;letter-spacing:.14em;color:#8a877f;font-weight:700;margin:26px 0 10px;text-transform:uppercase;}",
+    ".es-sec:first-of-type{margin-top:0;}",
+    ".es-encrow{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;}",
+    ".es-byte{display:flex;flex-direction:column;gap:4px;}",
+    ".es-byte label{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#8a877f;letter-spacing:.1em;}",
+    ".es-byte input{width:64px;min-height:48px;background:#0a0a0d;border:1px solid #3a3a42;border-radius:8px;color:#f2f0eb;font-family:'IBM Plex Mono',monospace;font-size:16px;text-align:center;text-transform:uppercase;}",
+    ".es-byte input:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".es-grid{display:grid;grid-template-columns:repeat(12,1fr);gap:4px;margin:10px 0 6px;}",
+    ".es-cell{aspect-ratio:1;min-height:28px;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:11px;border-radius:4px;background:#0a0a0d;border:1px solid #2a2a30;color:#b9b6ae;}",
+    ".es-cell.p{border-color:#ff5a1f;color:#ff5a1f;}",
+    ".es-cell.q{border-color:#7dd87d;color:#7dd87d;}",
+    ".es-legend{display:flex;gap:14px;flex-wrap:wrap;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8a877f;margin:0 0 10px;}",
+    ".es-legend b{color:#f2f0eb;}",
+    ".es-read{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;}",
+    ".es-stat{background:#0a0a0d;border:1px solid #2a2a30;border-radius:8px;padding:10px 14px;min-width:130px;}",
+    ".es-stat .k{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#6e6b64;letter-spacing:.1em;}",
+    ".es-stat .v{font-family:'IBM Plex Mono',monospace;font-size:16px;font-weight:700;color:#f2f0eb;margin-top:4px;}",
+    ".es-stat .v.warn{color:#ff5a1f;}",
+    ".es-stat .v.good{color:#7dd87d;}",
+    ".es-fliprow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px;}",
+    ".es-stepper{display:flex;align-items:center;gap:6px;}",
+    ".es-stepper button{width:48px;min-height:48px;background:#16161b;border:1px solid #3a3a42;border-radius:8px;color:#f2f0eb;font-size:20px;cursor:pointer;}",
+    ".es-stepper button:hover{border-color:#ff5a1f;}",
+    ".es-stepper button:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".es-stepper input{width:72px;min-height:48px;background:#0a0a0d;border:1px solid #3a3a42;border-radius:8px;color:#f2f0eb;font-family:'IBM Plex Mono',monospace;font-size:16px;text-align:center;}",
+    ".es-stepper input:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".es-btn{min-height:48px;padding:0 20px;border:1px solid #3a3a42;background:#16161b;color:#f2f0eb;border-radius:10px;font-family:'IBM Plex Mono',monospace;font-size:13px;cursor:pointer;}",
+    ".es-btn:hover:not(:disabled){border-color:#ff5a1f;}",
+    ".es-btn:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".es-btn:disabled{opacity:.35;cursor:default;}",
+    ".es-btn.pri{background:#ff5a1f;border-color:#ff5a1f;color:#101014;font-weight:700;}",
+    ".es-btn.pri:hover:not(:disabled){border-color:#ff5a1f;}",
+    ".es-btn.pri:focus-visible{outline:2px solid #fff;outline-offset:2px;}",
+    ".es-btn.good{border-color:#7dd87d;color:#7dd87d;}",
+    ".es-btn.good:hover:not(:disabled){background:#12240f;}",
+    ".es-cards{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;}",
+    ".es-cardtab{flex:1;min-width:170px;min-height:64px;border:1px solid #3a3a42;background:#16161b;color:#f2f0eb;border-radius:10px;cursor:pointer;font-family:'Space Grotesk',sans-serif;padding:10px 12px;text-align:left;transition:transform .2s,border-color .2s;}",
+    ".es-cardtab:hover{border-color:#ff5a1f;}",
+    ".es-cardtab:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".es-cardtab.sel{border-color:#ff5a1f;transform:translateY(-2px);}",
+    ".es-cardtab .n{font-size:14px;font-weight:700;}",
+    ".es-cardtab .s{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8a877f;margin-top:4px;}",
+    ".es-cardtab .s.done{color:#7dd87d;}",
+    ".es-brief{font-size:13px;color:#b9b6ae;border-left:3px solid #ff5a1f;padding:8px 14px;margin:0 0 14px;line-height:1.55;}",
+    ".es-words{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;}",
+    ".es-word{min-width:56px;min-height:48px;border:1px solid #3a3a42;background:#16161b;color:#f2f0eb;border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;cursor:pointer;}",
+    ".es-word:hover{border-color:#ff5a1f;}",
+    ".es-word:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".es-word.sel{border-color:#ff5a1f;}",
+    ".es-word.done{border-color:#7dd87d;color:#7dd87d;}",
+    ".es-raw{font-family:'IBM Plex Mono',monospace;font-size:13px;line-height:2;background:#0a0a0d;border:1px solid #2a2a30;border-radius:10px;padding:12px 16px;margin:0 0 10px;word-break:break-all;}",
+    ".es-raw .lbl{font-size:10px;color:#6e6b64;letter-spacing:.1em;display:block;line-height:1.4;}",
+    ".es-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0;}",
+    ".es-note{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;background:#0a0a0d;border:1px solid #2a2a30;border-radius:10px;padding:12px 16px;margin:0 0 10px;min-height:44px;white-space:pre-wrap;}",
+    ".es-note .good{color:#7dd87d;}",
+    ".es-note .bad{color:#ff5a1f;}",
+    ".es-verdict{font-size:15px;font-weight:700;letter-spacing:.1em;padding:14px;border-radius:10px;text-align:center;margin:14px 0;border:1px solid #3a3a42;}",
+    ".es-verdict.pass{border-color:#7dd87d;color:#7dd87d;}",
+    ".es-verdict.fail{border-color:#ff5a1f;color:#ff5a1f;}",
+    ".es-cert{border:1px solid #7dd87d;border-radius:10px;padding:18px;margin-top:14px;display:none;}",
+    ".es-cert.show{display:block;}",
+    ".es-cert h4{margin:0 0 8px;font-size:15px;letter-spacing:.12em;color:#7dd87d;}",
+    ".es-cert p{margin:0 0 12px;font-size:13px;color:#b9b6ae;line-height:1.6;}",
+    ".es-cert pre{font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.7;color:#f2f0eb;background:#0a0a0d;border:1px solid #2a2a30;border-radius:8px;padding:12px;white-space:pre-wrap;margin:0 0 12px;}",
+    "@media (prefers-reduced-motion: reduce){.es-cardtab{transition:none;}}",
+    "@media (max-width:640px){.es-grid{grid-template-columns:repeat(9,1fr);}.es-byte input{width:56px;}}"
+  ].join("\n");
+
+  function esRawHex(bits) {
+    var out = [];
+    for (var g = 0; g < 9; g++) {
+      var v = 0;
+      for (var i = 0; i < 8; i++) v = (v << 1) | bits[g * 8 + i];
+      out.push(esHexByte(v));
+    }
+    return out;
+  }
+
+  function esBitsToData(bits) {
+    var data = [];
+    for (var i = 0; i < 64; i++) data.push(bits[ES_DATAPOS[i] - 1]);
+    return data;
+  }
+
+  function esDataToBits(bytes) {
+    var data = [];
+    for (var i = 0; i < 8; i++) {
+      for (var bit = 7; bit >= 0; bit--) data.push((bytes[i] >> bit) & 1);
+    }
+    return data;
+  }
+
+  /* ---------- encoder (sandbox) ---------- */
+
+  function esRenderEncoder() {
+    var bits = esEncode(esDataToBits(esEnc.data));
+    Object.keys(esEnc.flips).forEach(function (k) {
+      var p = parseInt(k, 10);
+      if (p >= 1 && p <= 72) bits[p - 1] ^= 1;
+    });
+    esEnc.bits = bits;
+    var grid = es$("esGrid");
+    grid.innerHTML = "";
+    for (var i = 0; i < 72; i++) {
+      var c = esEl("span", "es-cell", String(bits[i]));
+      var pos = i + 1;
+      if (pos === ES_QPOS) { c.className = "es-cell q"; c.title = "bit 72, overall parity (Q)"; }
+      else if (esIsCheck(pos)) { c.className = "es-cell p"; c.title = "bit " + pos + ", parity (P)"; }
+      else { c.title = "bit " + pos + ", data (D)"; }
+      grid.appendChild(c);
+    }
+    var d = esDecode(bits);
+    es$("esSyn").textContent = "0x" + (d.syndrome < 16 ? "0" : "") + d.syndrome.toString(16).toUpperCase();
+    es$("esSyn").className = "v" + (d.syndrome !== 0 ? " warn" : "");
+    es$("esPar").textContent = d.parityOk ? "OK" : "BAD";
+    es$("esPar").className = "v" + (d.parityOk ? " good" : " warn");
+    var dt = es$("esDec");
+    if (d.verdict === "clean") { dt.textContent = "CLEAN, no error"; dt.className = "v good"; }
+    else if (d.verdict === "single") { dt.textContent = "SINGLE-BIT at bit " + d.pos; dt.className = "v warn"; }
+    else { dt.textContent = "DOUBLE-BIT, uncorrectable"; dt.className = "v warn"; }
+  }
+
+  function esFlip(pos) {
+    if (pos < 1 || pos > 72) return;
+    if (esEnc.flips[pos]) delete esEnc.flips[pos];
+    else esEnc.flips[pos] = 1;
+    esRenderEncoder();
+  }
+
+  /* ---------- trials ---------- */
+
+  function esMod() { return esMods[esModIdx]; }
+  function esWord() { return esMod().words[esWordIdx]; }
+
+  function esModStatus(m) {
+    var n = 0, i;
+    for (i = 0; i < m.words.length; i++) if (m.words[i].resolved) n++;
+    return n + " / " + m.words.length + " RESOLVED";
+  }
+
+  function esRenderCards() {
+    var box = es$("esCards");
+    box.innerHTML = "";
+    esMods.forEach(function (m, i) {
+      var b = esEl("button", "es-cardtab" + (i === esModIdx ? " sel" : ""), "");
+      b.type = "button";
+      b.setAttribute("aria-label", m.def.name + ", " + esModStatus(m) + ", score " + m.score);
+      var n = esEl("div", "n", m.def.name);
+      var s = esEl("div", "s" + (m.verdict ? " done" : ""), "");
+      s.textContent = m.verdict ? (m.verdictOk ? "SIGNED " : "MISSED ") + m.verdict.toUpperCase() + " " + m.score :
+        esModStatus(m) + "  SCORE " + m.score;
+      b.appendChild(n); b.appendChild(s);
+      (function (idx) {
+        b.addEventListener("click", function () {
+          esModIdx = idx; esWordIdx = 0; esRenderAll();
+        });
+      })(i);
+      box.appendChild(b);
+    });
+    es$("esBrief").textContent = esMod().def.brief;
+  }
+
+  function esRenderWords() {
+    var box = es$("esWords");
+    box.innerHTML = "";
+    esMod().words.forEach(function (w, i) {
+      var b = esEl("button", "es-word" + (i === esWordIdx ? " sel" : "") + (w.resolved ? " done" : ""), "W" + (i + 1));
+      b.type = "button";
+      b.setAttribute("aria-label", "word " + (i + 1) + (w.resolved ? ", resolved" : ", unresolved"));
+      (function (idx) {
+        b.addEventListener("click", function () { esWordIdx = idx; esRenderAll(); });
+      })(i);
+      box.appendChild(b);
+    });
+  }
+
+  function esRenderReadout() {
+    var m = esMod(), w = esWord();
+    var raw = es$("esRaw");
+    raw.innerHTML = "";
+    var lbl = esEl("span", "lbl", "RECEIVED CODEWORD, 72 BITS (9 BYTES, POSITION 1 FIRST)");
+    raw.appendChild(lbl);
+    raw.appendChild(document.createTextNode(esRawHex(w.bits).join(" ")));
+    var d = esDecode(w.bits);
+    var hw = es$("esHW");
+    hw.innerHTML = "";
+    var stats = [
+      ["SYNDROME", "0x" + (d.syndrome < 16 ? "0" : "") + d.syndrome.toString(16).toUpperCase(), d.syndrome !== 0],
+      ["OVERALL PARITY", d.parityOk ? "OK" : "BAD", !d.parityOk],
+      ["PRIOR CORRECTIONS", String(w.history), w.history >= 2],
+      ["MODULE SCORE", String(m.score), false]
+    ];
+    stats.forEach(function (st) {
+      var s = esEl("div", "es-stat", "");
+      s.appendChild(esEl("div", "k", st[0]));
+      var v = esEl("div", "v" + (st[2] ? " warn" : ""), st[1]);
+      s.appendChild(v);
+      hw.appendChild(s);
+    });
+    var ws = es$("esWStatus");
+    ws.textContent = w.resolved ? "RESOLVED: " + w.note : "UNRESOLVED: make the call.";
+    var canAct = !w.resolved;
+    es$("esPass").disabled = !canAct || w.awaitQuarantine;
+    es$("esCorrect").disabled = !canAct || w.awaitQuarantine;
+    es$("esQuar").disabled = !canAct;
+    es$("esPosMinus").disabled = !canAct || w.awaitQuarantine;
+    es$("esPosPlus").disabled = !canAct || w.awaitQuarantine;
+    es$("esPos").disabled = !canAct || w.awaitQuarantine;
+    var note = es$("esNote");
+    note.innerHTML = "";
+    note.appendChild(document.createTextNode(w.note || "The jig hands you the syndrome and the parity flag, exactly like the ECC hardware does. The fault underneath is yours to judge."));
+  }
+
+  function esRenderVerdictRow() {
+    var m = esMod();
+    var row = es$("esVerdictRow");
+    row.innerHTML = "";
+    var all = m.words.every(function (w) { return w.resolved; });
+    if (!all || m.verdict) {
+      if (m.verdict) {
+        var v = esEl("div", "es-verdict " + (m.verdictOk ? "pass" : "fail"),
+          m.verdictOk ? "MODULE " + m.verdict.toUpperCase() + ", CORRECT CALL" :
+                        "MODULE " + m.verdict.toUpperCase() + ", WRONG CALL");
+        row.appendChild(v);
+      }
+      return;
+    }
+    var lab = esEl("span", "", "");
+    lab.style.cssText = "font-family:'IBM Plex Mono',monospace;font-size:12px;color:#8a877f;";
+    lab.textContent = "All 8 words scrubbed. Make the module call:";
+    row.appendChild(lab);
+    var ship = esEl("button", "es-btn good", "SHIP MODULE");
+    ship.type = "button"; ship.id = "esShipBtn";
+    ship.addEventListener("click", function () { esVerdict("ship"); });
+    var rma = esEl("button", "es-btn", "RMA MODULE");
+    rma.type = "button"; rma.id = "esRmaBtn";
+    rma.addEventListener("click", function () { esVerdict("rma"); });
+    row.appendChild(ship); row.appendChild(rma);
+  }
+
+  function esAct(action) {
+    var m = esMod(), w = esWord();
+    if (w.resolved) return;
+    var pos = parseInt(es$("esPos").value, 10);
+    if (action === "correct" && (isNaN(pos) || pos < 1 || pos > 72)) {
+      if (typeof toast === "function") toast("Pick a bit position from 1 to 72 first.");
+      return;
+    }
+    var r = esAdjudicate(w, action, pos);
+    m.score += r.delta;
+    if (r.stuckAgain) {
+      /* right bit, but the cell is stuck: correct once, then it must be quarantined */
+      w.bits[pos - 1] ^= 1;
+      var back = esDecode(w.bits);
+      w.awaitQuarantine = true;
+      w.note = "PARTIAL: " + r.note + " (re-read syndrome 0x" +
+        (back.syndrome < 16 ? "0" : "") + back.syndrome.toString(16).toUpperCase() + ")";
+    } else if (action === "quarantine" && w.awaitQuarantine) {
+      /* second half of the stuck-cell sequence */
+      w.note = r.note;
+      w.resolved = true;
+      w.awaitQuarantine = false;
+    } else {
+      if (action === "correct" && r.delta > 0 && w.fault.type === "transient") {
+        w.bits[pos - 1] ^= 1; /* write-back, verified clean */
+      }
+      if (action === "correct" && r.delta < 0 && w.fault.type === "none") {
+        w.bits[pos - 1] ^= 1; /* you broke a good word: show it */
+      }
+      w.note = (r.delta >= 0 ? "GOOD CALL: " : "BAD CALL: ") + r.note +
+        " Truth: " + esFaultLabel(w.fault) + ".";
+      w.resolved = true;
+    }
+    esRenderAll();
+    esCheckDone();
+  }
+
+  function esVerdict(call) {
+    var m = esMod();
+    if (m.verdict) return;
+    var truth = esShouldShip(m) ? "ship" : "rma";
+    m.verdict = call;
+    m.verdictOk = (call === truth);
+    m.score += m.verdictOk ? 200 : -200;
+    esRenderAll();
+    esCheckDone();
+  }
+
+  function esCheckDone() {
+    var all = esMods.every(function (m) { return m.verdict; });
+    if (!all) return;
+    var cert = es$("esCert");
+    var okAll = esMods.every(function (m) { return m.verdictOk; });
+    var total = esMods.reduce(function (a, m) { return a + m.score; }, 0);
+    cert.classList.add("show");
+    var h = es$("esCertHead");
+    h.textContent = okAll ? "SCRUB BAY QUALIFIED" : "QUALIFICATION FAILED";
+    es$("esCertBody").textContent = okAll ?
+      "All three module calls were correct. Total scrub score " + total + " of 3000. " +
+      "This bench certifies the operator can run ECC qualification for TAPEOUT GDDR. Sign below and download the report." :
+      "One or more module calls were wrong. Total scrub score " + total + " of 3000. " +
+      "The modules keep their faults; run the scrub again and read the histories.";
+    es$("esDl").disabled = false;
+    esRenderReport();
+  }
+
+  function esBuildReport(mods) {
+    mods = mods || esMods;
+    if (!mods) return "";
+    var L = [];
+    L.push("THE SCRUB BAY, ECC QUALIFICATION REPORT");
+    L.push("Hamming(72,64) SECDED, 8 codewords per module");
+    L.push("==========================================");
+    mods.forEach(function (m) {
+      L.push("");
+      L.push(m.def.name + "  score " + m.score + " / 1000");
+      m.words.forEach(function (w, i) {
+        L.push("  W" + (i + 1) + ": truth=" + esFaultLabel(w.fault) +
+               " history=" + w.history + " :: " + w.note.replace(/\s+/g, " "));
+      });
+      L.push("  module call: " + (m.verdict ? m.verdict.toUpperCase() : "NONE") +
+             " (" + (m.verdict ? (m.verdictOk ? "correct" : "WRONG") : "undecided") + ", truth=" +
+             (esShouldShip(m) ? "SHIP" : "RMA") + ")");
+    });
+    var total = mods.reduce(function (a, m) { return a + m.score; }, 0);
+    L.push("");
+    L.push("TOTAL " + total + " / 3000");
+    L.push("Signed: the operator, The Proving Ground");
+    return L.join("\n");
+  }
+
+  function esRenderReport() {
+    es$("esCertPre").textContent = esBuildReport();
+  }
+
+  function esRenderAll() {
+    esRenderCards();
+    esRenderWords();
+    esRenderReadout();
+    esRenderVerdictRow();
+  }
+
+  /* ---------- shell ---------- */
+
+  function esBuildShell() {
+    var css = document.createElement("style");
+    css.textContent = ES_CSS;
+    document.head.appendChild(css);
+
+    var box = document.querySelector(".dossier .actions");
+    if (box && !es$("esBtn")) {
+      var b = esEl("button", "secondary", "Run the Scrub Bay");
+      b.id = "esBtn";
+      b.addEventListener("click", function () {
+        es$("esOverlay").classList.add("open");
+      });
+      box.appendChild(b);
+    }
+
+    var ov = esEl("div", "es-overlay");
+    ov.id = "esOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Scrub Bay");
+    var panel = esEl("div", "es-panel");
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    var bar = esEl("div", "es-bar");
+    var title = esEl("div", "es-title", "");
+    title.innerHTML = "THE <b>SCRUB</b> BAY";
+    var close = esEl("button", "es-close", "CLOSE [x]");
+    close.type = "button";
+    close.id = "esCloseBtn";
+    close.addEventListener("click", function () { ov.classList.remove("open"); });
+    bar.appendChild(title); bar.appendChild(close);
+    panel.appendChild(bar);
+    ov.addEventListener("click", function (e) { if (e.target === ov) ov.classList.remove("open"); });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && ov.classList.contains("open")) ov.classList.remove("open");
+    });
+
+    var body = esEl("div", "es-body");
+    panel.appendChild(body);
+
+    var sub = esEl("p", "es-sub", "");
+    sub.innerHTML = "<b>HOW IT WORKS</b> GDDR ships with SECDED error correction: 64 data bits, " +
+      "7 parity bits, 1 overall check. Read the syndrome the hardware hands you, correct single-bit " +
+      "flips, quarantine doubles and stuck cells, then call SHIP or RMA on three VRAM modules. " +
+      "Built for <a href=\"https://dillingerstaffing.github.io/tapeout/\" " +
+      "target=\"_blank\" rel=\"noopener\">TAPEOUT</a> memory qualification.";
+    body.appendChild(sub);
+
+    /* encoder */
+    body.appendChild(esEl("h3", "es-sec", "Encoder, learn the machinery"));
+    var encrow = esEl("div", "es-encrow");
+    var inputs = [];
+    for (var i = 0; i < 8; i++) {
+      (function (idx) {
+        var wrap = esEl("div", "es-byte");
+        var lab = esEl("label", "", "B" + (idx + 1));
+        lab.setAttribute("for", "es-in" + idx);
+        var inp = document.createElement("input");
+        inp.id = "es-in" + idx;
+        inp.maxLength = 2;
+        inp.setAttribute("aria-label", "data byte " + (idx + 1) + ", hex");
+        inp.value = esHexByte(esEnc.data[idx]);
+        inp.addEventListener("input", function () {
+          var v = inp.value.replace(/[^0-9a-fA-F]/g, "").slice(0, 2).toUpperCase();
+          inp.value = v;
+          if (v.length === 2) {
+            esEnc.data[idx] = parseInt(v, 16);
+            esRenderEncoder();
+          }
+        });
+        inputs.push(inp);
+        wrap.appendChild(lab); wrap.appendChild(inp);
+        encrow.appendChild(wrap);
+      })(i);
+    }
+    var encBtn = esEl("button", "es-btn pri", "ENCODE");
+    encBtn.type = "button"; encBtn.id = "esEncodeBtn";
+    encBtn.addEventListener("click", esRenderEncoder);
+    encrow.appendChild(encBtn);
+    body.appendChild(encrow);
+
+    var grid = esEl("div", "es-grid");
+    grid.id = "esGrid";
+    grid.setAttribute("role", "img");
+    grid.setAttribute("aria-label", "72-bit codeword grid");
+    body.appendChild(grid);
+    var legend = esEl("p", "es-legend", "");
+    legend.innerHTML = "<span><b>D</b> data bit</span><span><b>P</b> parity bit</span><span><b>Q</b> overall parity</span><span>hover a cell for its bit position</span>";
+    body.appendChild(legend);
+
+    var read = esEl("div", "es-read");
+    [["SYNDROME", "esSyn"], ["OVERALL PARITY", "esPar"], ["DECODER", "esDec"]].forEach(function (d) {
+      var s = esEl("div", "es-stat", "");
+      s.appendChild(esEl("div", "k", d[0]));
+      var v = esEl("div", "v", "--"); v.id = d[1];
+      s.appendChild(v);
+      read.appendChild(s);
+    });
+    body.appendChild(read);
+
+    var fliprow = esEl("div", "es-fliprow");
+    var lab = esEl("span", "", "");
+    lab.style.cssText = "font-family:'IBM Plex Mono',monospace;font-size:12px;color:#8a877f;";
+    lab.textContent = "Flip a bit to watch the syndrome move:";
+    fliprow.appendChild(lab);
+    var stepper = esEl("div", "es-stepper");
+    var minus = esEl("button", "", "-");
+    minus.type = "button"; minus.id = "esFlipMinus"; minus.setAttribute("aria-label", "decrease bit position");
+    var finp = document.createElement("input");
+    finp.id = "esFlipPos"; finp.value = "1";
+    finp.setAttribute("aria-label", "bit position to flip, 1 to 72");
+    finp.inputMode = "numeric";
+    var plus = esEl("button", "", "+");
+    plus.type = "button"; plus.id = "esFlipPlus"; plus.setAttribute("aria-label", "increase bit position");
+    var step = function (dlt) {
+      var v = parseInt(finp.value, 10);
+      if (isNaN(v)) v = 1;
+      v = Math.min(72, Math.max(1, v + dlt));
+      finp.value = String(v);
+    };
+    minus.addEventListener("click", function () { step(-1); });
+    plus.addEventListener("click", function () { step(1); });
+    var flipBtn = esEl("button", "es-btn", "FLIP BIT");
+    flipBtn.type = "button"; flipBtn.id = "esFlipBtn";
+    flipBtn.addEventListener("click", function () {
+      var v = parseInt(finp.value, 10);
+      if (!isNaN(v)) esFlip(Math.min(72, Math.max(1, v)));
+    });
+    stepper.appendChild(minus); stepper.appendChild(finp); stepper.appendChild(plus);
+    fliprow.appendChild(stepper); fliprow.appendChild(flipBtn);
+    body.appendChild(fliprow);
+
+    /* trials */
+    body.appendChild(esEl("h3", "es-sec", "Scrub trials, three VRAM modules"));
+    var cards = esEl("div", "es-cards"); cards.id = "esCards"; body.appendChild(cards);
+    var brief = esEl("p", "es-brief", ""); brief.id = "esBrief"; body.appendChild(brief);
+    var words = esEl("div", "es-words"); words.id = "esWords"; body.appendChild(words);
+
+    var raw = esEl("div", "es-raw", ""); raw.id = "esRaw"; body.appendChild(raw);
+    var hw = esEl("div", "es-read"); hw.id = "esHW"; body.appendChild(hw);
+    var wstatus = esEl("p", "es-note", ""); wstatus.id = "esWStatus"; body.appendChild(wstatus);
+
+    var actions = esEl("div", "es-actions");
+    var pass = esEl("button", "es-btn", "PASS, NO ACTION");
+    pass.type = "button"; pass.id = "esPass";
+    pass.addEventListener("click", function () { esAct("pass"); });
+    actions.appendChild(pass);
+    var cstep = esEl("div", "es-stepper");
+    var cminus = esEl("button", "", "-");
+    cminus.type = "button"; cminus.id = "esPosMinus"; cminus.setAttribute("aria-label", "decrease bit position");
+    var cinp = document.createElement("input");
+    cinp.id = "esPos"; cinp.value = "1";
+    cinp.setAttribute("aria-label", "suspect bit position, 1 to 72");
+    cinp.inputMode = "numeric";
+    var cplus = esEl("button", "", "+");
+    cplus.type = "button"; cplus.id = "esPosPlus"; cplus.setAttribute("aria-label", "increase bit position");
+    var cstepf = function (dlt) {
+      var v = parseInt(cinp.value, 10);
+      if (isNaN(v)) v = 1;
+      v = Math.min(72, Math.max(1, v + dlt));
+      cinp.value = String(v);
+    };
+    cminus.addEventListener("click", function () { cstepf(-1); });
+    cplus.addEventListener("click", function () { cstepf(1); });
+    cstep.appendChild(cminus); cstep.appendChild(cinp); cstep.appendChild(cplus);
+    actions.appendChild(cstep);
+    var corr = esEl("button", "es-btn pri", "CORRECT BIT");
+    corr.type = "button"; corr.id = "esCorrect";
+    corr.addEventListener("click", function () { esAct("correct"); });
+    actions.appendChild(corr);
+    var quar = esEl("button", "es-btn", "QUARANTINE WORD");
+    quar.type = "button"; quar.id = "esQuar";
+    quar.addEventListener("click", function () { esAct("quarantine"); });
+    actions.appendChild(quar);
+    body.appendChild(actions);
+
+    var note = esEl("p", "es-note", ""); note.id = "esNote"; body.appendChild(note);
+    var vrow = esEl("div", "es-actions"); vrow.id = "esVerdictRow"; body.appendChild(vrow);
+
+    var cert = esEl("div", "es-cert"); cert.id = "esCert";
+    cert.appendChild(esEl("h4", "", "SCRUB BAY CERTIFICATE"));
+    var ch = esEl("p", "", ""); ch.id = "esCertHead"; cert.appendChild(ch);
+    var cb = esEl("p", "", ""); cb.id = "esCertBody"; cert.appendChild(cb);
+    var pre = esEl("pre", "", ""); pre.id = "esCertPre"; cert.appendChild(pre);
+    var dl = esEl("button", "es-btn good", "DOWNLOAD REPORT");
+    dl.type = "button"; dl.id = "esDl"; dl.disabled = true;
+    dl.addEventListener("click", function () {
+      var a = document.createElement("a");
+      a.href = "data:text/plain;charset=utf-8," + encodeURIComponent(esBuildReport());
+      a.download = "scrub-bay-report.txt";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      if (typeof toast === "function") toast("Report downloaded.");
+    });
+    cert.appendChild(dl);
+    body.appendChild(cert);
+
+    esRenderEncoder();
+    esRenderAll();
+  }
+
+  function esInit() {
+    if (typeof document === "undefined") return;
+    if (!document.querySelector(".dossier .actions")) return;
+    if (!esMods) esMods = ES_MODULES.map(esGenModule);
+    esBuildShell();
+  }
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", esInit);
+    } else {
+      esInit();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      ES: {
+        encode: esEncode, decode: esDecode, genModule: esGenModule,
+        adjudicate: esAdjudicate, shouldShip: esShouldShip,
+        MODULES: ES_MODULES, DATAPOS: ES_DATAPOS, hexByte: esHexByte,
+        buildReport: esBuildReport
+      }
+    });
+  }
+
+})();
