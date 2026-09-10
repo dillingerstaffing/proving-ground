@@ -1438,8 +1438,8 @@ var PH_TRIALS = [
   },
   {
     id: "t2", name: "Trial 2: Two Branches, One Predictor",
-    brief: "One branch is taken 15 times out of 20, the other 19 out of 20. No static predictor gets both right, and every wrong guess flushes two fresh instructions down the drain. The two-bit predictor learns each branch on its own. Finish at or under <b>205 cycles</b> with a0 = 20 and a1 = 50. <span class=\"par\">Shop par: 195 cycles.</span>",
-    hint: "Static always-taken aces the loop branch but bombs the skip. Static always-not-taken does the reverse. Only the adaptive predictor gets both.",
+    brief: "One branch is taken 5 times out of 20, the other 19 out of 20. No static predictor gets both right, and every wrong guess flushes two fresh instructions down the drain. The two-bit predictor learns each branch on its own. Finish at or under <b>205 cycles</b> with a0 = 20 and a1 = 50. <span class=\"par\">Shop par: 195 cycles.</span>",
+    hint: "Static always-taken aces the loop branch but bombs the skip. Static always-not-taken does the reverse. On this code as written, only the adaptive predictor gets both. Invert the skip branch in the editor and always-taken clears it too.",
     program: "  addi t0, x0, 20\n  addi t1, x0, 0\n  addi t2, x0, 0\nloop:\n  addi t1, t1, 1\n  andi t3, t1, 3\n  beq  t3, x0, skip\n  jal  x0, cont\nskip:\n  addi t2, t2, 10\ncont:\n  addi t0, t0, -1\n  bne  t0, x0, loop\n  add  a0, x0, t1\n  add  a1, x0, t2",
     memInit: null,
     checks: [{ reg: "a0", val: 20 }, { reg: "a1", val: 50 }],
