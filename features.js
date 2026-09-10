@@ -9077,3 +9077,559 @@ if (typeof module !== "undefined" && module.exports) {
 }
 
 })();
+/* ================= THE LOCK LAB (BENCH 14) =================
+   TAPEOUT clock-generator qualification. A discrete charge-pump
+   PLL lives under the hood: vc = P0*err + I0*acc, with P0 from
+   charge-pump current times loop resistance and I0 from current
+   over loop capacitance. Three cards go on the bench: a golden
+   board, a hot noisy VCO, and a cold-start offset. Tune the
+   three knobs, run the loop, read lock time and jitter against
+   budget, and qualify only what you can honestly sign. */
+
+(function () {
+  "use strict";
+
+  /* ---------------- pure core: no DOM ---------------- */
+
+  function lkMulberry32(a) {
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function lkWrap(e) {
+    e = e % 1;
+    if (e > 0.5) e -= 1;
+    if (e <= -0.5) e += 1;
+    return e;
+  }
+
+  /* Discrete charge-pump PLL. Reference advances FREF cycles per
+     step; the VCO advances FREF*N*(1 + foff + KVC*vc) plus white
+     VCO frequency noise. The phase detector wraps error to
+     +-0.5 cycle. Loop filter: leaky integrator (capacitor) plus
+     proportional path (resistor). Jitter is RMS output phase
+     deviation over the last 500 steps, in picoseconds of a
+     1-cycle = 1000 ps scale. */
+  var LK_FREF = 0.02, LK_N = 50, LK_KVC = 0.1;
+  var LK_STEPS = 4000, LK_WIN = 0.05, LK_LEAK = 0.995;
+  var LK_P00 = 8, LK_I00 = 0.1;
+
+  var LK_ICP = [25, 50, 100];
+  var LK_R = [2.5, 5, 10];
+  var LK_C = [100, 200, 400];
+  var LK_DEF = [1, 1, 1];
+
+  var LK_CARDS = [
+    { id: "A", name: "GOLDEN BOARD", foff: 0.015, fvco: 0, seed: 5101,
+      budget: 1000, jmax: 20,
+      brief: "A known-good card. It locks at the default tuning. Learn the knobs here." },
+    { id: "B", name: "HOT VCO", foff: 0.03, fvco: 0.15, seed: 5202,
+      budget: 1200, jmax: 12,
+      brief: "The VCO runs hot and noisy. Jitter is over budget. Widen the loop to quiet it." },
+    { id: "C", name: "COLD START", foff: 0.12, fvco: 0, seed: 5303,
+      budget: 600, jmax: 25,
+      brief: "The oscillator wakes 12 percent off frequency. Lock it inside 600 steps." }
+  ];
+
+  function lkSim(icpIdx, rIdx, cIdx, card) {
+    var P0 = LK_P00 * (LK_ICP[icpIdx] / 50) * (LK_R[rIdx] / 5);
+    var I0 = LK_I00 * (LK_ICP[icpIdx] / 50) / (LK_C[cIdx] / 200);
+    var rng = lkMulberry32(card.seed);
+    var phr = 0, phv = 0, acc = 0, vc = 0;
+    var lastOut = -1, bad = 0;
+    var outj = [], trace = [];
+    for (var n = 0; n < LK_STEPS; n++) {
+      var fvn = (rng() - 0.5) * 2 * card.fvco;
+      phr += LK_FREF;
+      phv += LK_FREF * LK_N * (1 + card.foff + LK_KVC * vc) + fvn;
+      var err = lkWrap(phr - phv / LK_N);
+      acc = LK_LEAK * acc + err;
+      if (acc > 30) acc = 30; else if (acc < -30) acc = -30;
+      vc = P0 * err + I0 * acc;
+      if (vc > 1.5) vc = 1.5; else if (vc < -1.5) vc = -1.5;
+      if (err >= LK_WIN || err <= -LK_WIN) lastOut = n;
+      if (err > 0.25 || err < -0.25) {
+        bad++;
+        if (bad > 400) {
+          return { unstable: true, lock: LK_STEPS, jit: 999, trace: [], pass: false,
+                   budget: card.budget, jmax: card.jmax };
+        }
+      } else { bad = 0; }
+      var odev = (phv / LK_N) - (n + 1) * LK_FREF;
+      outj.push(odev);
+      if (outj.length > 500) outj.shift();
+      if (n % 20 === 0) trace.push(err);
+    }
+    var rms = 0, i;
+    for (i = 0; i < outj.length; i++) rms += outj[i] * outj[i];
+    rms = Math.sqrt(rms / outj.length);
+    var lock = lastOut + 1, jit = rms * 1000;
+    return {
+      unstable: false, lock: lock, jit: Math.round(jit * 10) / 10, trace: trace,
+      pass: lock <= card.budget && jit <= card.jmax,
+      budget: card.budget, jmax: card.jmax
+    };
+  }
+
+  function lkGrade(res) {
+    if (!res.pass) return "FAIL";
+    var jm = res.jit / res.jmax, lm = res.lock / res.budget;
+    var worst = jm > lm ? jm : lm;
+    if (worst <= 0.5) return "GOLD";
+    if (worst <= 0.8) return "SILVER";
+    return "BRONZE";
+  }
+
+  function lkCertText(quals) {
+    var L = [];
+    L.push("THE LOCK LAB : CLOCK QUALIFICATION CERTIFICATE");
+    L.push("TAPEOUT bring-up bench : charge-pump PLL sign-off");
+    L.push("");
+    for (var i = 0; i < LK_CARDS.length; i++) {
+      var c = LK_CARDS[i], q = quals[c.id];
+      L.push("Card " + c.id + " " + c.name + ": " +
+        (q ? ("QUALIFIED " + q.grade + " : " + q.icp + " uA / " + q.r + " kΩ / " +
+              q.c + " pF : lock " + q.lock + " steps, jitter " + q.jit + " ps")
+           : "NOT QUALIFIED"));
+    }
+    L.push("");
+    L.push("Method: discrete charge-pump PLL simulation, 4000 steps,");
+    L.push("seeded deterministic faults, budgets per card.");
+    L.push("Date: " + new Date().toISOString().slice(0, 10));
+    return L.join("\n");
+  }
+
+  /* ---------------- CSS ---------------- */
+
+  var LK_CSS = [
+    ".lk-overlay{position:fixed;inset:0;background:rgba(8,8,10,.82);z-index:9000;display:none;overflow-y:auto;padding:24px 16px;}",
+    ".lk-overlay.open{display:block;}",
+    ".lk-panel{max-width:860px;margin:0 auto;background:#101014;border:1px solid #2a2a30;border-radius:12px;color:#f2f0eb;font-family:'Space Grotesk',system-ui,sans-serif;}",
+    ".lk-bar{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid #2a2a30;}",
+    ".lk-title{font-size:20px;letter-spacing:.14em;font-weight:700;}",
+    ".lk-title b{color:#ff5a1f;}",
+    ".lk-close{background:none;border:1px solid #3a3a42;color:#f2f0eb;border-radius:8px;min-height:48px;padding:0 18px;font-family:'IBM Plex Mono',monospace;font-size:13px;cursor:pointer;}",
+    ".lk-close:hover{border-color:#ff5a1f;}",
+    ".lk-close:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".lk-body{padding:22px;}",
+    ".lk-sub{font-size:14px;line-height:1.6;color:#b9b6ae;margin:0 0 20px;}",
+    ".lk-sub b{color:#f2f0eb;}",
+    ".lk-sub a{color:#ff5a1f;}",
+    ".lk-cards{display:flex;gap:10px;margin-bottom:22px;flex-wrap:wrap;}",
+    ".lk-cardtab{flex:1;min-width:150px;min-height:56px;border:1px solid #3a3a42;background:#16161b;color:#f2f0eb;border-radius:10px;cursor:pointer;font-family:'Space Grotesk',sans-serif;padding:8px 10px;text-align:left;transition:transform .2s,border-color .2s;}",
+    ".lk-cardtab:hover{border-color:#ff5a1f;}",
+    ".lk-cardtab:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".lk-cardtab.sel{border-color:#ff5a1f;transform:translateY(-2px);}",
+    ".lk-cardtab .k{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8a877f;letter-spacing:.1em;}",
+    ".lk-cardtab .n{font-size:14px;font-weight:700;margin-top:2px;}",
+    ".lk-cardtab .q{font-family:'IBM Plex Mono',monospace;font-size:11px;margin-top:4px;color:#8a877f;}",
+    ".lk-cardtab .q.done{color:#7dd87d;}",
+    ".lk-brief{font-size:13px;color:#b9b6ae;border-left:3px solid #ff5a1f;padding:8px 14px;margin:0 0 22px;line-height:1.55;}",
+    ".lk-knobs{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:22px;}",
+    ".lk-knob{border:1px solid #2a2a30;border-radius:10px;padding:14px;}",
+    ".lk-knob h4{margin:0 0 4px;font-size:12px;letter-spacing:.12em;color:#8a877f;font-weight:700;}",
+    ".lk-knob .hint{font-size:12px;color:#6e6b64;margin:0 0 10px;font-family:'IBM Plex Mono',monospace;}",
+    ".lk-seg{display:flex;gap:8px;}",
+    ".lk-seg label{flex:1;}",
+    ".lk-seg input{position:absolute;opacity:0;width:1px;height:1px;}",
+    ".lk-seg span{display:flex;align-items:center;justify-content:center;min-height:48px;border:1px solid #3a3a42;border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;cursor:pointer;transition:transform .2s,border-color .2s,background .2s;}",
+    ".lk-seg label:hover span{border-color:#ff5a1f;}",
+    ".lk-seg input:checked+span{border-color:#ff5a1f;background:#2a150c;color:#ffb38a;font-weight:700;}",
+    ".lk-seg input:focus-visible+span{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".lk-runrow{display:flex;gap:12px;align-items:center;margin-bottom:20px;flex-wrap:wrap;}",
+    ".lk-run{min-height:52px;padding:0 28px;border:none;border-radius:10px;background:#ff5a1f;color:#101014;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;letter-spacing:.08em;cursor:pointer;transition:transform .2s;}",
+    ".lk-run:hover{transform:translateY(-2px);}",
+    ".lk-run:focus-visible{outline:2px solid #fff;outline-offset:2px;}",
+    ".lk-run:active{transform:translateY(0);}",
+    ".lk-tuning{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#8a877f;}",
+    ".lk-results{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:18px;}",
+    ".lk-metric{border:1px solid #2a2a30;border-radius:10px;padding:14px;}",
+    ".lk-metric h5{margin:0 0 6px;font-size:11px;letter-spacing:.12em;color:#8a877f;font-weight:700;}",
+    ".lk-metric .v{font-family:'IBM Plex Mono',monospace;font-size:24px;font-weight:700;}",
+    ".lk-metric .b{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#8a877f;margin-top:4px;}",
+    ".lk-verdict{font-size:15px;font-weight:700;letter-spacing:.1em;padding:14px;border-radius:10px;text-align:center;margin-bottom:18px;border:1px solid #3a3a42;}",
+    ".lk-verdict.pass{border-color:#7dd87d;color:#7dd87d;}",
+    ".lk-verdict.fail{border-color:#ff5a1f;color:#ff5a1f;}",
+    ".lk-verdict small{display:block;font-weight:400;letter-spacing:0;font-size:12px;color:#b9b6ae;margin-top:6px;}",
+    ".lk-scope{width:100%;height:180px;background:#0a0a0d;border:1px solid #2a2a30;border-radius:10px;margin-bottom:8px;}",
+    ".lk-scopelab{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8a877f;margin:0 0 18px;}",
+    ".lk-qualrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px;}",
+    ".lk-qual{min-height:52px;padding:0 24px;border:1px solid #7dd87d;background:none;color:#7dd87d;border-radius:10px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;letter-spacing:.08em;cursor:pointer;}",
+    ".lk-qual:hover{background:#12240f;}",
+    ".lk-qual:focus-visible{outline:2px solid #7dd87d;outline-offset:2px;}",
+    ".lk-qual:disabled{opacity:.4;cursor:default;}",
+    ".lk-cert{border:1px solid #7dd87d;border-radius:10px;padding:18px;margin-top:18px;display:none;}",
+    ".lk-cert.show{display:block;}",
+    ".lk-cert h4{margin:0 0 8px;font-size:14px;letter-spacing:.12em;color:#7dd87d;}",
+    ".lk-cert p{font-size:13px;color:#b9b6ae;line-height:1.6;margin:0 0 12px;}",
+    ".lk-mini{min-height:48px;padding:0 20px;border:1px solid #3a3a42;background:#16161b;color:#f2f0eb;border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;}",
+    ".lk-mini:hover{border-color:#ff5a1f;}",
+    ".lk-mini:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    "@media (prefers-reduced-motion:reduce){.lk-cardtab,.lk-run,.lk-seg span{transition:none;}}"
+  ];
+
+  /* ---------------- DOM helpers ---------------- */
+
+  function lk$(id) { return document.getElementById(id); }
+  function lkEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  /* ---------------- state ---------------- */
+
+  var lkCardIdx = 0;
+  var lkKnobs = [1, 1, 1];
+  var lkLast = null;
+  var lkQuals = {};
+
+  var LK_KNOB_DEFS = [
+    { key: "icp", title: "CHARGE PUMP", hint: "loop gain : wider or narrower", vals: LK_ICP, unit: "uA" },
+    { key: "r", title: "LOOP RESISTOR", hint: "damping : overshoot control", vals: LK_R, unit: "k" },
+    { key: "c", title: "LOOP CAPACITOR", hint: "integration : pull-in muscle", vals: LK_C, unit: "pF" }
+  ];
+
+  /* ---------------- UI build ---------------- */
+
+  function lkFmtVal(def, i) {
+    return String(def.vals[i]) + def.unit;
+  }
+
+  function lkBuildShell() {
+    var css = document.createElement("style");
+    css.textContent = LK_CSS.join("\n");
+    document.head.appendChild(css);
+
+    var box = document.querySelector(".dossier .actions");
+    if (box && !lk$("lkBtn")) {
+      var b = lkEl("button", "secondary", "Run the Lock Lab");
+      b.id = "lkBtn";
+      b.addEventListener("click", function () { lk$("lkOverlay").classList.add("open"); });
+      box.appendChild(b);
+    }
+
+    var ov = lkEl("div", "lk-overlay");
+    ov.id = "lkOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Lock Lab");
+    var panel = lkEl("div", "lk-panel");
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    var bar = lkEl("div", "lk-bar");
+    var title = lkEl("div", "lk-title", "");
+    title.innerHTML = "THE LOCK <b>LAB</b>";
+    var close = lkEl("button", "lk-close", "CLOSE [x]");
+    close.type = "button";
+    bar.appendChild(title); bar.appendChild(close);
+    panel.appendChild(bar);
+
+    var body = lkEl("div", "lk-body");
+    panel.appendChild(body);
+
+    var sub = lkEl("p", "lk-sub", "");
+    sub.innerHTML = "<b>HOW IT WORKS</b> Each card hides a clock fault. " +
+      "Set the charge pump, resistor, and capacitor, run the loop, and read " +
+      "lock time and jitter against the card's budget. Qualify all three cards " +
+      "to sign the TAPEOUT clock certificate. " +
+      "One line of advice: a noisy VCO wants a wide loop, a far-off oscillator " +
+      "wants a strong one. " +
+      "Built for the <a href=\"https://dillingerstaffing.github.io/tapeout/\" target=\"_blank\" rel=\"noopener\">TAPEOUT bring-up bench</a>.";
+    body.appendChild(sub);
+
+    var cards = lkEl("div", "lk-cards");
+    cards.id = "lkCards";
+    body.appendChild(cards);
+
+    var brief = lkEl("p", "lk-brief", "");
+    brief.id = "lkBrief";
+    body.appendChild(brief);
+
+    var knobs = lkEl("div", "lk-knobs");
+    knobs.id = "lkKnobs";
+    body.appendChild(knobs);
+
+    var runrow = lkEl("div", "lk-runrow");
+    var run = lkEl("button", "lk-run", "RUN THE LOOP");
+    run.id = "lkRun";
+    run.type = "button";
+    run.addEventListener("click", lkOnRun);
+    runrow.appendChild(run);
+    var tuning = lkEl("span", "lk-tuning", "");
+    tuning.id = "lkTuning";
+    runrow.appendChild(tuning);
+    body.appendChild(runrow);
+
+    var results = lkEl("div", "lk-results");
+    results.id = "lkResults";
+    body.appendChild(results);
+
+    var verdict = lkEl("div", "lk-verdict", "No run yet. Set the knobs and run the loop.");
+    verdict.id = "lkVerdict";
+    body.appendChild(verdict);
+
+    var canvas = document.createElement("canvas");
+    canvas.className = "lk-scope";
+    canvas.id = "lkScope";
+    canvas.setAttribute("role", "img");
+    canvas.setAttribute("aria-label", "Phase error trace");
+    body.appendChild(canvas);
+    var slab = lkEl("p", "lk-scopelab",
+      "SCOPE: phase error in cycles, dashed lines mark the +-0.05 lock window.");
+    body.appendChild(slab);
+
+    var qualrow = lkEl("div", "lk-qualrow");
+    var qual = lkEl("button", "lk-qual", "QUALIFY THIS CARD");
+    qual.id = "lkQual";
+    qual.type = "button";
+    qual.disabled = true;
+    qual.addEventListener("click", lkOnQualify);
+    qualrow.appendChild(qual);
+    body.appendChild(qualrow);
+
+    var cert = lkEl("div", "lk-cert");
+    cert.id = "lkCert";
+    body.appendChild(cert);
+
+    close.addEventListener("click", function () { ov.classList.remove("open"); });
+    ov.addEventListener("click", function (e) { if (e.target === ov) ov.classList.remove("open"); });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && ov.classList.contains("open")) ov.classList.remove("open");
+    });
+
+    lkRenderCards();
+    lkRenderKnobs();
+    lkSelectCard(0);
+  }
+
+  function lkRenderCards() {
+    var wrap = lk$("lkCards");
+    wrap.innerHTML = "";
+    LK_CARDS.forEach(function (c, i) {
+      var tab = lkEl("button", "lk-cardtab" + (i === lkCardIdx ? " sel" : ""), "");
+      tab.type = "button";
+      tab.setAttribute("aria-pressed", i === lkCardIdx ? "true" : "false");
+      var k = lkEl("div", "k", "CARD " + c.id);
+      var n = lkEl("div", "n", c.name);
+      var q = lkEl("div", "q" + (lkQuals[c.id] ? " done" : ""), "");
+      q.textContent = lkQuals[c.id] ? "QUALIFIED " + lkQuals[c.id].grade : "NOT QUALIFIED";
+      tab.appendChild(k); tab.appendChild(n); tab.appendChild(q);
+      tab.addEventListener("click", function () { lkSelectCard(i); });
+      wrap.appendChild(tab);
+    });
+  }
+
+  function lkRenderKnobs() {
+    var wrap = lk$("lkKnobs");
+    wrap.innerHTML = "";
+    LK_KNOB_DEFS.forEach(function (def, ki) {
+      var grp = lkEl("div", "lk-knob", "");
+      grp.appendChild(lkEl("h4", null, def.title));
+      var hint = lkEl("p", "hint", def.hint);
+      grp.appendChild(hint);
+      var seg = lkEl("div", "lk-seg", "");
+      seg.setAttribute("role", "radiogroup");
+      seg.setAttribute("aria-label", def.title);
+      def.vals.forEach(function (v, vi) {
+        var lab = lkEl("label", "", "");
+        var inp = document.createElement("input");
+        inp.type = "radio";
+        inp.name = "lk-" + def.key;
+        inp.checked = lkKnobs[ki] === vi;
+        inp.addEventListener("change", function () {
+          lkKnobs[ki] = vi;
+          lkUpdateTuning();
+        });
+        var sp = lkEl("span", "", lkFmtVal(def, vi));
+        lab.appendChild(inp);
+        lab.appendChild(sp);
+        seg.appendChild(lab);
+      });
+      grp.appendChild(seg);
+      wrap.appendChild(grp);
+    });
+    lkUpdateTuning();
+  }
+
+  function lkUpdateTuning() {
+    var t = lk$("lkTuning");
+    if (!t) return;
+    t.textContent = "Tuning: " + LK_ICP[lkKnobs[0]] + " uA / " +
+      LK_R[lkKnobs[1]] + " kΩ / " + LK_C[lkKnobs[2]] + " pF";
+  }
+
+  function lkSelectCard(i) {
+    lkCardIdx = i;
+    lkLast = null;
+    var c = LK_CARDS[i];
+    lk$("lkBrief").textContent = "CARD " + c.id + " " + c.name + ": " + c.brief +
+      " Budget: lock inside " + c.budget + " steps, jitter under " + c.jmax + " ps.";
+    var v = lk$("lkVerdict");
+    v.className = "lk-verdict";
+    v.textContent = "No run yet. Set the knobs and run the loop.";
+    lk$("lkResults").innerHTML = "";
+    lk$("lkQual").disabled = true;
+    lkDrawScope([]);
+    lkRenderCards();
+  }
+
+  function lkOnRun() {
+    var c = LK_CARDS[lkCardIdx];
+    var res = lkSim(lkKnobs[0], lkKnobs[1], lkKnobs[2], c);
+    lkLast = res;
+    var rbox = lk$("lkResults");
+    rbox.innerHTML = "";
+
+    var m1 = lkEl("div", "lk-metric", "");
+    m1.appendChild(lkEl("h5", null, "LOCK TIME"));
+    var v1 = lkEl("div", "v", res.unstable ? "NEVER" : String(res.lock));
+    m1.appendChild(v1);
+    m1.appendChild(lkEl("div", "b", "budget " + res.budget + " steps"));
+    rbox.appendChild(m1);
+
+    var m2 = lkEl("div", "lk-metric", "");
+    m2.appendChild(lkEl("h5", null, "JITTER"));
+    m2.appendChild(lkEl("div", "v", res.unstable ? "--" : res.jit + " ps"));
+    m2.appendChild(lkEl("div", "b", "budget " + res.jmax + " ps"));
+    rbox.appendChild(m2);
+
+    var m3 = lkEl("div", "lk-metric", "");
+    m3.appendChild(lkEl("h5", null, "GRADE"));
+    m3.appendChild(lkEl("div", "v", lkGrade(res)));
+    m3.appendChild(lkEl("div", "b", "gold / silver / bronze"));
+    rbox.appendChild(m3);
+
+    var v = lk$("lkVerdict");
+    if (res.pass) {
+      v.className = "lk-verdict pass";
+      v.innerHTML = "PASS: inside both budgets.<small>Grade " + lkGrade(res) +
+        ". Qualify the card to sign it off.</small>";
+    } else {
+      v.className = "lk-verdict fail";
+      var why = res.unstable ? "the loop never settled" :
+        (res.lock > res.budget ? "lock too slow" : "jitter over budget");
+      v.innerHTML = "FAIL: " + why + ".<small>Move the knobs and run again.</small>";
+    }
+    /* textContent already set via innerHTML for formatting; keep it honest */
+    lkDrawScope(res.trace);
+    var q = lk$("lkQual");
+    q.disabled = !res.pass;
+    q.textContent = lkQuals[c.id] ? "RE-QUALIFY THIS CARD" : "QUALIFY THIS CARD";
+  }
+
+  function lkDrawScope(trace) {
+    var cv = lk$("lkScope");
+    if (!cv) return;
+    var dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+    var W = cv.clientWidth || 600, H = 180;
+    cv.width = W * dpr; cv.height = H * dpr;
+    var g = cv.getContext("2d");
+    g.scale(dpr, dpr);
+    g.clearRect(0, 0, W, H);
+    var mid = H / 2, span = 0.5;
+    function y(e) { return mid - (e / span) * (H / 2 - 8); }
+    g.strokeStyle = "#2a2a30";
+    g.lineWidth = 1;
+    g.beginPath(); g.moveTo(0, mid); g.lineTo(W, mid); g.stroke();
+    g.strokeStyle = "#ff5a1f";
+    g.setLineDash([5, 5]);
+    [LK_WIN, -LK_WIN].forEach(function (w) {
+      g.beginPath(); g.moveTo(0, y(w)); g.lineTo(W, y(w)); g.stroke();
+    });
+    g.setLineDash([]);
+    if (trace && trace.length > 1) {
+      g.strokeStyle = "#f2f0eb";
+      g.lineWidth = 1.5;
+      g.beginPath();
+      for (var i = 0; i < trace.length; i++) {
+        var x = (i / (trace.length - 1)) * W;
+        var yy = y(Math.max(-span, Math.min(span, trace[i])));
+        if (i === 0) g.moveTo(x, yy); else g.lineTo(x, yy);
+      }
+      g.stroke();
+    } else {
+      g.fillStyle = "#6e6b64";
+      g.font = "12px 'IBM Plex Mono', monospace";
+      g.fillText("run the loop to draw the trace", 14, mid - 12);
+    }
+  }
+
+  function lkOnQualify() {
+    if (!lkLast || !lkLast.pass) return;
+    var c = LK_CARDS[lkCardIdx];
+    lkQuals[c.id] = {
+      grade: lkGrade(lkLast),
+      icp: LK_ICP[lkKnobs[0]], r: LK_R[lkKnobs[1]], c: LK_C[lkKnobs[2]],
+      lock: lkLast.lock, jit: lkLast.jit
+    };
+    lkRenderCards();
+    lk$("lkQual").textContent = "RE-QUALIFY THIS CARD";
+    if (typeof toast === "function") toast("Card " + c.id + " qualified " + lkQuals[c.id].grade + ".");
+    lkMaybeCert();
+  }
+
+  function lkMaybeCert() {
+    var done = LK_CARDS.every(function (c) { return !!lkQuals[c.id]; });
+    var box = lk$("lkCert");
+    if (!done) { box.classList.remove("show"); box.innerHTML = ""; return; }
+    box.innerHTML = "";
+    box.appendChild(lkEl("h4", null, "QUALIFICATION COMPLETE"));
+    var p = lkEl("p", null, "");
+    p.textContent = "All three cards qualified against their lock and jitter budgets. " +
+      "The TAPEOUT bring-up bench accepts these clock settings.";
+    box.appendChild(p);
+    var dl = lkEl("button", "lk-mini", "DOWNLOAD CERTIFICATE");
+    dl.type = "button";
+    dl.addEventListener("click", function () {
+      lkDownload(lkCertText(lkQuals), "lock-lab-certificate.txt");
+      if (typeof toast === "function") toast("Certificate downloaded.");
+    });
+    box.appendChild(dl);
+    box.classList.add("show");
+  }
+
+  function lkDownload(text, name) {
+    var blob = new Blob([text], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    }, 500);
+  }
+
+  function lkInit() {
+    if (typeof document === "undefined") return;
+    if (!document.querySelector(".dossier .actions")) return;
+    lkBuildShell();
+  }
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", lkInit);
+    } else {
+      lkInit();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      LK: {
+        mulberry32: lkMulberry32, wrap: lkWrap, sim: lkSim, grade: lkGrade,
+        certText: lkCertText, CARDS: LK_CARDS, ICP: LK_ICP, R: LK_R, C: LK_C,
+        FREF: LK_FREF, N: LK_N, STEPS: LK_STEPS, WIN: LK_WIN
+      }
+    });
+  }
+
+})();
+

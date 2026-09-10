@@ -513,7 +513,11 @@ var PG_BENCHES = [
   { section: "silicon", n: "13", name: "The Boot Bay", btn: "bbBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "RISC-V secure boot on the bench: verify each stage against its manifest, lay out the memory map, lock the PMP, and bring the hart from reset to login. One image is rotten and one map is a trap.",
     how: "Verify the stage images, set the load addresses, lock the PMP regions, then boot all three boards.",
-    spec: "SECURE BOOT \u00B7 3 BOARDS" }
+    spec: "SECURE BOOT \u00B7 3 BOARDS" },
+  { section: "tapeout", n: "14", name: "The Lock Lab", btn: "lkBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+    desc: "Clock-generator qualification for GPU bring-up: a real discrete charge-pump PLL under the hood. Tune the loop, beat the lock and jitter budgets on three faulty cards, sign the certificate.",
+    how: "Set the charge pump, resistor, and capacitor, run the loop, qualify all three cards.",
+    spec: "CP-PLL \u00B7 3 CARDS \u00B7 LOCK/JITTER" }
 ];
 
 var pgFilter = "all";
@@ -822,8 +826,8 @@ if (document.readyState === "loading") {
   pgBoot();
 }
 </script>
-<script src="rvcore.js?v=9d14ad4" defer></script>
-<script src="rvdata.js?v=9d14ad4" defer></script>
-<script src="features.js?v=9d14ad4" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=a5fd97f" defer></script>
+<script src="rvdata.js?v=a5fd97f" defer></script>
+<script src="features.js?v=a5fd97f" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
