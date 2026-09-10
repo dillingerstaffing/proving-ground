@@ -582,7 +582,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "22", name: "The Rail Room", btn: "rrBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "PSU rail qualification for the OLD IRON refurb line: plug in, power up, and probe the 24-pin ATX connector with a live meter model. Read every rail against the ATX tolerance table and certify three supplies.",
     how: "Set the meter dial, plant both probes on the connector, record all five required rails, and call the verdict on all three PSUs.",
-    spec: "ATX 24-PIN \u00B7 DMM \u00B7 3 PSUS" }
+    spec: "ATX 24-PIN \u00B7 DMM \u00B7 3 PSUS" },
+  { section: "oldiron", n: "23", name: "The Switch Room", btn: "swBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "IP addressing for the OLD IRON bench network: real CIDR math with a live binary worksheet, then subnet design. Certify all three shop zones with zero addressing errors.",
+    how: "Compute each zone's network facts, carve a fitting subnet from the base block, and place the gateway.",
+    spec: "CIDR MATH \u00B7 3 ZONES \u00B7 BINARY PROOF" }
 ];
 
 var pgFilter = "all";

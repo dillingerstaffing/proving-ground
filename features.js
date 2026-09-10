@@ -14758,3 +14758,723 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
 })();
+/* ============================================================
+   THE SWITCH ROOM
+   Old Iron bench networking: IP addressing and subnet design for
+   the refurb shop's three network zones. Task 1 is real CIDR math
+   (network, broadcast, usable hosts, first/last usable) with a live
+   binary worksheet that shows the bits. Task 2 is subnet design:
+   pick a prefix that fits the host count, plant an aligned subnet
+   inside the base block, and place the gateway on a usable host.
+   Certify all three zones with zero addressing errors to print the
+   certification record. Self-contained, appended at the end of
+   features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- pure IPv4 math (no DOM) ---------------- */
+
+  function swParseIP(s) {
+    if (typeof s !== "string") return null;
+    var p = s.trim().split(".");
+    if (p.length !== 4) return null;
+    var n = 0;
+    for (var i = 0; i < 4; i++) {
+      if (!/^\d{1,3}$/.test(p[i])) return null;
+      var v = parseInt(p[i], 10);
+      if (v < 0 || v > 255) return null;
+      n = n * 256 + v;
+    }
+    return n >>> 0;
+  }
+
+  function swInt2ip(n) {
+    n = n >>> 0;
+    return ((n >>> 24) & 255) + "." + ((n >>> 16) & 255) + "." +
+           ((n >>> 8) & 255) + "." + (n & 255);
+  }
+
+  function swMask(p) {
+    if (p <= 0) return 0;
+    if (p >= 32) return 0xFFFFFFFF;
+    return (0xFFFFFFFF << (32 - p)) >>> 0;
+  }
+
+  function swNet(ip, p) { return (ip & swMask(p)) >>> 0; }
+  function swBcast(ip, p) { return (swNet(ip, p) | (~swMask(p) >>> 0)) >>> 0; }
+  function swUsable(p) {
+    if (p < 0 || p > 30) return 0;
+    return Math.pow(2, 32 - p) - 2;
+  }
+  function swFirst(ip, p) { return (swNet(ip, p) + 1) >>> 0; }
+  function swLast(ip, p) { return (swBcast(ip, p) - 1) >>> 0; }
+
+  function swBin8(v) {
+    var s = (v & 255).toString(2);
+    while (s.length < 8) s = "0" + s;
+    return s;
+  }
+
+  function swOctets(n) {
+    n = n >>> 0;
+    return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+  }
+
+  /* ---------------- scenarios ---------------- */
+
+  var SW_T1_PREFIXES = [24, 25, 26, 27, 28];
+  var SW_T1_NETS = ["192.168", "10.20", "172.16"];
+
+  function swPick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+  function swGenT1() {
+    var net = swPick(SW_T1_NETS);
+    var o3 = 1 + Math.floor(Math.random() * 253);
+    var o4 = 1 + Math.floor(Math.random() * 253);
+    return { ip: swParseIP(net + "." + o3 + "." + o4), p: swPick(SW_T1_PREFIXES) };
+  }
+
+  var SW_ZONES = [
+    { tag: "SHOP FLOOR",  need: 12, base: "10.14.0.0", baseP: 24,
+      blurb: "The workbenches: twelve refurbished desktops that PXE-boot their test images from the shop server. They need their own subnet, carved from the shop base block." },
+    { tag: "BURN-IN ROW", need: 28, base: "10.14.1.0", baseP: 24,
+      blurb: "The burn-in racks: twenty-eight test nodes hammering GPUs around the clock. Give the row a subnet with room to spare, carved from the burn-in base block." },
+    { tag: "FRONT OFFICE", need: 55, base: "10.14.2.0", baseP: 24,
+      blurb: "The front office: fifty-five seats between desks, printers, and the point-of-sale. One subnet from the office base block, big enough for all of them." }
+  ];
+
+  function swNewZoneState(z) {
+    return {
+      def: z, t1: swGenT1(),
+      a1: { net: "", bcast: "", hosts: "", first: "", last: "" },
+      a2: { prefix: "", subnet: "", gw: "" },
+      t1ok: false, t2ok: false, bitsOpen: false, checks: 0,
+      hint1: false
+    };
+  }
+
+  /* ---------------- checks (pure, exported for tests) ---------------- */
+
+  function swCheckT1(zs, a) {
+    var t1 = zs.t1, out = {};
+    var netI = swNet(t1.ip, t1.p), bcI = swBcast(t1.ip, t1.p);
+    var exp = {
+      net: swInt2ip(netI),
+      bcast: swInt2ip(bcI),
+      hosts: String(swUsable(t1.p)),
+      first: swInt2ip(swFirst(t1.ip, t1.p)),
+      last: swInt2ip(swLast(t1.ip, t1.p))
+    };
+    var keys = ["net", "bcast", "hosts", "first", "last"];
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      var got = (a[k] || "").trim();
+      if (k === "hosts") {
+        out[k] = { ok: got === exp[k], msg: got === exp[k] ? "Correct: " + exp[k] + " usable hosts" : "Not yet: count the host bits, 2^n minus network and broadcast" };
+      } else {
+        out[k] = { ok: got === exp[k], msg: got === exp[k] ? "Correct: " + exp[k] : "Not yet: recheck the bits" };
+      }
+    }
+    out.all = out.net.ok && out.bcast.ok && out.hosts.ok && out.first.ok && out.last.ok;
+    out.exp = exp;
+    return out;
+  }
+
+  function swCheckT2(zs, a) {
+    var out = {};
+    var need = zs.def.need;
+    var baseNet = swParseIP(zs.def.base), baseP = zs.def.baseP;
+    var p = parseInt(a.prefix, 10);
+    out.prefix = { ok: false, msg: "Pick a prefix from the list" };
+    if (a.prefix !== "" && !isNaN(p) && p >= 24 && p <= 30) {
+      var u = swUsable(p);
+      out.prefix = u >= need
+        ? { ok: true, msg: "Correct: /" + p + " holds " + u + " usable, the zone needs " + need }
+        : { ok: false, msg: "Too small: /" + p + " holds " + u + " usable, the zone needs " + need };
+    }
+    var netI = swParseIP(a.subnet);
+    out.subnet = { ok: false, msg: "Enter the subnet network address as a dotted quad" };
+    if (netI !== null && out.prefix.ok) {
+      var hostBits = 32 - p;
+      var aligned = (hostBits === 0) || ((netI & ((1 << hostBits) - 1)) === 0);
+      var inside = ((netI & swMask(baseP)) >>> 0) === baseNet;
+      if (!inside) {
+        out.subnet = { ok: false, msg: "Outside the base block: it must live inside " + zs.def.base + "/" + baseP };
+      } else if (!aligned) {
+        out.subnet = { ok: false, msg: "Not aligned: /" + p + " subnets start on host-bit boundaries (host bits all zero)" };
+      } else {
+        out.subnet = { ok: true, msg: "Correct: " + swInt2ip(netI) + "/" + p + " is aligned inside " + zs.def.base + "/" + baseP };
+      }
+    } else if (netI !== null && !out.prefix.ok) {
+      out.subnet = { ok: false, msg: "Fix the prefix first, then the alignment can be judged" };
+    }
+    var gwI = swParseIP(a.gw);
+    out.gw = { ok: false, msg: "Enter the gateway as a dotted quad" };
+    if (gwI !== null && out.subnet.ok) {
+      var snet = swNet(netI, p), sbc = swBcast(netI, p);
+      if (gwI === snet) {
+        out.gw = { ok: false, msg: "That is the network address itself, not a usable host" };
+      } else if (gwI === sbc) {
+        out.gw = { ok: false, msg: "That is the broadcast address, not a usable host" };
+      } else if (gwI > snet && gwI < sbc) {
+        out.gw = { ok: true, msg: "Correct: " + swInt2ip(gwI) + " is a usable host in " + swInt2ip(snet) + "/" + p };
+      } else {
+        out.gw = { ok: false, msg: "Outside the subnet: pick a host between " + swInt2ip(snet + 1) + " and " + swInt2ip(sbc - 1) };
+      }
+    } else if (gwI !== null && !out.subnet.ok) {
+      out.gw = { ok: false, msg: "Plant the subnet first, then place the gateway inside it" };
+    }
+    out.all = out.prefix.ok && out.subnet.ok && out.gw.ok;
+    return out;
+  }
+
+  /* ---------------- styles ---------------- */
+
+  var SW_CSS = [
+    ".sw-overlay{position:fixed;inset:0;background:rgba(4,7,7,.94);z-index:90;display:none;overflow-y:auto;padding:18px 12px;}",
+    ".sw-overlay.open{display:block;}",
+    ".sw-panel{max-width:1020px;margin:0 auto;background:var(--panel);border:1px solid var(--line);padding:20px;}",
+    ".sw-panel h3{font-family:var(--font-d);font-size:24px;margin:0 0 4px;text-transform:uppercase;letter-spacing:.02em;color:var(--ember);}",
+    ".sw-spec{font-family:var(--font-m);font-size:10.5px;color:var(--dim);letter-spacing:.1em;margin:0 0 10px;}",
+    ".sw-sub{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 14px;max-width:72ch;}",
+    ".sw-sub b{color:var(--paper);font-weight:600;}",
+    ".sw-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 12px;}",
+    "@media(max-width:760px){.sw-tabs{grid-template-columns:1fr;}}",
+    ".sw-tab{border:1px solid var(--line);background:var(--panel-2);padding:10px 12px;min-height:48px;text-align:left;cursor:pointer;color:var(--paper);font-family:var(--font-d);font-size:13px;}",
+    ".sw-tab .sw-tag{font-family:var(--font-m);font-size:10.5px;color:var(--dim);display:block;letter-spacing:.08em;}",
+    ".sw-tab .sw-st{font-family:var(--font-m);font-size:10.5px;letter-spacing:.08em;display:block;margin-top:2px;}",
+    ".sw-tab[aria-selected=\"true\"]{border-color:var(--ember);}",
+    ".sw-st.todo{color:var(--dim);}.sw-st.part{color:var(--ember);}.sw-st.done{color:var(--mint);}",
+    ".sw-blurb{border:1px dashed var(--line);padding:10px 12px;margin:0 0 12px;font-size:12.5px;line-height:1.7;color:var(--steel);}",
+    ".sw-blurb b{color:var(--paper);}",
+    ".sw-k{font-family:var(--font-m);font-size:10.5px;color:var(--dim);letter-spacing:.1em;display:block;margin:14px 0 8px;}",
+    ".sw-card{border:1px solid var(--line);background:var(--panel-2);padding:14px;margin:0 0 12px;}",
+    ".sw-card.done{border-color:var(--mint);}",
+    ".sw-q{font-family:var(--font-m);font-size:13px;color:var(--paper);margin:0 0 4px;}",
+    ".sw-q b{color:var(--ember);font-weight:600;}",
+    ".sw-note{font-size:12px;color:var(--dim);margin:0 0 10px;line-height:1.6;}",
+    ".sw-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:0 0 10px;}",
+    ".sw-fld label{display:block;font-family:var(--font-m);font-size:10.5px;color:var(--dim);letter-spacing:.08em;margin:0 0 4px;}",
+    ".sw-fld input,.sw-fld select{width:100%;min-height:48px;background:var(--ink);border:1px solid var(--line);color:var(--paper);font-family:var(--font-m);font-size:14px;padding:8px 10px;box-sizing:border-box;}",
+    ".sw-fld input:disabled,.sw-fld select:disabled{opacity:.55;}",
+    ".sw-fmsg{font-family:var(--font-m);font-size:10.5px;letter-spacing:.06em;margin:4px 0 0;min-height:16px;}",
+    ".sw-fmsg.good{color:var(--mint);}.sw-fmsg.bad{color:var(--ember);}",
+    ".sw-btnrow{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 2px;}",
+    ".sw-btn{border:1px solid var(--line);background:var(--ink);color:var(--paper);font-family:var(--font-d);font-size:13px;min-height:48px;padding:10px 18px;cursor:pointer;letter-spacing:.04em;}",
+    ".sw-btn.primary{background:var(--ember);border-color:var(--ember);color:#0a0a0a;font-weight:700;}",
+    ".sw-btn:disabled{opacity:.45;cursor:default;}",
+    ".sw-btn:hover:not(:disabled){border-color:var(--ember);}",
+    ".sw-btn.primary:hover:not(:disabled){border-color:var(--paper);}",
+    ".sw-hint{font-size:12px;color:var(--steel);line-height:1.7;margin:8px 0 0;max-width:72ch;display:none;}",
+    ".sw-hint.show{display:block;}",
+    ".sw-hint b{color:var(--paper);}",
+    ".sw-bits{width:100%;border-collapse:collapse;font-family:var(--font-m);font-size:11.5px;margin:8px 0 4px;color:var(--steel);display:none;}",
+    ".sw-bits.show{display:table;}",
+    ".sw-bits th,.sw-bits td{border:1px solid var(--line);padding:6px 10px;text-align:left;}",
+    ".sw-bits th{color:var(--dim);font-weight:400;letter-spacing:.08em;font-size:10px;}",
+    ".sw-bits td b{color:var(--paper);font-weight:400;}",
+    ".sw-bits .sw-dim{color:var(--dim);}",
+    ".sw-banner{border:1px solid var(--mint);color:var(--mint);font-family:var(--font-m);font-size:12px;letter-spacing:.1em;padding:10px 12px;margin:12px 0 0;}",
+    "@media(prefers-reduced-motion:no-preference){.sw-pop{animation:swpop .2s ease-out;}}",
+    "@keyframes swpop{0%{transform:scale(.96);}100%{transform:scale(1);}}",
+    ".sw-done{border:1px solid var(--ember);padding:18px;margin:0 0 12px;}",
+    ".sw-done h4{font-family:var(--font-d);font-size:18px;color:var(--ember);margin:0 0 8px;text-transform:uppercase;letter-spacing:.03em;}",
+    ".sw-done p{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 8px;}",
+    ".sw-done p b{color:var(--paper);}",
+    ".sw-zline{font-family:var(--font-m);font-size:11.5px;color:var(--steel);margin:0 0 4px;}",
+    ".sw-zline b{color:var(--paper);font-weight:400;}",
+    ".sw-foot{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0 0;}",
+    ".sw-progress{font-family:var(--font-m);font-size:11.5px;color:var(--dim);letter-spacing:.08em;margin-right:auto;}",
+    ".sw-progress b{color:var(--paper);font-weight:600;}",
+    ".sw-panel button:focus-visible,.sw-panel input:focus-visible,.sw-panel select:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}"
+  ];
+
+  /* ---------------- element helper ---------------- */
+
+  function swEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  /* ---------------- state ---------------- */
+
+  var swS = null;
+  var swEls = {};
+
+  function swNewState() {
+    return {
+      zones: SW_ZONES.map(swNewZoneState),
+      tab: 0,
+      done: false
+    };
+  }
+
+  function swZone() { return swS.zones[swS.tab]; }
+
+  function swCertified() {
+    var n = 0;
+    for (var i = 0; i < swS.zones.length; i++) {
+      if (swS.zones[i].t1ok && swS.zones[i].t2ok) n++;
+    }
+    return n;
+  }
+
+  /* ---------------- binary worksheet ---------------- */
+
+  function swBuildBits(zs) {
+    var t = document.createElement("table");
+    t.className = "sw-bits";
+    t.setAttribute("aria-label", "Binary worksheet");
+    var head = document.createElement("tr");
+    ["", "octet 1", "octet 2", "octet 3", "octet 4"].forEach(function (h) {
+      var th = document.createElement("th");
+      th.textContent = h;
+      head.appendChild(th);
+    });
+    t.appendChild(head);
+    var p = zs.t1.p;
+    var rows = [
+      { label: "address", val: zs.t1.ip },
+      { label: "mask /" + p, val: swMask(p) },
+      { label: "network", val: swNet(zs.t1.ip, p) },
+      { label: "broadcast", val: swBcast(zs.t1.ip, p) }
+    ];
+    rows.forEach(function (r) {
+      var tr = document.createElement("tr");
+      var lab = document.createElement("th");
+      lab.textContent = r.label;
+      tr.appendChild(lab);
+      var octs = swOctets(r.val);
+      for (var i = 0; i < 4; i++) {
+        var td = document.createElement("td");
+        var bits = swBin8(octs[i]);
+        var netBits = Math.min(8, Math.max(0, p - i * 8));
+        var nb = document.createElement("b");
+        nb.textContent = bits.slice(0, netBits);
+        var hb = document.createElement("span");
+        hb.className = "sw-dim";
+        hb.textContent = bits.slice(netBits);
+        td.appendChild(nb);
+        td.appendChild(hb);
+        tr.appendChild(td);
+      }
+      t.appendChild(tr);
+    });
+    return t;
+  }
+
+  /* ---------------- zone panel ---------------- */
+
+  var SW_T1_FIELDS = [
+    { key: "net", label: "Network address" },
+    { key: "bcast", label: "Broadcast address" },
+    { key: "hosts", label: "Usable hosts" },
+    { key: "first", label: "First usable" },
+    { key: "last", label: "Last usable" }
+  ];
+
+  function swFieldMsg(container, key, res) {
+    var m = container.querySelector("[data-swmsg=\"" + key + "\"]");
+    if (!m) return;
+    m.textContent = (res.ok ? "CORRECT: " : "NOT YET: ") + res.msg.replace(/^(Correct|Not yet):\s*/, "");
+    m.className = "sw-fmsg " + (res.ok ? "good" : "bad");
+  }
+
+  function swBuildZone() {
+    var w = swEls.zone;
+    w.innerHTML = "";
+    var zs = swZone(), i = swS.tab;
+
+    var blurb = swEl("p", "sw-blurb");
+    blurb.innerHTML = "<b>" + zs.def.tag + ".</b> " + zs.def.blurb;
+    w.appendChild(blurb);
+
+    /* ---- task 1 ---- */
+    var c1 = swEl("div", "sw-card" + (zs.t1ok ? " done" : ""));
+    var q1 = swEl("p", "sw-q");
+    q1.innerHTML = "1. Read the address. A host reports <b>" + swInt2ip(zs.t1.ip) + "/" + zs.t1.p + "</b>. Give the five facts.";
+    c1.appendChild(q1);
+    var n1 = swEl("p", "sw-note", "AND the address with the mask for the network; the broadcast flips every host bit to 1; the count is 2 to the host bits, minus the network and the broadcast.");
+    c1.appendChild(n1);
+
+    var fgrid = swEl("div", "sw-fields");
+    SW_T1_FIELDS.forEach(function (f) {
+      var fld = swEl("div", "sw-fld");
+      var lab = document.createElement("label");
+      lab.textContent = f.label;
+      lab.setAttribute("for", "sw_z" + i + "_" + f.key);
+      var inp = document.createElement("input");
+      inp.id = "sw_z" + i + "_" + f.key;
+      inp.type = "text";
+      inp.setAttribute("inputmode", f.key === "hosts" ? "numeric" : "decimal");
+      inp.setAttribute("autocomplete", "off");
+      inp.setAttribute("spellcheck", "false");
+      inp.value = zs.a1[f.key] || "";
+      inp.disabled = zs.t1ok;
+      (function (key, el) {
+        el.addEventListener("input", function () { zs.a1[key] = el.value; });
+      })(f.key, inp);
+      var msg = swEl("p", "sw-fmsg");
+      msg.setAttribute("data-swmsg", f.key);
+      msg.setAttribute("aria-live", "polite");
+      lab.appendChild(inp);
+      fld.appendChild(lab);
+      fld.appendChild(msg);
+      fgrid.appendChild(fld);
+    });
+    c1.appendChild(fgrid);
+
+    var b1row = swEl("div", "sw-btnrow");
+    var check1 = swEl("button", "sw-btn primary", "Check the five facts");
+    check1.type = "button";
+    check1.id = "sw_z" + i + "_check1";
+    check1.disabled = zs.t1ok;
+    check1.addEventListener("click", function () { swOnCheck1(i); });
+    b1row.appendChild(check1);
+    var bitsBtn = swEl("button", "sw-btn", zs.bitsOpen ? "Hide the bits" : "Show the bits");
+    bitsBtn.type = "button";
+    bitsBtn.addEventListener("click", function () {
+      zs.bitsOpen = !zs.bitsOpen;
+      swBuildZone();
+    });
+    b1row.appendChild(bitsBtn);
+    var newAddr = swEl("button", "sw-btn", "New addresses");
+    newAddr.type = "button";
+    newAddr.addEventListener("click", function () {
+      var fresh = swNewZoneState(zs.def);
+      fresh.checks = zs.checks;
+      swS.zones[i] = fresh;
+      if (swS.done) { swS.done = false; swEls.done.innerHTML = ""; }
+      swRenderTabs();
+      swBuildZone();
+      swRenderFoot();
+      toast("Fresh addresses dealt for " + zs.def.tag);
+    });
+    b1row.appendChild(newAddr);
+    c1.appendChild(b1row);
+
+    var bits = swBuildBits(zs);
+    if (zs.bitsOpen) bits.classList.add("show");
+    bits.id = "sw_z" + i + "_bits";
+    c1.appendChild(bits);
+
+    var hint = swEl("p", "sw-hint" + (zs.hint1 ? " show" : ""));
+    hint.innerHTML = "<b>Method, not answers.</b> Write the address and the mask in binary, AND them for the network. " +
+      "The broadcast is the network with every host bit set to 1. Usable hosts are 2^(host bits) minus 2. " +
+      "First usable is network plus one; last usable is broadcast minus one.";
+    c1.appendChild(hint);
+    w.appendChild(c1);
+
+    /* ---- task 2 ---- */
+    var c2 = swEl("div", "sw-card" + (zs.t2ok ? " done" : ""));
+    var q2 = swEl("p", "sw-q");
+    q2.innerHTML = "2. Carve the subnet. The base block is <b>" + zs.def.base + "/" + zs.def.baseP + "</b> and this zone needs <b>" + zs.def.need + " hosts</b>.";
+    c2.appendChild(q2);
+    var n2 = swEl("p", "sw-note", "Pick the smallest prefix that still fits, plant the subnet on an aligned boundary inside the base block, and put the gateway on any usable host. Convention parks the gateway on the first usable address.");
+    c2.appendChild(n2);
+
+    var f2 = swEl("div", "sw-fields");
+    var fldP = swEl("div", "sw-fld");
+    var labP = document.createElement("label");
+    labP.textContent = "Prefix length";
+    labP.setAttribute("for", "sw_z" + i + "_prefix");
+    var sel = document.createElement("select");
+    sel.id = "sw_z" + i + "_prefix";
+    sel.disabled = zs.t2ok;
+    var opt0 = document.createElement("option");
+    opt0.value = "";
+    opt0.textContent = "Choose";
+    sel.appendChild(opt0);
+    for (var pp = 24; pp <= 30; pp++) {
+      var o = document.createElement("option");
+      o.value = String(pp);
+      o.textContent = "/" + pp + " (" + swUsable(pp) + " usable)";
+      sel.appendChild(o);
+    }
+    sel.value = zs.a2.prefix || "";
+    (function (el) {
+      el.addEventListener("change", function () { zs.a2.prefix = el.value; });
+    })(sel);
+    var msgP = swEl("p", "sw-fmsg");
+    msgP.setAttribute("data-swmsg", "prefix");
+    msgP.setAttribute("aria-live", "polite");
+    labP.appendChild(sel);
+    fldP.appendChild(labP);
+    fldP.appendChild(msgP);
+    f2.appendChild(fldP);
+
+    [["subnet", "Subnet network address"], ["gw", "Gateway address"]].forEach(function (pair) {
+      var fld = swEl("div", "sw-fld");
+      var lab = document.createElement("label");
+      lab.textContent = pair[1];
+      lab.setAttribute("for", "sw_z" + i + "_" + pair[0]);
+      var inp = document.createElement("input");
+      inp.id = "sw_z" + i + "_" + pair[0];
+      inp.type = "text";
+      inp.setAttribute("inputmode", "decimal");
+      inp.setAttribute("autocomplete", "off");
+      inp.setAttribute("spellcheck", "false");
+      inp.value = zs.a2[pair[0]] || "";
+      inp.disabled = zs.t2ok;
+      (function (key, el) {
+        el.addEventListener("input", function () { zs.a2[key] = el.value; });
+      })(pair[0], inp);
+      var msg = swEl("p", "sw-fmsg");
+      msg.setAttribute("data-swmsg", pair[0]);
+      msg.setAttribute("aria-live", "polite");
+      lab.appendChild(inp);
+      fld.appendChild(lab);
+      fld.appendChild(msg);
+      f2.appendChild(fld);
+    });
+    c2.appendChild(f2);
+
+    var b2row = swEl("div", "sw-btnrow");
+    var check2 = swEl("button", "sw-btn primary", "Check the subnet");
+    check2.type = "button";
+    check2.id = "sw_z" + i + "_check2";
+    check2.disabled = zs.t2ok;
+    check2.addEventListener("click", function () { swOnCheck2(i); });
+    b2row.appendChild(check2);
+    c2.appendChild(b2row);
+    w.appendChild(c2);
+
+    if (zs.t1ok && zs.t2ok) {
+      var ban = swEl("div", "sw-banner sw-pop", "ZONE CERTIFIED: " + zs.def.tag + " (" + zs.checks + " checks)");
+      w.appendChild(ban);
+    }
+  }
+
+  function swOnCheck1(i) {
+    var zs = swS.zones[i];
+    zs.checks++;
+    var res = swCheckT1(zs, zs.a1);
+    var card = swEls.zone;
+    SW_T1_FIELDS.forEach(function (f) { swFieldMsg(card, f.key, res[f.key]); });
+    if (res.all && !zs.t1ok) {
+      zs.t1ok = true;
+      toast("Task 1 correct: " + zs.def.tag);
+      if (zs.t2ok) swZoneCertified(i);
+      else { swRenderTabs(); swBuildZone(); }
+    } else if (!res.all) {
+      var hint = card.querySelector(".sw-hint");
+      if (hint) hint.classList.add("show");
+      zs.hint1 = true;
+      swRenderTabs();
+    }
+  }
+
+  function swOnCheck2(i) {
+    var zs = swS.zones[i];
+    zs.checks++;
+    var res = swCheckT2(zs, zs.a2);
+    var card = swEls.zone;
+    ["prefix", "subnet", "gw"].forEach(function (k) { swFieldMsg(card, k, res[k]); });
+    if (res.all && !zs.t2ok) {
+      zs.t2ok = true;
+      toast("Subnet correct: " + zs.def.tag);
+      if (zs.t1ok) swZoneCertified(i);
+      else { swRenderTabs(); swBuildZone(); }
+    } else {
+      swRenderTabs();
+    }
+  }
+
+  function swZoneCertified(i) {
+    swRenderTabs();
+    swBuildZone();
+    var n = swCertified();
+    swRenderFoot();
+    if (n === swS.zones.length && !swS.done) {
+      swS.done = true;
+      swRenderDone();
+      toast("Shop network certified");
+    }
+  }
+
+  /* ---------------- tabs, done, foot ---------------- */
+
+  function swRenderTabs() {
+    var w = swEls.tabs;
+    w.innerHTML = "";
+    swS.zones.forEach(function (zs, i) {
+      var b = swEl("button", "sw-tab");
+      b.type = "button";
+      b.id = "sw_tab_" + i;
+      b.setAttribute("aria-selected", i === swS.tab ? "true" : "false");
+      var tag = swEl("span", "sw-tag", "ZONE " + (i + 1) + " OF 3");
+      var nm = swEl("span", null, zs.def.tag);
+      var st = swEl("span", "sw-st " + (zs.t1ok && zs.t2ok ? "done" : (zs.t1ok || zs.t2ok ? "part" : "todo")),
+        zs.t1ok && zs.t2ok ? "CERTIFIED" : (zs.t1ok || zs.t2ok ? "HALF DONE" : "OPEN"));
+      b.appendChild(tag);
+      b.appendChild(nm);
+      b.appendChild(st);
+      (function (idx) {
+        b.addEventListener("click", function () {
+          swS.tab = idx;
+          swRenderTabs();
+          swBuildZone();
+        });
+      })(i);
+      w.appendChild(b);
+    });
+  }
+
+  function swRenderDone() {
+    var w = swEls.done;
+    w.innerHTML = "";
+    var d = swEl("div", "sw-done sw-pop");
+    d.appendChild(swEl("h4", null, "Shop network certified"));
+    var p = swEl("p");
+    p.innerHTML = "All three zones address cleanly: <b>zero addressing errors</b> across reads and carves. " +
+      "The record below is the proof the wiring closet gets.";
+    d.appendChild(p);
+    swS.zones.forEach(function (zs) {
+      var z = swEl("p", "sw-zline");
+      z.innerHTML = "<b>" + zs.def.tag + "</b> " + swInt2ip(zs.t1.ip) + "/" + zs.t1.p +
+        " read, " + zs.a2.subnet + "/" + zs.a2.prefix + " carved, gateway " + zs.a2.gw +
+        " (" + zs.checks + " checks)";
+      d.appendChild(z);
+    });
+    w.appendChild(d);
+  }
+
+  function swDownloadCert() {
+    var lines = [];
+    lines.push("THE PROVING GROUND: THE SWITCH ROOM");
+    lines.push("OLD IRON bench network certification record");
+    lines.push("issued: " + new Date().toISOString());
+    lines.push("");
+    swS.zones.forEach(function (zs, i) {
+      var r1 = swCheckT1(zs, zs.a1).exp;
+      lines.push("ZONE " + (i + 1) + ": " + zs.def.tag);
+      lines.push("  address read: " + swInt2ip(zs.t1.ip) + "/" + zs.t1.p);
+      lines.push("  network: " + r1.net + "  broadcast: " + r1.bcast);
+      lines.push("  usable: " + r1.hosts + "  first: " + r1.first + "  last: " + r1.last);
+      lines.push("  subnet carved: " + zs.a2.subnet + "/" + zs.a2.prefix + " from " + zs.def.base + "/" + zs.def.baseP);
+      lines.push("  gateway: " + zs.a2.gw + "  (hosts needed: " + zs.def.need + ")");
+      lines.push("  checks used: " + zs.checks);
+      lines.push("");
+    });
+    lines.push("verdict: SHOP NETWORK CERTIFIED, zero addressing errors");
+    var blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = (window.URL || window.webkitURL).createObjectURL(blob);
+    a.download = "switch-room-certification.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      (window.URL || window.webkitURL).revokeObjectURL(a.href);
+      if (a.parentNode) a.parentNode.removeChild(a);
+    }, 4000);
+    toast("Certification record downloaded");
+  }
+
+  function swRenderFoot() {
+    var w = swEls.foot;
+    w.innerHTML = "";
+    var p = swEl("span", "sw-progress");
+    var b = swEl("b", null, swCertified() + " of 3");
+    p.appendChild(b);
+    p.appendChild(swEl("span", null, " zones certified"));
+    w.appendChild(p);
+    var cert = swEl("button", "sw-btn", "Download the certification record");
+    cert.type = "button";
+    cert.setAttribute("data-sw", "cert");
+    cert.disabled = swCertified() < 3;
+    cert.addEventListener("click", swDownloadCert);
+    w.appendChild(cert);
+    var close = swEl("button", "sw-btn", "Close bench");
+    close.type = "button";
+    close.setAttribute("data-sw", "close");
+    close.addEventListener("click", function () {
+      document.getElementById("swOverlay").classList.remove("open");
+    });
+    w.appendChild(close);
+  }
+
+  /* ---------------- build ---------------- */
+
+  function swBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("swBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = SW_CSS.join("\n");
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "swBtn";
+    b.className = "secondary";
+    b.textContent = "Run the Switch Room";
+    b.addEventListener("click", function () {
+      document.getElementById("swOverlay").classList.add("open");
+    });
+    box.appendChild(b);
+
+    var ov = document.createElement("div");
+    ov.className = "sw-overlay";
+    ov.id = "swOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Switch Room");
+
+    var panel = document.createElement("div");
+    panel.className = "sw-panel";
+    panel.appendChild(swEl("h3", null, "The Switch Room"));
+    panel.appendChild(swEl("p", "sw-spec", "CIDR MATH \u00B7 3 ZONES \u00B7 BINARY PROOF"));
+
+    var sub = swEl("p", "sw-sub");
+    sub.innerHTML = "The <b>OLD IRON</b> refurb shop is wiring three network zones and the switch will not forgive a bad address. " +
+      "Every IPv4 address is 32 bits: the prefix length says how many belong to the network, the rest name the hosts. " +
+      "For each zone, <b>read the address</b> (network, broadcast, usable hosts, first and last usable), then <b>carve the subnet</b> " +
+      "from the base block and place the gateway. Certify all three zones with zero addressing errors.";
+    panel.appendChild(sub);
+
+    swEls.tabs = swEl("div", "sw-tabs");
+    panel.appendChild(swEls.tabs);
+
+    swEls.zone = swEl("div", null);
+    panel.appendChild(swEls.zone);
+
+    swEls.done = swEl("div", null);
+    panel.appendChild(swEls.done);
+
+    swEls.foot = swEl("div", "sw-foot");
+    panel.appendChild(swEls.foot);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    swS = swNewState();
+    swRenderTabs();
+    swBuildZone();
+    swRenderFoot();
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", swBuild);
+    } else {
+      swBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      SW: {
+        parseIP: swParseIP, int2ip: swInt2ip, mask: swMask,
+        net: swNet, bcast: swBcast, usable: swUsable,
+        first: swFirst, last: swLast, bin8: swBin8,
+        genT1: swGenT1, zones: function () { return swS ? swS.zones : null; },
+        checkT1: swCheckT1, checkT2: swCheckT2,
+        newState: swNewState, newZoneState: swNewZoneState,
+        certified: function () { return swS ? swCertified() : -1; }
+      }
+    });
+  }
+
+})();
