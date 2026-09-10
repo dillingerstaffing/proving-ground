@@ -4528,13 +4528,14 @@ if (typeof module !== "undefined" && module.exports) {
     panel.innerHTML =
       '<button class="sb-close" id="sbClose">CLOSE [x]</button>' +
       '<h3>The Spill <span class="sb-acid">Bin</span></h3>' +
-      '<p class="sb-sub">Every function is a bar fight over registers: more live values than ' +
-      'physical registers, and somebody spills to the stack. This bench puts you in the ' +
-      'allocator seat for the same register pressure behind the ' +
-      '<a href="https://dillingerstaffing.github.io/portfolio/" target="_blank" rel="noopener">RV32I pipeline work</a> ' +
-      'in the portfolio. Read the live ranges, color the interference graph, spill the cheapest ' +
-      'victims, stay inside the budget. Free-build in EXPLORE, then qualify on three shifts in TRIALS. ' +
-      'The shop solver (a real Chaitin-Briggs allocator running under the bench) sets every par.</p>' +
+      '<p class="sb-sub">A register allocator decides which values live in the chip&#39;s ' +
+      'handful of registers and which wait in memory. Waiting in memory is called a spill, ' +
+      'and every spill costs cycles, so the allocator spills the cheapest victim it can find. ' +
+      'Trial 2 makes it concrete: eleven virtuals, four physical registers, something has to spill. ' +
+      'Each value is a node; two nodes alive at the same time share an edge, and that web of edges ' +
+      'is the interference graph. Color it with four colors, or spill the cheapest node to the stack, ' +
+      'and stay inside the budget. Free-build in EXPLORE, then qualify on three shifts in TRIALS ' +
+      'against the shop solver par.</p>' +
       '<div class="sb-tabs">' +
       '<button class="sb-tab on" id="sbTabExp">EXPLORE</button>' +
       '<button class="sb-tab" id="sbTabTri">TRIALS</button>' +
@@ -5860,9 +5861,13 @@ if (typeof module !== "undefined" && module.exports) {
 
     var body = pwEl("div", "pw-body");
     var sub = pwEl("p", "pw-sub", "");
-    sub.innerHTML = "<b>HOW IT WORKS</b> Every load, store, and fetch walks the page tables. " +
-      "Read VPN1 and VPN0 out of the virtual address, step the matching entries, decode the PTE flags, " +
-      "and either commit the physical address or raise the page fault. " +
+    sub.innerHTML = "<b>HOW IT WORKS</b> The addresses your program uses are not real: " +
+      "two tables translate every virtual address to a physical one, and a missing entry " +
+      "is the page fault your OS handles. Trial 1 makes it concrete: address 0x3A7C, a READ. " +
+      "Split the address into its two page-number fields, VPN1 and VPN0, step the matching entries " +
+      "in both 16-entry tables, check each entry's permission flags, then commit the physical address. " +
+      "Trial 3 is the failure mode: the walk finds a denial, and the correct answer is raising " +
+      "the page fault instead of translating. " +
       "Same walk as sv32 (and xv6), on 16-entry training tables. " +
       "Built for the <a href=\"https://dillingerstaffing.github.io/portfolio/\" target=\"_blank\" rel=\"noopener\">RISC-V portfolio work</a>.";
     body.appendChild(sub);
@@ -6510,10 +6515,13 @@ if (typeof module !== "undefined" && module.exports) {
 
     var body = tgEl("div", "tg-body");
     var sub = tgEl("p", "tg-sub", "");
-    sub.innerHTML = "<b>HOW IT WORKS</b> Traps arrive as an mcause value: top bit set means interrupt, " +
-      "low bits name the cause. mideleg bit[cause] delegates an interrupt to S-mode, " +
-      "medeleg bit[cause] delegates a sync exception, and mtvec chooses DIRECT or VECTORED dispatch. " +
-      "Route every wave exactly where the firmware policy demands. " +
+    sub.innerHTML = "<b>HOW IT WORKS</b> When a trap fires, the hardware must decide who handles it: " +
+      "machine firmware or the supervisor OS. That routing decision is delegation, and getting it " +
+      "wrong means the wrong handler runs. Each trap arrives as an mcause value: top bit set means " +
+      "interrupt, low bits name the cause. One delegation bit per cause sends interrupts (mideleg) " +
+      "or sync exceptions (medeleg) to S-mode; mtvec then chooses DIRECT or VECTORED dispatch. " +
+      "Trial 2 makes it concrete: the OS claims its timer interrupt and its ecalls, everything else " +
+      "stays with firmware. Route every wave exactly where the policy demands. " +
       "Built for the <a href=\"https://dillingerstaffing.github.io/portfolio/\" target=\"_blank\" rel=\"noopener\">RISC-V portfolio work</a>.";
     body.appendChild(sub);
     var pageExp = tgEl("div", null, "");
