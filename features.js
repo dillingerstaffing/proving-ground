@@ -17365,3 +17365,625 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+
+/* ============================================================
+   THE DIMM BAY
+   Old Iron memory installation: keyed DDR slots that physically
+   refuse the wrong generation, matched pairs for dual channel,
+   retention clips that must both latch. Pick, seat, POST.
+   Self-contained, appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- data: the atomic mechanism ---------------- */
+
+  /* Notch position along the edge connector, arbitrary units 0..100.
+     The mechanism is real: every DDR generation keys its notch at a
+     different position, so a wrong-generation stick physically cannot
+     seat. SO-DIMM keys differ from full-size DIMM keys. */
+  var DM_KEY = { 3: 38, 4: 62, 5: 74 };
+  var DM_SO_KEY = { 3: 30, 4: 55, 5: 66 };
+
+  var DM_STICKS = [
+    { id: "t1a", label: "DDR3 8GB 1600 DIMM",        gen: 3, form: "dimm",   buf: "udimm", cap: 8,  speed: 1600, pins: 240 },
+    { id: "t1b", label: "DDR4 8GB 3200 UDIMM",      gen: 4, form: "dimm",   buf: "udimm", cap: 8,  speed: 3200, pins: 288 },
+    { id: "t1c", label: "DDR4 8GB 3200 UDIMM",      gen: 4, form: "dimm",   buf: "udimm", cap: 8,  speed: 3200, pins: 288 },
+    { id: "t1d", label: "DDR4 16GB 3200 UDIMM",     gen: 4, form: "dimm",   buf: "udimm", cap: 16, speed: 3200, pins: 288 },
+    { id: "t1e", label: "DDR4 8GB 2666 SO-DIMM",    gen: 4, form: "sodimm", buf: "udimm", cap: 8,  speed: 2666, pins: 260 },
+    { id: "t1f", label: "DDR5 16GB 5600 UDIMM",     gen: 5, form: "dimm",   buf: "udimm", cap: 16, speed: 5600, pins: 288 },
+    { id: "t1g", label: "DDR4 16GB 3200 RDIMM ECC", gen: 4, form: "dimm",   buf: "rdimm", cap: 16, speed: 3200, pins: 288 },
+    { id: "t2a", label: "DDR4 8GB 3200 UDIMM",      gen: 4, form: "dimm",   buf: "udimm", cap: 8,  speed: 3200, pins: 288 },
+    { id: "t2b", label: "DDR4 8GB 3200 UDIMM",      gen: 4, form: "dimm",   buf: "udimm", cap: 8,  speed: 3200, pins: 288 },
+    { id: "t2d", label: "DDR4 4GB 2666 UDIMM",      gen: 4, form: "dimm",   buf: "udimm", cap: 4,  speed: 2666, pins: 288 },
+    { id: "t3a", label: "DDR4 8GB 3200 UDIMM",      gen: 4, form: "dimm",   buf: "udimm", cap: 8,  speed: 3200, pins: 288 },
+    { id: "t3b", label: "DDR4 8GB 3200 UDIMM",      gen: 4, form: "dimm",   buf: "udimm", cap: 8,  speed: 3200, pins: 288 }
+  ];
+
+  function dmBoardSpec() {
+    return {
+      name: "B450M REFURB",
+      gen: 4, form: "dimm", key: DM_KEY[4],
+      slots: [
+        { id: "A1", chan: "A", primary: false },
+        { id: "A2", chan: "A", primary: true },
+        { id: "B1", chan: "B", primary: false },
+        { id: "B2", chan: "B", primary: true }
+      ]
+    };
+  }
+
+  var DM_TRIALS = [
+    { id: "pick", name: "TRIAL 1: THE RIGHT STICKS",
+      story: "A B450M refurb board, DDR4, four slots. Seven sticks in the tray and only one matched pair belongs in this board. Read every label: generation, form factor, and buffering must all match before the slot key lets anything seat.",
+      tray: ["t1a", "t1b", "t1c", "t1d", "t1e", "t1f", "t1g"], preset: [] },
+    { id: "move", name: "TRIAL 2: THE SINGLE-CHANNEL TRAP",
+      story: "This board POSTs, but the BIOS reads SINGLE CHANNEL and the refurb spec demands dual. The last tech seated both sticks on channel A. Move one stick so the matched pair straddles the channels on the primary slots.",
+      tray: ["t2d"], preset: [
+        { slot: "A2", stick: "t2a", latched: [true, true] },
+        { slot: "A1", stick: "t2b", latched: [true, true] } ] },
+    { id: "reseat", name: "TRIAL 3: THE SILENT BOARD",
+      story: "Fans spin, no video, three long beeps. That beep code means the memory never trained. The last tech swears both clips clicked. Inspect every slot, find the liar, and reseat the stick until both clips latch.",
+      tray: [], preset: [
+        { slot: "A2", stick: "t3a", latched: [true, true] },
+        { slot: "B2", stick: "t3b", latched: [true, false] } ] }
+  ];
+
+  /* ---------------- pure logic (no DOM) ---------------- */
+
+  function dmStickById(id) {
+    for (var i = 0; i < DM_STICKS.length; i++) if (DM_STICKS[i].id === id) return DM_STICKS[i];
+    return null;
+  }
+
+  function dmKeyOf(st) { return st.form === "sodimm" ? DM_SO_KEY[st.gen] : DM_KEY[st.gen]; }
+
+  /* Physical seating check. Returns {ok:true} or {ok:false, msg}. */
+  function dmSeatCheck(st, board) {
+    if (st.gen !== board.gen) {
+      return { ok: false, msg: "Won't seat: " + st.label + " in a DDR" + board.gen +
+        " slot. The stick's notch sits at " + dmKeyOf(st) + ", the slot key at " +
+        board.key + ". Wrong generation: the key physically blocks it." };
+    }
+    if (st.form !== board.form) {
+      return { ok: false, msg: "Won't seat: a " + st.pins + "-pin SO-DIMM in a full-size " +
+        "DIMM slot. Wrong form factor: the stick doesn't span the slot." };
+    }
+    if (st.buf === "rdimm") {
+      return { ok: false, msg: "Won't train: registered ECC needs a board with a register " +
+        "driver chip. This desktop board has none, so the stick stays in the tray." };
+    }
+    return { ok: true };
+  }
+
+  function dmNewTrial(def) {
+    var t = { def: def, board: dmBoardSpec(), selected: null, selSlot: null,
+              loose: def.tray.slice(), seated: [], certified: false };
+    for (var i = 0; i < def.preset.length; i++) {
+      t.seated.push({ slot: def.preset[i].slot, stick: def.preset[i].stick,
+                      latched: [def.preset[i].latched[0], def.preset[i].latched[1]] });
+    }
+    return t;
+  }
+
+  function dmNewState() {
+    var trials = [];
+    for (var i = 0; i < DM_TRIALS.length; i++) trials.push(dmNewTrial(DM_TRIALS[i]));
+    return { trials: trials, ti: 0, done: false };
+  }
+
+  function dmSlotEntry(t, slotId) {
+    for (var i = 0; i < t.seated.length; i++) if (t.seated[i].slot === slotId) return t.seated[i];
+    return null;
+  }
+
+  function dmActSeat(t, slotId) {
+    var st = dmStickById(t.selected);
+    if (!st) return { ok: false, msg: "Pick a stick from the tray first, then tap a slot." };
+    if (dmSlotEntry(t, slotId)) return { ok: false, msg: "Slot " + slotId + " is occupied. Tap it to unseat the stick." };
+    var chk = dmSeatCheck(st, t.board);
+    if (!chk.ok) return { ok: false, msg: chk.msg };
+    t.seated.push({ slot: slotId, stick: st.id, latched: [true, true] });
+    var ix = t.loose.indexOf(st.id);
+    if (ix >= 0) t.loose.splice(ix, 1);
+    t.selected = null;
+    return { ok: true, msg: st.label + " seated in " + slotId + ". Both clips latched." };
+  }
+
+  function dmActUnseat(t, slotId) {
+    var e = dmSlotEntry(t, slotId);
+    if (!e) return { ok: false, msg: "Slot " + slotId + " is empty." };
+    t.seated.splice(t.seated.indexOf(e), 1);
+    t.loose.push(e.stick);
+    if (t.selSlot === slotId) t.selSlot = null;
+    return { ok: true, msg: dmStickById(e.stick).label + " back in the tray." };
+  }
+
+  function dmActReseat(t, slotId) {
+    var e = dmSlotEntry(t, slotId);
+    if (!e) return { ok: false, msg: "Slot " + slotId + " is empty." };
+    if (e.latched[0] && e.latched[1]) return { ok: false, msg: "Slot " + slotId + ": both clips already latched. Nothing to reseat." };
+    e.latched = [true, true];
+    if (t.selSlot === slotId) t.selSlot = null;
+    return { ok: true, msg: "Slot " + slotId + " reseated. Both clips clicked." };
+  }
+
+  /* POST model. Returns {code, pass, beeps, title, lines[]}. */
+  function dmPost(t) {
+    var seated = t.seated.slice(), i, e;
+    if (!seated.length) {
+      return { code: "nomem", pass: false, beeps: true, title: "3 LONG BEEPS",
+        lines: ["NO MEMORY DETECTED", "Seat at least one stick before POST."] };
+    }
+    for (i = 0; i < seated.length; i++) {
+      e = seated[i];
+      if (!e.latched[0] || !e.latched[1]) {
+        return { code: "unlatched", pass: false, beeps: true, slot: e.slot, title: "3 LONG BEEPS",
+          lines: ["MEMORY NEVER TRAINED",
+                  "Slot " + e.slot + ": one retention clip never latched, the stick sits tilted.",
+                  "Reseat it until both clips click."] };
+      }
+    }
+    if (seated.length > 2) {
+      return { code: "crowded", pass: false, beeps: true, title: "3 LONG BEEPS",
+        lines: ["POPULATION ERROR", seated.length + " sticks seated.",
+                "This bench qualifies exactly one matched pair."] };
+    }
+    var sticks = seated.map(function (s) { return dmStickById(s.stick); });
+    if (seated.length === 1) {
+      var s0 = sticks[0];
+      return { code: "single1", pass: false, beeps: false, title: "POST: SINGLE CHANNEL",
+        lines: ["MEMORY: " + (s0.cap * 1024) + " MB DDR" + s0.gen + "-" + s0.speed,
+                "CHANNEL: SINGLE",
+                "The board boots on one stick, but the refurb spec demands a matched dual-channel pair."] };
+    }
+    var a = sticks[0], b = sticks[1];
+    if (a.cap !== b.cap || a.speed !== b.speed || a.gen !== b.gen || a.form !== b.form) {
+      return { code: "mismatch", pass: false, beeps: false, title: "POST: SINGLE CHANNEL",
+        lines: ["MEMORY: " + ((a.cap + b.cap) * 1024) + " MB",
+                "CHANNEL: SINGLE (FLEX)",
+                "Mismatched pair: " + a.label + " + " + b.label + ".",
+                "Dual-channel interleaving needs identical capacity and speed."] };
+    }
+    var ids = [seated[0].slot, seated[1].slot].sort();
+    var totalMB = (a.cap + b.cap) * 1024;
+    var memLine = "MEMORY: " + totalMB + " MB DDR" + a.gen + "-" + a.speed;
+    if (ids[0] === "A2" && ids[1] === "B2") {
+      return { code: "ok", pass: true, beeps: false, title: "POST OK",
+        lines: [memLine, "CHANNEL: DUAL (A2/B2)", "CLIPS: 4/4 LATCHED",
+                "The pair trains on the first try. Trial certified."] };
+    }
+    if (ids[0] === "A1" && ids[1] === "B1") {
+      return { code: "nonprimary", pass: false, beeps: false, title: "POST: DUAL, WRONG SLOTS",
+        lines: [memLine, "CHANNEL: DUAL (A1/B1)",
+                "The pair trains, but the board manual wants the primary slots (A2/B2) populated first. Move both."] };
+    }
+    return { code: "onechan", pass: false, beeps: false, title: "POST: SINGLE CHANNEL",
+      lines: [memLine, "CHANNEL: SINGLE (" + ids.join("/") + ")",
+              "Both sticks sit on one channel. Dual channel needs one stick per channel: move one to the other channel's primary slot."] };
+  }
+
+  /* ---------------- css ---------------- */
+
+  var DM_CSS = [
+    ".dm-overlay{position:fixed;inset:0;background:rgba(4,7,7,.94);z-index:90;display:none;overflow-y:auto;padding:18px 12px;}",
+    ".dm-overlay.open{display:block;}",
+    ".dm-panel{max-width:1020px;margin:0 auto;background:var(--panel);border:1px solid var(--line);padding:20px;}",
+    ".dm-panel h3{font-family:var(--font-d);font-size:22px;letter-spacing:.02em;margin:0 0 4px;text-transform:uppercase;}",
+    ".dm-spec{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--ember);margin:0 0 10px;}",
+    ".dm-story{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 12px;max-width:74ch;}",
+    ".dm-story b{color:var(--paper);}",
+    ".dm-tabs{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px;}",
+    ".dm-tab{min-height:48px;padding:10px 14px;background:transparent;border:1px solid var(--line);color:var(--paper);font-family:var(--font-d);font-size:12px;letter-spacing:.04em;cursor:pointer;text-transform:uppercase;}",
+    ".dm-tab[aria-pressed=\"true\"]{border-color:var(--ember);color:var(--ember);}",
+    ".dm-tab .dm-pill{display:block;font-family:var(--font-m);font-size:10px;letter-spacing:.1em;margin-top:4px;color:var(--steel);}",
+    ".dm-tab .dm-pill.cert{color:var(--ember);}",
+    ".dm-boardline{font-family:var(--font-m);font-size:11px;letter-spacing:.08em;color:var(--paper);border:1px solid var(--line);padding:10px 12px;margin:0 0 12px;line-height:1.8;}",
+    ".dm-boardline .k{color:var(--steel);}",
+    ".dm-slots{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0 0 14px;}",
+    "@media (max-width:720px){.dm-slots{grid-template-columns:repeat(2,minmax(0,1fr));}}",
+    ".dm-slot{min-height:48px;background:var(--panel-2,#0c1414);border:1px solid var(--line);color:var(--paper);cursor:pointer;padding:10px;text-align:left;font-family:inherit;display:block;width:100%;}",
+    ".dm-slot[aria-pressed=\"true\"]{border-color:var(--ember);}",
+    ".dm-slothead{display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;}",
+    ".dm-slotid{font-family:var(--font-d);font-size:15px;font-weight:700;letter-spacing:.06em;}",
+    ".dm-chantag{font-family:var(--font-m);font-size:9px;letter-spacing:.12em;padding:3px 6px;border:1px solid var(--line);color:var(--paper);}",
+    ".dm-slot.chanA .dm-chantag{border-color:#3f7f8c;color:#8fd0dc;}",
+    ".dm-slot.chanB .dm-chantag{border-color:#8c6a3f;color:#e0b478;}",
+    ".dm-primtag{font-family:var(--font-m);font-size:9px;letter-spacing:.12em;padding:3px 6px;border:1px solid var(--ember);color:var(--ember);}",
+    ".dm-keyline{position:relative;height:10px;background:var(--ink,#05090a);border:1px solid var(--line);margin-bottom:8px;}",
+    ".dm-key{position:absolute;top:-3px;width:4px;height:14px;background:var(--ember);}",
+    ".dm-keylbl{font-family:var(--font-m);font-size:9px;color:var(--steel);letter-spacing:.1em;margin:0 0 8px;}",
+    ".dm-stickarea{min-height:44px;display:flex;align-items:center;}",
+    ".dm-empty{font-family:var(--font-m);font-size:10px;letter-spacing:.14em;color:var(--steel);}",
+    ".dm-stick{position:relative;width:100%;background:#101a1a;border:1px solid var(--ember);padding:8px 6px;}",
+    ".dm-stick.tilt{border-color:#c9a227;transform:rotate(-2.5deg);}",
+    ".dm-sticklbl{font-family:var(--font-m);font-size:10px;color:var(--paper);line-height:1.5;}",
+    ".dm-notchline{position:relative;height:6px;background:var(--ink,#05090a);margin-top:6px;}",
+    ".dm-notch{position:absolute;top:-2px;width:4px;height:10px;background:var(--paper);}",
+    ".dm-clips{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;}",
+    ".dm-clip{font-family:var(--font-m);font-size:9px;letter-spacing:.1em;padding:4px 8px;border:1px solid var(--line);color:var(--steel);}",
+    ".dm-clip.on{border-color:var(--ember);color:var(--ember);}",
+    ".dm-clip.off{border-color:#c9a227;color:#c9a227;}",
+    "@keyframes dmPop{0%{transform:scale(.94);}100%{transform:scale(1);}}",
+    ".dm-slot.just-seated .dm-stick{animation:dmPop .2s ease-out;}",
+    "@media (prefers-reduced-motion:reduce){.dm-slot.just-seated .dm-stick{animation:none;}}",
+    ".dm-traylbl{font-family:var(--font-m);font-size:10px;letter-spacing:.14em;color:var(--steel);margin:0 0 8px;}",
+    ".dm-tray{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin:0 0 14px;}",
+    ".dm-traystick{min-height:48px;padding:10px 12px;background:transparent;border:1px solid var(--line);color:var(--paper);font-family:var(--font-m);font-size:11px;line-height:1.5;cursor:pointer;text-align:left;}",
+    ".dm-traystick[aria-pressed=\"true\"]{border-color:var(--ember);color:var(--ember);}",
+    ".dm-actions{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px;}",
+    ".dm-btn{min-height:48px;padding:12px 18px;font-family:var(--font-d);font-size:12px;letter-spacing:.06em;text-transform:uppercase;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--paper);}",
+    ".dm-btn.primary{background:var(--ember);border-color:var(--ember);color:#0a0a0a;font-weight:700;}",
+    ".dm-btn:disabled{opacity:.4;cursor:not-allowed;}",
+    ".dm-log{font-family:var(--font-m);font-size:11.5px;line-height:1.75;background:var(--ink,#05090a);border:1px solid var(--line);padding:12px;min-height:120px;max-height:260px;overflow-y:auto;margin:0 0 14px;}",
+    ".dm-logline{color:var(--paper);margin:0 0 4px;overflow-wrap:anywhere;}",
+    ".dm-logline.post-ok{color:var(--ember);font-weight:700;}",
+    ".dm-logline.post-fail{color:#c9a227;font-weight:700;}",
+    ".dm-logline .dim{color:var(--steel);}",
+    ".dm-foot{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}",
+    ".dm-progress{font-family:var(--font-m);font-size:11px;letter-spacing:.1em;color:var(--steel);margin-right:auto;}"
+  ];
+
+  /* ---------------- dom ---------------- */
+
+  var dmS = null;
+  var dmEls = {};
+
+  function dmEl(tag, cls, html) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (html != null) e.innerHTML = html;
+    return e;
+  }
+
+  function dmTrial() { return dmS.trials[dmS.ti]; }
+
+  function dmSay(msg, cls) {
+    var line = dmEl("div", "dm-logline" + (cls ? " " + cls : ""), null);
+    line.textContent = msg;
+    dmEls.log.appendChild(line);
+    dmEls.log.scrollTop = dmEls.log.scrollHeight;
+  }
+
+  function dmSayBlock(lines, cls) {
+    for (var i = 0; i < lines.length; i++) dmSay(lines[i], i === 0 ? cls : null);
+  }
+
+  function dmRenderTabs() {
+    dmEls.tabs.innerHTML = "";
+    for (var i = 0; i < dmS.trials.length; i++) {
+      (function (i) {
+        var t = dmS.trials[i];
+        var b = dmEl("button", "dm-tab", null);
+        b.setAttribute("aria-pressed", i === dmS.ti ? "true" : "false");
+        var pill = t.certified ? "<span class=\"dm-pill cert\">CERTIFIED</span>"
+                               : "<span class=\"dm-pill\">OPEN</span>";
+        b.innerHTML = t.def.name + pill;
+        b.addEventListener("click", function () { dmS.ti = i; dmRenderAll(); });
+        dmEls.tabs.appendChild(b);
+      })(i);
+    }
+  }
+
+  function dmSlotCard(slot) {
+    var t = dmTrial();
+    var e = dmSlotEntry(t, slot.id);
+    var b = dmEl("button", "dm-slot chan" + slot.chan + (slot.primary ? " prim" : ""), null);
+    b.setAttribute("data-slot", slot.id);
+    b.setAttribute("aria-pressed", t.selSlot === slot.id ? "true" : "false");
+    var head = dmEl("div", "dm-slothead", null);
+    head.appendChild(dmEl("span", "dm-slotid", slot.id));
+    head.appendChild(dmEl("span", "dm-chantag", "CH " + slot.chan));
+    if (slot.primary) head.appendChild(dmEl("span", "dm-primtag", "PRIMARY"));
+    b.appendChild(head);
+    var kl = dmEl("div", "dm-keyline", null);
+    var key = dmEl("span", "dm-key", null);
+    key.style.left = "calc(" + t.board.key + "% - 2px)";
+    kl.appendChild(key);
+    b.appendChild(kl);
+    b.appendChild(dmEl("div", "dm-keylbl", "SLOT KEY " + t.board.key));
+    var area = dmEl("div", "dm-stickarea", null);
+    if (e) {
+      var st = dmStickById(e.stick);
+      var tilted = !e.latched[0] || !e.latched[1];
+      var stick = dmEl("div", "dm-stick" + (tilted ? " tilt" : ""), null);
+      stick.appendChild(dmEl("div", "dm-sticklbl", st.label + " (" + st.pins + "-pin)"));
+      var nl = dmEl("div", "dm-notchline", null);
+      var n = dmEl("span", "dm-notch", null);
+      n.style.left = "calc(" + dmKeyOf(st) + "% - 2px)";
+      nl.appendChild(n);
+      stick.appendChild(nl);
+      area.appendChild(stick);
+    } else {
+      area.appendChild(dmEl("div", "dm-empty", "EMPTY"));
+    }
+    b.appendChild(area);
+    if (e) {
+      var clips = dmEl("div", "dm-clips", null);
+      clips.appendChild(dmEl("span", "dm-clip " + (e.latched[0] ? "on" : "off"),
+        "CLIP A: " + (e.latched[0] ? "LATCHED" : "OPEN")));
+      clips.appendChild(dmEl("span", "dm-clip " + (e.latched[1] ? "on" : "off"),
+        "CLIP B: " + (e.latched[1] ? "LATCHED" : "OPEN")));
+      b.appendChild(clips);
+    }
+    b.addEventListener("click", function () { dmOnSlot(slot.id); });
+    return b;
+  }
+
+  function dmRenderSlots() {
+    dmEls.slots.innerHTML = "";
+    var slots = dmTrial().board.slots;
+    for (var i = 0; i < slots.length; i++) dmEls.slots.appendChild(dmSlotCard(slots[i]));
+  }
+
+  function dmRenderTray() {
+    var t = dmTrial();
+    dmEls.tray.innerHTML = "";
+    dmEls.traylbl.textContent = "PARTS TRAY (" + t.loose.length + " STICKS)";
+    for (var i = 0; i < t.loose.length; i++) {
+      (function (id) {
+        var st = dmStickById(id);
+        var b = dmEl("button", "dm-traystick", null);
+        b.setAttribute("aria-pressed", t.selected === id ? "true" : "false");
+        b.textContent = st.label + " / " + st.pins + "-pin / notch " + dmKeyOf(st);
+        b.addEventListener("click", function () {
+          t.selected = (t.selected === id) ? null : id;
+          t.selSlot = null;
+          dmRenderSlots(); dmRenderTray();
+          if (t.selected) toast("Selected: " + st.label + ". Tap a slot to seat it.");
+        });
+        dmEls.tray.appendChild(b);
+      })(t.loose[i]);
+    }
+    if (!t.loose.length) {
+      var none = dmEl("div", "dm-empty", "TRAY EMPTY");
+      dmEls.tray.appendChild(none);
+    }
+  }
+
+  function dmRenderFoot() {
+    var n = 0;
+    for (var i = 0; i < dmS.trials.length; i++) if (dmS.trials[i].certified) n++;
+    dmEls.progress.textContent = n + "/3 TRIALS CERTIFIED";
+    dmEls.dl.disabled = !dmS.done;
+  }
+
+  function dmRenderAll() {
+    var t = dmTrial();
+    dmEls.story.innerHTML = t.def.story;
+    dmEls.boardline.innerHTML = "<span class=\"k\">BOARD</span> " + t.board.name +
+      " &nbsp;<span class=\"k\">DDR</span>" + t.board.gen +
+      " &nbsp;<span class=\"k\">SLOTS</span> A1 A2 B1 B2" +
+      " &nbsp;<span class=\"k\">PRIMARY</span> A2/B2" +
+      " &nbsp;<span class=\"k\">KEY</span> " + t.board.key;
+    dmRenderTabs(); dmRenderSlots(); dmRenderTray(); dmRenderFoot();
+    dmEls.reseat.disabled = !(t.selSlot && (function () {
+      var e = dmSlotEntry(t, t.selSlot);
+      return e && (!e.latched[0] || !e.latched[1]);
+    })());
+  }
+
+  /* ---------------- actions ---------------- */
+
+  function dmOnSlot(slotId) {
+    var t = dmTrial();
+    var e = dmSlotEntry(t, slotId);
+    if (t.selected) {
+      var r = dmActSeat(t, slotId);
+      if (r.ok) {
+        dmRenderAll();
+        var card = dmEls.slots.querySelector('[data-slot="' + slotId + '"]');
+        if (card) card.classList.add("just-seated");
+        dmSay(r.msg);
+        toast(r.msg);
+      } else {
+        dmSay("REFUSED: " + r.msg);
+        toast(r.msg);
+      }
+      return;
+    }
+    if (e) {
+      if (!e.latched[0] || !e.latched[1]) {
+        t.selSlot = slotId;
+        dmRenderAll();
+        var msg = "Slot " + slotId + ": one clip never latched, the stick sits tilted. Tap RESEAT STICK.";
+        dmSay(msg);
+        toast(msg);
+      } else {
+        var u = dmActUnseat(t, slotId);
+        t.selSlot = null;
+        dmRenderAll();
+        dmSay(u.msg);
+      }
+      return;
+    }
+    var slot = null;
+    for (var i = 0; i < t.board.slots.length; i++) if (t.board.slots[i].id === slotId) slot = t.board.slots[i];
+    var info = "Slot " + slotId + ": channel " + slot.chan + (slot.primary ? ", primary slot" : "") +
+      ", DDR" + t.board.gen + " key at " + t.board.key + ". Empty.";
+    dmSay(info);
+    toast(info);
+  }
+
+  function dmOnPower() {
+    var t = dmTrial();
+    var v = dmPost(t);
+    dmSayBlock(["--- POWER ON ---"], null);
+    dmSayBlock(v.lines, v.pass ? "post-ok" : "post-fail");
+    if (v.pass && !t.certified) {
+      t.certified = true;
+      toast("Trial certified: " + t.def.name);
+      var n = 0, i;
+      for (i = 0; i < dmS.trials.length; i++) if (dmS.trials[i].certified) n++;
+      if (n === dmS.trials.length) {
+        dmS.done = true;
+        dmSay("ALL THREE TRIALS CERTIFIED. The qualification record is ready to download.", "post-ok");
+        toast("All three trials certified. Download the qualification record.");
+      }
+    } else if (!v.pass) {
+      toast(v.title + ". Read the POST readout.");
+    }
+    dmRenderAll();
+  }
+
+  function dmOnReseat() {
+    var t = dmTrial();
+    if (!t.selSlot) { toast("Tap a tilted slot first."); return; }
+    var r = dmActReseat(t, t.selSlot);
+    dmRenderAll();
+    dmSay(r.msg);
+    toast(r.msg);
+  }
+
+  function dmOnReset() {
+    var def = dmTrial().def;
+    dmS.trials[dmS.ti] = dmNewTrial(def);
+    dmEls.log.innerHTML = "";
+    dmRenderAll();
+    dmSay("Trial reset. " + def.name);
+  }
+
+  function dmDownload() {
+    var lines = ["THE DIMM BAY: QUALIFICATION RECORD", "OLD IRON refurb line, memory installation", ""];
+    for (var i = 0; i < dmS.trials.length; i++) {
+      var t = dmS.trials[i];
+      lines.push(t.def.name + ": " + (t.certified ? "CERTIFIED" : "OPEN"));
+      for (var j = 0; j < t.seated.length; j++) {
+        var st = dmStickById(t.seated[j].stick);
+        lines.push("  " + t.seated[j].slot + ": " + st.label +
+          " (clips " + (t.seated[j].latched[0] && t.seated[j].latched[1] ? "latched" : "OPEN") + ")");
+      }
+      lines.push("");
+    }
+    lines.push("Keying rule: DDR3/DDR4/DDR5 notch positions differ, the slot key physically refuses the wrong generation.");
+    lines.push("Dual channel: matched capacity and speed, one stick per channel, primary slots A2/B2 first.");
+    lines.push("Retention clips: both must latch or the board never trains.");
+    var blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "dimm-bay-qualification.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { document.body.removeChild(a); }, 500);
+    toast("Qualification record downloaded");
+  }
+
+  /* ---------------- build ---------------- */
+
+  function dmBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("dmBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = DM_CSS.join("\n");
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "dmBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The DIMM Bay";
+    b.addEventListener("click", dmOpen);
+    box.appendChild(b);
+
+    var ov = document.createElement("div");
+    ov.className = "dm-overlay";
+    ov.id = "dmOverlay";
+    var panel = dmEl("div", "dm-panel", null);
+    panel.appendChild(dmEl("h3", null, "The DIMM Bay"));
+    panel.appendChild(dmEl("p", "dm-spec", "DDR KEYING · DUAL CHANNEL · 3 MACHINES"));
+    panel.appendChild(dmEl("p", "dm-story",
+      "Memory installation for the OLD IRON refurb line. The slot key <b>physically refuses</b> the wrong " +
+      "DDR generation, dual channel needs a <b>matched pair</b> straddling the channels, and both <b>retention " +
+      "clips</b> must latch or the board never trains. Ground yourself before you touch the sticks, pick, seat, and POST three machines."));
+
+    dmEls.tabs = dmEl("div", "dm-tabs", null);
+    panel.appendChild(dmEls.tabs);
+
+    dmEls.story = dmEl("p", "dm-story", null);
+    panel.appendChild(dmEls.story);
+
+    dmEls.boardline = dmEl("div", "dm-boardline", null);
+    panel.appendChild(dmEls.boardline);
+
+    dmEls.slots = dmEl("div", "dm-slots", null);
+    panel.appendChild(dmEls.slots);
+
+    dmEls.traylbl = dmEl("p", "dm-traylbl", "PARTS TRAY");
+    panel.appendChild(dmEls.traylbl);
+    dmEls.tray = dmEl("div", "dm-tray", null);
+    panel.appendChild(dmEls.tray);
+
+    var acts = dmEl("div", "dm-actions", null);
+    var power = dmEl("button", "dm-btn primary", "POWER ON");
+    power.addEventListener("click", dmOnPower);
+    acts.appendChild(power);
+    dmEls.reseat = dmEl("button", "dm-btn", "RESEAT STICK");
+    dmEls.reseat.disabled = true;
+    dmEls.reseat.addEventListener("click", dmOnReseat);
+    acts.appendChild(dmEls.reseat);
+    var reset = dmEl("button", "dm-btn", "RESET TRIAL");
+    reset.addEventListener("click", dmOnReset);
+    acts.appendChild(reset);
+    panel.appendChild(acts);
+
+    dmEls.log = dmEl("div", "dm-log", null);
+    dmEls.log.setAttribute("role", "log");
+    dmEls.log.setAttribute("aria-live", "polite");
+    panel.appendChild(dmEls.log);
+
+    var foot = dmEl("div", "dm-foot", null);
+    dmEls.progress = dmEl("span", "dm-progress", "0/3 TRIALS CERTIFIED");
+    foot.appendChild(dmEls.progress);
+    dmEls.dl = dmEl("button", "dm-btn primary", "DOWNLOAD QUALIFICATION RECORD");
+    dmEls.dl.disabled = true;
+    dmEls.dl.addEventListener("click", dmDownload);
+    foot.appendChild(dmEls.dl);
+    var close = dmEl("button", "dm-btn", "CLOSE THE BENCH");
+    close.addEventListener("click", dmClose);
+    foot.appendChild(close);
+    panel.appendChild(foot);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    dmEls.overlay = ov;
+    ov.addEventListener("click", function (ev) { if (ev.target === ov) dmClose(); });
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && dmEls.overlay.classList.contains("open")) dmClose();
+    });
+
+    dmS = dmNewState();
+    dmRenderAll();
+  }
+
+  function dmOpen() {
+    if (!dmEls.overlay) dmBuild();
+    dmEls.overlay.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+
+  function dmClose() {
+    if (dmEls.overlay) dmEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", dmBuild);
+    } else {
+      dmBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      DM: {
+        STICKS: DM_STICKS, TRIALS: DM_TRIALS, KEY: DM_KEY, SO_KEY: DM_SO_KEY,
+        stickById: dmStickById, keyOf: dmKeyOf, seatCheck: dmSeatCheck,
+        newTrial: dmNewTrial, newState: dmNewState,
+        actSeat: dmActSeat, actUnseat: dmActUnseat, actReseat: dmActReseat,
+        post: dmPost, state: function () { return dmS; }
+      }
+    });
+  }
+})();

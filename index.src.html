@@ -601,7 +601,11 @@ var PG_BENCHES = [
   { section: "silicon", n: "26", name: "The Decode Bench", btn: "dbBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "A raw 32-bit instruction word off the fetch bus. Split it into its RISC-V fields with the format maps, read the opcode table, and reassemble the sign-extended immediate. Decode all three words with zero field errors.",
     how: "Pick the format from the opcode, fill every field from the word's bit positions, enter the sign-extended immediate, check the decode.",
-    spec: "RV32I FIELDS \u00B7 3 WORDS" }
+    spec: "RV32I FIELDS \u00B7 3 WORDS" },
+  { section: "oldiron", n: "27", name: "The DIMM Bay", btn: "dmBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "Memory installation for the OLD IRON refurb line: keyed slots that physically refuse the wrong generation, matched pairs for dual channel, retention clips that must both latch. Pick, seat, and POST three machines.",
+    how: "Pick matching DDR4 UDIMMs from the tray, seat them in the A2/B2 slots, then power on for POST.",
+    spec: "DDR KEYING \u00B7 DUAL CHANNEL \u00B7 3 MACHINES" }
 ];
 
 var pgFilter = "all";
@@ -971,7 +975,17 @@ if (document.readyState === "loading") {
 </script>
 <script>
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('sw.js');
+  navigator.serviceWorker.register('sw.js').then((reg) => {
+    // Check for updates when app returns to foreground (iOS PWA fix)
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') reg.update();
+    });
+    // Reload once when a new service worker takes over, to show fresh content
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!reloaded) { reloaded = true; window.location.reload(); }
+    });
+  });
 }
 </script>
 </body>
