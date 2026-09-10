@@ -11093,3 +11093,656 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
 })();
+/* Bench 17: The Thermostat. PID fan-control tuning for a refurbished 1U server.
+   Real thermal physics, real workload steps, three servers to qualify for OLD IRON. */
+(function () {
+  "use strict";
+
+  /* ---------------- pure core: no DOM ---------------- */
+
+  var TH_DT = 0.1, TH_STEPS = 900, TH_HORIZON = 90;
+  var TH_SET = 65, TH_TRIP = 95, TH_BAND = 2.5, TH_CTH = 30;
+  var TH_POLL = 15; /* BMC polls the die sensor every 1.5s: dead time in the loop */
+
+  function thLoadA(t) { return t < 15 ? 90 : t < 45 ? 170 : t < 70 ? 210 : 90; }
+  function thLoadB(t) { return t < 15 ? 100 : t < 45 ? 180 : t < 70 ? 220 : 100; }
+  function thLoadC(t) {
+    if (t < 10) return 90;
+    if (t < 12) return 250;
+    if (t < 40) return 190;
+    if (t < 42) return 250;
+    if (t < 70) return 215;
+    return 90;
+  }
+
+  var TH_SERVERS = [
+    { id: "A", name: "RACK A, COLD AISLE", amb: 22, dust: 1.0, load: thLoadA, noiseBudget: 44,
+      brief: "The easy rack: a clean heatsink, a cool aisle, and an honest workload curve. A sane PID should hold this all day. Use it to learn what each knob does before the hot aisle humbles you." },
+    { id: "B", name: "RACK B, HOT AISLE", amb: 33, dust: 1.0, load: thLoadB, noiseBudget: 50,
+      brief: "This rack breathes its neighbor's exhaust: 33C intake air. The fan has almost no headroom left, so the integral term has to do real work and the noise budget is tight. Overshoot here is expensive." },
+    { id: "C", name: "RACK C, DUSTY SINK", amb: 22, dust: 0.75, load: thLoadC, noiseBudget: 51,
+      brief: "Retired from a bakery office, dust baked into the fins: the sink moves 25% less heat. The workload slams in 250W spikes with almost no ramp. Derivative action earns its keep on this one." }
+  ];
+
+  function thH(pwm, dust) { return (0.9 + 7.5 * Math.pow(pwm / 100, 1.6)) * dust; }
+  function thNoise(pwm) { return 28 + 34 * Math.pow(pwm / 100, 1.8); }
+
+  function thNewRun(sv, kp, ki, kd) {
+    var edges = [], pl = sv.load(0), se, cl;
+    for (se = TH_DT; se <= TH_HORIZON; se += TH_DT) {
+      cl = sv.load(se);
+      if (Math.abs(cl - pl) > 1) { edges.push({ t: se, w: cl }); pl = cl; }
+    }
+    var hist = [], hd;
+    for (hd = 0; hd < TH_POLL; hd++) hist.push(58);
+    return { sv: sv, kp: kp, ki: ki, kd: kd, T: 58, I: 0, ePrev: 58 - TH_SET,
+      pwm: 0, hist: hist, edges: edges, ei: 0, lastEdge: -100,
+      i: 0, trip: false, inBand: 0, bandN: 0, noiseSum: 0, maxT: 58,
+      samples: [], events: [], imax: ki > 0 ? 100 / ki : 0, done: false };
+  }
+
+  function thStepRun(st) {
+    if (st.done) return;
+    var t = st.i * TH_DT, sv = st.sv;
+    var P = sv.load(t) + 6 + 0.30 * Math.max(0, st.T - 55);
+    st.hist.push(st.T);
+    var Td = st.hist.shift();
+    var Tm = Math.round((Td + 0.25 * Math.sin(6.2831 * 1.7 * t)) * 5) / 5;
+    var e = Tm - TH_SET;
+    var integ = st.I + e * TH_DT;
+    if (integ > st.imax) integ = st.imax; else if (integ < -st.imax) integ = -st.imax;
+    var u = st.kp * e + st.ki * integ + st.kd * (e - st.ePrev) / TH_DT;
+    var npwm = u < 0 ? 0 : u > 100 ? 100 : u;
+    if (!((u > 100 && e > 0) || (u < 0 && e < 0))) st.I = integ; /* anti-windup */
+    st.pwm += (npwm - st.pwm) * TH_DT / 2.5; /* fan spool lag */
+    st.ePrev = e;
+    st.T += (P - thH(st.pwm, sv.dust) * (st.T - sv.amb)) * TH_DT / TH_CTH;
+    if (st.T > st.maxT) st.maxT = st.T;
+    var nz = thNoise(st.pwm);
+    st.noiseSum += nz;
+    while (st.ei < st.edges.length && st.edges[st.ei].t <= t) {
+      st.events.push({ t: t, txt: "t=" + t.toFixed(0) + "s: workload steps to " +
+        st.edges[st.ei].w + "W." });
+      st.lastEdge = st.edges[st.ei].t;
+      st.ei++;
+    }
+    if (t >= 10 && t - st.lastEdge >= 12) {
+      st.bandN++;
+      if (Math.abs(st.T - TH_SET) <= TH_BAND) st.inBand++;
+    }
+    if (st.T >= TH_TRIP) {
+      st.trip = true;
+      st.events.push({ t: t, txt: "THERMAL TRIP at t=" + t.toFixed(1) + "s: die hit " +
+        st.T.toFixed(1) + "C, the BMC cut power. Run over." });
+      st.done = true;
+    }
+    if (st.i % 5 === 0) st.samples.push({ t: t, T: st.T, pwm: st.pwm, nz: nz });
+    st.i++;
+    if (st.i >= TH_STEPS) st.done = true;
+  }
+
+  function thVerdict(st) {
+    var frac = st.bandN ? st.inBand / st.bandN : 0;
+    var avgN = st.noiseSum / Math.max(1, st.i);
+    var reasons = [];
+    if (st.trip) reasons.push("Thermal trip: the die hit 95C and the BMC cut power.");
+    if (frac < 0.75) reasons.push("In band only " + Math.round(frac * 100) +
+      "% of the scored window (need 75%). Each workload step gets a 12s settle allowance.");
+    if (avgN > st.sv.noiseBudget) reasons.push("Average noise " + avgN.toFixed(1) +
+      " dBA over the " + st.sv.noiseBudget + " dBA budget. The customer hears this rack.");
+    return { pass: reasons.length === 0, reasons: reasons, inBandFrac: frac,
+      avgNoise: avgN, maxT: st.maxT };
+  }
+
+  function thSim(sv, kp, ki, kd) {
+    var st = thNewRun(sv, kp, ki, kd);
+    while (!st.done) thStepRun(st);
+    var v = thVerdict(st);
+    v.samples = st.samples;
+    v.events = st.events;
+    return v;
+  }
+
+  /* ---------------- shell ---------------- */
+
+  var TH_CSS = [
+    ".th-overlay{position:fixed;inset:0;background:rgba(8,8,10,.82);z-index:9000;display:none;overflow-y:auto;padding:24px 16px;}",
+    ".th-overlay.open{display:block;}",
+    ".th-panel{max-width:860px;margin:0 auto;background:#101014;border:1px solid #2a2a30;border-radius:12px;color:#f2f0eb;font-family:'Space Grotesk',system-ui,sans-serif;}",
+    ".th-bar{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid #2a2a30;}",
+    ".th-title{font-size:20px;letter-spacing:.14em;font-weight:700;}",
+    ".th-title b{color:#ff5a1f;}",
+    ".th-close{background:none;border:1px solid #3a3a42;color:#f2f0eb;border-radius:8px;min-height:48px;padding:0 18px;font-family:'IBM Plex Mono',monospace;font-size:13px;cursor:pointer;}",
+    ".th-close:hover{border-color:#ff5a1f;}",
+    ".th-close:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".th-body{padding:22px;}",
+    ".th-sub{font-size:14px;line-height:1.6;color:#b9b6ae;margin:0 0 20px;}",
+    ".th-sub b{color:#f2f0eb;}",
+    ".th-sub a{color:#ff5a1f;}",
+    ".th-cards{display:flex;gap:10px;margin-bottom:8px;flex-wrap:wrap;}",
+    ".th-cardtab{flex:1;min-width:150px;min-height:56px;border:1px solid #3a3a42;background:#16161b;color:#f2f0eb;border-radius:10px;cursor:pointer;font-family:'Space Grotesk',sans-serif;padding:8px 10px;text-align:left;transition:transform .2s,border-color .2s;}",
+    ".th-cardtab:hover{border-color:#ff5a1f;}",
+    ".th-cardtab:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".th-cardtab.sel{border-color:#ff5a1f;transform:translateY(-2px);}",
+    ".th-cardtab .k{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8a877f;letter-spacing:.1em;}",
+    ".th-cardtab .n{font-size:14px;font-weight:700;margin-top:2px;}",
+    ".th-cardtab .q{font-family:'IBM Plex Mono',monospace;font-size:11px;margin-top:4px;color:#8a877f;}",
+    ".th-cardtab .q.done{color:#7dd87d;}",
+    ".th-brief{font-size:13px;color:#b9b6ae;border-left:3px solid #ff5a1f;padding:8px 14px;margin:0 0 22px;line-height:1.55;}",
+    ".th-sec{font-size:12px;letter-spacing:.14em;color:#8a877f;font-weight:700;margin:0 0 10px;text-transform:uppercase;}",
+    ".th-gains{display:flex;flex-direction:column;gap:10px;margin-bottom:8px;}",
+    ".th-grow{display:flex;align-items:center;gap:14px;flex-wrap:wrap;}",
+    ".th-glab{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:700;min-width:120px;color:#f2f0eb;}",
+    ".th-glab small{display:block;font-weight:400;font-size:11px;color:#8a877f;}",
+    ".th-grow input[type=range]{flex:1;min-width:180px;min-height:48px;accent-color:#ff5a1f;}",
+    ".th-grow input[type=range]:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".th-gval{font-family:'IBM Plex Mono',monospace;font-size:16px;font-weight:700;color:#ff5a1f;min-width:56px;text-align:right;}",
+    ".th-hint{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6e6b64;margin:0 0 22px;line-height:1.6;}",
+    ".th-runrow{display:flex;gap:12px;align-items:center;margin:6px 0 16px;flex-wrap:wrap;}",
+    ".th-run{min-height:52px;padding:0 28px;border:none;border-radius:10px;background:#ff5a1f;color:#101014;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;letter-spacing:.08em;cursor:pointer;transition:transform .2s;}",
+    ".th-run:hover:not(:disabled){transform:translateY(-2px);}",
+    ".th-run:disabled{opacity:.35;cursor:default;}",
+    ".th-run:focus-visible{outline:2px solid #fff;outline-offset:2px;}",
+    ".th-stop{min-height:52px;padding:0 24px;border:1px solid #3a3a42;background:#16161b;color:#f2f0eb;border-radius:10px;font-family:'IBM Plex Mono',monospace;font-size:13px;cursor:pointer;}",
+    ".th-stop:hover:not(:disabled){border-color:#ff5a1f;}",
+    ".th-stop:disabled{opacity:.35;cursor:default;}",
+    ".th-stop:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".th-stats{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:14px;}",
+    ".th-stat{background:#0a0a0d;border:1px solid #2a2a30;border-radius:8px;padding:10px 12px;}",
+    ".th-stat .k{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#6e6b64;letter-spacing:.1em;}",
+    ".th-stat .v{font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:700;color:#f2f0eb;margin-top:4px;}",
+    ".th-stat .v.hot{color:#ff5a1f;}",
+    ".th-chart{width:100%;height:240px;background:#0a0a0d;border:1px solid #2a2a30;border-radius:10px;margin-bottom:8px;}",
+    ".th-legend{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px;}",
+    ".th-leg{display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#b9b6ae;}",
+    ".th-sw{width:16px;height:4px;border-radius:2px;}",
+    ".th-chartlab{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8a877f;margin:0 0 18px;line-height:1.6;}",
+    ".th-log{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#f2f0eb;background:#0a0a0d;border:1px solid #2a2a30;border-radius:10px;padding:14px 16px;margin:0 0 14px;max-height:180px;overflow-y:auto;line-height:1.7;white-space:pre-wrap;}",
+    ".th-log .bad{color:#ff5a1f;}",
+    ".th-log .good{color:#7dd87d;}",
+    ".th-log .dim{color:#8a877f;}",
+    ".th-verdict{font-size:15px;font-weight:700;letter-spacing:.1em;padding:14px;border-radius:10px;text-align:center;margin-bottom:18px;border:1px solid #3a3a42;}",
+    ".th-verdict.pass{border-color:#7dd87d;color:#7dd87d;}",
+    ".th-verdict.fail{border-color:#ff5a1f;color:#ff5a1f;}",
+    ".th-verdict small{display:block;font-weight:400;letter-spacing:0;font-size:12px;color:#b9b6ae;margin-top:6px;}",
+    ".th-signrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:6px;}",
+    ".th-sign{min-height:52px;padding:0 24px;border:1px solid #7dd87d;background:none;color:#7dd87d;border-radius:10px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;letter-spacing:.08em;cursor:pointer;}",
+    ".th-sign:hover:not(:disabled){background:#12240f;}",
+    ".th-sign:disabled{opacity:.35;cursor:default;}",
+    ".th-sign:focus-visible{outline:2px solid #7dd87d;outline-offset:2px;}",
+    ".th-runs{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#8a877f;}",
+    ".th-cert{border:1px solid #7dd87d;border-radius:10px;padding:18px;margin-top:14px;display:none;}",
+    ".th-cert.show{display:block;}",
+    ".th-cert h4{margin:0 0 8px;font-size:15px;letter-spacing:.12em;color:#7dd87d;}",
+    ".th-cert p{margin:0 0 12px;font-size:13px;color:#b9b6ae;line-height:1.6;}",
+    ".th-mini{min-height:48px;padding:0 18px;border:1px solid #3a3a42;background:#16161b;color:#f2f0eb;border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;margin-right:10px;margin-bottom:8px;}",
+    ".th-mini:hover{border-color:#ff5a1f;}",
+    ".th-mini:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    "@media (prefers-reduced-motion: reduce){.th-cardtab,.th-run{transition:none;}}",
+    "@media (max-width:640px){.th-stats{grid-template-columns:repeat(2,1fr);}.th-glab{min-width:96px;}}"
+  ].join("\n");
+
+  function thEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null && text !== "") e.textContent = text;
+    return e;
+  }
+  function th$(id) { return document.getElementById(id); }
+
+  var thSrvIdx = 0, thKp = 2.0, thKi = 0.25, thKd = 0.4;
+  var thRun = null, thTimer = null, thSigned = {}, thRuns = 0, thLastVerdict = null;
+  var TH_REDUCED = false;
+
+  function thServer() { return TH_SERVERS[thSrvIdx]; }
+
+  function thBuildShell() {
+    var css = document.createElement("style");
+    css.textContent = TH_CSS;
+    document.head.appendChild(css);
+
+    var box = document.querySelector(".dossier .actions");
+    if (box && !th$("thBtn")) {
+      var b = thEl("button", "secondary", "Run the Thermostat");
+      b.id = "thBtn";
+      b.addEventListener("click", function () {
+        th$("thOverlay").classList.add("open");
+        thDraw();
+      });
+      box.appendChild(b);
+    }
+
+    var ov = thEl("div", "th-overlay");
+    ov.id = "thOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Thermostat");
+    var panel = thEl("div", "th-panel");
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    var bar = thEl("div", "th-bar");
+    var title = thEl("div", "th-title", "");
+    title.innerHTML = "THE <b>THERMO</b>STAT";
+    var close = thEl("button", "th-close", "CLOSE [x]");
+    close.type = "button";
+    bar.appendChild(title); bar.appendChild(close);
+    panel.appendChild(bar);
+
+    var body = thEl("div", "th-body");
+    panel.appendChild(body);
+
+    var sub = thEl("p", "th-sub", "");
+    sub.innerHTML = "<b>HOW IT WORKS</b> A real PID loop drives this refurbished 1U server's fans: " +
+      "die temperature, fan spool lag, a BMC that polls the sensor every 1.5s, and honest workload steps. " +
+      "Tune P, I, and D, run the 90-second workload, and hold 65C inside the band without tripping 95C " +
+      "or blowing the noise budget. Built for <a href=\"https://dillingerstaffing.github.io/old-iron/\" " +
+      "target=\"_blank\" rel=\"noopener\">OLD IRON</a> server refurbishment.";
+    body.appendChild(sub);
+
+    var cards = thEl("div", "th-cards"); cards.id = "thCards"; body.appendChild(cards);
+    var brief = thEl("p", "th-brief", ""); brief.id = "thBrief"; body.appendChild(brief);
+
+    body.appendChild(thEl("h3", "th-sec", "PID gains"));
+    var gains = thEl("div", "th-gains"); gains.id = "thGains"; body.appendChild(gains);
+    var defs = [
+      { k: "kp", lab: "P, proportional", note: "pushes the fan against the current error", min: 0, max: 6, step: 0.1 },
+      { k: "ki", lab: "I, integral", note: "kills steady droop, winds up if greedy", min: 0, max: 1.2, step: 0.05 },
+      { k: "kd", lab: "D, derivative", note: "brakes fast moves, twitchy past its prime", min: 0, max: 3, step: 0.1 }
+    ];
+    defs.forEach(function (d) {
+      var row = thEl("div", "th-grow");
+      var lab = thEl("label", "th-glab", "");
+      lab.innerHTML = d.lab + "<small>" + d.note + "</small>";
+      var inp = document.createElement("input");
+      inp.type = "range"; inp.id = "th-" + d.k;
+      inp.min = String(d.min); inp.max = String(d.max); inp.step = String(d.step);
+      var cur = d.k === "kp" ? thKp : d.k === "ki" ? thKi : thKd;
+      inp.value = String(cur);
+      inp.setAttribute("aria-label", d.lab + " gain");
+      var val = thEl("span", "th-gval", cur.toFixed(2)); val.id = "th-" + d.k + "v";
+      lab.setAttribute("for", "th-" + d.k);
+      (function (key, input, out, stp) {
+        input.addEventListener("input", function () {
+          var v = parseFloat(input.value);
+          if (key === "kp") thKp = v; else if (key === "ki") thKi = v; else thKd = v;
+          out.textContent = v.toFixed(2);
+          thLastVerdict = null;
+          thRenderSign();
+        });
+      })(d.k, inp, val, d.step);
+      row.appendChild(lab); row.appendChild(inp); row.appendChild(val);
+      gains.appendChild(row);
+    });
+    body.appendChild(thEl("p", "th-hint",
+      "P alone always droops: something has to hold the fan against a steady load. " +
+      "Crank everything to the stops and the 1.5s sensor delay turns the loop into a hunter. " +
+      "Tune like the customer is listening, because they are."));
+
+    var runrow = thEl("div", "th-runrow");
+    var run = thEl("button", "th-run", "RUN BENCH");
+    run.id = "thRun"; run.type = "button";
+    run.addEventListener("click", thOnRun);
+    runrow.appendChild(run);
+    var stop = thEl("button", "th-stop", "STOP");
+    stop.id = "thStop"; stop.type = "button"; stop.disabled = true;
+    stop.addEventListener("click", thOnStop);
+    runrow.appendChild(stop);
+    var runs = thEl("span", "th-runs", ""); runs.id = "thRuns"; runrow.appendChild(runs);
+    body.appendChild(runrow);
+
+    var stats = thEl("div", "th-stats");
+    [["DIE TEMP", "thStT", "C"], ["FAN", "thStF", "%"], ["NOISE", "thStN", "dBA"],
+     ["IN BAND", "thStB", "%"], ["ELAPSED", "thStE", "s"]].forEach(function (d) {
+      var s = thEl("div", "th-stat", "");
+      s.appendChild(thEl("div", "k", d[0]));
+      var v = thEl("div", "v", "--"); v.id = d[1];
+      s.appendChild(v);
+      s.appendChild(thEl("div", "k", d[2]));
+      stats.appendChild(s);
+    });
+    body.appendChild(stats);
+
+    var canvas = document.createElement("canvas");
+    canvas.className = "th-chart"; canvas.id = "thChart";
+    canvas.setAttribute("role", "img");
+    canvas.setAttribute("aria-label", "Live chart: die temperature and fan speed over the 90 second run");
+    body.appendChild(canvas);
+    var legend = thEl("div", "th-legend");
+    legend.innerHTML = "<span class=\"th-leg\"><span class=\"th-sw\" style=\"background:#ff5a1f\"></span>DIE TEMP, C</span>" +
+      "<span class=\"th-leg\"><span class=\"th-sw\" style=\"background:#8a877f\"></span>FAN, %</span>" +
+      "<span class=\"th-leg\"><span class=\"th-sw\" style=\"background:#7dd87d\"></span>65C TARGET BAND</span>";
+    body.appendChild(legend);
+    body.appendChild(thEl("p", "th-chartlab",
+      "CHART: die temperature (ember, left scale 20 to 100C) and fan speed (gray, 0 to 100%). " +
+      "Green band is the 65C target window, dashed red is the 95C trip line. " +
+      "Workload steps are marked; the first 12s after each step are settle time and unscored."));
+
+    var log = thEl("div", "th-log", "No run yet. Set the gains, pick a rack, then run the bench.");
+    log.id = "thLog"; body.appendChild(log);
+    var verdict = thEl("div", "th-verdict", "No run yet."); verdict.id = "thVerdict";
+    body.appendChild(verdict);
+
+    var signrow = thEl("div", "th-signrow");
+    var sign = thEl("button", "th-sign", "SIGN OFF SERVER");
+    sign.id = "thSign"; sign.type = "button"; sign.disabled = true;
+    sign.addEventListener("click", thOnSign);
+    signrow.appendChild(sign);
+    body.appendChild(signrow);
+
+    var cert = thEl("div", "th-cert"); cert.id = "thCert"; body.appendChild(cert);
+
+    close.addEventListener("click", function () { thOnStop(); ov.classList.remove("open"); });
+    ov.addEventListener("click", function (e) { if (e.target === ov) { thOnStop(); ov.classList.remove("open"); } });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && ov.classList.contains("open")) { thOnStop(); ov.classList.remove("open"); }
+    });
+
+    thRenderCards(); thRenderSign(); thDraw();
+  }
+
+  function thRenderCards() {
+    var wrap = th$("thCards");
+    wrap.innerHTML = "";
+    TH_SERVERS.forEach(function (c, i) {
+      var tab = thEl("button", "th-cardtab" + (i === thSrvIdx ? " sel" : ""), "");
+      tab.type = "button";
+      tab.setAttribute("aria-pressed", i === thSrvIdx ? "true" : "false");
+      tab.appendChild(thEl("div", "k", "SERVER " + c.id));
+      tab.appendChild(thEl("div", "n", c.name));
+      var q = thEl("div", "q" + (thSigned[c.id] ? " done" : ""), "");
+      q.textContent = thSigned[c.id] ? "SIGNED OFF" : "NOT SIGNED OFF";
+      tab.appendChild(q);
+      tab.addEventListener("click", function () { thSelectServer(i); });
+      wrap.appendChild(tab);
+    });
+    th$("thBrief").textContent = thServer().brief;
+  }
+
+  function thSelectServer(i) {
+    if (thRun) thOnStop();
+    thSrvIdx = i;
+    thLastVerdict = null;
+    thRenderCards(); thRenderSign();
+    th$("thLog").textContent = "No run yet on server " + thServer().id + ". Set the gains, then run the bench.";
+    var v = th$("thVerdict");
+    v.className = "th-verdict";
+    v.textContent = "No run yet.";
+    thDraw();
+  }
+
+  function thRenderSign() {
+    var sign = th$("thSign");
+    var can = !!thLastVerdict && thLastVerdict.pass && !thSigned[thServer().id] && !thRun;
+    sign.disabled = !can;
+    th$("thRuns").textContent = thRuns === 0 ? "no runs yet" :
+      thRuns + (thRuns === 1 ? " run" : " runs") + " this session";
+  }
+
+  function thEsc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function thOnRun() {
+    if (thRun) return;
+    thRun = thNewRun(thServer(), thKp, thKi, thKd);
+    thLastVerdict = null;
+    th$("thRun").disabled = true;
+    th$("thStop").disabled = false;
+    th$("thLog").innerHTML = "<span class=\"dim\">Run started on server " + thServer().id +
+      " with P=" + thKp.toFixed(2) + " I=" + thKi.toFixed(2) + " D=" + thKd.toFixed(2) + ".</span>";
+    thRenderSign();
+    if (TH_REDUCED) {
+      while (!thRun.done) thStepRun(thRun);
+      thFinish();
+      return;
+    }
+    thTimer = setInterval(function () {
+      for (var k = 0; k < 60 && !thRun.done; k++) thStepRun(thRun);
+      thDraw();
+      thUpdateStats();
+      if (thRun.done) thFinish();
+    }, 50);
+  }
+
+  function thOnStop() {
+    if (thTimer) { clearInterval(thTimer); thTimer = null; }
+    if (thRun && !thRun.done) {
+      thRun.done = true;
+      th$("thLog").innerHTML += "\n<span class=\"dim\">Run aborted by operator.</span>";
+    }
+    thRun = null;
+    th$("thRun").disabled = false;
+    th$("thStop").disabled = true;
+    thRenderSign();
+  }
+
+  function thUpdateStats() {
+    if (!thRun) return;
+    var t = thRun.i * TH_DT;
+    th$("thStT").textContent = thRun.T.toFixed(1);
+    th$("thStT").className = "v" + (thRun.T > 90 ? " hot" : "");
+    th$("thStF").textContent = Math.round(thRun.pwm);
+    var n = thRun.samples.length ? thRun.samples[thRun.samples.length - 1].nz : 28;
+    th$("thStN").textContent = n.toFixed(1);
+    th$("thStB").textContent = thRun.bandN ? Math.round(100 * thRun.inBand / thRun.bandN) : "--";
+    th$("thStE").textContent = Math.min(t, TH_HORIZON).toFixed(0);
+  }
+
+  function thFinish() {
+    if (thTimer) { clearInterval(thTimer); thTimer = null; }
+    var st = thRun;
+    thRun = null;
+    thRuns++;
+    var v = thVerdict(st);
+    thLastVerdict = v;
+    var log = th$("thLog");
+    var html = "";
+    st.events.forEach(function (e) {
+      var cls = /TRIP/.test(e.txt) ? "bad" : "dim";
+      html += "<span class=\"" + cls + "\">" + thEsc(e.txt) + "</span>\n";
+    });
+    html += "<span class=\"dim\">Run complete: peak die " + st.maxT.toFixed(1) +
+      "C, in band " + Math.round(v.inBandFrac * 100) + "% of scored time, avg noise " +
+      v.avgNoise.toFixed(1) + " dBA (budget " + st.sv.noiseBudget + ").</span>";
+    log.innerHTML = html;
+    log.scrollTop = log.scrollHeight;
+    var vd = th$("thVerdict");
+    vd.className = "th-verdict " + (v.pass ? "pass" : "fail");
+    if (v.pass) {
+      vd.innerHTML = "REFURB READY: SERVER " + st.sv.id + " QUALIFIED" +
+        "<small>Held 65C in band, no trip, inside the noise budget. Sign it off.</small>";
+    } else {
+      vd.innerHTML = "NOT READY: SERVER " + st.sv.id + " FAILED" +
+        "<small>" + thEsc(v.reasons.join(" ")) + "</small>";
+    }
+    th$("thStT").textContent = st.T.toFixed(1);
+    th$("thStF").textContent = Math.round(st.pwm);
+    th$("thStE").textContent = TH_HORIZON.toFixed(0);
+    th$("thRun").disabled = false;
+    th$("thStop").disabled = true;
+    thDraw();
+    thRenderSign();
+    if (typeof toast === "function") toast(v.pass ? "Server " + st.sv.id + " qualified." : "Server " + st.sv.id + " failed the bench.");
+  }
+
+  function thOnSign() {
+    var sv = thServer();
+    if (!thLastVerdict || !thLastVerdict.pass || thSigned[sv.id]) return;
+    thSigned[sv.id] = { kp: thKp, ki: thKi, kd: thKd };
+    thRenderCards(); thRenderSign(); thMaybeCert();
+    if (typeof toast === "function") toast("Server " + sv.id + " signed off.");
+  }
+
+  function thCertText() {
+    var L = [];
+    L.push("THE THERMOSTAT, THERMAL QUALIFICATION CERTIFICATE");
+    L.push("The Proving Ground, bench 17");
+    L.push("Issued: " + new Date().toISOString().slice(0, 10));
+    L.push("");
+    L.push("This certifies the following refurbished servers held a 65C die");
+    L.push("setpoint inside a 2.5C band for 75% of scored time, with no thermal");
+    L.push("trip and inside the per-server noise budget, under a real PID loop");
+    L.push("with fan spool lag and a 1.5s BMC sensor poll delay.");
+    L.push("");
+    TH_SERVERS.forEach(function (sv) {
+      var g = thSigned[sv.id];
+      L.push("SERVER " + sv.id + " (" + sv.name + "): " +
+        (g ? "QUALIFIED, P=" + g.kp.toFixed(2) + " I=" + g.ki.toFixed(2) + " D=" + g.kd.toFixed(2) : "not signed"));
+    });
+    L.push("");
+    L.push("Signed off on the bench for OLD IRON refurbishment.");
+    return L.join("\n");
+  }
+
+  function thMaybeCert() {
+    var all = TH_SERVERS.every(function (sv) { return !!thSigned[sv.id]; });
+    var cert = th$("thCert");
+    if (!all) { cert.className = "th-cert"; cert.innerHTML = ""; return; }
+    cert.className = "th-cert show";
+    cert.innerHTML = "";
+    cert.appendChild(thEl("h4", null, "THERMAL QUALIFICATION CERTIFICATE"));
+    cert.appendChild(thEl("p", null,
+      "All three servers held 65C through their workloads with no trip and inside the noise budget. " +
+      "This rack is refurb-ready."));
+    var dl = thEl("button", "th-mini", "DOWNLOAD CERTIFICATE");
+    dl.type = "button";
+    dl.addEventListener("click", function () {
+      thDownload(thCertText(), "thermostat-certificate.txt");
+      if (typeof toast === "function") toast("Certificate downloaded.");
+    });
+    cert.appendChild(dl);
+  }
+
+  function thDownload(text, name) {
+    var blob = new Blob([text], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    }, 500);
+  }
+
+  function thDraw() {
+    var cv = th$("thChart");
+    if (!cv) return;
+    var g = cv.getContext("2d");
+    if (!g) return;
+    var W = cv.clientWidth || 800, H = 240;
+    var dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+    cv.width = W * dpr; cv.height = H * dpr;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.fillStyle = "#0a0a0d";
+    g.fillRect(0, 0, W, H);
+
+    var split = H * 0.68;
+    var XT = function (t) { return 44 + (t / TH_HORIZON) * (W - 56); };
+    var YT = function (c) { return 10 + (1 - (c - 20) / 80) * (split - 20); };
+    var YP = function (p) { return split + 14 + (1 - p / 100) * (H - split - 34); };
+
+    g.font = "10px 'IBM Plex Mono', monospace";
+    g.lineWidth = 1;
+
+    /* target band */
+    g.fillStyle = "rgba(125,216,125,.10)";
+    g.fillRect(XT(0), YT(TH_SET + TH_BAND), XT(TH_HORIZON) - XT(0), YT(TH_SET - TH_BAND) - YT(TH_SET + TH_BAND));
+    /* trip line */
+    g.strokeStyle = "#ff5a1f"; g.setLineDash([5, 4]);
+    g.beginPath(); g.moveTo(XT(0), YT(TH_TRIP)); g.lineTo(XT(TH_HORIZON), YT(TH_TRIP)); g.stroke();
+    g.setLineDash([]);
+    g.fillStyle = "#ff5a1f";
+    g.fillText("TRIP 95", W - 58, YT(TH_TRIP) - 4);
+    /* setpoint line */
+    g.strokeStyle = "#3a5a3a"; g.setLineDash([5, 4]);
+    g.beginPath(); g.moveTo(XT(0), YT(TH_SET)); g.lineTo(XT(TH_HORIZON), YT(TH_SET)); g.stroke();
+    g.setLineDash([]);
+    /* temp gridlines */
+    g.fillStyle = "#6e6b64";
+    [20, 40, 60, 80, 100].forEach(function (c) {
+      g.strokeStyle = "#1e1e24";
+      g.beginPath(); g.moveTo(XT(0), YT(c)); g.lineTo(XT(TH_HORIZON), YT(c)); g.stroke();
+      g.fillStyle = "#6e6b64";
+      g.fillText(String(c), 8, YT(c) + 3);
+    });
+    /* pwm gridlines */
+    [0, 50, 100].forEach(function (p) {
+      g.strokeStyle = "#1e1e24";
+      g.beginPath(); g.moveTo(XT(0), YP(p)); g.lineTo(XT(TH_HORIZON), YP(p)); g.stroke();
+      g.fillStyle = "#6e6b64";
+      g.fillText(String(p) + "%", 8, YP(p) + 3);
+    });
+    g.fillStyle = "#6e6b64";
+    g.fillText("0s", XT(0), H - 6);
+    g.fillText("45s", XT(45) - 8, H - 6);
+    g.fillText("90s", XT(90) - 12, H - 6);
+
+    var samples = thRun ? thRun.samples : (thLastSamples || []);
+    if (samples.length === 0) {
+      g.fillStyle = "#6e6b64";
+      g.fillText("Run the bench to paint the chart.", 60, 40);
+      return;
+    }
+    /* workload step markers */
+    g.strokeStyle = "#2e2e38";
+    thServer().load && (function () {
+      var prev = thServer().load(0);
+      for (var t = 1; t <= TH_HORIZON; t++) {
+        var cur = thServer().load(t);
+        if (cur !== prev) {
+          g.beginPath(); g.moveTo(XT(t), 10); g.lineTo(XT(t), H - 20); g.stroke();
+          prev = cur;
+        }
+      }
+    })();
+    /* pwm area */
+    g.strokeStyle = "#8a877f";
+    g.lineWidth = 1.5;
+    g.beginPath();
+    samples.forEach(function (s, i) {
+      var x = XT(s.t), y = YP(s.pwm);
+      if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+    });
+    g.stroke();
+    /* temp trace */
+    g.strokeStyle = "#ff5a1f";
+    g.lineWidth = 2;
+    g.beginPath();
+    samples.forEach(function (s, i) {
+      var x = XT(s.t), y = YT(Math.max(20, Math.min(100, s.T)));
+      if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+    });
+    g.stroke();
+    g.lineWidth = 1;
+    thLastSamples = samples;
+  }
+  var thLastSamples = [];
+
+  function thInit() {
+    if (typeof document === "undefined") return;
+    if (!document.querySelector(".dossier .actions")) return;
+    if (typeof window !== "undefined" && window.matchMedia &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches) TH_REDUCED = true;
+    thBuildShell();
+  }
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", thInit);
+    } else {
+      thInit();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      TH: {
+        servers: TH_SERVERS, sim: thSim, newRun: thNewRun, stepRun: thStepRun,
+        verdict: thVerdict, SET: TH_SET, TRIP: TH_TRIP, BAND: TH_BAND, noise: thNoise
+      }
+    });
+  }
+
+})();

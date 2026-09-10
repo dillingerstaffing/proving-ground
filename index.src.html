@@ -525,7 +525,11 @@ var PG_BENCHES = [
   { section: "tapeout", n: "16", name: "The Power Tree", btn: "ptBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "GPU power sequencing on the bench: five rails with real ramp physics, Power-Good windows, sequence violations, and UVLO faults. Order the enables, dial the delay, convict the two faulty boards on the scope, sign off all three.",
     how: "Set the rail order and inter-rail delay, run the sequence, rework exactly what the scope proves is broken, qualify all three boards.",
-    spec: "5 RAILS \u00B7 SEQ + UVLO \u00B7 3 BOARDS" }
+    spec: "5 RAILS \u00B7 SEQ + UVLO \u00B7 3 BOARDS" },
+  { section: "oldiron", n: "17", name: "The Thermostat", btn: "thBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "PID fan-control tuning for a refurbished 1U server: real thermal physics, fan spool lag, a 1.5s BMC sensor delay, and honest workload steps. Hold 65C in band, no trip, inside the noise budget.",
+    how: "Tune P, I, and D, run the 90-second workload, and qualify all three racks for refurb.",
+    spec: "PID LOOP \u00B7 3 RACKS" }
 ];
 
 var pgFilter = "all";
