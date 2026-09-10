@@ -3498,7 +3498,7 @@ if (typeof module !== "undefined" && module.exports) {
    GDDR timing qualification bench for the TAPEOUT GPU refurb
    line: a real DRAM command-scheduler simulation. Tune tCL,
    tRCD, tRP, tRAS on three memory modules, watch ACT/RD/WR/PRE
-   commands flow across 8 banks on a live trace, then qualify
+   commands flow across 16 banks on a live trace, then qualify
    each module with a 4000-transaction deterministic pass.
    Pass mark: errors within the ECC budget AND bandwidth at or
    above the module's grade target. Grade is set by silicon
@@ -4064,7 +4064,7 @@ if (typeof module !== "undefined" && module.exports) {
       "Silicon margin: " + (r.res.margin >= 0 ? "+" : "") + r.res.margin + " cycles",
       "BIN GRADE: " + r.grade,
       "",
-      "4000-transaction deterministic qualification, 8 banks,",
+      "4000-transaction deterministic qualification, 16 banks,",
       "128-byte accesses, real command scheduling.",
       "",
       "Issued " + new Date().toISOString().slice(0, 10) + " by The Proving Ground"
