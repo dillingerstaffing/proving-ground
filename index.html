@@ -590,7 +590,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "24", name: "The Static Room", btn: "srBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "ESD-safe handling for the OLD IRON refurb line: a real triboelectric charge model and RC bleed physics. Test your wrist strap, keep your body voltage below each board's HBM rating, and certify three boards without a single discharge event.",
     how: "Test the strap, walk to the bin, reclip and wait for the meter to clear the board rating, then touch.",
-    spec: "ESD PHYSICS \u00B7 3 BOARDS \u00B7 HBM" }
+    spec: "ESD PHYSICS \u00B7 3 BOARDS \u00B7 HBM" },
+  { section: "silicon", n: "25", name: "The Fence Line", btn: "flBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "Two harts share memory and the silicon may complete their accesses out of order. Place FENCE instructions in each litmus program so the forbidden outcome becomes unreachable. A hands-on lab for the RISC-V weak memory model.",
+    how: "Read each litmus program, place fences in the slots, run the outcome explorer, then certify all three trials.",
+    spec: "RVWMO \u00B7 3 LITMUS TRIALS" }
 ];
 
 var pgFilter = "all";
@@ -958,9 +962,9 @@ if (document.readyState === "loading") {
   pgBoot();
 }
 </script>
-<script src="rvcore.js?v=13efda57c6" defer></script>
-<script src="rvdata.js?v=13efda57c6" defer></script>
-<script src="riscv-lab.js?v=13efda57c6" defer></script>
-<script src="features.js?v=13efda57c6" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=1fdcdffd9e" defer></script>
+<script src="rvdata.js?v=1fdcdffd9e" defer></script>
+<script src="riscv-lab.js?v=1fdcdffd9e" defer></script>
+<script src="features.js?v=1fdcdffd9e" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

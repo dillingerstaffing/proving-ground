@@ -16063,3 +16063,699 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
 })();
+
+/* ================= THE FENCE LINE (BENCH 25) =================
+ * A hands-on lab for the RISC-V weak memory model (RVWMO). Two harts
+ * share memory and the silicon may complete their accesses out of order.
+ * Each trial is a litmus program with one forbidden outcome. Place FENCE
+ * instructions in the slots, run the outcome explorer (which enumerates
+ * every possible execution under three stated rules and checks the order
+ * graph for cycles), and certify the trial when the forbidden outcome is
+ * unreachable.
+ *
+ * The explorer's rules (a stated simplification of RVWMO's core):
+ *   1. Same address: program order never breaks.
+ *   2. Different addresses: any order, unless a fence forbids it.
+ *   3. An execution is possible only if all order edges form no cycle.
+ * Fences are modelled as non-cumulative order edges.
+ */
+(function () {
+  "use strict";
+
+  /* ---------------- engine: litmus explorer (pure, no DOM) ---------------- */
+
+  var FL_FENCES = {
+    none: null,
+    rwrw: { label: "FENCE RW,RW", pred: { R: 1, W: 1 }, succ: { R: 1, W: 1 } },
+    rr:   { label: "FENCE R,R",   pred: { R: 1 },        succ: { R: 1 } },
+    ww:   { label: "FENCE W,W",   pred: { W: 1 },        succ: { W: 1 } },
+    wr:   { label: "FENCE W,R",   pred: { W: 1 },        succ: { R: 1 } },
+    rw:   { label: "FENCE R,W",   pred: { R: 1 },        succ: { W: 1 } }
+  };
+  var FL_FENCE_ORDER = ["none", "rwrw", "rr", "ww", "wr", "rw"];
+
+  var FL_TRIALS = [
+    {
+      id: "corr", name: "The Quiet Invariant", par: 0,
+      story: "Two stores to one address, then two loads of it. The hardware " +
+        "reorders across addresses freely, but program order on a single " +
+        "address is sacred: the second load may never observe an older value " +
+        "than the first. Run the explorer and confirm the forbidden outcome " +
+        "is already impossible. Par is zero fences.",
+      forbidden: [["r1", 2], ["r2", 1]],
+      forbiddenNote: "r1 = 2, r2 = 1 would mean the second load saw an older value than the first.",
+      harts: [
+        { name: "HART 0", ops: [
+          { t: "st", addr: "x", val: 1 },
+          { t: "st", addr: "x", val: 2 }
+        ] },
+        { name: "HART 1", ops: [
+          { t: "ld", reg: "r1", addr: "x" },
+          { t: "ld", reg: "r2", addr: "x" }
+        ] }
+      ]
+    },
+    {
+      id: "sb", name: "Store Buffering", par: 2,
+      story: "Each hart stores, then loads the other hart's address. A store " +
+        "can sit in the hart's store buffer while the later load runs ahead, " +
+        "so both loads can read the old zero. Fence each store ahead of its " +
+        "load: FENCE W,R orders the store before the load. Par is 2 fences.",
+      forbidden: [["r1", 0], ["r2", 0]],
+      forbiddenNote: "r1 = 0, r2 = 0 means both loads ran before either store became visible.",
+      harts: [
+        { name: "HART 0", ops: [
+          { t: "st", addr: "x", val: 1 },
+          { t: "ld", reg: "r1", addr: "y" }
+        ] },
+        { name: "HART 1", ops: [
+          { t: "st", addr: "y", val: 1 },
+          { t: "ld", reg: "r2", addr: "x" }
+        ] }
+      ]
+    },
+    {
+      id: "mp", name: "Message Passing", par: 2,
+      story: "Hart 0 writes the message, then the flag. Hart 1 reads the " +
+        "flag, then the message. Without fences the flag store can pass the " +
+        "message store, or the flag load can pass the data load. Order the " +
+        "two stores on the writer (FENCE W,W) and the two loads on the reader " +
+        "(FENCE R,R). Note: fencing only the reader changes nothing. Par is 2 fences.",
+      forbidden: [["r1", 1], ["r2", 0]],
+      forbiddenNote: "r1 = 1, r2 = 0 means the flag was seen but the message was not.",
+      harts: [
+        { name: "HART 0", ops: [
+          { t: "st", addr: "x", val: 1 },
+          { t: "st", addr: "y", val: 1 }
+        ] },
+        { name: "HART 1", ops: [
+          { t: "ld", reg: "r1", addr: "y" },
+          { t: "ld", reg: "r2", addr: "x" }
+        ] }
+      ]
+    }
+  ];
+
+  function flOpType(t) { return t === "st" ? "W" : "R"; }
+
+  /* Order graph over ops. fences[h][s] is the fence key in the slot after
+     op s on hart h. Edges: same-address program order, plus fence edges. */
+  function flBuildGraph(trial, fences) {
+    var nodes = [], idx = {}, h, i, j, s;
+    trial.harts.forEach(function (hart, hh) {
+      hart.ops.forEach(function (op, ii) {
+        var n = { id: hh + ":" + ii, h: hh, i: ii, t: op.t, addr: op.addr,
+                  reg: op.reg, val: op.val };
+        idx[n.id] = nodes.length;
+        nodes.push(n);
+      });
+    });
+    var edges = [];
+    function edge(a, b) { edges.push([idx[a], idx[b]]); }
+    for (h = 0; h < trial.harts.length; h++) {
+      var ops = trial.harts[h].ops;
+      for (i = 0; i < ops.length; i++)
+        for (j = i + 1; j < ops.length; j++)
+          if (ops[i].addr === ops[j].addr) edge(h + ":" + i, h + ":" + j);
+      var fs = fences[h] || [];
+      for (s = 0; s < fs.length; s++) {
+        var F = FL_FENCES[fs[s]];
+        if (!F) continue;
+        for (i = 0; i <= s; i++) {
+          if (!F.pred[flOpType(ops[i].t)]) continue;
+          for (j = s + 1; j < ops.length; j++) {
+            if (!F.succ[flOpType(ops[j].t)]) continue;
+            edge(h + ":" + i, h + ":" + j);
+          }
+        }
+      }
+    }
+    return { nodes: nodes, idx: idx, edges: edges };
+  }
+
+  /* Stores per address in coherence order: initial zero, then program
+     stores in definition order (same-hart same-address program order
+     forces this order). */
+  function flStores(trial) {
+    var map = {};
+    trial.harts.forEach(function (hart, h) {
+      hart.ops.forEach(function (op, i) {
+        if (op.t === "st") {
+          if (!map[op.addr]) map[op.addr] = [];
+          map[op.addr].push({ h: h, i: i, val: op.val });
+        }
+      });
+    });
+    Object.keys(map).forEach(function (a) {
+      map[a].unshift({ h: -1, i: -1, val: 0 });
+    });
+    return map;
+  }
+
+  function flHasCycle(n, edges) {
+    var color = new Array(n).fill(0), u;
+    function dfs(v) {
+      color[v] = 1;
+      for (var k = 0; k < edges.length; k++) {
+        if (edges[k][0] !== v) continue;
+        var w = edges[k][1];
+        if (color[w] === 1) return true;
+        if (color[w] === 0 && dfs(w)) return true;
+      }
+      color[v] = 2;
+      return false;
+    }
+    for (u = 0; u < n; u++)
+      if (color[u] === 0 && dfs(u)) return true;
+    return false;
+  }
+
+  /* Enumerate every reads-from assignment; a candidate is a possible
+     execution iff ppo + rfe + fr is acyclic. Returns reachable outcomes. */
+  function flExplore(trial, fences) {
+    var g = flBuildGraph(trial, fences);
+    var stores = flStores(trial);
+    var coPos = {};
+    Object.keys(stores).forEach(function (a) {
+      stores[a].forEach(function (st, p) { coPos[a + "|" + st.h + ":" + st.i] = p; });
+    });
+    var loads = [];
+    g.nodes.forEach(function (n, k) { if (n.t === "ld") loads.push(k); });
+    var seen = {}, outcomes = [];
+    var rf = new Array(loads.length);
+
+    function candidate() {
+      var extra = [], regs = {}, k, ln, st;
+      for (k = 0; k < loads.length; k++) {
+        ln = g.nodes[loads[k]];
+        st = rf[k];
+        regs[ln.reg] = st.val;
+        if (st.h === ln.h && st.i > ln.i) return; /* load reading a po-later store: impossible */
+        if (st.h >= 0 && st.h !== ln.h) extra.push([g.idx[st.h + ":" + st.i], loads[k]]); /* rfe */
+      }
+      for (k = 0; k < loads.length; k++) {
+        ln = g.nodes[loads[k]];
+        st = rf[k];
+        var p = coPos[ln.addr + "|" + st.h + ":" + st.i];
+        stores[ln.addr].forEach(function (s2) {
+          if (s2.h < 0) return;
+          if (coPos[ln.addr + "|" + s2.h + ":" + s2.i] > p)
+            extra.push([loads[k], g.idx[s2.h + ":" + s2.i]]); /* fr */
+        });
+      }
+      if (flHasCycle(g.nodes.length, g.edges.concat(extra))) return;
+      var key = Object.keys(regs).sort().map(function (r) { return r + "=" + regs[r]; }).join(",");
+      if (!seen[key]) {
+        seen[key] = 1;
+        outcomes.push({ regs: regs, key: key });
+      }
+    }
+
+    (function rec(li) {
+      if (li === loads.length) { candidate(); return; }
+      var list = stores[g.nodes[loads[li]].addr];
+      for (var s = 0; s < list.length; s++) { rf[li] = list[s]; rec(li + 1); }
+    })(0);
+
+    outcomes.sort(function (a, b) { return a.key < b.key ? -1 : 1; });
+    var forbiddenReachable = outcomes.some(function (o) {
+      return trial.forbidden.every(function (p) { return o.regs[p[0]] === p[1]; });
+    });
+    return { outcomes: outcomes, forbiddenReachable: forbiddenReachable };
+  }
+
+  function flFenceCount(fences) {
+    var n = 0, h, s;
+    for (h = 0; h < fences.length; h++)
+      for (s = 0; s < fences[h].length; s++)
+        if (fences[h][s] && fences[h][s] !== "none") n++;
+    return n;
+  }
+
+  /* ---------------- state ---------------- */
+
+  function flNewTrialState(trial) {
+    return {
+      fences: trial.harts.map(function (hart) {
+        var a = [];
+        for (var s = 0; s < hart.ops.length - 1; s++) a.push("none");
+        return a;
+      }),
+      explored: false,
+      dirty: false,
+      certified: false,
+      result: null
+    };
+  }
+
+  function flNewState() {
+    return {
+      active: 0,
+      trials: FL_TRIALS.map(flNewTrialState),
+      done: false
+    };
+  }
+
+  function flCertifiedCount(s) {
+    return s.trials.filter(function (t) { return t.certified; }).length;
+  }
+
+  function flTotalFences(s) {
+    return s.trials.reduce(function (n, t) { return n + flFenceCount(t.fences); }, 0);
+  }
+
+  function flParTotal() {
+    return FL_TRIALS.reduce(function (n, t) { return n + t.par; }, 0);
+  }
+
+  /* ---------------- view ---------------- */
+
+  var flS = null;
+  var flEls = {};
+
+  var FL_CSS = [
+    ".fl-overlay{position:fixed;inset:0;background:rgba(4,7,7,.94);z-index:90;display:none;overflow-y:auto;padding:18px 12px;}",
+    ".fl-overlay.open{display:block;}",
+    ".fl-panel{max-width:1020px;margin:0 auto;background:var(--panel);border:1px solid var(--line);padding:20px;}",
+    ".fl-panel h3{font-family:var(--font-d);font-size:22px;letter-spacing:.02em;margin:0 0 4px;text-transform:uppercase;}",
+    ".fl-spec{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--ember);margin:0 0 10px;}",
+    ".fl-sub{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 10px;max-width:72ch;}",
+    ".fl-sub b{color:var(--paper);}",
+    ".fl-rules{font-family:var(--font-m);font-size:11.5px;color:var(--dim);line-height:1.8;margin:0 0 14px;padding:10px 12px;border:1px solid var(--line);}",
+    ".fl-rules b{color:var(--paper);font-weight:600;}",
+    ".fl-tabs{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px;}",
+    ".fl-tab{min-height:48px;padding:10px 14px;background:transparent;border:1px solid var(--line);color:var(--paper);font-family:var(--font-d);font-size:12px;letter-spacing:.04em;cursor:pointer;text-transform:uppercase;}",
+    ".fl-tab .fl-st{display:block;font-family:var(--font-m);font-size:10px;letter-spacing:.1em;margin-top:4px;}",
+    ".fl-tab .fl-st.todo{color:var(--dim);}",
+    ".fl-tab .fl-st.part{color:var(--ember);}",
+    ".fl-tab .fl-st.done{color:#7fd67f;}",
+    ".fl-tab[aria-selected=\"true\"]{border-color:var(--ember);}",
+    ".fl-story{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 4px;max-width:72ch;}",
+    ".fl-par{font-family:var(--font-m);font-size:11px;letter-spacing:.1em;color:var(--dim);margin:0 0 12px;}",
+    ".fl-harts{display:flex;flex-wrap:wrap;gap:16px;margin:0 0 12px;}",
+    ".fl-hart{flex:1 1 280px;min-width:0;border:1px solid var(--line);padding:12px;}",
+    ".fl-hart h4{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--ember);margin:0 0 8px;}",
+    ".fl-op{font-family:var(--font-m);font-size:13px;color:var(--paper);padding:10px 12px;border:1px solid var(--line);margin:0 0 6px;background:rgba(255,255,255,.02);}",
+    ".fl-op .fl-addr{color:var(--ember);}",
+    ".fl-slot{display:flex;align-items:center;gap:10px;margin:0 0 6px;padding:8px 10px;border:1px dashed var(--line);}",
+    ".fl-slot label{font-family:var(--font-m);font-size:10.5px;letter-spacing:.08em;color:var(--dim);white-space:nowrap;}",
+    ".fl-slot select{flex:1;min-height:48px;background:var(--ink);color:var(--paper);border:1px solid var(--line);font-family:var(--font-m);font-size:12.5px;padding:8px;}",
+    ".fl-btnrow{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px;}",
+    ".fl-btn{min-height:48px;padding:12px 18px;font-family:var(--font-d);font-size:12px;letter-spacing:.06em;text-transform:uppercase;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--paper);}",
+    ".fl-btn.primary{background:var(--ember);border-color:var(--ember);color:#0a0a0a;font-weight:700;}",
+    ".fl-btn:disabled{opacity:.4;cursor:not-allowed;}",
+    ".fl-out{border:1px solid var(--line);padding:12px;margin:0 0 12px;}",
+    ".fl-out h5{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--paper);margin:0 0 8px;}",
+    ".fl-row{display:flex;align-items:baseline;gap:10px;font-family:var(--font-m);font-size:12.5px;color:var(--paper);padding:8px 4px;border-top:1px solid var(--line);}",
+    ".fl-row .fl-tag{margin-left:auto;font-size:10px;letter-spacing:.1em;white-space:nowrap;}",
+    ".fl-row .fl-tag.ok{color:var(--dim);}",
+    ".fl-row .fl-tag.bad{color:var(--ember);font-weight:700;}",
+    ".fl-verdict{font-size:12.5px;line-height:1.7;margin:10px 0 0;color:var(--steel);}",
+    ".fl-verdict b{color:var(--paper);}",
+    ".fl-verdict.bad b{color:var(--ember);}",
+    ".fl-note{font-family:var(--font-m);font-size:11px;color:var(--dim);line-height:1.7;margin:8px 0 0;}",
+    ".fl-done{border:1px solid var(--ember);padding:18px;margin:0 0 12px;}",
+    ".fl-done h4{font-family:var(--font-d);font-size:18px;color:var(--ember);margin:0 0 8px;text-transform:uppercase;letter-spacing:.03em;}",
+    ".fl-done p{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 8px;}",
+    ".fl-done p b{color:var(--paper);}",
+    ".fl-zline{font-family:var(--font-m);font-size:11.5px;color:var(--steel);margin:0 0 4px;}",
+    ".fl-zline b{color:var(--paper);font-weight:400;}",
+    ".fl-foot{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0 0;}",
+    ".fl-progress{font-family:var(--font-m);font-size:11.5px;color:var(--dim);letter-spacing:.08em;margin-right:auto;}",
+    ".fl-progress b{color:var(--paper);font-weight:600;}",
+    "@keyframes flpop{0%{transform:scale(.96);}100%{transform:scale(1);}}",
+    ".fl-pop{animation:flpop 200ms ease-out;}",
+    "@media (prefers-reduced-motion: reduce){.fl-pop{animation:none;}}",
+    ".fl-panel button:focus-visible,.fl-panel select:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}"
+  ];
+
+  function flEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function flOpText(op) {
+    if (op.t === "st") return "ST [" + op.addr + "], " + op.val;
+    return "LD " + op.reg + ", [" + op.addr + "]";
+  }
+
+  function flTrialStatus(ts, trial) {
+    if (ts.certified) return { t: "CERTIFIED", c: "done" };
+    if (ts.explored && !ts.dirty) {
+      return ts.result.forbiddenReachable
+        ? { t: "FORBIDDEN REACHABLE", c: "part" }
+        : { t: "READY TO CERTIFY", c: "part" };
+    }
+    var n = flFenceCount(ts.fences);
+    return { t: n > 0 ? n + " FENCE" + (n === 1 ? "" : "S") + " PLACED" : "NO FENCES YET", c: "todo" };
+  }
+
+  function flRenderTabs() {
+    var w = flEls.tabs;
+    w.innerHTML = "";
+    FL_TRIALS.forEach(function (trial, i) {
+      var ts = flS.trials[i];
+      var st = flTrialStatus(ts, trial);
+      var t = flEl("button", "fl-tab", null);
+      t.type = "button";
+      t.setAttribute("data-fl", "tab");
+      t.setAttribute("data-i", String(i));
+      t.setAttribute("aria-selected", i === flS.active ? "true" : "false");
+      t.appendChild(flEl("span", null, (i + 1) + " · " + trial.name));
+      t.appendChild(flEl("span", "fl-st " + st.c, st.t));
+      (function (idx) {
+        t.addEventListener("click", function () { flS.active = idx; flRenderAll(); });
+      })(i);
+      w.appendChild(t);
+    });
+  }
+
+  function flRenderTrial() {
+    var w = flEls.trial;
+    w.innerHTML = "";
+    var ti = flS.active;
+    var trial = FL_TRIALS[ti];
+    var ts = flS.trials[ti];
+
+    var story = flEl("p", "fl-story", trial.story);
+    w.appendChild(story);
+    w.appendChild(flEl("p", "fl-par", "PAR " + trial.par + " FENCE" + (trial.par === 1 ? "" : "S") +
+      " · FORBIDDEN OUTCOME: " + trial.forbidden.map(function (p) { return p[0] + " = " + p[1]; }).join(", ")));
+
+    var harts = flEl("div", "fl-harts", null);
+    trial.harts.forEach(function (hart, h) {
+      var col = flEl("div", "fl-hart", null);
+      col.appendChild(flEl("h4", null, hart.name));
+      hart.ops.forEach(function (op, i) {
+        var row = flEl("div", "fl-op", null);
+        row.textContent = flOpText(op);
+        col.appendChild(row);
+        if (i < hart.ops.length - 1) {
+          var slot = flEl("div", "fl-slot", null);
+          var lab = flEl("label", null, "FENCE SLOT");
+          var selId = "fl-sel-" + ti + "-" + h + "-" + i;
+          lab.setAttribute("for", selId);
+          slot.appendChild(lab);
+          var sel = document.createElement("select");
+          sel.id = selId;
+          sel.setAttribute("aria-label", "Fence between " + flOpText(hart.ops[i]) +
+            " and " + flOpText(hart.ops[i + 1]) + " on " + hart.name);
+          FL_FENCE_ORDER.forEach(function (key) {
+            var o = document.createElement("option");
+            o.value = key;
+            o.textContent = key === "none" ? "No fence" : FL_FENCES[key].label;
+            if (ts.fences[h][i] === key) o.selected = true;
+            sel.appendChild(o);
+          });
+          (function (hh, ss) {
+            sel.addEventListener("change", function () {
+              ts.fences[hh][ss] = sel.value;
+              ts.dirty = true;
+              if (ts.certified) {
+                ts.certified = false;
+                flS.done = false;
+                toast("Fence changed: trial " + (ti + 1) + " certification revoked. Re-run the explorer.");
+              }
+              flRenderAll();
+            });
+          })(h, i);
+          slot.appendChild(sel);
+          col.appendChild(slot);
+        }
+      });
+      harts.appendChild(col);
+    });
+    w.appendChild(harts);
+
+    var btnrow = flEl("div", "fl-btnrow", null);
+    var run = flEl("button", "fl-btn primary", "Run the explorer");
+    run.type = "button";
+    run.setAttribute("data-fl", "run");
+    run.addEventListener("click", function () { flActRun(ti); });
+    btnrow.appendChild(run);
+    var cert = flEl("button", "fl-btn", "Certify trial");
+    cert.type = "button";
+    cert.setAttribute("data-fl", "certify");
+    cert.addEventListener("click", function () { flActCertify(ti); });
+    btnrow.appendChild(cert);
+    var reset = flEl("button", "fl-btn", "Reset trial");
+    reset.type = "button";
+    reset.setAttribute("data-fl", "reset");
+    reset.addEventListener("click", function () { flActReset(ti); });
+    btnrow.appendChild(reset);
+    w.appendChild(btnrow);
+
+    w.appendChild(flRenderOut(ti));
+  }
+
+  function flRenderOut(ti) {
+    var trial = FL_TRIALS[ti];
+    var ts = flS.trials[ti];
+    var box = flEl("div", "fl-out", null);
+    box.setAttribute("data-fl", "out");
+    if (!ts.explored) {
+      box.appendChild(flEl("h5", null, "OUTCOME EXPLORER"));
+      box.appendChild(flEl("p", "fl-note", "Place fences in the slots, then run the explorer to list every outcome the hardware can still produce."));
+      return box;
+    }
+    var r = ts.result;
+    box.appendChild(flEl("h5", null, "OUTCOME EXPLORER · " + r.outcomes.length + " REACHABLE OUTCOME" + (r.outcomes.length === 1 ? "" : "S")));
+    r.outcomes.forEach(function (o) {
+      var isF = trial.forbidden.every(function (p) { return o.regs[p[0]] === p[1]; });
+      var row = flEl("div", "fl-row", null);
+      var txt = flEl("span", null, o.key.replace(/,/g, ", ").replace(/=/g, " = "));
+      row.appendChild(txt);
+      row.appendChild(flEl("span", "fl-tag " + (isF ? "bad" : "ok"), isF ? "FORBIDDEN OUTCOME" : "reachable"));
+      box.appendChild(row);
+    });
+    var v = flEl("p", "fl-verdict" + (r.forbiddenReachable ? " bad" : ""), null);
+    if (ts.dirty) {
+      v.innerHTML = "Fences changed since this run. <b>Run the explorer again</b> before certifying.";
+    } else if (r.forbiddenReachable) {
+      v.innerHTML = "<b>FORBIDDEN OUTCOME REACHABLE.</b> " + trial.forbiddenNote + " Add or change fences, then re-run the explorer.";
+    } else {
+      v.innerHTML = "<b>FORBIDDEN OUTCOME IMPOSSIBLE</b> under the explorer's rules. This trial is ready to certify.";
+    }
+    box.appendChild(v);
+    return box;
+  }
+
+  function flRenderDone() {
+    var w = flEls.done;
+    w.innerHTML = "";
+    if (!flS.done) return;
+    var d = flEl("div", "fl-done fl-pop", null);
+    d.appendChild(flEl("h4", null, "Fence line qualified"));
+    var p = flEl("p", null, null);
+    var used = flTotalFences(flS), par = flParTotal();
+    p.innerHTML = "All three litmus trials fenced so the forbidden outcomes are unreachable. " +
+      "You ordered the silicon's chaos with <b>" + used + " fences</b> against a par of <b>" + par + "</b>." +
+      (used > par ? " Over par, but every trial holds: tighten the fencing to beat par." : " At or under par: tight, correct fencing.");
+    d.appendChild(p);
+    FL_TRIALS.forEach(function (trial, i) {
+      var ts = flS.trials[i];
+      var z = flEl("p", "fl-zline", null);
+      var flist = [];
+      ts.fences.forEach(function (fs, h) {
+        fs.forEach(function (key, s) {
+          if (key && key !== "none")
+            flist.push(trial.harts[h].name + " slot " + (s + 1) + ": " + FL_FENCES[key].label);
+        });
+      });
+      z.innerHTML = "<b>" + (i + 1) + " · " + trial.name + ":</b> " +
+        (flist.length ? flist.join("; ") : "no fences (invariant held on its own)");
+      d.appendChild(z);
+    });
+    w.appendChild(d);
+  }
+
+  function flRenderFoot() {
+    var w = flEls.foot;
+    w.innerHTML = "";
+    var p = flEl("span", "fl-progress", null);
+    p.innerHTML = "Certified <b>" + flCertifiedCount(flS) + " of 3</b> trials · fences used <b>" +
+      flTotalFences(flS) + "</b> (par " + flParTotal() + ")";
+    w.appendChild(p);
+    var cert = flEl("button", "fl-btn", "Download the qualification record");
+    cert.type = "button";
+    cert.setAttribute("data-fl", "record");
+    cert.disabled = !flS.done;
+    cert.addEventListener("click", flDownloadCert);
+    w.appendChild(cert);
+    var close = flEl("button", "fl-btn", "Close bench");
+    close.type = "button";
+    close.setAttribute("data-fl", "close");
+    close.addEventListener("click", function () {
+      document.getElementById("flOverlay").classList.remove("open");
+    });
+    w.appendChild(close);
+  }
+
+  function flRenderAll() {
+    flRenderTabs();
+    flRenderTrial();
+    flRenderDone();
+    flRenderFoot();
+  }
+
+  /* ---------------- actions ---------------- */
+
+  function flActRun(ti) {
+    var trial = FL_TRIALS[ti];
+    var ts = flS.trials[ti];
+    ts.result = flExplore(trial, ts.fences);
+    ts.explored = true;
+    ts.dirty = false;
+    flRenderAll();
+    if (ts.result.forbiddenReachable) {
+      toast("Explorer: " + ts.result.outcomes.length + " outcomes reachable, including the forbidden one.");
+    } else {
+      toast("Explorer: " + ts.result.outcomes.length + " outcomes reachable. Forbidden outcome impossible.");
+    }
+  }
+
+  function flActCertify(ti) {
+    var ts = flS.trials[ti];
+    if (!ts.explored || ts.dirty) {
+      toast("Run the explorer first, then certify.");
+      return;
+    }
+    if (ts.result.forbiddenReachable) {
+      toast("Cannot certify: the forbidden outcome is still reachable. Change the fences and re-run the explorer.");
+      return;
+    }
+    ts.certified = true;
+    toast("Trial " + (ti + 1) + " certified: " + FL_TRIALS[ti].name + ".");
+    if (flCertifiedCount(flS) === FL_TRIALS.length) flS.done = true;
+    flRenderAll();
+  }
+
+  function flActReset(ti) {
+    flS.trials[ti] = flNewTrialState(FL_TRIALS[ti]);
+    if (flS.done) flS.done = false;
+    flRenderAll();
+    toast("Trial " + (ti + 1) + " reset.");
+  }
+
+  function flDownloadCert() {
+    var lines = [];
+    lines.push("THE FENCE LINE · RVWMO LITMUS QUALIFICATION");
+    lines.push("RISC-V weak memory model · outcome explorer, three stated rules");
+    lines.push("");
+    FL_TRIALS.forEach(function (trial, i) {
+      var ts = flS.trials[i];
+      lines.push((i + 1) + ". " + trial.name);
+      lines.push("   Forbidden outcome: " + trial.forbidden.map(function (p) { return p[0] + " = " + p[1]; }).join(", "));
+      var flist = [];
+      ts.fences.forEach(function (fs, h) {
+        fs.forEach(function (key, s) {
+          if (key && key !== "none")
+            flist.push(trial.harts[h].name + " slot " + (s + 1) + ": " + FL_FENCES[key].label);
+        });
+      });
+      lines.push("   Fences: " + (flist.length ? flist.join("; ") : "none"));
+      lines.push("   Reachable outcomes at certification: " + ts.result.outcomes.length);
+      lines.push("   Verdict: CERTIFIED, forbidden outcome unreachable");
+      lines.push("");
+    });
+    lines.push("Fences used: " + flTotalFences(flS) + " (par " + flParTotal() + ")");
+    lines.push("THE FENCE LINE: QUALIFIED");
+    var blob = new Blob(["The Fence Line qualification record\n\n" + lines.join("\n") + "\n"], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "fence-line-qualification.txt";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);
+    toast("Qualification record downloaded");
+  }
+
+  /* ---------------- build ---------------- */
+
+  function flBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("flBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = FL_CSS.join("\n");
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "flBtn";
+    b.className = "secondary";
+    b.textContent = "Run the Fence Line";
+    b.addEventListener("click", function () {
+      document.getElementById("flOverlay").classList.add("open");
+    });
+    box.appendChild(b);
+
+    var ov = document.createElement("div");
+    ov.className = "fl-overlay";
+    ov.id = "flOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Fence Line");
+
+    var panel = document.createElement("div");
+    panel.className = "fl-panel";
+    panel.appendChild(flEl("h3", null, "The Fence Line"));
+    panel.appendChild(flEl("p", "fl-spec", "RVWMO · 3 LITMUS TRIALS"));
+
+    var sub = flEl("p", "fl-sub", null);
+    sub.innerHTML = "Two harts share memory, and the silicon may complete their accesses " +
+      "out of order. This is the heart of <b>RVWMO</b>, the RISC-V weak memory model. " +
+      "Each trial is a litmus program with one <b>forbidden outcome</b>: place " +
+      "<b>FENCE</b> instructions in the slots, run the outcome explorer, and certify " +
+      "the trial when the forbidden outcome becomes unreachable.";
+    panel.appendChild(sub);
+
+    var rules = flEl("div", "fl-rules", null);
+    rules.innerHTML = "<b>THE EXPLORER'S RULES</b> (the core of RVWMO, stated plainly)<br>" +
+      "1. Same address: program order never breaks.<br>" +
+      "2. Different addresses: any order, unless a fence forbids it.<br>" +
+      "3. An outcome is possible only if every order edge forms no cycle.";
+    panel.appendChild(rules);
+
+    flEls.tabs = flEl("div", "fl-tabs", null);
+    panel.appendChild(flEls.tabs);
+
+    flEls.trial = flEl("div", null);
+    panel.appendChild(flEls.trial);
+
+    flEls.done = flEl("div", null);
+    panel.appendChild(flEls.done);
+
+    flEls.foot = flEl("div", "fl-foot", null);
+    panel.appendChild(flEls.foot);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    flS = flNewState();
+    flRenderAll();
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", flBuild);
+    } else {
+      flBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      FL: {
+        FENCES: FL_FENCES, TRIALS: FL_TRIALS,
+        explore: flExplore, buildGraph: flBuildGraph, hasCycle: flHasCycle,
+        newState: flNewState, fenceCount: flFenceCount,
+        certifiedCount: flCertifiedCount, totalFences: flTotalFences, parTotal: flParTotal,
+        run: flActRun, certify: flActCertify, reset: flActReset,
+        state: function () { return flS; }
+      }
+    });
+  }
+})();
