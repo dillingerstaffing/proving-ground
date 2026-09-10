@@ -618,7 +618,11 @@ var PG_BENCHES = [
   { section: "silicon", n: "30", name: "The Reservation Bay", btn: "rsBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "RISC-V atomicity on the bench: two harts race on one counter under a preemptive scheduler. Watch increments vanish, fix it with LR/SC, then run the token vault where only LR/SC can work.",
     how: "Run the losing race, call the outcome first, pick the fix, and certify all three trials.",
-    spec: "LR/SC \u00B7 2 HARTS \u00B7 3 TRIALS" }
+    spec: "LR/SC \u00B7 2 HARTS \u00B7 3 TRIALS" },
+  { section: "silicon", n: "31", name: "The Two-Wire Room", btn: "i2Btn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "A real bit-level I2C bus on the bench: open-drain SDA/SCL, address bytes, one ACK slot per byte, repeated starts. Scan 112 addresses, read the 16-bit temperature register, set the fan duty and prove it with a readback.",
+    how: "Scan the bus, decode the sensor's two bytes, write the fan duty and read it back. Three trials, three strikes.",
+    spec: "I2C BUS \u00B7 112 ADDR \u00B7 3 TRIALS" }
 ];
 
 var pgFilter = "all";
@@ -1030,9 +1034,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=a09b03df29" defer></script>
-<script src="rvdata.js?v=a09b03df29" defer></script>
-<script src="riscv-lab.js?v=a09b03df29" defer></script>
-<script src="features.js?v=a09b03df29" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=b92fb7e319" defer></script>
+<script src="rvdata.js?v=b92fb7e319" defer></script>
+<script src="riscv-lab.js?v=b92fb7e319" defer></script>
+<script src="features.js?v=b92fb7e319" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

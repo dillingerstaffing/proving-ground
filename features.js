@@ -20187,3 +20187,932 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+/* ============================================================
+   THE TWO-WIRE ROOM
+   Silicon bench 31. A real bit-level I2C bus on the bench: an
+   open-drain SDA/SCL waveform model, 7-bit addressing with one
+   direction bit, one ACK slot per byte, repeated starts. Trial 1
+   scans 112 addresses and builds the bus map. Trial 2 reads the
+   temperature sensor's 16-bit register through a combined
+   write-pointer / repeated-start / read transaction and decodes
+   25.5 C by hand. Trial 3 writes the fan controller's duty
+   register and proves it with a readback. Three trials certify,
+   three strikes fail the bench.
+   Teaches one atomic mechanism: the address byte at the start of
+   every I2C conversation decides exactly who answers, and every
+   byte after that gets one ACK bit. Everything else on the bus
+   ignores the traffic.
+   Self-contained, appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- data: the bus ---------------- */
+
+  function i2BlankMem() {
+    var m = new Array(256), i;
+    for (i = 0; i < 256; i++) m[i] = 0xFF;
+    return m;
+  }
+
+  /* Two live devices. TEMP SENSOR 0x48: reg 0x00 holds 0x19 0x80
+     (25 whole degrees, 0x80/256 fraction = 25.5 C), read-only.
+     FAN CONTROLLER 0x2C: reg 0x00 status (read-only), reg 0x01
+     fan duty 0..255, read/write. Everything else NACKs. */
+  function i2BusReset() {
+    var t = i2BlankMem(); t[0] = 0x19; t[1] = 0x80;
+    var f = i2BlankMem(); f[0] = 0xA5; f[1] = 0x00;
+    return {
+      0x48: { name: "TEMP SENSOR", mem: t, ro: { 0: true, 1: true },
+              note: "reg 0x00: temperature, 16 bits. High byte whole degrees, low byte fractions in 1/256 steps. Read-only." },
+      0x2C: { name: "FAN CONTROLLER", mem: f, ro: { 0: true },
+              note: "reg 0x00: status, read-only. reg 0x01: fan duty 0..255, read/write." }
+    };
+  }
+  var I2_BUS = i2BusReset();
+
+  var I2_TEMP_C = 25.5;
+  var I2_SCAN_LO = 0x08, I2_SCAN_HI = 0x77;
+
+  var I2_TRIALS = [
+    { id: "t1", name: "TRIAL 1: THE CENSUS",
+      story: "Two wires run the whole board. A dozen chips can share SDA and SCL, and nothing collides, " +
+             "because the address byte at the start of every conversation decides exactly who answers. " +
+             "No chip-select pins, no extra wires: a 7-bit address plus one direction bit is the whole trick.\n\n" +
+             "The bus on this bench has 112 legal addresses, 0x08 to 0x77 (the reserved ends are skipped). " +
+             "Some of them answer. When a device hears its own address it pulls SDA low during the ninth " +
+             "clock: that is the ACK, one bit that says 'I am here.' An address nobody owns gets silence, " +
+             "a NACK, and the bus just moves on.\n\n" +
+             "Worked example, by hand, before you scan. The temperature sensor lives at 0x48. The master " +
+             "sends START, then the byte 0x90, which is 0x48 shifted left with the direction bit set to 0 " +
+             "(write). The sensor pulls SDA low on the ninth clock: ACK. If the master had sent 0x77 instead, " +
+             "the ninth clock would sit high: NACK, nobody home. That one low bit is the entire census.\n\n" +
+             "Failure modes, stated up front: a NACK on the address byte means no device owns that address. " +
+             "The scanner counts answers, so call the count before you run it." },
+    { id: "t2", name: "TRIAL 2: THE READ",
+      story: "The census found the temperature sensor at 0x48. Reading it takes the standard two-step: " +
+             "write the register pointer, then a repeated START flips the direction bit and the device talks.\n\n" +
+             "The frame, bit by bit: START, 0x90 (0x48 plus WRITE), ACK, 0x00 (point at the temperature " +
+             "register), ACK, repeated START, 0x91 (0x48 plus READ), ACK, then the sensor drives two bytes " +
+             "while the master ACKs the first and NACKs the second to say 'last one', STOP. Watch it happen " +
+             "on the wire below.\n\n" +
+             "The datasheet line on the bench card: reg 0x00 holds 16 bits, the high byte is whole degrees, " +
+             "the low byte is fractions in 1/256 steps. Take the bytes the register holds, decode by hand, " +
+             "and enter the temperature. Take only one byte and you read 0x19, a clean 25.0, and you will be " +
+             "wrong: the register decides its width, not the master.\n\n" +
+             "Failure modes: write a data byte to this sensor and it NACKs, the registers are read-only. " +
+             "Read fewer bytes than the register holds and the value decodes wrong with no error flag." },
+    { id: "t3", name: "TRIAL 3: THE WRITE",
+      story: "Same bus, same address trick, the other direction. The fan controller at 0x2C has two " +
+             "registers: 0x00 is status, read-only, and 0x01 holds the fan duty, 0 to 255, read/write. " +
+             "Writing is the mirror of reading: address plus WRITE, the register pointer, the data byte, " +
+             "one ACK per byte.\n\n" +
+             "Set a duty, write it, then read it back with a repeated START. The readback is the proof the " +
+             "write landed: on a real board this is how you confirm a configuration took, because a write " +
+             "can be NACKed and the only honest check is to read.\n\n" +
+             "Failure modes: write to 0x00 and the device NACKs the data byte, the register is read-only " +
+             "and nothing changes. Skip the readback and you are trusting the bus, which is not a " +
+             "qualification method." }
+  ];
+
+  /* ---------------- pure logic: the wire ---------------- */
+
+  function i2h(b) {
+    var s = (b & 0xFF).toString(16).toUpperCase();
+    return s.length < 2 ? "0" + s : s;
+  }
+
+  /* Bit-level transaction engine. Modes: "write" (addr+W, then wbytes,
+     first byte is the register pointer), "read" (addr+R, rcount bytes
+     from o.ptr), "combined" (addr+W with pointer byte(s), repeated
+     START, addr+R, rcount bytes). Returns samples for the waveform,
+     a text transcript, ok/fail, and the bytes read. Device memory is
+     real: writes persist and reads see them. */
+  function i2Transact(o) {
+    var samples = [], marks = [], tr = [], readBytes = [];
+    var ok = true, fail = null;
+    function S(scl, sda, mark) {
+      samples.push({ scl: scl, sda: sda });
+      if (mark) marks.push({ i: samples.length - 1, label: mark });
+    }
+    function start(mark) { S(1, 1); S(1, 0, mark); S(0, 0); }
+    function rstart(mark) { S(0, 0); S(0, 1); S(1, 1); S(1, 0, mark); S(0, 0); }
+    function stop(mark) { S(0, 0); S(1, 0); S(1, 1, mark); }
+    function byteOut(byte, ackIsAck, label, ackLabel) {
+      marks.push({ i: samples.length, label: label });
+      for (var i = 7; i >= 0; i--) {
+        var v = (byte >> i) & 1;
+        S(0, v); S(1, v); S(1, v); S(0, v);
+      }
+      marks.push({ i: samples.length, label: ackLabel });
+      var av = ackIsAck ? 0 : 1;
+      S(0, av); S(1, av); S(1, av); S(0, av);
+    }
+
+    var dev = I2_BUS[o.addr] || null;
+    var ptr = 0;
+
+    function addrPhase(rw) {
+      var ab = ((o.addr << 1) | rw) & 0xFF;
+      byteOut(ab, !!dev, "0x" + i2h(ab), dev ? "ACK" : "NACK");
+      tr.push("ADDR 0x" + i2h(ab) + " = 0x" + i2h(o.addr) + " + " +
+              (rw ? "READ" : "WRITE") + " -> " + (dev ? "ACK" : "NACK"));
+      if (!dev) {
+        ok = false;
+        fail = "NACK on the address byte: nothing answers at 0x" + i2h(o.addr) +
+               ". No device, no hang, the bus just moves on.";
+      }
+      return !!dev;
+    }
+
+    function writePhase(bytes, firstIsPtr) {
+      for (var i = 0; i < bytes.length; i++) {
+        var b = bytes[i] & 0xFF;
+        var isPtr = firstIsPtr && i === 0;
+        var ackOk = true, why = "";
+        if (isPtr) {
+          ptr = b;
+        } else if (dev.ro[ptr]) {
+          ackOk = false;
+          why = ": register 0x" + i2h(ptr) + " is read-only, the device refused the byte";
+        } else {
+          dev.mem[ptr] = b;
+        }
+        byteOut(b, ackOk, "0x" + i2h(b), ackOk ? "ACK" : "NACK");
+        tr.push("DATA 0x" + i2h(b) + (isPtr ? " (register pointer)" : "") +
+                " -> " + (ackOk ? "ACK" : "NACK" + why));
+        if (!ackOk) {
+          ok = false;
+          fail = "NACK on a data byte" + why + ".";
+          return false;
+        }
+        if (!isPtr) ptr = (ptr + 1) & 0xFF;
+      }
+      return true;
+    }
+
+    function readPhase(n, basePtr) {
+      for (var i = 0; i < n; i++) {
+        var b = dev.mem[(basePtr + i) & 0xFF];
+        readBytes.push(b);
+        var last = (i === n - 1);
+        byteOut(b, !last, "0x" + i2h(b), last ? "NACK" : "ACK");
+        tr.push("READ 0x" + i2h(b) + " <- " + dev.name +
+                ", master " + (last ? "NACKs (last byte)" : "ACKs"));
+      }
+      return true;
+    }
+
+    if (o.mode === "write") {
+      start("START");
+      if (addrPhase(0)) writePhase(o.wbytes || [], true);
+      stop("STOP");
+    } else if (o.mode === "read") {
+      start("START");
+      if (addrPhase(1)) readPhase(o.rcount || 1, o.ptr || 0);
+      stop("STOP");
+    } else if (o.mode === "combined") {
+      start("START");
+      if (addrPhase(0) && writePhase(o.wbytes || [], true)) {
+        rstart("Sr");
+        if (addrPhase(1)) readPhase(o.rcount || 1, ptr);
+      }
+      stop("STOP");
+    }
+    tr.push(ok ? "RESULT: SUCCESS, bus released" : "RESULT: FAILED, " + fail);
+    return { samples: samples, marks: marks, transcript: tr, ok: ok,
+             fail: fail, readBytes: readBytes };
+  }
+
+  /* The census: one address byte per legal address, count the ACKs.
+     Exactly what the on-screen scanner shows. */
+  function i2Scan() {
+    var out = [], a;
+    for (a = I2_SCAN_LO; a <= I2_SCAN_HI; a++) {
+      if (I2_BUS[a]) out.push({ addr: a, name: I2_BUS[a].name });
+    }
+    return out;
+  }
+
+  function i2ResetBus() { I2_BUS = i2BusReset(); }
+
+  /* ---------------- state ---------------- */
+
+  function i2TrialById(id) {
+    for (var i = 0; i < I2_TRIALS.length; i++) {
+      if (I2_TRIALS[i].id === id) return I2_TRIALS[i];
+    }
+    return null;
+  }
+
+  function i2NewTrialState(trial) {
+    var st = { id: trial.id, ran: false, res: null, certified: false,
+               pred: null, map: null, nbytes: 2, entered: "",
+               reg: 0x01, duty: 180, wroteOk: false, wroteReg: null,
+               dutyAtWrite: null, readback: null };
+    return st;
+  }
+
+  function i2NewState() {
+    var trials = [], i;
+    for (i = 0; i < I2_TRIALS.length; i++) {
+      trials.push(i2NewTrialState(I2_TRIALS[i]));
+    }
+    return { trials: trials, ti: 0, strikes: 0, failed: false, done: false };
+  }
+
+  function i2Cur(s) { return s.trials[s.ti]; }
+  function i2Job(s) { return i2TrialById(i2Cur(s).id); }
+
+  function i2SetPred(s, pred) {
+    var t = i2Cur(s);
+    if (t.certified || s.failed) return t.pred;
+    t.pred = pred;
+    return pred;
+  }
+
+  function i2RunScan(s) {
+    var t = i2Cur(s);
+    if (s.failed || t.certified) return t.res;
+    t.map = i2Scan();
+    t.res = { n: t.map.length };
+    t.ran = true;
+    return t.res;
+  }
+
+  function i2RunRead(s) {
+    var t = i2Cur(s);
+    if (s.failed || t.certified) return t.res;
+    t.res = i2Transact({ mode: "combined", addr: 0x48,
+                         wbytes: [0x00], rcount: t.nbytes });
+    t.ran = true;
+    return t.res;
+  }
+
+  function i2RunWrite(s) {
+    var t = i2Cur(s);
+    if (s.failed || t.certified) return t.res;
+    t.dutyAtWrite = t.duty;
+    t.wroteReg = t.reg;
+    t.res = i2Transact({ mode: "write", addr: 0x2C,
+                         wbytes: [t.reg, t.duty] });
+    t.wroteOk = t.res.ok;
+    t.ran = true;
+    return t.res;
+  }
+
+  function i2RunReadback(s) {
+    var t = i2Cur(s);
+    if (s.failed || t.certified) return t.res;
+    t.res = i2Transact({ mode: "combined", addr: 0x2C,
+                         wbytes: [0x01], rcount: 1 });
+    if (t.res.ok && t.res.readBytes.length) {
+      t.readback = t.res.readBytes[0];
+    }
+    t.ran = true;
+    return t.res;
+  }
+
+  /* CERTIFY. Returns {ok, strike, msg}. Trial 1 is the lesson trial:
+     it certifies the observation (prediction + scan), never the count.
+     Trials 2 and 3 certify only correct decodes and honest readbacks. */
+  function i2Certify(s) {
+    var t = i2Cur(s), job = i2Job(s), i, all;
+    if (s.failed) {
+      return { ok: false, strike: false,
+        msg: "The bench has failed. Reset the bench to try again." };
+    }
+    if (t.certified) {
+      return { ok: false, strike: false,
+        msg: "This trial is already certified. Move to the next trial." };
+    }
+    if (!t.ran || !t.res) {
+      return { ok: false, strike: false,
+        msg: "Run the transaction first. The bench certifies observed results, not intentions." };
+    }
+    if (job.id === "t1") {
+      if (t.pred === null || t.pred === undefined) {
+        return { ok: false, strike: false,
+          msg: "Call the device count first: pick a prediction, then certify." };
+      }
+      t.certified = true;
+      all = true;
+      for (i = 0; i < s.trials.length; i++) {
+        if (!s.trials[i].certified) all = false;
+      }
+      if (all) s.done = true;
+      var n = t.map.length;
+      var hit = (t.pred === "4+" && n >= 4) || (Number(t.pred) === n);
+      var names = [];
+      for (i = 0; i < t.map.length; i++) {
+        names.push("0x" + i2h(t.map[i].addr) + " " + t.map[i].name);
+      }
+      return { ok: true, strike: false,
+        msg: "CERTIFIED: the scanner found " + n + " answers (" + names.join(", ") +
+             "), your prediction was " +
+             (hit ? "CONFIRMED." : "MISSED, and that miss is the lesson: the bus tells you, you do not guess.") };
+    }
+    if (job.id === "t2") {
+      var v = parseFloat(t.entered);
+      if (isNaN(v)) {
+        return { ok: false, strike: false,
+          msg: "Enter the decoded temperature in C before certifying." };
+      }
+      if (Math.abs(v - I2_TEMP_C) <= 0.25) {
+        t.certified = true;
+        all = true;
+        for (i = 0; i < s.trials.length; i++) {
+          if (!s.trials[i].certified) all = false;
+        }
+        if (all) s.done = true;
+        return { ok: true, strike: false,
+          msg: "CERTIFIED: 0x19 whole plus 0x80/256 fraction = 25.5 C. You read what the register holds." };
+      }
+      return { ok: false, strike: true,
+        msg: "NOT CERTIFIED: you entered " + v + " C, the register holds 25.5 C " +
+             "(0x19 whole degrees, 0x80 is 128/256). Decode both bytes, the register decides its width." };
+    }
+    /* t3 */
+    if (!t.wroteOk) {
+      return { ok: false, strike: false,
+        msg: "The write did not land" +
+             (t.res && t.res.fail ? ": " + t.res.fail : ".") +
+             " Fix the target register and write again." };
+    }
+    if (t.readback === null || t.readback === undefined) {
+      return { ok: false, strike: false,
+        msg: "Read it back first. A write without a readback is not a qualification." };
+    }
+    if (t.readback === t.dutyAtWrite) {
+      t.certified = true;
+      all = true;
+      for (i = 0; i < s.trials.length; i++) {
+        if (!s.trials[i].certified) all = false;
+      }
+      if (all) s.done = true;
+      return { ok: true, strike: false,
+        msg: "CERTIFIED: duty " + t.dutyAtWrite + " written to 0x2C reg 0x01, readback " +
+             t.readback + ". The configuration is proven, not trusted." };
+    }
+    return { ok: false, strike: true,
+      msg: "NOT CERTIFIED: readback " + t.readback + " does not match the written duty " +
+           t.dutyAtWrite + ". Something between the write and the read is lying to you." };
+  }
+
+  function i2ActStrike(s) {
+    s.strikes++;
+    if (s.strikes >= 3) s.failed = true;
+    return s.failed;
+  }
+
+  function i2ResetTrial(s) {
+    var job = i2Job(s);
+    s.trials[s.ti] = i2NewTrialState(job);
+    i2ResetBus();
+  }
+
+  function i2ResetAll(s) {
+    var keep = i2NewState();
+    s.trials = keep.trials; s.ti = 0; s.strikes = 0; s.failed = false; s.done = false;
+    i2ResetBus();
+  }
+
+  function i2Record(s) {
+    var lines = ["THE TWO-WIRE ROOM: I2C BUS QUALIFICATION RECORD",
+      "Bit-level I2C: 7-bit address + direction bit, one ACK slot per byte,",
+      "repeated starts. Scan range 0x08..0x77 (112 legal addresses).", ""];
+    var i, t, job, r, names, k;
+    for (i = 0; i < s.trials.length; i++) {
+      t = s.trials[i]; job = i2TrialById(t.id);
+      if (t.certified) {
+        if (job.id === "t1") {
+          names = [];
+          for (k = 0; k < t.map.length; k++) {
+            names.push("0x" + i2h(t.map[k].addr) + " " + t.map[k].name);
+          }
+          lines.push((i + 1) + ". " + job.name + ": scanner found " + t.map.length +
+                     " answers (" + names.join(", ") + ") [CERTIFIED]");
+        } else if (job.id === "t2") {
+          lines.push((i + 1) + ". " + job.name + ": 0x48 reg 0x00 read as 0x19 0x80 = " +
+                     I2_TEMP_C + " C [CERTIFIED]");
+        } else {
+          lines.push((i + 1) + ". " + job.name + ": duty " + t.dutyAtWrite +
+                     " written to 0x2C reg 0x01, readback " + t.readback + " [CERTIFIED]");
+        }
+      } else {
+        lines.push((i + 1) + ". " + job.name + " [OPEN]");
+      }
+    }
+    lines.push("", "Discipline: the address byte decides who answers, every byte gets one ACK bit,",
+      "and a write is only proven by a readback.");
+    lines.push("Strikes taken: " + s.strikes);
+    return lines.join("\n");
+  }
+
+  /* ---------------- css ---------------- */
+
+  var I2_CSS = [
+    ".i2-overlay{position:fixed;inset:0;background:rgba(4,7,7,.94);z-index:90;display:none;overflow-y:auto;padding:18px 12px;}",
+    ".i2-overlay.open{display:block;}",
+    ".i2-panel{max-width:1020px;margin:0 auto;background:var(--panel);border:1px solid var(--line);padding:20px;}",
+    ".i2-panel h3{font-family:var(--font-d);font-size:22px;letter-spacing:.02em;margin:0 0 4px;text-transform:uppercase;}",
+    ".i2-spec{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--ember);margin:0 0 10px;}",
+    ".i2-how{color:var(--steel);font-size:12.5px;line-height:1.7;margin:0 0 12px;max-width:74ch;}",
+    ".i2-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px;}",
+    ".i2-tab{font-family:var(--font-m);font-size:12px;letter-spacing:.08em;background:transparent;color:var(--steel);border:1px solid var(--line);padding:0 14px;min-height:48px;cursor:pointer;transition:border-color 200ms,color 200ms;}",
+    ".i2-tab.is-on{color:var(--ember);border-color:var(--ember);}",
+    ".i2-tab.is-done{color:var(--paper);}",
+    ".i2-tab:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".i2-story{color:var(--paper);font-size:13px;line-height:1.75;margin:0 0 12px;max-width:78ch;white-space:pre-line;}",
+    ".i2-rowlabel{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--ember);margin:14px 0 8px;}",
+    ".i2-predict{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 4px;}",
+    ".i2-pred-note{font-family:var(--font-m);font-size:11.5px;color:var(--steel);margin:0 0 8px;}",
+    ".i2-btn{font-family:var(--font-m);font-size:12px;letter-spacing:.1em;background:transparent;color:var(--paper);border:1px solid var(--line);padding:0 16px;min-height:48px;cursor:pointer;transition:border-color 200ms,color 200ms,transform 200ms;}",
+    ".i2-btn:hover{border-color:var(--ember);color:var(--ember);}",
+    ".i2-btn:active{transform:scale(.97);}",
+    ".i2-btn.primary{border-color:var(--ember);color:var(--ember);}",
+    ".i2-btn.primary:hover{background:var(--ember);color:#0a0c0e;}",
+    ".i2-btn.is-on{border-color:var(--ember);color:var(--ember);}",
+    ".i2-btn:disabled{opacity:.35;cursor:not-allowed;transform:none;}",
+    ".i2-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".i2-actions{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0;}",
+    ".i2-wave-scroll{overflow-x:auto;border:1px solid var(--line);background:#0a0d10;margin:0 0 8px;}",
+    ".i2-ws{fill:none;stroke:#8a94a0;stroke-width:1.5;}",
+    ".i2-we{fill:none;stroke:var(--ember);stroke-width:1.5;}",
+    ".i2-wl{font-family:var(--font-m);font-size:9px;fill:#8a94a0;}",
+    ".i2-wm{font-family:var(--font-m);font-size:9px;fill:#c8cdd4;}",
+    ".i2-tr{font-family:var(--font-m);font-size:12px;line-height:1.7;color:var(--paper);border:1px solid var(--line);background:#0a0d10;padding:12px 14px;margin:0 0 12px;}",
+    ".i2-tr .ok{color:#7ddf8a;}",
+    ".i2-tr .bad{color:var(--ember);}",
+    ".i2-tr .dim{color:var(--steel);}",
+    ".i2-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(40px,1fr));gap:4px;margin:0 0 12px;}",
+    ".i2-cell{font-family:var(--font-m);font-size:10px;text-align:center;padding:8px 2px;border:1px solid var(--line);color:var(--steel);min-height:40px;display:flex;align-items:center;justify-content:center;}",
+    ".i2-cell.hit{border-color:var(--ember);color:var(--ember);}",
+    ".i2-cell .nm{display:block;font-size:8px;}",
+    ".i2-field{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 8px;}",
+    ".i2-input{font-family:var(--font-m);font-size:14px;background:#0a0d10;color:var(--paper);border:1px solid var(--line);padding:0 12px;min-height:48px;width:140px;}",
+    ".i2-input:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".i2-range{flex:1;min-width:180px;min-height:48px;accent-color:var(--ember);}",
+    ".i2-val{font-family:var(--font-m);font-size:14px;color:var(--ember);min-width:44px;}",
+    ".i2-log{font-family:var(--font-m);font-size:12px;line-height:1.7;color:var(--paper);border:1px solid var(--line);background:#0a0d10;padding:12px 14px;min-height:100px;max-height:240px;overflow-y:auto;margin:0 0 12px;}",
+    ".i2-log .dim{color:var(--steel);}",
+    ".i2-log .good{color:#7ddf8a;}",
+    ".i2-log .bad{color:var(--ember);}",
+    ".i2-foot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:12px;}",
+    ".i2-progress,.i2-strikes{font-family:var(--font-m);font-size:11px;letter-spacing:.12em;color:var(--steel);}",
+    ".i2-progress b,.i2-strikes b{color:var(--paper);}",
+    ".i2-strikes b.hit{color:var(--ember);}",
+    ".i2-foot .spacer{flex:1;}",
+    "@media (prefers-reduced-motion:reduce){.i2-tab,.i2-btn{transition:none;}}"
+  ];
+
+  /* ---------------- dom ---------------- */
+
+  var i2S = null;
+  var i2Els = {};
+
+  function i2El(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  function i2Log(html, cls) {
+    var d = i2El("div", cls || null);
+    d.innerHTML = html;
+    i2Els.log.appendChild(d);
+    i2Els.log.scrollTop = i2Els.log.scrollHeight;
+  }
+
+  function i2WaveSvg(res) {
+    var samples = res.samples, marks = res.marks;
+    var dx = 5, padL = 36;
+    var w = padL + samples.length * dx + 10, h = 118;
+    var ySclHi = 24, ySclLo = 40, ySdaHi = 68, ySdaLo = 84;
+    function X(i) { return padL + i * dx; }
+    var s = '<svg viewBox="0 0 ' + w + ' ' + h + '" width="' + w + '" height="' + h +
+            '" role="img" aria-label="I2C bus waveform, SCL and SDA">';
+    s += '<text x="4" y="' + (ySclHi + 4) + '" class="i2-wl">SCL</text>';
+    s += '<text x="4" y="' + (ySdaHi + 4) + '" class="i2-wl">SDA</text>';
+    function path(key, hi, lo) {
+      var d = "", i, x, y;
+      for (i = 0; i < samples.length; i++) {
+        x = X(i); y = samples[i][key] ? hi : lo;
+        d += (i ? "L" : "M") + x + " " + y + " ";
+      }
+      return d;
+    }
+    s += '<path d="' + path("scl", ySclHi, ySclLo) + '" class="i2-ws"/>';
+    s += '<path d="' + path("sda", ySdaHi, ySdaLo) + '" class="i2-we"/>';
+    var lastX = -100, m, mx;
+    for (m = 0; m < marks.length; m++) {
+      mx = X(marks[m].i);
+      if (mx - lastX < 34) continue;
+      lastX = mx;
+      s += '<text x="' + mx + '" y="106" class="i2-wm">' + marks[m].label + "</text>";
+    }
+    return s + "</svg>";
+  }
+
+  function i2RenderWave(box, res) {
+    box.innerHTML = "";
+    if (!res) {
+      box.appendChild(i2El("p", "i2-pred-note", "No transaction yet. Run one to watch the wire."));
+      return;
+    }
+    var sc = i2El("div", "i2-wave-scroll");
+    sc.innerHTML = i2WaveSvg(res);
+    box.appendChild(sc);
+    var tr = i2El("div", "i2-tr");
+    for (var i = 0; i < res.transcript.length; i++) {
+      var line = i2El("div", null);
+      var txt = res.transcript[i];
+      if (txt.indexOf("RESULT: SUCCESS") === 0) line.className = "ok";
+      else if (txt.indexOf("RESULT: FAILED") === 0) line.className = "bad";
+      else if (txt.indexOf("NACK") !== -1) line.className = "bad";
+      else if (txt.indexOf("ACK") !== -1) line.className = "dim";
+      line.textContent = txt;
+      tr.appendChild(line);
+    }
+    box.appendChild(tr);
+  }
+
+  function i2RenderGrid(box, map) {
+    box.innerHTML = "";
+    var hits = {}, i;
+    if (map) {
+      for (i = 0; i < map.length; i++) hits[map[i].addr] = map[i].name;
+    }
+    for (var a = I2_SCAN_LO; a <= I2_SCAN_HI; a++) {
+      (function (addr) {
+        var c = i2El("div", "i2-cell" + (hits[addr] ? " hit" : ""));
+        c.textContent = "0x" + i2h(addr);
+        c.title = hits[addr] ? ("ACK: " + hits[addr]) : "NACK: no device";
+        if (hits[addr]) {
+          var nm = i2El("span", "nm", hits[addr].split(" ")[0]);
+          c.appendChild(document.createElement("br"));
+          c.appendChild(nm);
+        }
+        box.appendChild(c);
+      })(a);
+    }
+  }
+
+  /* ---------------- render ---------------- */
+
+  function i2RenderTabs() {
+    i2Els.tabs.innerHTML = "";
+    for (var i = 0; i < I2_TRIALS.length; i++) {
+      (function (idx) {
+        var t = i2S.trials[idx], job = I2_TRIALS[idx];
+        var b = i2El("button", "i2-tab" +
+          (idx === i2S.ti ? " is-on" : "") +
+          (t.certified ? " is-done" : ""));
+        b.type = "button";
+        b.textContent = (t.certified ? "OK " : "") + job.name;
+        b.setAttribute("aria-pressed", idx === i2S.ti ? "true" : "false");
+        b.addEventListener("click", function () {
+          i2S.ti = idx;
+          i2RenderAll();
+        });
+        i2Els.tabs.appendChild(b);
+      })(i);
+    }
+  }
+
+  function i2CertRow() {
+    var t = i2Cur(i2S);
+    var acts = i2El("div", "i2-actions");
+    var cert = i2El("button", "i2-btn", "CERTIFY TRIAL");
+    cert.type = "button";
+    cert.disabled = t.certified || i2S.failed || !t.ran;
+    cert.addEventListener("click", i2OnCertify);
+    acts.appendChild(cert);
+    var rt = i2El("button", "i2-btn", "RESET TRIAL");
+    rt.type = "button";
+    rt.addEventListener("click", function () {
+      i2ResetTrial(i2S);
+      i2Log("<span class='dim'>Trial reset. Bus restored to power-on state.</span>", null);
+      i2RenderAll();
+    });
+    acts.appendChild(rt);
+    return acts;
+  }
+
+  function i2RenderBody() {
+    var t = i2Cur(i2S), job = i2Job(i2S);
+    i2Els.body.innerHTML = "";
+    var story = i2El("p", "i2-story", job.story);
+    i2Els.body.appendChild(story);
+
+    if (job.id === "t1") {
+      i2Els.body.appendChild(i2El("p", "i2-rowlabel", "STEP 1: CALL THE DEVICE COUNT"));
+      var prow = i2El("div", "i2-predict");
+      ["1", "2", "3", "4+"].forEach(function (p) {
+        var b = i2El("button", "i2-btn" + (t.pred === p ? " is-on" : ""),
+                     p === "4+" ? "4 OR MORE" : p + (p === "1" ? " DEVICE" : " DEVICES"));
+        b.type = "button";
+        b.setAttribute("aria-pressed", t.pred === p ? "true" : "false");
+        b.disabled = t.certified;
+        b.addEventListener("click", function () {
+          i2SetPred(i2S, p);
+          i2Log("Prediction logged: <span class='dim'>" + b.textContent + "</span>. Now run the scanner.", null);
+          i2RenderAll();
+        });
+        prow.appendChild(b);
+      });
+      i2Els.body.appendChild(prow);
+      i2Els.body.appendChild(i2El("p", "i2-pred-note",
+        t.pred ? "Prediction locked: " + t.pred + ". Run the scanner to check it."
+               : "No prediction yet. Pick one before you certify."));
+      i2Els.body.appendChild(i2El("p", "i2-rowlabel", "STEP 2: RUN THE SCANNER"));
+      var acts = i2El("div", "i2-actions");
+      var run = i2El("button", "i2-btn primary", "RUN THE SCANNER");
+      run.type = "button";
+      run.disabled = t.certified || i2S.failed;
+      run.addEventListener("click", function () {
+        var r = i2RunScan(i2S);
+        i2Log("Scan complete: <b>" + r.n + "</b> answers on 112 addresses.", null);
+        i2RenderAll();
+      });
+      acts.appendChild(run);
+      i2Els.body.appendChild(acts);
+      var grid = i2El("div", "i2-grid");
+      i2Els.body.appendChild(grid);
+      i2RenderGrid(grid, t.map);
+      i2Els.body.appendChild(i2CertRow());
+    } else if (job.id === "t2") {
+      i2Els.body.appendChild(i2El("p", "i2-rowlabel", "BYTES TO READ"));
+      var brow = i2El("div", "i2-predict");
+      [1, 2, 3].forEach(function (n) {
+        var b = i2El("button", "i2-btn" + (t.nbytes === n ? " is-on" : ""), n + (n === 1 ? " BYTE" : " BYTES"));
+        b.type = "button";
+        b.setAttribute("aria-pressed", t.nbytes === n ? "true" : "false");
+        b.disabled = t.certified;
+        b.addEventListener("click", function () {
+          t.nbytes = n; t.ran = false; t.res = null;
+          i2Log("Read length set: <span class='dim'>" + n + " byte(s)</span>. Run the read.", null);
+          i2RenderAll();
+        });
+        brow.appendChild(b);
+      });
+      i2Els.body.appendChild(brow);
+      var acts2 = i2El("div", "i2-actions");
+      var run2 = i2El("button", "i2-btn primary", "RUN THE READ");
+      run2.type = "button";
+      run2.disabled = t.certified || i2S.failed;
+      run2.addEventListener("click", function () {
+        var r = i2RunRead(i2S);
+        i2Log("Read complete: <b>" + r.readBytes.map(function (b) { return "0x" + i2h(b); }).join(" ") +
+              "</b> from 0x48." + (r.ok ? "" : " " + r.fail), null);
+        i2RenderAll();
+      });
+      acts2.appendChild(run2);
+      i2Els.body.appendChild(acts2);
+      var wave = i2El("div", null);
+      i2Els.body.appendChild(wave);
+      i2RenderWave(wave, t.res);
+      i2Els.body.appendChild(i2El("p", "i2-rowlabel", "DECODE AND ENTER (DEGREES C)"));
+      var field = i2El("div", "i2-field");
+      var inp = document.createElement("input");
+      inp.className = "i2-input";
+      inp.type = "text";
+      inp.inputMode = "decimal";
+      inp.setAttribute("aria-label", "Decoded temperature in degrees C");
+      inp.value = t.entered || "";
+      inp.disabled = t.certified;
+      inp.addEventListener("input", function () { t.entered = inp.value; });
+      field.appendChild(inp);
+      field.appendChild(i2El("span", "i2-pred-note", "High byte whole degrees, low byte in 1/256 steps."));
+      i2Els.body.appendChild(field);
+      i2Els.body.appendChild(i2CertRow());
+    } else {
+      i2Els.body.appendChild(i2El("p", "i2-rowlabel", "TARGET REGISTER"));
+      var rrow = i2El("div", "i2-predict");
+      [{ v: 0x00, l: "0x00 STATUS" }, { v: 0x01, l: "0x01 DUTY" }].forEach(function (r) {
+        var b = i2El("button", "i2-btn" + (t.reg === r.v ? " is-on" : ""), r.l);
+        b.type = "button";
+        b.setAttribute("aria-pressed", t.reg === r.v ? "true" : "false");
+        b.disabled = t.certified;
+        b.addEventListener("click", function () {
+          t.reg = r.v; t.ran = false; t.res = null;
+          t.wroteOk = false; t.readback = null;
+          i2Log("Target register: <span class='dim'>" + r.l + "</span>.", null);
+          i2RenderAll();
+        });
+        rrow.appendChild(b);
+      });
+      i2Els.body.appendChild(rrow);
+      i2Els.body.appendChild(i2El("p", "i2-pred-note",
+        "0x00 is status, read-only. 0x01 holds the fan duty, 0 to 255."));
+      i2Els.body.appendChild(i2El("p", "i2-rowlabel", "FAN DUTY"));
+      var frow = i2El("div", "i2-field");
+      var rng = document.createElement("input");
+      rng.type = "range"; rng.className = "i2-range";
+      rng.min = "0"; rng.max = "255"; rng.value = String(t.duty);
+      rng.setAttribute("aria-label", "Fan duty 0 to 255");
+      rng.disabled = t.certified;
+      var val = i2El("span", "i2-val", String(t.duty));
+      rng.addEventListener("input", function () {
+        t.duty = Number(rng.value);
+        val.textContent = rng.value;
+      });
+      frow.appendChild(rng);
+      frow.appendChild(val);
+      i2Els.body.appendChild(frow);
+      var acts3 = i2El("div", "i2-actions");
+      var wr = i2El("button", "i2-btn primary", "WRITE DUTY");
+      wr.type = "button";
+      wr.disabled = t.certified || i2S.failed;
+      wr.addEventListener("click", function () {
+        var r = i2RunWrite(i2S);
+        i2Log(r.ok ? "Write landed: duty <b>" + t.dutyAtWrite + "</b> at 0x2C reg 0x" + i2h(t.wroteReg) + "."
+                   : "<span class='bad'>Write refused: " + r.fail + "</span>", null);
+        i2RenderAll();
+      });
+      acts3.appendChild(wr);
+      var rb = i2El("button", "i2-btn", "READ BACK");
+      rb.type = "button";
+      rb.disabled = t.certified || i2S.failed || !t.wroteOk;
+      rb.addEventListener("click", function () {
+        var r = i2RunReadback(i2S);
+        i2Log("Readback: <b>0x" + i2h(t.readback) + "</b> (" + t.readback +
+              ") from 0x2C reg 0x01.", null);
+        i2RenderAll();
+      });
+      acts3.appendChild(rb);
+      i2Els.body.appendChild(acts3);
+      var wave3 = i2El("div", null);
+      i2Els.body.appendChild(wave3);
+      i2RenderWave(wave3, t.res);
+      i2Els.body.appendChild(i2CertRow());
+    }
+  }
+
+  function i2RenderFoot() {
+    var n = 0, i;
+    for (i = 0; i < i2S.trials.length; i++) if (i2S.trials[i].certified) n++;
+    i2Els.progress.innerHTML = "";
+    i2Els.progress.appendChild(document.createTextNode("CERTIFIED: "));
+    i2Els.progress.appendChild(i2El("b", null, n + "/3"));
+    i2Els.strikes.innerHTML = "";
+    i2Els.strikes.appendChild(document.createTextNode("STRIKES: "));
+    i2Els.strikes.appendChild(i2El("b", i2S.strikes ? "hit" : null, i2S.strikes + "/3"));
+    i2Els.dl.disabled = !i2S.done;
+  }
+
+  function i2RenderAll() {
+    i2RenderTabs();
+    i2RenderBody();
+    i2RenderFoot();
+  }
+
+  /* ---------------- actions ---------------- */
+
+  function i2OnCertify() {
+    var r = i2Certify(i2S);
+    if (r.strike) {
+      var dead = i2ActStrike(i2S);
+      i2Log("<span class='bad'>" + r.msg + " Strike " + i2S.strikes + " of 3." +
+        (dead ? " The bench has failed: three strikes. Reset the bench to try again." : "") + "</span>", null);
+    } else if (r.ok) {
+      i2Log("<span class='good'>" + r.msg + "</span>", null);
+      if (i2S.done) {
+        i2Log("<span class='good'>ALL THREE TRIALS CERTIFIED. The Two-Wire Room is yours. " +
+          "Download the qualification record.</span>", null);
+      }
+    } else {
+      i2Log("<span class='dim'>" + r.msg + "</span>", null);
+    }
+    i2RenderAll();
+  }
+
+  function i2Download() {
+    var blob = new Blob([i2Record(i2S)], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "two-wire-room-qualification.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    }, 4000);
+    toast("Qualification record downloaded");
+  }
+
+  /* ---------------- build ---------------- */
+
+  function i2Build() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("i2Btn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = I2_CSS.join("\n");
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "i2Btn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Two-Wire Room";
+    b.addEventListener("click", i2Open);
+    box.appendChild(b);
+
+    var ov = document.createElement("div");
+    ov.className = "i2-overlay";
+    ov.id = "i2Overlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Two-Wire Room");
+
+    var panel = document.createElement("div");
+    panel.className = "i2-panel";
+
+    panel.appendChild(i2El("h3", null, "The Two-Wire Room"));
+    panel.appendChild(i2El("p", "i2-spec", "SILICON // I2C BUS LAB"));
+    panel.appendChild(i2El("p", "i2-how",
+      "Two wires run the whole board: every sensor and controller shares SDA and SCL, and the address " +
+      "byte at the start of each conversation decides exactly who answers. Scan the bus, read the " +
+      "16-bit temperature register, set the fan duty and prove it with a readback. Certify all three " +
+      "trials; three strikes fail the bench."));
+
+    i2Els.tabs = i2El("div", "i2-tabs");
+    panel.appendChild(i2Els.tabs);
+
+    i2Els.body = i2El("div", null);
+    panel.appendChild(i2Els.body);
+
+    i2Els.log = i2El("div", "i2-log");
+    panel.appendChild(i2Els.log);
+
+    var foot = i2El("div", "i2-foot");
+    i2Els.progress = i2El("span", "i2-progress", "CERTIFIED: 0/3");
+    foot.appendChild(i2Els.progress);
+    i2Els.strikes = i2El("span", "i2-strikes", "STRIKES: 0/3");
+    foot.appendChild(i2Els.strikes);
+    foot.appendChild(i2El("span", "spacer"));
+    i2Els.dl = i2El("button", "i2-btn", "DOWNLOAD RECORD");
+    i2Els.dl.disabled = true;
+    i2Els.dl.addEventListener("click", i2Download);
+    foot.appendChild(i2Els.dl);
+    var resetBench = i2El("button", "i2-btn", "RESET BENCH");
+    resetBench.addEventListener("click", function () {
+      i2ResetAll(i2S);
+      i2Log("<span class='dim'>Bench reset. All trials open, strikes cleared, bus at power-on.</span>", null);
+      i2RenderAll();
+    });
+    foot.appendChild(resetBench);
+    var close = i2El("button", "i2-btn", "CLOSE THE BENCH");
+    close.addEventListener("click", i2Close);
+    foot.appendChild(close);
+    panel.appendChild(foot);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    i2Els.overlay = ov;
+    ov.addEventListener("click", function (ev) { if (ev.target === ov) i2Close(); });
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && i2Els.overlay.classList.contains("open")) i2Close();
+    });
+
+    i2S = i2NewState();
+    i2RenderAll();
+    i2Log("<span class='dim'>A live I2C bus: 112 addresses, two devices, one dead end. " +
+      "Open trial 1, call the device count, and run the scanner.</span>", null);
+  }
+
+  function i2Open() {
+    if (!i2Els.overlay) i2Build();
+    i2Els.overlay.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+
+  function i2Close() {
+    if (i2Els.overlay) i2Els.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", i2Build);
+    } else {
+      i2Build();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      I2: {
+        TRIALS: I2_TRIALS, TEMP_C: I2_TEMP_C,
+        transact: i2Transact, scan: i2Scan, hex: i2h, resetBus: i2ResetBus,
+        newState: i2NewState, cur: i2Cur,
+        setPred: i2SetPred, runScan: i2RunScan, runRead: i2RunRead,
+        runWrite: i2RunWrite, runReadback: i2RunReadback,
+        certify: i2Certify, strike: i2ActStrike,
+        resetTrial: i2ResetTrial, resetAll: i2ResetAll,
+        record: i2Record, state: function () { return i2S; }
+      }
+    });
+  }
+})();
