@@ -884,6 +884,17 @@ function pgSlashKey() {
     }
     document.body.classList.toggle("pg-locked", anyOpen);
     document.body.classList.toggle("pg-any-open", anyOpen);
+    /* Scroll-lock failsafe: benches 27, 28, and 29 also set an inline
+       body overflow when they open, and only their own close buttons
+       clear it. Any close path that bypasses those buttons (the
+       floating CLOSE control, the universal backdrop tap, Escape)
+       strips the open class without touching the inline style, which
+       used to freeze page scroll permanently. Every close path on
+       this page funnels through the open-class change this watcher
+       sees, so releasing the inline lock here covers all of them,
+       present and future. Never set the inline lock here: the class
+       alone governs the locked state while a bench is open. */
+    if (!anyOpen) document.body.style.overflow = "";
   }
   var mo = new MutationObserver(function (muts) {
     for (var k = 0; k < muts.length; k++) {
