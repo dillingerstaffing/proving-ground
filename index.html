@@ -416,6 +416,9 @@ body.pg-any-open div[class*="-overlay"].open {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
 }
 </style>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#ff5a1f">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 </head>
 <body>
 <a class="skip" href="#benches">Skip to the benches</a>
@@ -960,6 +963,11 @@ if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", pgBoot);
 } else {
   pgBoot();
+}
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js');
 }
 </script>
 <script src="rvcore.js?v=1fdcdffd9e" defer></script>
