@@ -8430,3 +8430,650 @@ if (typeof module !== "undefined" && module.exports) {
 }
 
 })();
+(function () {
+"use strict";
+/* ================= The Boot Bay: core (no DOM). Node-testable. =================
+   You are the M-mode firmware on a fresh RISC-V hart. Verify the stage
+   images, lay out the memory map, lock the PMP, and bring the machine
+   from reset to login. Deterministic: same seed, same board, every run. */
+
+function btbMulberry32(seed) {
+  var a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    var t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function btbFnv(bytes) {
+  var h = 0x811c9dc5;
+  for (var i = 0; i < bytes.length; i++) {
+    h ^= bytes[i];
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+function btbHex(n) {
+  return "0x" + (n >>> 0).toString(16).toUpperCase().padStart(8, "0");
+}
+
+function btbMakeImage(seed, size) {
+  var rng = btbMulberry32(seed);
+  var img = new Uint8Array(size);
+  for (var i = 0; i < size; i++) img[i] = (rng() * 256) | 0;
+  return img;
+}
+
+var BTB_ROM_END = 0x00010000;   /* ROM: 0x00000000 .. 0x0000FFFF (64 KB) */
+var BTB_MBOX_END = 0x00011000;  /* mailbox: 0x00010000 .. 0x00010FFF (4 KB) */
+var BTB_DRAM_BASE = 0x80000000;
+var BTB_DRAM_END = 0x88000000;  /* 128 MB DRAM */
+var BTB_ALIGN = 0x1000;         /* 4 KB alignment */
+var BTB_S1_SIZE = 0xC000;       /* stage 1: 48 KB */
+var BTB_S2_SIZE = 0x18000;      /* stage 2: 96 KB */
+
+function btbTrialDef(id) {
+  var t = { id: id };
+  if (id === "t1") {
+    t.name = "CLEAN BOARD"; t.seed = 7101;
+    t.blurb = "A fresh board, golden images, sane defaults. Learn the drill: verify, map, lock, boot.";
+    t.defA1 = 0x80000000; t.defA2 = 0x80010000; t.corrupt = false;
+  } else if (id === "t2") {
+    t.name = "BIT ROT"; t.seed = 7202;
+    t.blurb = "Stage 2 sat in a damp warehouse. Its bytes no longer match the manifest. Firmware rule: never boot what you cannot verify.";
+    t.defA1 = 0x80000000; t.defA2 = 0x80010000; t.corrupt = true;
+  } else {
+    t.name = "OVERLAP TRAP"; t.seed = 7303;
+    t.blurb = "Someone else's defaults. Stage 2's load address sits inside stage 1's footprint. Fix the map before you boot.";
+    t.defA1 = 0x80000000; t.defA2 = 0x80004000; t.corrupt = false;
+  }
+  return t;
+}
+
+var BTB_TRIALS = ["t1", "t2", "t3"].map(btbTrialDef);
+
+/* Build the stage images for a trial. Claimed hashes are the manifest
+   (golden) values; when t.corrupt, stage 2's bytes are flipped after
+   the manifest is taken, so verification fails until a reflash. */
+function btbImages(t) {
+  var img1 = btbMakeImage(t.seed, BTB_S1_SIZE);
+  var img2 = btbMakeImage(t.seed ^ 0x9E37, BTB_S2_SIZE);
+  var claimed1 = btbFnv(img1);
+  var claimed2 = btbFnv(img2);
+  if (t.corrupt) img2[1234] ^= 0xFF;
+  return { img1: img1, img2: img2, claimed1: claimed1, claimed2: claimed2 };
+}
+
+function btbVerify(bytes, claimed) {
+  var computed = btbFnv(bytes);
+  return { match: computed === (claimed >>> 0), computed: computed };
+}
+
+/* Memory-map validation. Returns an array of fault strings (empty = clean). */
+function btbCheckMap(a1, a2) {
+  var faults = [];
+  function checkAddr(v, name, size) {
+    if (typeof v !== "number" || isNaN(v) || v !== (v >>> 0)) {
+      faults.push(name + " address is not a valid 32-bit hex value.");
+      return false;
+    }
+    if (v % BTB_ALIGN !== 0) {
+      faults.push(name + " address " + btbHex(v) + " is not 4 KB aligned.");
+    }
+    if (v < BTB_DRAM_BASE || v + size > BTB_DRAM_END) {
+      faults.push(name + " range " + btbHex(v) + ".." + btbHex(v + size) +
+        " leaves DRAM (" + btbHex(BTB_DRAM_BASE) + ".." + btbHex(BTB_DRAM_END) + ").");
+    }
+    if (v < BTB_MBOX_END) {
+      faults.push(name + " address " + btbHex(v) + " collides with ROM/mailbox (below " + btbHex(BTB_MBOX_END) + ").");
+    }
+    return true;
+  }
+  var ok1 = checkAddr(a1, "STAGE1", BTB_S1_SIZE);
+  var ok2 = checkAddr(a2, "STAGE2", BTB_S2_SIZE);
+  if (ok1 && ok2) {
+    var e1 = a1 + BTB_S1_SIZE, e2 = a2 + BTB_S2_SIZE;
+    if (a1 < e2 && a2 < e1) {
+      faults.push("STAGE2 range " + btbHex(a2) + ".." + btbHex(e2) +
+        " overlaps STAGE1 range " + btbHex(a1) + ".." + btbHex(e1) + ".");
+    }
+  }
+  return faults;
+}
+
+/* PMP validation. Both regions must be locked or the boot is refused. */
+function btbCheckPmp(romLock, fwLock) {
+  var faults = [];
+  if (!romLock) faults.push("ROM region unlocked: the immutable code has a tamper window. Lock it.");
+  if (!fwLock) faults.push("Firmware region unlocked: U-mode could rewrite the loader. Lock it.");
+  return faults;
+}
+
+/* Run the boot. cfg: {a1, a2, romLock, fwLock, reflashed}.
+   Returns { pass, log } where log is [{kind, text}], kind in ok|bad|info. */
+function btbBoot(t, cfg) {
+  var L = [];
+  function log(kind, text) { L.push({ kind: kind, text: text }); }
+  function halt(why) {
+    log("bad", "HALT: " + why + " Hart parked, board safe.");
+    return { pass: false, log: L };
+  }
+  log("info", "RESET: hart0 released at 0x00001000, M-mode ROM, traps to M.");
+  var mf = btbCheckMap(cfg.a1, cfg.a2);
+  if (mf.length) {
+    for (var i = 0; i < mf.length; i++) log("bad", "MAP FAULT: " + mf[i]);
+    return halt("memory map fault.");
+  }
+  log("ok", "MAP: stage regions valid, no overlaps, 4 KB aligned.");
+  var pf = btbCheckPmp(cfg.romLock, cfg.fwLock);
+  if (pf.length) {
+    for (var j = 0; j < pf.length; j++) log("bad", "PMP FAULT: " + pf[j]);
+    return halt("PMP refused.");
+  }
+  log("ok", "PMP: ROM locked R-X, firmware region locked. No tamper window.");
+  var im = btbImages(t);
+  var v1 = btbVerify(im.img1, im.claimed1);
+  if (!v1.match) {
+    log("bad", "SECURE BOOT FAULT: stage1 checksum mismatch (manifest " +
+      btbHex(im.claimed1) + ", computed " + btbHex(v1.computed) + ").");
+    return halt("unverified stage1.");
+  }
+  log("ok", "STAGE1 VERIFIED: manifest " + btbHex(im.claimed1) +
+    " matches, 48 KB loaded at " + btbHex(cfg.a1) + ".");
+  log("info", "JUMP: mret to stage1, still M-mode, medeleg clear.");
+  var img2 = (cfg.reflashed && t.corrupt)
+    ? btbMakeImage(t.seed ^ 0x9E37, BTB_S2_SIZE)
+    : im.img2;
+  if (cfg.reflashed && t.corrupt) {
+    log("info", "REFLASH: stage2 restored from the golden image in ROM.");
+  }
+  var v2 = btbVerify(img2, im.claimed2);
+  if (!v2.match) {
+    log("bad", "SECURE BOOT FAULT: stage2 checksum mismatch (manifest " +
+      btbHex(im.claimed2) + ", computed " + btbHex(v2.computed) + ").");
+    log("bad", "Refusing to boot an unverified stage. Reflash from golden, then retry.");
+    return halt("unverified stage2.");
+  }
+  log("ok", "STAGE2 VERIFIED: manifest " + btbHex(im.claimed2) +
+    " matches, 96 KB loaded at " + btbHex(cfg.a2) + ".");
+  log("info", "DELEGATE: medeleg/mideleg programmed, S-mode takes its traps.");
+  log("info", "JUMP: sret to the kernel at " + btbHex(cfg.a2) + ".");
+  log("ok", "KERNEL: satp programmed, hart running in S-mode.");
+  log("ok", "INIT: login:  The machine is up.");
+  return { pass: true, log: L };
+}
+
+function btbCertText(results) {
+  var lines = [
+    "THE PROVING GROUND",
+    "BOOT BAY CERTIFICATE",
+    "=====================",
+    "Bearer brought a RISC-V hart from reset to login on all three boards:",
+    ""
+  ];
+  for (var i = 0; i < BTB_TRIALS.length; i++) {
+    var t = BTB_TRIALS[i];
+    lines.push((results[t.id] && results[t.id].passed ? "PASS" : "FAIL") + "  " + t.name);
+  }
+  lines.push("");
+  lines.push("Secure boot held: every stage verified against its manifest,");
+  lines.push("memory map clean, PMP locked, no unverified code executed.");
+  lines.push("Issued by the bench. Deterministic, reproducible, no shortcuts.");
+  return lines.join("\n");
+}
+
+
+/* ================= The Boot Bay: UI ================= */
+
+function btbEl(tag, cls, text) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined && text !== null) e.textContent = text;
+  return e;
+}
+function btb$(id) { return document.getElementById(id); }
+
+function btbDownload(text, filename) {
+  var blob = new Blob([text], { type: "text/plain" });
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 400);
+}
+
+var BTB_CSS = [
+  ".bb-overlay{position:fixed;inset:0;z-index:9995;background:rgba(5,8,10,.94);display:none;}",
+  ".bb-overlay.open{display:flex;}",
+  ".bb-panel{flex:1;min-height:0;width:100%;max-width:920px;margin:0 auto;display:flex;flex-direction:column;background:#0a0c0e;border:1px solid var(--line);overflow:hidden;}",
+  ".bb-bar{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--line);}",
+  ".bb-title{font-family:'Space Grotesk',sans-serif;font-weight:700;letter-spacing:.08em;font-size:15px;}",
+  ".bb-title b{color:var(--ember);font-weight:700;}",
+  ".bb-close{min-width:48px;min-height:48px;padding:0 18px;background:transparent;border:1px solid var(--line);color:var(--ink);font-family:'Space Grotesk',sans-serif;font-weight:700;letter-spacing:.08em;font-size:13px;cursor:pointer;}",
+  ".bb-close:hover{border-color:var(--ember);color:var(--ember);}",
+  ".bb-close:focus-visible,.bb-btn:focus-visible,.bb-card:focus-visible,.bb-check input:focus-visible + span{outline:2px solid var(--ember);outline-offset:2px;}",
+  ".bb-body{overflow-y:auto;padding:18px;-webkit-overflow-scrolling:touch;}",
+  ".bb-sub{font-size:13px;line-height:1.6;color:#b9b2a4;margin:0 0 16px;max-width:64ch;}",
+  ".bb-sub b{color:var(--ink);letter-spacing:.06em;}",
+  ".bb-sub a{color:var(--ember);}",
+  ".bb-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:18px;}",
+  ".bb-card{min-height:48px;padding:12px 14px;background:var(--panel);border:1px solid var(--line);color:var(--ink);cursor:pointer;text-align:left;font-family:'Space Grotesk',sans-serif;}",
+  ".bb-card .bb-cardname{display:block;font-weight:700;letter-spacing:.06em;font-size:13px;}",
+  ".bb-card .bb-cardst{display:block;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.08em;margin-top:6px;color:#8f8a7d;}",
+  ".bb-card.passed{border-color:var(--ember);}",
+  ".bb-card.passed .bb-cardst{color:var(--ember);}",
+  ".bb-card.sel{border-color:var(--ember);box-shadow:inset 3px 0 0 var(--ember);}",
+  ".bb-h{font-family:'Space Grotesk',sans-serif;font-size:12px;font-weight:700;letter-spacing:.12em;margin:20px 0 10px;color:var(--ink);}",
+  ".bb-h:first-child{margin-top:0;}",
+  ".bb-table{width:100%;border-collapse:collapse;font-size:13px;}",
+  ".bb-table th{font-family:'Space Grotesk',sans-serif;font-size:11px;letter-spacing:.1em;text-align:left;color:#8f8a7d;padding:8px;border-bottom:1px solid var(--line);}",
+  ".bb-table td{padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:middle;}",
+  ".bb-mono{font-family:'IBM Plex Mono',monospace;font-size:12px;}",
+  ".bb-vstat{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.06em;display:inline-block;margin-top:6px;}",
+  ".bb-vstat.ok{color:#7de0a8;}",
+  ".bb-vstat.bad{color:#ff7d6b;}",
+  ".bb-vstat.idle{color:#8f8a7d;}",
+  ".bb-btn{min-height:48px;padding:0 18px;background:transparent;border:1px solid var(--line);color:var(--ink);font-family:'Space Grotesk',sans-serif;font-weight:700;letter-spacing:.08em;font-size:12px;cursor:pointer;margin:4px 8px 4px 0;}",
+  ".bb-btn:hover{border-color:var(--ember);color:var(--ember);}",
+  ".bb-btn.pri{background:var(--ember);border-color:var(--ember);color:#0a0c0e;}",
+  ".bb-btn.pri:hover{background:#ff6f3a;color:#0a0c0e;}",
+  ".bb-btn:disabled{opacity:.45;cursor:default;}",
+  ".bb-btn:disabled:hover{border-color:var(--line);color:var(--ink);}",
+  ".bb-btn.pri:disabled:hover{background:var(--ember);color:#0a0c0e;}",
+  ".bb-field{margin:0 0 12px;}",
+  ".bb-field label{display:block;font-family:'Space Grotesk',sans-serif;font-size:11px;font-weight:700;letter-spacing:.1em;margin-bottom:8px;color:#b9b2a4;}",
+  ".bb-field input[type=text]{width:100%;max-width:340px;min-height:48px;padding:0 14px;background:#05070a;border:1px solid var(--line);color:var(--ink);font-family:'IBM Plex Mono',monospace;font-size:15px;}",
+  ".bb-field input[type=text]:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+  ".bb-hint{font-size:12px;color:#8f8a7d;margin:6px 0 0;font-family:'IBM Plex Mono',monospace;}",
+  ".bb-check{display:flex;align-items:center;gap:12px;min-height:48px;padding:8px 0;cursor:pointer;}",
+  ".bb-check input{width:24px;height:24px;accent-color:var(--ember);flex:none;}",
+  ".bb-check span{font-size:13px;line-height:1.5;}",
+  ".bb-check span b{font-family:'IBM Plex Mono',monospace;font-weight:400;color:#b9b2a4;}",
+  ".bb-log{list-style:none;margin:0;padding:0;background:#05070a;border:1px solid var(--line);max-height:260px;overflow-y:auto;}",
+  ".bb-log li{padding:8px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.5;border-bottom:1px solid rgba(255,255,255,.04);}",
+  ".bb-log li:last-child{border-bottom:none;}",
+  ".bb-log .k-ok{color:#7de0a8;font-weight:700;}",
+  ".bb-log .k-bad{color:#ff7d6b;font-weight:700;}",
+  ".bb-log .k-info{color:#7dd0ff;font-weight:700;}",
+  ".bb-banner{display:none;margin-top:16px;padding:14px 16px;border:1px solid var(--line);font-family:'Space Grotesk',sans-serif;}",
+  ".bb-banner.show{display:block;}",
+  ".bb-banner .t{font-weight:700;letter-spacing:.1em;font-size:14px;}",
+  ".bb-banner.pass{border-color:#7de0a8;}",
+  ".bb-banner.pass .t{color:#7de0a8;}",
+  ".bb-banner.fail{border-color:#ff7d6b;}",
+  ".bb-banner.fail .t{color:#ff7d6b;}",
+  ".bb-banner p{margin:8px 0 0;font-size:13px;color:#b9b2a4;line-height:1.6;}",
+  ".bb-cert{display:none;margin-top:18px;padding:18px;border:1px solid var(--ember);}",
+  ".bb-cert.show{display:block;}",
+  ".bb-cert h4{font-family:'Space Grotesk',sans-serif;letter-spacing:.1em;font-size:14px;margin:0 0 8px;color:var(--ember);}",
+  ".bb-cert p{font-size:13px;color:#b9b2a4;line-height:1.6;margin:0 0 12px;}",
+  "@media (max-width:640px){.bb-cards{grid-template-columns:1fr;}.bb-body{padding:14px;}.bb-table th:nth-child(3),.bb-table td:nth-child(3){display:none;}}",
+  "@media (prefers-reduced-motion: reduce){.bb-btn,.bb-card,.bb-close{transition:none !important;}}"
+];
+
+var BTB_ST = { t1: { passed: false }, t2: { passed: false }, t3: { passed: false } };
+var BTB_UI = null; /* per-trial editor state, rebuilt on trial open */
+
+function btbFreshUI(t) {
+  return {
+    trial: t, a1: t.defA1, a2: t.defA2,
+    romLock: false, fwLock: false, reflashed: false,
+    v1: null, v2: null /* null = not verified, true/false = result */
+  };
+}
+
+function btbParseHex(str, fallback) {
+  var s = String(str).trim().toLowerCase().replace(/^0x/, "");
+  if (!/^[0-9a-f]{1,8}$/.test(s)) return fallback;
+  return parseInt(s, 16) >>> 0;
+}
+
+/* ---------------- trial cards + work area ---------------- */
+
+function btbRenderCards() {
+  var wrap = btb$("bbCards");
+  wrap.innerHTML = "";
+  BTB_TRIALS.forEach(function (t) {
+    var c = btbEl("button", "bb-card" + (BTB_ST[t.id].passed ? " passed" : "") +
+      (BTB_UI && BTB_UI.trial.id === t.id ? " sel" : ""));
+    c.type = "button";
+    var nm = btbEl("span", "bb-cardname", t.name);
+    var st = btbEl("span", "bb-cardst",
+      BTB_ST[t.id].passed ? "[ PASS ] LOGGED" : "[ OPEN ] NOT YET BOOTED");
+    c.appendChild(nm); c.appendChild(st);
+    c.setAttribute("aria-label", "Open trial " + t.name);
+    c.addEventListener("click", function () { btbOpenTrial(t.id); });
+    wrap.appendChild(c);
+  });
+}
+
+function btbOpenTrial(id) {
+  var t = btbTrialDef(id);
+  BTB_UI = btbFreshUI(t);
+  btbRenderCards();
+  var work = btb$("bbWork");
+  work.innerHTML = "";
+
+  var blurb = btbEl("p", "bb-sub", t.blurb);
+  work.appendChild(blurb);
+
+  /* stage manifest */
+  work.appendChild(btbEl("h3", "bb-h", "STAGE MANIFEST"));
+  var im = btbImages(t);
+  var tbl = btbEl("table", "bb-table");
+  var thead = btbEl("thead");
+  var hr = btbEl("tr");
+  ["STAGE", "SIZE", "MANIFEST", "CHECK"].forEach(function (h) {
+    hr.appendChild(btbEl("th", null, h));
+  });
+  thead.appendChild(hr); tbl.appendChild(thead);
+  var tb = btbEl("tbody");
+
+  function stageRow(name, sizeLabel, claimed, imgBytes, vkey) {
+    var tr = btbEl("tr");
+    var tdN = btbEl("td"); tdN.appendChild(btbEl("div", null, name));
+    var tdS = btbEl("td", "bb-mono", sizeLabel);
+    var tdM = btbEl("td", "bb-mono", btbHex(claimed));
+    var tdC = btbEl("td");
+    var stat = btbEl("span", "bb-vstat idle", "NOT VERIFIED");
+    stat.id = "bbV" + vkey;
+    tdC.appendChild(stat);
+    tr.appendChild(tdN); tr.appendChild(tdS); tr.appendChild(tdM); tr.appendChild(tdC);
+    return tr;
+  }
+
+  var tr0 = btbEl("tr");
+  var td0n = btbEl("td"); td0n.appendChild(btbEl("div", null, "STAGE0 ROM"));
+  var note0 = btbEl("div", "bb-hint", "immutable, baked at tapeout");
+  td0n.appendChild(note0);
+  tr0.appendChild(td0n);
+  tr0.appendChild(btbEl("td", "bb-mono", "64 KB"));
+  tr0.appendChild(btbEl("td", "bb-mono", "baked"));
+  var td0c = btbEl("td");
+  td0c.appendChild(btbEl("span", "bb-vstat ok", "TRUSTED"));
+  tr0.appendChild(td0c);
+  tb.appendChild(tr0);
+
+  var r1 = stageRow("STAGE1 loader", "48 KB", im.claimed1, im.img1, "1");
+  var vb1 = btbEl("button", "bb-btn", "VERIFY STAGE1");
+  vb1.type = "button";
+  vb1.addEventListener("click", function () {
+    var v = btbVerify(im.img1, im.claimed1);
+    BTB_UI.v1 = v.match;
+    btbPaintVStat("1", v);
+  });
+  r1.lastChild.appendChild(document.createElement("br"));
+  r1.lastChild.appendChild(vb1);
+  tb.appendChild(r1);
+
+  var r2 = stageRow("STAGE2 kernel", "96 KB", im.claimed2, im.img2, "2");
+  var vb2 = btbEl("button", "bb-btn", "VERIFY STAGE2");
+  vb2.type = "button";
+  vb2.addEventListener("click", function () {
+    var bytes = (BTB_UI.reflashed && t.corrupt)
+      ? btbMakeImage(t.seed ^ 0x9E37, BTB_S2_SIZE) : im.img2;
+    var v = btbVerify(bytes, im.claimed2);
+    BTB_UI.v2 = v.match;
+    btbPaintVStat("2", v);
+  });
+  r2.lastChild.appendChild(document.createElement("br"));
+  r2.lastChild.appendChild(vb2);
+  var rf = btbEl("button", "bb-btn", "REFLASH FROM GOLDEN");
+  rf.type = "button";
+  rf.id = "bbReflash";
+  rf.addEventListener("click", function () {
+    BTB_UI.reflashed = true;
+    BTB_UI.v2 = null;
+    btbPaintVStat("2", null);
+    try { toast("Stage 2 reflashed from the golden image in ROM."); } catch (e) {}
+  });
+  r2.lastChild.appendChild(rf);
+  tb.appendChild(r2);
+
+  tbl.appendChild(tb);
+  work.appendChild(tbl);
+
+  /* memory map */
+  work.appendChild(btbEl("h3", "bb-h", "MEMORY MAP"));
+  function addrField(labelText, val, key) {
+    var f = btbEl("div", "bb-field");
+    var lab = btbEl("label", null, labelText);
+    lab.htmlFor = "bb" + key;
+    var inp = btbEl("input");
+    inp.type = "text"; inp.id = "bb" + key;
+    inp.value = btbHex(val);
+    inp.setAttribute("inputmode", "text");
+    inp.setAttribute("aria-label", labelText);
+    inp.addEventListener("change", function () {
+      var parsed = btbParseHex(inp.value, null);
+      if (parsed === null) {
+        inp.value = btbHex(key === "A1" ? BTB_UI.a1 : BTB_UI.a2);
+        try { toast("Not a valid 32-bit hex address. Reverted."); } catch (e) {}
+        return;
+      }
+      if (key === "A1") BTB_UI.a1 = parsed; else BTB_UI.a2 = parsed;
+      inp.value = btbHex(parsed);
+    });
+    f.appendChild(lab); f.appendChild(inp);
+    return f;
+  }
+  work.appendChild(addrField("STAGE1 LOAD ADDRESS", BTB_UI.a1, "A1"));
+  work.appendChild(addrField("STAGE2 LOAD ADDRESS", BTB_UI.a2, "A2"));
+  var hint = btbEl("p", "bb-hint",
+    "DRAM " + btbHex(BTB_DRAM_BASE) + " to " + btbHex(BTB_DRAM_END) +
+    ". 4 KB aligned. No overlaps. ROM and mailbox below " + btbHex(BTB_MBOX_END) + " are off limits.");
+  work.appendChild(hint);
+
+  /* PMP */
+  work.appendChild(btbEl("h3", "bb-h", "PMP LOCKS"));
+  function lockRow(labelText, sub, key) {
+    var lab = btbEl("label", "bb-check");
+    var inp = btbEl("input");
+    inp.type = "checkbox";
+    inp.checked = key === "rom" ? BTB_UI.romLock : BTB_UI.fwLock;
+    inp.setAttribute("aria-label", labelText);
+    inp.addEventListener("change", function () {
+      if (key === "rom") BTB_UI.romLock = inp.checked; else BTB_UI.fwLock = inp.checked;
+    });
+    var sp = btbEl("span");
+    sp.appendChild(btbEl("b", null, labelText));
+    sp.appendChild(document.createTextNode("  " + sub));
+    lab.appendChild(inp); lab.appendChild(sp);
+    return lab;
+  }
+  work.appendChild(lockRow("LOCK ROM REGION", "R-X, M-mode only. The immutable code gets no tamper window.", "rom"));
+  work.appendChild(lockRow("LOCK FIRMWARE REGION", "No U-mode writes to the loader once it is verified.", "fw"));
+
+  /* actions */
+  work.appendChild(btbEl("h3", "bb-h", "BRING-UP"));
+  var va = btbEl("button", "bb-btn", "VERIFY ALL");
+  va.type = "button";
+  va.addEventListener("click", function () {
+    var v1 = btbVerify(im.img1, im.claimed1);
+    var bytes2 = (BTB_UI.reflashed && t.corrupt)
+      ? btbMakeImage(t.seed ^ 0x9E37, BTB_S2_SIZE) : im.img2;
+    var v2 = btbVerify(bytes2, im.claimed2);
+    BTB_UI.v1 = v1.match; BTB_UI.v2 = v2.match;
+    btbPaintVStat("1", v1); btbPaintVStat("2", v2);
+  });
+  work.appendChild(va);
+  var boot = btbEl("button", "bb-btn pri", "BOOT");
+  boot.type = "button";
+  boot.setAttribute("aria-label", "Boot the machine with the current configuration");
+  boot.addEventListener("click", function () { btbRunBoot(t); });
+  work.appendChild(boot);
+
+  /* log */
+  work.appendChild(btbEl("h3", "bb-h", "BOOT LOG"));
+  var log = btbEl("ul", "bb-log");
+  log.id = "bbLog";
+  var li = btbEl("li", null, "No boot attempted yet. Verify, map, lock, then press BOOT.");
+  log.appendChild(li);
+  work.appendChild(log);
+
+  /* banner */
+  var banner = btbEl("div", "bb-banner");
+  banner.id = "bbBanner";
+  work.appendChild(banner);
+
+  btbMaybeCert();
+}
+
+function btbPaintVStat(key, v) {
+  var el = btb$("bbV" + key);
+  if (!el) return;
+  el.className = "bb-vstat " + (v === null ? "idle" : (v.match ? "ok" : "bad"));
+  el.textContent = v === null ? "NOT VERIFIED"
+    : (v.match ? "MATCH " + btbHex(v.computed) : "MISMATCH " + btbHex(v.computed));
+}
+
+function btbRunBoot(t) {
+  var cfg = { a1: BTB_UI.a1, a2: BTB_UI.a2,
+    romLock: BTB_UI.romLock, fwLock: BTB_UI.fwLock, reflashed: BTB_UI.reflashed };
+  var res = btbBoot(t, cfg);
+  var log = btb$("bbLog");
+  log.innerHTML = "";
+  res.log.forEach(function (line) {
+    var li = btbEl("li");
+    var k = btbEl("span", "k-" + line.kind,
+      line.kind === "ok" ? "[ OK ] " : line.kind === "bad" ? "[ FAULT ] " : "[ INFO ] ");
+    li.appendChild(k);
+    li.appendChild(document.createTextNode(line.text));
+    log.appendChild(li);
+  });
+  var banner = btb$("bbBanner");
+  banner.className = "bb-banner show " + (res.pass ? "pass" : "fail");
+  banner.innerHTML = "";
+  banner.appendChild(btbEl("div", "t", res.pass ? "TRIAL PASS" : "TRIAL FAIL"));
+  var p = btbEl("p", null, res.pass
+    ? t.name + " booted clean: reset to login, every stage verified, map clean, PMP locked. Logged."
+    : t.name + " did not boot. Read the FAULT lines, fix the configuration, and boot again. The board is safe.");
+  banner.appendChild(p);
+  if (res.pass && !BTB_ST[t.id].passed) {
+    BTB_ST[t.id].passed = true;
+    btbRenderCards();
+    try { toast("Trial passed: " + t.name + "."); } catch (e) {}
+  }
+  btbMaybeCert();
+  log.scrollTop = log.scrollHeight;
+}
+
+function btbMaybeCert() {
+  var box = btb$("bbCertBox");
+  if (!box) return;
+  var done = BTB_TRIALS.every(function (t) { return BTB_ST[t.id].passed; });
+  if (!done) return;
+  box.style.display = "";
+  box.innerHTML = "";
+  box.appendChild(btbEl("h4", null, "BOOT BAY CERTIFIED"));
+  var tot = BTB_TRIALS.length;
+  var p = btbEl("p", null,
+    "All " + tot + " boards booted from reset to login. Secure boot held on every one: " +
+    "stages verified against their manifests, memory maps clean, PMP locked. The bench accepts this firmware.");
+  box.appendChild(p);
+  var dl = btbEl("button", "bb-btn pri", "DOWNLOAD CERTIFICATE");
+  dl.type = "button";
+  dl.addEventListener("click", function () {
+    btbDownload(btbCertText(BTB_ST), "boot-bay-certificate.txt");
+    try { toast("Certificate downloaded."); } catch (e) {}
+  });
+  box.appendChild(dl);
+  box.classList.add("show");
+}
+
+/* ---------------- shell ---------------- */
+
+function btbBuildShell() {
+  var css = document.createElement("style");
+  css.textContent = BTB_CSS.join("\n");
+  document.head.appendChild(css);
+
+  var box = document.querySelector(".dossier .actions");
+  if (box && !btb$("bbBtn")) {
+    var b = btbEl("button", "secondary", "Run the Boot Bay");
+    b.id = "bbBtn";
+    b.addEventListener("click", function () { btb$("bbOverlay").classList.add("open"); });
+    box.appendChild(b);
+  }
+
+  var ov = btbEl("div", "bb-overlay");
+  ov.id = "bbOverlay";
+  var panel = btbEl("div", "bb-panel");
+  ov.appendChild(panel);
+  document.body.appendChild(ov);
+
+  var bar = btbEl("div", "bb-bar");
+  var title = btbEl("div", "bb-title", "");
+  title.innerHTML = "THE BOOT <b>BAY</b>";
+  var close = btbEl("button", "bb-close", "CLOSE");
+  close.setAttribute("aria-label", "Close the Boot Bay");
+  bar.appendChild(title); bar.appendChild(close);
+  panel.appendChild(bar);
+
+  var body = btbEl("div", "bb-body");
+  var sub = btbEl("p", "bb-sub", "");
+  sub.innerHTML = "<b>HOW IT WORKS</b> You are the M-mode firmware on a fresh RISC-V hart. " +
+    "Verify each stage against its manifest, set the load addresses, lock the PMP regions, " +
+    "then boot from reset to login across three boards. One image is rotten, one map is a trap. " +
+    "Built for the RISC-V and xv6 systems work in the " +
+    "<a href=\"https://dillingerstaffing.github.io/portfolio/\" target=\"_blank\" rel=\"noopener\">portfolio</a>.";
+  body.appendChild(sub);
+
+  var cards = btbEl("div", "bb-cards");
+  cards.id = "bbCards";
+  body.appendChild(cards);
+
+  var work = btbEl("div", "bb-work");
+  work.id = "bbWork";
+  body.appendChild(work);
+
+  var certBox = btbEl("div", "bb-cert");
+  certBox.id = "bbCertBox";
+  certBox.style.display = "none";
+  body.appendChild(certBox);
+
+  panel.appendChild(body);
+
+  close.addEventListener("click", function () { ov.classList.remove("open"); });
+  ov.addEventListener("click", function (e) { if (e.target === ov) ov.classList.remove("open"); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && ov.classList.contains("open")) ov.classList.remove("open");
+  });
+
+  BTB_UI = btbFreshUI(BTB_TRIALS[0]);
+  btbRenderCards();
+  btbOpenTrial("t1");
+}
+
+function btbInit() {
+  if (typeof document === "undefined") return;
+  if (!document.querySelector(".dossier .actions")) return;
+  btbBuildShell();
+}
+if (typeof document !== "undefined") {
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", btbInit);
+  } else {
+    btbInit();
+  }
+}
+
+/* node test hook: harmless in the browser */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = Object.assign(module.exports || {}, {
+    BTB: {
+      mulberry32: btbMulberry32, fnv: btbFnv, hex: btbHex,
+      trialDef: btbTrialDef, trials: BTB_TRIALS, images: btbImages,
+      verify: btbVerify, checkMap: btbCheckMap, checkPmp: btbCheckPmp,
+      boot: btbBoot, certText: btbCertText, parseHex: btbParseHex,
+      ROM_END: BTB_ROM_END, MBOX_END: BTB_MBOX_END, DRAM_BASE: BTB_DRAM_BASE,
+      DRAM_END: BTB_DRAM_END, ALIGN: BTB_ALIGN, S1_SIZE: BTB_S1_SIZE, S2_SIZE: BTB_S2_SIZE
+    }
+  });
+}
+
+})();

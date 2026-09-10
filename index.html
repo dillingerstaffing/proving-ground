@@ -509,7 +509,11 @@ var PG_BENCHES = [
   { section: "silicon", n: "12", name: "The Scheduler Bay", btn: "scbBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "An xv6-style scheduler lab: tune Round Robin, Lottery, and Multi-Level Feedback Queue against three shop workloads, beat the house baseline, ship the certificate.",
     how: "Pick a policy, set the quantum and queues, run the simulation, beat par on all three trials.",
-    spec: "3 POLICIES \u00B7 3 WORKLOADS" }
+    spec: "3 POLICIES \u00B7 3 WORKLOADS" },
+  { section: "silicon", n: "13", name: "The Boot Bay", btn: "bbBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "RISC-V secure boot on the bench: verify each stage against its manifest, lay out the memory map, lock the PMP, and bring the hart from reset to login. One image is rotten and one map is a trap.",
+    how: "Verify the stage images, set the load addresses, lock the PMP regions, then boot all three boards.",
+    spec: "SECURE BOOT \u00B7 3 BOARDS" }
 ];
 
 var pgFilter = "all";
@@ -818,8 +822,8 @@ if (document.readyState === "loading") {
   pgBoot();
 }
 </script>
-<script src="rvcore.js?v=ec84f07" defer></script>
-<script src="rvdata.js?v=ec84f07" defer></script>
-<script src="features.js?v=ec84f07" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=9d14ad4" defer></script>
+<script src="rvdata.js?v=9d14ad4" defer></script>
+<script src="features.js?v=9d14ad4" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
