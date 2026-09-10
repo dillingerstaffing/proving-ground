@@ -567,7 +567,11 @@ var PG_BENCHES = [
   { section: "tapeout", n: "18", name: "The Scrub Bay", btn: "esBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "GDDR ECC qualification for TAPEOUT: a real Hamming(72,64) SECDED code under the hood. Read the syndrome, correct single-bit flips, quarantine doubles and stuck cells, and sign off three VRAM modules.",
     how: "Read the syndrome, make the call on all eight codewords, then call SHIP or RMA on each module.",
-    spec: "SECDED ECC \u00B7 3 MODULES" }
+    spec: "SECDED ECC \u00B7 3 MODULES" },
+  { section: "tapeout", n: "19", name: "The Reflow Bay", btn: "rfBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+    desc: "Reflow-oven qualification for the TAPEOUT bring-up lab: real SAC305 thermal physics, a damp-storage board, and a 4 oz copper sink. Tune the profile, bake what needs baking, ship all three boards.",
+    how: "Set ramp, soak, peak, and dwell, run the profile, read the joint traces, and qualify all three boards.",
+    spec: "REFLOW PHYSICS \u00B7 3 BOARDS" }
 ];
 
 var pgFilter = "all";
@@ -935,9 +939,9 @@ if (document.readyState === "loading") {
   pgBoot();
 }
 </script>
-<script src="rvcore.js?v=74c92a6179" defer></script>
-<script src="rvdata.js?v=74c92a6179" defer></script>
-<script src="riscv-lab.js?v=74c92a6179" defer></script>
-<script src="features.js?v=74c92a6179" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=6672e067cd" defer></script>
+<script src="rvdata.js?v=6672e067cd" defer></script>
+<script src="riscv-lab.js?v=6672e067cd" defer></script>
+<script src="features.js?v=6672e067cd" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

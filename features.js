@@ -11995,6 +11995,542 @@ if (typeof module !== "undefined" && module.exports) {
 
 })();
 
+/* ============================================================
+   THE REFLOW BAY
+   Reflow-oven qualification bench for the TAPEOUT bring-up lab.
+   Three GPU boards run through one oven profile: real SAC305
+   thermal physics under the hood (liquidus 217 C, scorch line
+   260 C), modeled as a first-order joint-temperature lag per
+   board. A damp-storage board popcorn-cracks if its joints ramp
+   faster than 2.2 C/s unless baked out first; a 4 oz copper pour
+   lags the air and needs a hotter, longer peak. Tune ramp, soak,
+   peak, and dwell, read the joint traces on the scope, and ship
+   all three boards.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  var rf$ = function (id) { return document.getElementById(id); };
+  function rfToast(msg) { if (typeof toast === "function") toast(msg); }
+  function rfEl(tag, cls, html) {
+    var d = document.createElement(tag);
+    if (cls) d.className = cls;
+    if (html != null) d.innerHTML = html;
+    return d;
+  }
+  var RF_REDUCED = (typeof window !== "undefined" && window.matchMedia) ?
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches : true;
+
+  /* ---- physics constants ---- */
+  var RF_LIQ = 217;      /* SAC305 liquidus, C */
+  var RF_SCORCH = 260;   /* damage line, C */
+  var RF_POP_RAMP = 2.2; /* joint ramp limit for damp boards, C/s */
+  var RF_WET_PEAK = 228; /* liquidus plus margin, C */
+  var RF_WET_TAL = 40;   /* minimum time above liquidus, s */
+
+  var RF_BOARDS = [
+    { id: "REF-01", sub: "clean 2-layer", tau: 8, moist: false,
+      note: "Standard 2-layer, dry storage. The reference board." },
+    { id: "HVY-02", sub: "4 oz copper pour", tau: 18, moist: false,
+      note: "Heavy planes act as a thermal sink: the joints lag the air. Needs a hotter, longer peak." },
+    { id: "MST-03", sub: "MSL-3 expired", tau: 8, moist: true,
+      note: "Sat in damp storage. Joints ramping past 2.2 C/s popcorn-crack. Bake it out first." }
+  ];
+  var RF_COLORS = ["#f2ede3", "#7cc4ff", "#7de0a8"];
+  var rfBaked = { "MST-03": false };
+
+  var RF_KNOBS = [
+    { key: "ramp", id: "rfRamp", label: "RAMP RATE", unit: "C/s",
+      min: 1.0, max: 3.0, step: 0.1, val: 2.0,
+      tip: "How fast the oven air climbs. Damp boards hate a fast ramp." },
+    { key: "soak", id: "rfSoak", label: "SOAK DWELL AT 160 C", unit: "s",
+      min: 30, max: 180, step: 5, val: 90,
+      tip: "Hold at 160 C so every joint equalizes before the spike." },
+    { key: "peak", id: "rfPeak", label: "PEAK TEMP", unit: "C",
+      min: 220, max: 265, step: 1, val: 245,
+      tip: "Oven air peak. Joints lag behind; the copper sink needs the headroom." },
+    { key: "dwell", id: "rfDwell", label: "PEAK DWELL", unit: "s",
+      min: 20, max: 120, step: 5, val: 60,
+      tip: "Time held at peak so lagging joints catch up and wet." }
+  ];
+
+  /* Oven air profile at 1 s resolution: ramp to 160, soak, ramp to peak,
+     hold, then fixed 2.5 C/s cool to 60. */
+  function rfGenAir(ramp, soak, peak, dwell) {
+    var t = [25], cur = 25, i;
+    while (cur < 160) { cur = Math.min(160, cur + ramp); t.push(cur); }
+    for (i = 0; i < soak; i++) t.push(160);
+    while (cur < peak) { cur = Math.min(peak, cur + ramp); t.push(cur); }
+    for (i = 0; i < dwell; i++) t.push(peak);
+    while (cur > 60) { cur = Math.max(60, cur - 2.5); t.push(cur); }
+    return t;
+  }
+
+  /* First-order joint lag: Tj tracks the air with time constant tau. */
+  function rfSimBoard(air, tau) {
+    var a = 1 - Math.exp(-1 / tau), Tj = 25, i;
+    var trace = [25], maxRamp = 0, tal = 0, pk = 25;
+    for (i = 1; i < air.length; i++) {
+      var prev = Tj;
+      Tj += a * (air[i] - Tj);
+      trace.push(Tj);
+      var r = Tj - prev;
+      if (r > maxRamp) maxRamp = r;
+      if (Tj >= RF_LIQ) tal++;
+      if (Tj > pk) pk = Tj;
+    }
+    return { trace: trace, maxRamp: maxRamp, tal: tal, peak: pk };
+  }
+
+  function rfAdjudicate(b, sim) {
+    if (b.moist && !rfBaked[b.id] && sim.maxRamp > RF_POP_RAMP) {
+      return { v: "SCRAP", why: b.id + " popcorn-cracked: joints ramped at " +
+        sim.maxRamp.toFixed(1) + " C/s, over the 2.2 C/s limit for a damp board. " +
+        "Bake it out or slow the ramp." };
+    }
+    if (sim.peak > RF_SCORCH) {
+      return { v: "SCRAP", why: b.id + " scorched: joint peak " + Math.round(sim.peak) +
+        " C crossed the 260 C damage line. Drop the peak." };
+    }
+    if (sim.peak < RF_WET_PEAK) {
+      return { v: "REWORK", why: b.id + " has cold joints: peak " + Math.round(sim.peak) +
+        " C never cleared liquidus plus margin (228 C). Raise peak or dwell." };
+    }
+    if (sim.tal < RF_WET_TAL) {
+      return { v: "REWORK", why: b.id + " has cold joints: only " + sim.tal +
+        " s above liquidus, needs 40 s for full wetting. Lengthen the peak dwell." };
+    }
+    return { v: "SHIP", why: b.id + " wet clean: peak " + Math.round(sim.peak) + " C, " +
+      sim.tal + " s above liquidus, max joint ramp " + sim.maxRamp.toFixed(1) + " C/s." };
+  }
+
+  var RF_CSS = [
+    ".rf-overlay{position:fixed;inset:0;background:rgba(8,8,10,.82);z-index:9000;display:none;overflow-y:auto;padding:24px 16px;}",
+    ".rf-overlay.open{display:block;}",
+    ".rf-panel{max-width:960px;margin:0 auto;background:#101014;border:1px solid #2a2a30;border-radius:4px;color:#f2f0eb;font-family:'Space Grotesk',system-ui,sans-serif;}",
+    ".rf-bar{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid #2a2a30;}",
+    ".rf-title{font-size:20px;letter-spacing:.14em;font-weight:700;}",
+    ".rf-title b{color:#ff5a1f;}",
+    ".rf-close{background:none;border:1px solid #3a3a42;color:#f2f0eb;border-radius:4px;min-height:48px;padding:0 18px;font-family:'IBM Plex Mono',monospace;font-size:13px;cursor:pointer;}",
+    ".rf-close:hover{border-color:#ff5a1f;}",
+    ".rf-close:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".rf-body{padding:22px;}",
+    ".rf-sub{font-size:14px;line-height:1.6;color:#b9b6ae;margin:0 0 20px;}",
+    ".rf-sub b{color:#f2f0eb;}",
+    ".rf-sub a{color:#ff5a1f;}",
+    ".rf-sec{font-size:12px;letter-spacing:.14em;color:#8a877f;font-weight:700;margin:26px 0 10px;text-transform:uppercase;}",
+    ".rf-sec:first-of-type{margin-top:0;}",
+    ".rf-boards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:6px;}",
+    ".rf-bcard{background:#0a0a0d;border:1px solid #2a2a30;border-radius:4px;padding:12px 14px;}",
+    ".rf-bcard .bn{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:700;color:#f2f0eb;}",
+    ".rf-bcard .bs{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#8a877f;letter-spacing:.1em;text-transform:uppercase;margin-top:2px;}",
+    ".rf-bcard .bnote{font-size:12px;line-height:1.55;color:#b9b6ae;margin:8px 0 10px;}",
+    ".rf-knobs{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-bottom:14px;}",
+    ".rf-knob{background:#0a0a0d;border:1px solid #2a2a30;border-radius:4px;padding:12px 14px;}",
+    ".rf-knob label{display:block;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.1em;color:#8a877f;margin-bottom:2px;}",
+    ".rf-knob .tip{font-size:11px;color:#6e6b64;margin:0 0 8px;}",
+    ".rf-knob .val{font-family:'IBM Plex Mono',monospace;font-size:15px;font-weight:700;color:#ff5a1f;margin-bottom:8px;}",
+    ".rf-knob input[type=range]{width:100%;min-height:48px;accent-color:#ff5a1f;cursor:pointer;}",
+    ".rf-knob input[type=range]:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".rf-btn{min-height:48px;padding:0 20px;border:1px solid #3a3a42;background:#16161b;color:#f2f0eb;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:13px;cursor:pointer;}",
+    ".rf-btn:hover:not(:disabled){border-color:#ff5a1f;}",
+    ".rf-btn:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".rf-btn:disabled{opacity:.35;cursor:default;}",
+    ".rf-btn.pri{background:#ff5a1f;border-color:#ff5a1f;color:#101014;font-weight:700;}",
+    ".rf-btn.sm{min-height:48px;padding:0 14px;font-size:12px;}",
+    ".rf-btn[aria-pressed=true]{border-color:#7de0a8;color:#7de0a8;}",
+    ".rf-scopewrap{background:#0a0a0d;border:1px solid #2a2a30;border-radius:4px;padding:10px;margin-bottom:8px;}",
+    ".rf-scope{width:100%;height:auto;display:block;}",
+    ".rf-legend{display:flex;gap:14px;flex-wrap:wrap;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8a877f;margin:0 0 12px;}",
+    ".rf-legend .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:baseline;}",
+    ".rf-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px;}",
+    ".rf-stat{background:#0a0a0d;border:1px solid #2a2a30;border-radius:4px;padding:10px 14px;}",
+    ".rf-stat .k{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#6e6b64;letter-spacing:.1em;}",
+    ".rf-stat .v{font-family:'IBM Plex Mono',monospace;font-size:16px;font-weight:700;color:#f2f0eb;margin-top:4px;}",
+    ".rf-stat .v.ship{color:#7de0a8;}",
+    ".rf-stat .v.rework{color:#ffbe4d;}",
+    ".rf-stat .v.scrap{color:#ff5d5d;}",
+    ".rf-note{font-size:13px;line-height:1.65;color:#b9b6ae;margin:0 0 10px;}",
+    ".rf-note b{color:#f2f0eb;}",
+    ".rf-verdict{font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:700;letter-spacing:.08em;padding:14px 16px;border:1px solid #3a3a42;border-radius:4px;margin:14px 0 0;}",
+    ".rf-verdict.win{border-color:#7de0a8;color:#7de0a8;}",
+    ".rf-verdict.lose{border-color:#ffbe4d;color:#ffbe4d;}",
+    ".rf-cert{display:none;margin-top:16px;border:1px solid #7de0a8;border-radius:4px;padding:16px 18px;}",
+    ".rf-cert.show{display:block;}",
+    ".rf-cert h4{font-size:13px;letter-spacing:.14em;color:#7de0a8;margin:0 0 8px;}",
+    ".rf-cert p{font-size:12px;line-height:1.6;color:#b9b6ae;margin:0 0 8px;}",
+    ".rf-cert pre{font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.7;color:#f2f0eb;background:#0a0a0d;border:1px solid #2a2a30;border-radius:4px;padding:10px 12px;white-space:pre-wrap;margin:0 0 12px;}",
+    "@media (max-width:640px){.rf-body{padding:16px;}.rf-bar{padding:14px 16px;}}",
+    "@media (prefers-reduced-motion:reduce){.rf-overlay *{transition:none!important;}}"
+  ].join("\n");
+
+  var rfLastRun = null;
+
+  function rfBuildShell() {
+    var css = document.createElement("style");
+    css.textContent = RF_CSS;
+    document.head.appendChild(css);
+
+    var box = document.querySelector(".dossier .actions");
+    if (box && !rf$("rfBtn")) {
+      var b = rfEl("button", "secondary", "Run the Reflow Bay");
+      b.id = "rfBtn";
+      b.addEventListener("click", function () {
+        rf$("rfOverlay").classList.add("open");
+      });
+      box.appendChild(b);
+    }
+
+    var ov = rfEl("div", "rf-overlay");
+    ov.id = "rfOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Reflow Bay");
+    var panel = rfEl("div", "rf-panel");
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    var bar = rfEl("div", "rf-bar");
+    var title = rfEl("div", "rf-title", "");
+    title.innerHTML = "THE <b>REFLOW</b> BAY";
+    var close = rfEl("button", "rf-close", "CLOSE [x]");
+    close.type = "button";
+    close.id = "rfCloseBtn";
+    close.addEventListener("click", function () { ov.classList.remove("open"); });
+    bar.appendChild(title); bar.appendChild(close);
+    panel.appendChild(bar);
+    ov.addEventListener("click", function (e) { if (e.target === ov) ov.classList.remove("open"); });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && ov.classList.contains("open")) ov.classList.remove("open");
+    });
+
+    var body = rfEl("div", "rf-body");
+    panel.appendChild(body);
+
+    var sub = rfEl("p", "rf-sub", "");
+    sub.innerHTML = "<b>HOW IT WORKS</b> Tune one oven profile for three GPU boards on the " +
+      "TAPEOUT bring-up line. Real SAC305 physics under the hood: liquidus 217 C, scorch line " +
+      "260 C, joints that lag the air. One board sat in damp storage, one carries a 4 oz copper " +
+      "sink. Bake what needs baking, read the joint traces, ship all three. Built for " +
+      "<a href=\"https://dillingerstaffing.github.io/tapeout/\" target=\"_blank\" " +
+      "rel=\"noopener\">TAPEOUT</a> board qualification.";
+    body.appendChild(sub);
+
+    /* boards */
+    body.appendChild(rfEl("h3", "rf-sec", "The boards"));
+    var bc = rfEl("div", "rf-boards");
+    RF_BOARDS.forEach(function (bd) {
+      var card = rfEl("div", "rf-bcard");
+      card.appendChild(rfEl("div", "bn", bd.id));
+      card.appendChild(rfEl("div", "bs", bd.sub));
+      var nt = rfEl("p", "bnote", "");
+      nt.textContent = bd.note;
+      card.appendChild(nt);
+      if (bd.moist) {
+        var bk = rfEl("button", "rf-btn sm", "BAKE OUT 24H: OFF");
+        bk.type = "button";
+        bk.id = "rfBake";
+        bk.setAttribute("aria-pressed", "false");
+        bk.setAttribute("aria-label", "Bake out MST-03 for 24 hours at 125 C to drive off moisture");
+        bk.addEventListener("click", function () {
+          rfBaked[bd.id] = !rfBaked[bd.id];
+          bk.setAttribute("aria-pressed", String(rfBaked[bd.id]));
+          bk.textContent = "BAKE OUT 24H: " + (rfBaked[bd.id] ? "ON" : "OFF");
+          rfToast(rfBaked[bd.id] ? "MST-03 baked: moisture driven off, ramp freely." : "Bake-out off: damp board again.");
+        });
+        card.appendChild(bk);
+      } else {
+        var nb = rfEl("p", "bnote", "");
+        nb.textContent = "Dry board: no bake needed.";
+        card.appendChild(nb);
+      }
+      bc.appendChild(card);
+    });
+    body.appendChild(bc);
+
+    /* knobs */
+    body.appendChild(rfEl("h3", "rf-sec", "Profile knobs"));
+    var kn = rfEl("div", "rf-knobs");
+    RF_KNOBS.forEach(function (k) {
+      var wrap = rfEl("div", "rf-knob");
+      var lab = rfEl("label", "", k.label);
+      lab.setAttribute("for", k.id);
+      wrap.appendChild(lab);
+      var tip = rfEl("p", "tip", "");
+      tip.textContent = k.tip;
+      wrap.appendChild(tip);
+      var val = rfEl("div", "val", k.val.toFixed(1) + " " + k.unit);
+      val.id = k.id + "V";
+      wrap.appendChild(val);
+      var inp = document.createElement("input");
+      inp.type = "range";
+      inp.id = k.id;
+      inp.min = String(k.min); inp.max = String(k.max);
+      inp.step = String(k.step); inp.value = String(k.val);
+      inp.setAttribute("aria-label", k.label + ", " + k.min + " to " + k.max + " " + k.unit);
+      (function (kk, vv, ii) {
+        ii.addEventListener("input", function () {
+          vv.textContent = parseFloat(ii.value).toFixed(1) + " " + kk.unit;
+        });
+      })(k, val, inp);
+      wrap.appendChild(inp);
+      kn.appendChild(wrap);
+    });
+    body.appendChild(kn);
+
+    var run = rfEl("button", "rf-btn pri", "RUN PROFILE");
+    run.type = "button";
+    run.id = "rfRun";
+    run.addEventListener("click", rfRunProfile);
+    body.appendChild(run);
+
+    /* scope */
+    body.appendChild(rfEl("h3", "rf-sec", "Scope, joint traces"));
+    var sw = rfEl("div", "rf-scopewrap");
+    var cv = document.createElement("canvas");
+    cv.id = "rfScope";
+    cv.className = "rf-scope";
+    cv.width = 920; cv.height = 300;
+    cv.setAttribute("role", "img");
+    cv.setAttribute("aria-label", "Temperature traces: oven air and the three board joint temperatures against time");
+    sw.appendChild(cv);
+    body.appendChild(sw);
+    var lg = rfEl("div", "rf-legend");
+    lg.innerHTML =
+      "<span><span class=\"sw\" style=\"background:#9aa3ad\"></span>OVEN AIR</span>" +
+      "<span><span class=\"sw\" style=\"background:#f2ede3\"></span>REF-01 JOINT</span>" +
+      "<span><span class=\"sw\" style=\"background:#7cc4ff\"></span>HVY-02 JOINT</span>" +
+      "<span><span class=\"sw\" style=\"background:#7de0a8\"></span>MST-03 JOINT</span>" +
+      "<span><span class=\"sw\" style=\"background:#ff5a1f\"></span>LIQUIDUS 217 C</span>" +
+      "<span><span class=\"sw\" style=\"background:#ff5d5d\"></span>SCORCH 260 C</span>";
+    body.appendChild(lg);
+
+    var read = rfEl("div", "rf-stats");
+    read.id = "rfRead";
+    body.appendChild(read);
+    var note = rfEl("p", "rf-note", "");
+    note.id = "rfNote";
+    note.innerHTML = "No profile run yet. Set the knobs and press <b>RUN PROFILE</b>.";
+    body.appendChild(note);
+    var vr = rfEl("div", "rf-verdict", "");
+    vr.id = "rfVerdict";
+    vr.style.display = "none";
+    body.appendChild(vr);
+
+    var cert = rfEl("div", "rf-cert");
+    cert.id = "rfCert";
+    cert.appendChild(rfEl("h4", "", "REFLOW BAY CERTIFICATE"));
+    var ch = rfEl("p", "", ""); ch.id = "rfCertHead"; cert.appendChild(ch);
+    var cb = rfEl("p", "", ""); cb.id = "rfCertBody"; cert.appendChild(cb);
+    var pre = rfEl("pre", "", ""); pre.id = "rfCertPre"; cert.appendChild(pre);
+    var dl = rfEl("button", "rf-btn", "DOWNLOAD REPORT");
+    dl.type = "button"; dl.id = "rfDl"; dl.disabled = true;
+    dl.addEventListener("click", function () {
+      var a = document.createElement("a");
+      a.href = "data:text/plain;charset=utf-8," + encodeURIComponent(rfBuildReport());
+      a.download = "reflow-bay-report.txt";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      rfToast("Report downloaded.");
+    });
+    cert.appendChild(dl);
+    body.appendChild(cert);
+  }
+
+  function rfKnob(key) {
+    for (var i = 0; i < RF_KNOBS.length; i++) {
+      if (RF_KNOBS[i].key === key) return parseFloat(rf$(RF_KNOBS[i].id).value);
+    }
+    return NaN;
+  }
+
+  function rfRunProfile() {
+    var k = {
+      ramp: rfKnob("ramp"), soak: rfKnob("soak"),
+      peak: rfKnob("peak"), dwell: rfKnob("dwell")
+    };
+    var air = rfGenAir(k.ramp, k.soak, k.peak, k.dwell);
+    var sims = RF_BOARDS.map(function (b) { return rfSimBoard(air, b.tau); });
+    var adj = RF_BOARDS.map(function (b, i) { return rfAdjudicate(b, sims[i]); });
+    rfLastRun = { k: k, air: air, sims: sims, adj: adj };
+
+    rfDrawScope(air, sims);
+    rfRenderRead(sims, adj);
+
+    var ship = 0, i;
+    var whys = [];
+    for (i = 0; i < adj.length; i++) {
+      if (adj[i].v === "SHIP") ship++;
+      whys.push(adj[i].why);
+    }
+    var note = rf$("rfNote");
+    note.innerHTML = "";
+    whys.forEach(function (w) {
+      var p = rfEl("p", "", "");
+      p.textContent = w;
+      note.appendChild(p);
+    });
+
+    var vr = rf$("rfVerdict");
+    vr.style.display = "block";
+    var cert = rf$("rfCert"), dl = rf$("rfDl");
+    if (ship === 3) {
+      vr.className = "rf-verdict win";
+      vr.textContent = "ALL THREE BOARDS SHIP: LINE QUALIFIED";
+      var serial = "RF-" + Date.now().toString(36).toUpperCase();
+      rf$("rfCertHead").textContent = "Serial " + serial + ": all three boards wet clean on one profile.";
+      rf$("rfCertBody").textContent = "Profile: ramp " + k.ramp.toFixed(1) + " C/s, soak " +
+        k.soak + " s at 160 C, peak " + k.peak + " C, dwell " + k.dwell + " s. " +
+        "MST-03 bake-out: " + (rfBaked["MST-03"] ? "yes" : "no") + ".";
+      var lines = RF_BOARDS.map(function (b, j) {
+        return b.id + "  peak " + Math.round(sims[j].peak) + " C  TAL " + sims[j].tal +
+          " s  max ramp " + sims[j].maxRamp.toFixed(1) + " C/s  -> SHIP";
+      });
+      rf$("rfCertPre").textContent = lines.join("\n");
+      cert.classList.add("show");
+      dl.disabled = false;
+      rfToast("Line qualified: all three boards ship.");
+    } else {
+      vr.className = "rf-verdict lose";
+      vr.textContent = ship + " OF 3 SHIP: REWORK THE PROFILE";
+      cert.classList.remove("show");
+      dl.disabled = true;
+    }
+  }
+
+  function rfRenderRead(sims, adj) {
+    var read = rf$("rfRead");
+    read.innerHTML = "";
+    RF_BOARDS.forEach(function (b, i) {
+      var s = sims[i], a = adj[i];
+      var box = rfEl("div", "rf-stat");
+      var cls = a.v === "SHIP" ? "ship" : (a.v === "REWORK" ? "rework" : "scrap");
+      box.innerHTML =
+        "<div class=\"k\">" + b.id + " JOINT</div>" +
+        "<div class=\"v\">PEAK " + Math.round(s.peak) + " C</div>" +
+        "<div class=\"k\">TAL " + s.tal + " S ABOVE LIQUIDUS</div>" +
+        "<div class=\"k\">MAX RAMP " + s.maxRamp.toFixed(1) + " C/S</div>" +
+        "<div class=\"v " + cls + "\">" + a.v + "</div>";
+      read.appendChild(box);
+    });
+  }
+
+  function rfDrawScope(air, sims) {
+    var cv = rf$("rfScope");
+    if (!cv || !cv.getContext) return;
+    var ctx = cv.getContext("2d");
+    var W = 920, H = 300, pL = 48, pR = 14, pT = 14, pB = 32;
+    var n = air.length, tMax = n - 1, yMax = 280;
+    function X(t) { return pL + (t / tMax) * (W - pL - pR); }
+    function Y(c) { return pT + (1 - c / yMax) * (H - pT - pB); }
+
+    function frame() {
+      ctx.clearRect(0, 0, W, H);
+      ctx.font = "10px 'IBM Plex Mono', monospace";
+      var g;
+      for (g = 0; g <= 280; g += 40) {
+        ctx.strokeStyle = "rgba(242,237,227,0.08)";
+        ctx.beginPath(); ctx.moveTo(pL, Y(g)); ctx.lineTo(W - pR, Y(g)); ctx.stroke();
+        ctx.fillStyle = "#6e6b64";
+        ctx.fillText(String(g) + " C", 6, Y(g) + 3);
+      }
+      for (g = 0; g <= tMax; g += 60) {
+        ctx.fillStyle = "#6e6b64";
+        ctx.fillText(String(g) + "s", X(g) - 8, H - 12);
+      }
+      /* limit lines */
+      ctx.setLineDash([6, 5]);
+      ctx.strokeStyle = "#ff5a1f";
+      ctx.beginPath(); ctx.moveTo(pL, Y(RF_LIQ)); ctx.lineTo(W - pR, Y(RF_LIQ)); ctx.stroke();
+      ctx.fillStyle = "#ff5a1f";
+      ctx.fillText("LIQUIDUS 217 C", W - pR - 118, Y(RF_LIQ) - 6);
+      ctx.strokeStyle = "#ff5d5d";
+      ctx.beginPath(); ctx.moveTo(pL, Y(RF_SCORCH)); ctx.lineTo(W - pR, Y(RF_SCORCH)); ctx.stroke();
+      ctx.fillStyle = "#ff5d5d";
+      ctx.fillText("SCORCH 260 C", W - pR - 108, Y(RF_SCORCH) - 6);
+      ctx.setLineDash([]);
+    }
+
+    function traces(p) {
+      var upto = Math.max(2, Math.floor(n * p));
+      var i, j;
+      /* oven air */
+      ctx.strokeStyle = "#9aa3ad";
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      for (i = 0; i < upto; i++) { var x = X(i), y = Y(air[i]); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
+      ctx.stroke();
+      ctx.setLineDash([]);
+      for (j = 0; j < sims.length; j++) {
+        ctx.strokeStyle = RF_COLORS[j];
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        var tr = sims[j].trace;
+        for (i = 0; i < upto; i++) { var x2 = X(i), y2 = Y(tr[i]); if (i === 0) ctx.moveTo(x2, y2); else ctx.lineTo(x2, y2); }
+        ctx.stroke();
+        ctx.lineWidth = 1;
+      }
+    }
+
+    function drawAll(p) { frame(); traces(p); }
+
+    if (RF_REDUCED) { drawAll(1); return; }
+    var raf = (typeof window !== "undefined" && window.requestAnimationFrame) ?
+      window.requestAnimationFrame.bind(window) : function (f) { f(0); };
+    var t0 = null;
+    function step(ts) {
+      if (t0 === null) t0 = ts;
+      var p = Math.min(1, (ts - t0) / 400);
+      drawAll(p);
+      if (p < 1) raf(step);
+    }
+    raf(step);
+  }
+
+  function rfBuildReport() {
+    if (!rfLastRun) return "No profile run yet.";
+    var k = rfLastRun.k;
+    var out = ["THE REFLOW BAY, LINE REPORT",
+      "Profile: ramp " + k.ramp.toFixed(1) + " C/s, soak " + k.soak + " s at 160 C, " +
+      "peak " + k.peak + " C, dwell " + k.dwell + " s",
+      "MST-03 bake-out: " + (rfBaked["MST-03"] ? "yes" : "no"), ""];
+    RF_BOARDS.forEach(function (b, i) {
+      var s = rfLastRun.sims[i], a = rfLastRun.adj[i];
+      out.push(b.id + " (" + b.sub + "): joint peak " + Math.round(s.peak) + " C, " +
+        "TAL " + s.tal + " s, max ramp " + s.maxRamp.toFixed(1) + " C/s => " + a.v);
+      out.push("  " + a.why);
+    });
+    return out.join("\n");
+  }
+
+  function rfInit() {
+    if (typeof document === "undefined") return;
+    if (!document.querySelector(".dossier .actions")) return;
+    rfBuildShell();
+  }
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", rfInit);
+    } else {
+      rfInit();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      RF: {
+        genAir: rfGenAir, simBoard: rfSimBoard, adjudicate: rfAdjudicate,
+        BOARDS: RF_BOARDS, KNOBS: RF_KNOBS, baked: rfBaked,
+        buildReport: rfBuildReport,
+        LIQ: RF_LIQ, SCORCH: RF_SCORCH, POP_RAMP: RF_POP_RAMP,
+        WET_PEAK: RF_WET_PEAK, WET_TAL: RF_WET_TAL
+      }
+    });
+  }
+
+})();
+
 /* ================= PRECISION DISCIPLINE LAYER =================
    Additive presentation rules for every bench overlay. This layer never
    touches logic: it only tightens the shared visual grammar. Module
