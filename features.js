@@ -15974,7 +15974,7 @@ if (typeof module !== "undefined" && module.exports) {
       lines.push("  HBM rating: " + bs.def.rating + " V");
       lines.push("  Touch voltage: " + Math.round(bs.certV) + " V");
       lines.push("  Strap at touch: " + bs.strap + " " + srFmtR(bs.certR));
-      lines.push("  Verdict: CERTIFIED, zero discharge events");
+      lines.push("  Verdict: CERTIFIED" + (srS.kills === 0 ? ", zero discharge events" : ""));
       lines.push("");
     }
     lines.push("Kills on record: " + srS.kills);
@@ -16027,7 +16027,7 @@ if (typeof module !== "undefined" && module.exports) {
     var d = srEl("div", "sr-done sr-pop", null);
     d.appendChild(srEl("h4", null, "Line certified"));
     var p = srEl("p", null, null);
-    p.innerHTML = "All three boards handled with <b>zero discharge events</b>. You read the strap, respected the flooring, and let the physics do the work. The certification record is ready below.";
+    p.innerHTML = "All three boards certified" + (srS.kills === 0 ? " with <b>zero discharge events</b>" : " with <b>" + srS.kills + " discharge event</b> on the record") + ". You read the strap, respected the flooring, and let the physics do the work. The certification record is ready below.";
     d.appendChild(p);
     var i, bs;
     for (i = 0; i < srS.boards.length; i++) {
@@ -16081,7 +16081,7 @@ if (typeof module !== "undefined" && module.exports) {
     sub.innerHTML = "The <b>OLD IRON</b> refurb line handles boards that die if you look at them wrong, electrically speaking. " +
       "Your body is a 120 pF capacitor: walking on carpet charges it at 2,000 volts per second, tile at 120. " +
       "A good wrist strap bleeds that charge in under a millisecond; a dirty one takes seconds; a dead one never does. " +
-      "For each board, <b>test the strap</b>, <b>walk to the bin</b>, <b>reclip and wait</b> until the meter clears the board's HBM rating, " +
+      "For each board, <b>test the strap</b>, <b>walk to the bin</b>, <b>reclip and wait</b> until the meter clears the board's HBM rating (Human Body Model: the standard for how much static shock a chip survives), " +
       "then <b>touch</b>. Two discharge events fail the bench.";
     panel.appendChild(sub);
 
