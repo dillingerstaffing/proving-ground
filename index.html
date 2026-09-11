@@ -630,7 +630,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "33", name: "The Flash Room", btn: "frBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "A real NAND-flash FTL on the bench: erase-before-write, stale pages, a sector map, garbage collection including spare-block overprovisioning, and a per-block erase budget. Keep every sector readable and no block over budget.",
     how: "Run the host workload, garbage-collect the stale-heavy blocks, rotate your victims on trial 3, certify all three drives.",
-    spec: "ERASE-BEFORE-WRITE \u00B7 3 DRIVES" }
+    spec: "ERASE-BEFORE-WRITE \u00B7 3 DRIVES" },
+  { section: "oldiron", n: "34", name: "The Bounce Room", btn: "bnBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "Switch debounce for the OLD IRON bench: a real contact-bounce model with chattering edges and an unfiltered counter that overcounts. Demand N consecutive steady samples, outlast the worst bounce, stay inside the latency budget, and qualify three keys.",
+    how: "Press the raw key and call the count first, tune the filter window against the latency budget, then qualify all three keys.",
+    spec: "CONTACT BOUNCE \u00B7 3 TRIALS" }
 ];
 
 var pgFilter = "all";
@@ -1042,9 +1046,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=d1e1c5c30b" defer></script>
-<script src="rvdata.js?v=d1e1c5c30b" defer></script>
-<script src="riscv-lab.js?v=d1e1c5c30b" defer></script>
-<script src="features.js?v=d1e1c5c30b" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=4fa2db6126" defer></script>
+<script src="rvdata.js?v=4fa2db6126" defer></script>
+<script src="riscv-lab.js?v=4fa2db6126" defer></script>
+<script src="features.js?v=4fa2db6126" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

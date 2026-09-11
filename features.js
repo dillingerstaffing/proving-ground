@@ -22569,3 +22569,827 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+/* Bench 34 staging: The Bounce Room module (appended to features.js at ship time). */
+"use strict";
+/* Bench 34: The Bounce Room. Switch debounce for the OLD IRON bench: a real
+   contact-bounce model (mechanical chatter with short and long dwells, worst
+   bounce per key), an unfiltered edge counter that overcounts, and a
+   time-domain filter (sample every P ms, accept only after N consecutive
+   steady samples). Three trials: press it raw and call the count first,
+   tune period x count against the bounce and the latency budget, then
+   qualify three keys with different contacts. One atomic mechanism: a press
+   counts only after the signal proves itself steady longer than the worst
+   bounce, and the proof always costs latency. */
+(function () {
+  var BN_CSS = [
+    ".bn-overlay{position:fixed;inset:0;z-index:60;display:none;align-items:flex-start;justify-content:center;background:rgba(8,8,10,.82);padding:18px 12px;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".bn-overlay.open{display:flex}",
+    ".bn-panel{width:min(880px,100%);background:var(--panel,#141416);border:1px solid var(--line,#2a2a2e);border-radius:10px;color:var(--paper,#f2efe9);font-family:'Space Grotesk',system-ui,sans-serif;margin:2vh auto;max-height:96vh;display:flex;flex-direction:column}",
+    ".bn-head{padding:16px 18px 10px;border-bottom:1px solid var(--line,#2a2a2e)}",
+    ".bn-head h3{margin:0 0 4px;font-size:20px;letter-spacing:.02em}",
+    ".bn-spec{margin:0 0 8px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ember,#ff5a1f);letter-spacing:.12em}",
+    ".bn-why{margin:0 0 8px;font-size:13.5px;line-height:1.55;color:#d8d4cc}",
+    ".bn-worked{margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#2a2a2e);border-left:3px solid var(--ember,#ff5a1f);border-radius:0 6px 6px 0;background:rgba(255,90,31,.05);font-size:13px;line-height:1.6}",
+    ".bn-worked b{color:#fff}",
+    ".bn-failmodes{margin:0 0 4px;font-size:12.5px;line-height:1.5;color:#a9a49a}",
+    ".bn-body{padding:12px 18px;overflow-y:auto}",
+    ".bn-tabs{display:flex;gap:8px;margin:2px 0 12px;flex-wrap:wrap}",
+    ".bn-tab{flex:1;min-width:150px;min-height:48px;border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;padding:8px 6px;text-align:center}",
+    ".bn-tab .bn-tname{display:block;font-size:13px;font-weight:600}",
+    ".bn-tab .bn-tprof{display:block;font-size:11px;color:#a9a49a;margin-top:2px}",
+    ".bn-tab[aria-selected='true']{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.1)}",
+    ".bn-tab.done{border-color:#3fa34d}",
+    ".bn-tab.done .bn-tname::after{content:' \\2713';color:#3fa34d}",
+    ".bn-trialwhy{margin:0 0 10px;font-size:12.5px;line-height:1.55;color:#a9a49a}",
+    ".bn-card{border:1px solid var(--line,#2a2a2e);border-radius:8px;padding:10px 12px;margin-bottom:12px}",
+    ".bn-card h4{margin:0 0 8px;font-size:13px;letter-spacing:.06em}",
+    ".bn-scope{width:100%;height:118px;display:block;background:#0c0c0e;border:1px solid var(--line,#2a2a2e);border-radius:6px}",
+    ".bn-readout{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.8;color:#d8d4cc;margin:8px 0 0}",
+    ".bn-readout .ok{color:#3fa34d;font-weight:700}",
+    ".bn-readout .bad{color:var(--ember,#ff5a1f);font-weight:700}",
+    ".bn-ctrl{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}",
+    ".bn-field{display:flex;flex-direction:column;gap:6px;min-width:150px;flex:1}",
+    ".bn-field label{font-size:12px;color:#d8d4cc}",
+    ".bn-field input[type=range]{min-height:48px;accent-color:var(--ember,#ff5a1f)}",
+    ".bn-field .bn-val{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ember,#ff5a1f)}",
+    ".bn-keysel{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}",
+    ".bn-key{flex:1;min-width:140px;min-height:48px;border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;padding:8px 6px;text-align:center}",
+    ".bn-key[aria-pressed='true']{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.1)}",
+    ".bn-key .bn-kprof{display:block;font-size:10.5px;color:#a9a49a;margin-top:2px}",
+    ".bn-btn{border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;min-height:48px;padding:0 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Space Grotesk',system-ui,sans-serif}",
+    ".bn-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".bn-btn:disabled{opacity:.35;cursor:not-allowed}",
+    ".bn-btn.primary{background:var(--ember,#ff5a1f);border:none;color:#101012}",
+    ".bn-btn.big{min-height:64px;font-size:16px;padding:0 28px}",
+    ".bn-btn:focus-visible,.bn-tab:focus-visible,.bn-key:focus-visible,.bn-field input:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".bn-pred{display:flex;gap:8px;flex-wrap:wrap;align-items:center}",
+    ".bn-pred .bn-plab{font-size:12px;color:#d8d4cc;flex-basis:100%}",
+    ".bn-popt{min-height:48px;min-width:96px}",
+    ".bn-popt[aria-pressed='true']{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12)}",
+    ".bn-table{width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:11.5px;margin-top:8px}",
+    ".bn-table th,.bn-table td{border:1px solid var(--line,#2a2a2e);padding:6px 8px;text-align:left}",
+    ".bn-table th{color:#a9a49a;font-weight:600;font-size:10.5px;letter-spacing:.06em}",
+    ".bn-table .ok{color:#3fa34d;font-weight:700}",
+    ".bn-table .bad{color:var(--ember,#ff5a1f);font-weight:700}",
+    ".bn-table .na{color:#6d6961}",
+    ".bn-log{font-family:'IBM Plex Mono',monospace;font-size:11.5px;line-height:1.7;color:#c9c4b9;max-height:150px;overflow-y:auto;border:1px solid var(--line,#2a2a2e);border-radius:8px;padding:10px 12px;margin-bottom:12px}",
+    ".bn-log .dim{color:#6d6961}",
+    ".bn-log .bad{color:var(--ember,#ff5a1f)}",
+    ".bn-log .good{color:#3fa34d}",
+    ".bn-foot{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px 18px;border-top:1px solid var(--line,#2a2a2e)}",
+    ".bn-progress{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#a9a49a;margin-right:auto}"
+  ];
+
+  /* ---------- pure sim: contact bounce + time-domain debounce ---------- */
+  function bnRng(seed) {
+    var a = seed >>> 0;
+    return function () {
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      var t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  /* Press at t=0: the contact chatters (short dwells, occasional long rests
+     at the wrong level) and settles HIGH no later than bounceMs. */
+  function bnBounceTrain(seed, bounceMs) {
+    var rnd = bnRng(seed), ev = [], t = rnd() * 0.6, lvl = 1;
+    ev.push({ t: t, level: 1 });
+    for (;;) {
+      t += (rnd() < 0.28) ? 1.0 + rnd() * 2.0 : 0.1 + rnd() * 0.35;
+      if (t >= bounceMs) break;
+      lvl = 1 - lvl;
+      ev.push({ t: t, level: lvl });
+    }
+    if (lvl === 0) ev.push({ t: bounceMs, level: 1 });
+    return ev;
+  }
+  /* Release at relT: chatters, settles LOW no later than relT+bounceMs. */
+  function bnReleaseTrain(seed, relT, bounceMs) {
+    var rnd = bnRng(seed), ev = [], t = relT + rnd() * 0.6, lvl = 0;
+    ev.push({ t: t, level: 0 });
+    for (;;) {
+      t += (rnd() < 0.28) ? 1.0 + rnd() * 2.0 : 0.1 + rnd() * 0.35;
+      if (t >= relT + bounceMs) break;
+      lvl = 1 - lvl;
+      ev.push({ t: t, level: lvl });
+    }
+    if (lvl === 1) ev.push({ t: relT + bounceMs, level: 0 });
+    return ev;
+  }
+  function bnLevelAt(ev, t) {
+    var l = 0;
+    for (var i = 0; i < ev.length; i++) { if (ev[i].t <= t) l = ev[i].level; else break; }
+    return l;
+  }
+  function bnRising(ev) {
+    var n = 0;
+    for (var i = 0; i < ev.length; i++) if (ev[i].level === 1) n++;
+    return n;
+  }
+  /* Time-domain debounce: the output follows the raw level only after
+     stableCount consecutive samples agree with each other. */
+  function bnDebounce(ev, periodMs, stableCount, tEnd) {
+    var out = 0, cand = -1, run = 0, accepted = [];
+    for (var s = 0; s <= tEnd + 1e-9; s += periodMs) {
+      var lv = bnLevelAt(ev, s);
+      if (lv === out) { cand = -1; run = 0; }
+      else {
+        if (lv === cand) run++; else { cand = lv; run = 1; }
+        if (run >= stableCount) {
+          out = lv;
+          accepted.push({ t: Math.round(s * 1000) / 1000, level: lv });
+          cand = -1; run = 0;
+        }
+      }
+    }
+    return { accepted: accepted };
+  }
+  /* Full press test. pass requires all three: every press counted exactly
+     once, max latency inside budget, and the window outlasting the worst
+     bounce (the design rule: one lucky test run is not a guarantee). */
+  function bnPressTest(cfg) {
+    var ev = [], i, a, pressT, pt, rt;
+    for (i = 0; i < cfg.n; i++) {
+      pressT = i * (cfg.holdMs + cfg.gapMs);
+      pt = bnBounceTrain(cfg.seed + i * 7919, cfg.bounceMs);
+      for (a = 0; a < pt.length; a++) ev.push({ t: pt[a].t + pressT, level: pt[a].level });
+      rt = bnReleaseTrain(cfg.seed + 1 + i * 104729, pressT + cfg.holdMs, cfg.bounceMs);
+      for (a = 0; a < rt.length; a++) ev.push(rt[a]);
+    }
+    ev.sort(function (x, y) { return x.t - y.t; });
+    var spacing = cfg.holdMs + cfg.gapMs;
+    var tEnd = cfg.n * spacing + cfg.holdMs + cfg.bounceMs + cfg.stableCount * cfg.periodMs + 5;
+    var res = bnDebounce(ev, cfg.periodMs, cfg.stableCount, tEnd);
+    var presses = res.accepted.filter(function (e) { return e.level === 1; });
+    var lat = presses.map(function (p) {
+      var k = Math.floor(p.t / spacing + 1e-9);
+      if (k > cfg.n - 1) k = cfg.n - 1;
+      if (k < 0) k = 0;
+      return Math.round((p.t - k * spacing) * 1000) / 1000;
+    });
+    var maxLat = lat.length ? Math.max.apply(null, lat) : 0;
+    var counted = presses.length;
+    var windowMs = Math.round(cfg.periodMs * cfg.stableCount * 1000) / 1000;
+    var ruleOk = windowMs > cfg.bounceMs;
+    return {
+      sent: cfg.n, counted: counted,
+      doubles: Math.max(0, counted - cfg.n), missed: Math.max(0, cfg.n - counted),
+      maxLatency: maxLat, windowMs: windowMs, ruleOk: ruleOk,
+      pass: counted === cfg.n && maxLat <= cfg.budgetMs && ruleOk
+    };
+  }
+  function bnVerdictLine(r, bounceMs, budgetMs) {
+    if (r.counted !== r.sent)
+      return "FAIL: " + r.sent + " sent, " + r.counted + " accepted" +
+        (r.doubles ? " (" + r.doubles + " bounce-through doubles)" : "") +
+        (r.missed ? " (" + r.missed + " missed)" : "") + ".";
+    if (!r.ruleOk)
+      return "FAIL: window " + r.windowMs + " ms does not outlast the " + bounceMs +
+        " ms worst bounce. This run got lucky; the design rule is not satisfied.";
+    if (r.maxLatency > budgetMs)
+      return "FAIL: max latency " + r.maxLatency + " ms breaks the " + budgetMs + " ms budget.";
+    return "PASS: " + r.sent + "/" + r.sent + " presses, no doubles, no misses, " +
+      "window " + r.windowMs + " ms clears the " + bounceMs + " ms bounce, " +
+      "max latency " + r.maxLatency + " ms inside the " + budgetMs + " ms budget.";
+  }
+
+  /* ---------- trial configs ---------- */
+  var BN_TRIALS = [
+    { n: "1", name: "PRESS IT RAW", prof: "tactile key, 1.8 ms bounce",
+      why: "Do first, read later. Press the key with no filter and watch the raw contact chatter on the scope. Before you press, call the count: how many presses will the raw counter report for one finger press? Then engage the filter and press again. The filter is fixed here (sample every 1 ms, demand 5 steady samples); tuning it is trial 2.",
+      bounceMs: 1.8, seed: 9, periodMs: 1, stableCount: 5 },
+    { n: "2", name: "TUNE THE FILTER", prof: "dome key, 4.6 ms bounce, 12 ms budget",
+      why: "The dome key off the refurb pile bounces up to 4.6 ms, and the controller it feeds needs every press reported within 12 ms of the finger. Your filter is two knobs: sample period x steady count = window. The window must outlast the 4.6 ms bounce (the design rule) while the latency stays inside the 12 ms budget (the job). Tune the knobs, run the 20-press test, read the verdict.",
+      bounceMs: 4.6, budgetMs: 12, seed: 21, presses: 20, holdMs: 25, gapMs: 15 },
+    { n: "3", name: "THREE KEYS, ONE BENCH", prof: "3 contacts, per-key windows",
+      why: "Three keys, three contacts, three jobs. The tactile key bounces 1.8 ms on a 6 ms budget, the dome 4.6 ms on 12 ms, the worn industrial mushroom 8.5 ms on 20 ms (its presses are slow and deliberate). Sample period is fixed at 1 ms; set the steady-count per key and qualify all three. The worn key is honest about the tradeoff: its window must be long, so its latency is long.",
+      keys: [
+        { name: "TACTILE", bounceMs: 1.8, budgetMs: 6, seed: 101, n: 12, holdMs: 20, gapMs: 12, defN: 5 },
+        { name: "DOME", bounceMs: 4.6, budgetMs: 12, seed: 202, n: 12, holdMs: 25, gapMs: 15, defN: 3 },
+        { name: "WORN", bounceMs: 8.5, budgetMs: 20, seed: 303, n: 12, holdMs: 45, gapMs: 45, defN: 5 }
+      ] }
+  ];
+
+  /* ---------- state ---------- */
+  function bnNewTrialState(i) {
+    if (i === 0) return { predicted: null, filterOn: false, rawPresses: 0, rawRising: 0, filtPresses: 0, filtCount: 0, lastRaw: null, lastFilt: null, lastKind: null, certified: false };
+    if (i === 1) return { periodMs: 1, stableCount: 3, lastTest: null, passed: false, certified: false, scopeEv: null, scopeAcc: null, scopeTEnd: 0 };
+    return { sel: 0, counts: [5, 3, 5], tests: [null, null, null], passed: [false, false, false], manual: [0, 0, 0], certified: false, scopeEv: null, scopeAcc: null, scopeTEnd: 0, scopeKey: 0 };
+  }
+  function bnNewState() {
+    return { cur: 0, trials: [bnNewTrialState(0), bnNewTrialState(1), bnNewTrialState(2)] };
+  }
+  var bnS = bnNewState();
+  var bnEls = {};
+
+  function bnEl(tag, cls, html) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (html != null) e.innerHTML = html;
+    return e;
+  }
+  function bnLog(msg, cls) {
+    if (!bnEls.log) return;
+    var d = bnEl("div", null, msg);
+    if (cls) d.className = cls;
+    bnEls.log.appendChild(d);
+    bnEls.log.scrollTop = bnEls.log.scrollHeight;
+  }
+  function bnFmt(n) {
+    return (Math.round(n * 10) / 10).toString();
+  }
+
+  /* ---------- scope renderer ---------- */
+  function bnDrawScope(cv, ev, accepted, tEnd) {
+    if (!cv) return;
+    var ctx = cv.getContext("2d");
+    if (!ctx) return;
+    var W = cv.width = cv.clientWidth * 2 || 1200;
+    var H = cv.height = 236;
+    ctx.clearRect(0, 0, W, H);
+    var padL = 150, padR = 24, padT = 18, padB = 30;
+    var iw = W - padL - padR, ih = (H - padT - padB - 24) / 2;
+    var x = function (t) { return padL + (t / tEnd) * iw; };
+    var lanes = [
+      { label: "RAW", y0: padT, color: "#8a857c" },
+      { label: "FILTERED", y0: padT + ih + 24, color: "#ff5a1f" }
+    ];
+    ctx.font = "20px 'IBM Plex Mono', monospace";
+    ctx.fillStyle = "#6d6961";
+    for (var m = 0; m <= tEnd; m += 5) {
+      var gx = x(m);
+      ctx.strokeStyle = "rgba(255,255,255,0.06)";
+      ctx.beginPath(); ctx.moveTo(gx, padT); ctx.lineTo(gx, H - padB); ctx.stroke();
+      ctx.fillText(m + "ms", gx - 14, H - 10);
+    }
+    var rawLane = lanes[0], fltLane = lanes[1];
+    function step(lane, levelFn) {
+      var yHi = lane.y0 + 8, yLo = lane.y0 + ih - 8;
+      ctx.strokeStyle = lane.color; ctx.lineWidth = 3;
+      ctx.beginPath();
+      var prev = levelFn(0), px = x(0);
+      ctx.moveTo(px, prev ? yHi : yLo);
+      var steps = Math.max(200, Math.floor(tEnd * 8));
+      for (var i = 1; i <= steps; i++) {
+        var t = (i / steps) * tEnd, lv = levelFn(t), cx = x(t);
+        if (lv !== prev) { ctx.lineTo(cx, prev ? yHi : yLo); ctx.lineTo(cx, lv ? yHi : yLo); prev = lv; }
+        else ctx.lineTo(cx, lv ? yHi : yLo);
+      }
+      ctx.stroke();
+      ctx.fillStyle = lane.color;
+      ctx.fillText(lane.label, 14, lane.y0 + ih / 2 + 7);
+    }
+    step(rawLane, function (t) { return bnLevelAt(ev, t); });
+    var accMap = {};
+    (accepted || []).forEach(function (a) { accMap[Math.round(a.t * 100) / 100] = a.level; });
+    step(fltLane, function (t) {
+      var l = 0, k;
+      for (k in accMap) { if (parseFloat(k) <= t) l = accMap[k]; }
+      return l;
+    });
+    ctx.fillStyle = "#ff5a1f";
+    (accepted || []).forEach(function (a) {
+      if (a.level !== 1) return;
+      var ax = x(a.t), yHi = fltLane.y0 + 8;
+      ctx.fillRect(ax - 2, yHi - 14, 4, 14);
+    });
+    if (accepted && accepted.length) ctx.fillText("accepted press", 14, fltLane.y0 + ih + 22);
+  }
+
+  function bnTrial1Press() {
+    var st = bnS.trials[0], T = BN_TRIALS[0];
+    var seed = T.seed + st.rawPresses + st.filtPresses;
+    var train = bnBounceTrain(seed, T.bounceMs);
+    return { train: train, rising: bnRising(train) };
+  }
+
+  /* ---------- DOM build ---------- */
+  function bnBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("bnBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = BN_CSS.join("\n");
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "bnBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Bounce Room";
+    b.addEventListener("click", bnOpen);
+    box.appendChild(b);
+
+    var ov = bnEl("div", "bn-overlay");
+    ov.id = "bnOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Bounce Room");
+    var panel = bnEl("div", "bn-panel");
+
+    var head = bnEl("div", "bn-head");
+    head.appendChild(bnEl("h3", null, "The Bounce Room"));
+    head.appendChild(bnEl("p", "bn-spec", "OLD IRON // SWITCH DEBOUNCE LAB"));
+    head.appendChild(bnEl("p", "bn-why",
+      "Every key on an OLD IRON keyboard, every button on a refurbished control panel, is a mechanical " +
+      "contact, and every mechanical contact bounces: for a few milliseconds after your finger lands, the " +
+      "contacts chatter open and closed before they settle. A controller counting edges sees one press as " +
+      "three, four, five presses. This bench is that chatter, and the filter that tames it: a press counts " +
+      "only after the signal holds steady for N consecutive samples."));
+    var worked = bnEl("p", "bn-worked");
+    worked.innerHTML =
+      "<b>Worked example, trial 1:</b> the tactile key, worst bounce 1.8 ms. One press makes the contact " +
+      "chatter 9 times, and an unfiltered edge counter reports <b>5 presses</b> for the one your finger " +
+      "made (that counter is the obvious alternative, and it is wrong on a concrete measurement). Engage " +
+      "the filter, sample every 1 ms, demand 5 steady samples: the 5 ms window outlasts the 1.8 ms chatter, " +
+      "the counter reports exactly <b>1</b>, five milliseconds after your finger landed. Those 5 ms are the " +
+      "price of truth: the filter can only report a press after the signal has proven itself steady.";
+    head.appendChild(worked);
+    head.appendChild(bnEl("p", "bn-failmodes",
+      "Failure modes, stated plainly: a window shorter than the worst bounce lets chatter through, and one " +
+      "press counts twice or more (bounce-through). A window longer than the job allows eats input: presses " +
+      "arrive late or merge, and the latency budget fails. Debounce cannot fix a contact that never settles: " +
+      "an intermittent switch reads as endless presses at any window. Certification demands both evidence " +
+      "and the design rule: the press test must pass AND the window must outlast the worst bounce, because " +
+      "one lucky test run is not a guarantee."));
+    panel.appendChild(head);
+
+    var body = bnEl("div", "bn-body");
+    bnEls.tabs = bnEl("div", "bn-tabs");
+    bnEls.tabs.setAttribute("role", "tablist");
+    body.appendChild(bnEls.tabs);
+    bnEls.trialWhy = bnEl("p", "bn-trialwhy");
+    body.appendChild(bnEls.trialWhy);
+    bnEls.trialHost = bnEl("div", null);
+    body.appendChild(bnEls.trialHost);
+
+    var scopeCard = bnEl("div", "bn-card");
+    scopeCard.appendChild(bnEl("h4", null, "SCOPE (KEPT VISIBLE)"));
+    bnEls.scope = bnEl("canvas", "bn-scope");
+    scopeCard.appendChild(bnEls.scope);
+    bnEls.scopeNote = bnEl("p", "bn-readout", "Press the key: the scope shows the raw chatter and the filtered output.");
+    scopeCard.appendChild(bnEls.scopeNote);
+    body.appendChild(scopeCard);
+
+    var chkCard = bnEl("div", "bn-card");
+    chkCard.appendChild(bnEl("h4", null, "CERTIFY CHECKS"));
+    bnEls.checks = bnEl("p", "bn-readout", "");
+    chkCard.appendChild(bnEls.checks);
+    bnEls.certBtn = bnEl("button", "bn-btn primary", "CERTIFY TRIAL");
+    bnEls.certBtn.addEventListener("click", bnOnCertify);
+    chkCard.appendChild(bnEls.certBtn);
+    body.appendChild(chkCard);
+
+    bnEls.log = bnEl("div", "bn-log");
+    bnEls.log.setAttribute("aria-live", "polite");
+    body.appendChild(bnEls.log);
+    panel.appendChild(body);
+
+    var foot = bnEl("div", "bn-foot");
+    bnEls.progress = bnEl("span", "bn-progress", "CERTIFIED: 0/3");
+    foot.appendChild(bnEls.progress);
+    var resetTrial = bnEl("button", "bn-btn", "RESET TRIAL");
+    resetTrial.addEventListener("click", function () {
+      bnS.trials[bnS.cur] = bnNewTrialState(bnS.cur);
+      bnRenderAll();
+      bnLog("<span class='dim'>Trial " + BN_TRIALS[bnS.cur].n + " reset. Fresh key, checks cleared.</span>");
+    });
+    foot.appendChild(resetTrial);
+    var resetBench = bnEl("button", "bn-btn", "RESET BENCH");
+    resetBench.addEventListener("click", function () {
+      bnS = bnNewState();
+      bnRenderAll();
+      bnLog("<span class='dim'>Bench reset. All trials open, checks cleared.</span>");
+    });
+    foot.appendChild(resetBench);
+    bnEls.cert = bnEl("button", "bn-btn primary", "DOWNLOAD CERTIFICATE");
+    bnEls.cert.style.display = "none";
+    bnEls.cert.addEventListener("click", bnDownloadCert);
+    foot.appendChild(bnEls.cert);
+    var close = bnEl("button", "bn-btn", "CLOSE THE BENCH");
+    close.addEventListener("click", bnClose);
+    foot.appendChild(close);
+    panel.appendChild(foot);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    bnEls.overlay = ov;
+    ov.addEventListener("click", function (ev) { if (ev.target === ov) bnClose(); });
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && bnEls.overlay.classList.contains("open")) bnClose();
+    });
+    window.addEventListener("resize", function () { bnDrawCurrentScope(); });
+
+    bnRenderTabs();
+    bnRenderAll();
+    bnLog("<span class='dim'>Trial 1 is loaded. First, call the count: how many presses will the raw " +
+      "counter report for one finger press? Then press the key and see.</span>");
+  }
+
+  function bnRenderTabs() {
+    bnEls.tabs.innerHTML = "";
+    for (var i = 0; i < BN_TRIALS.length; i++) {
+      (function (i) {
+        var T = BN_TRIALS[i], st = bnS.trials[i];
+        var t = bnEl("button", "bn-tab" + (st.certified ? " done" : ""),
+          "<span class='bn-tname'>" + T.n + " // " + T.name + "</span>" +
+          "<span class='bn-tprof'>" + T.prof + "</span>");
+        t.setAttribute("role", "tab");
+        t.setAttribute("aria-selected", i === bnS.cur ? "true" : "false");
+        t.addEventListener("click", function () { bnS.cur = i; bnRenderAll(); });
+        bnEls.tabs.appendChild(t);
+      })(i);
+    }
+  }
+
+  function bnRenderAll() {
+    bnRenderTabs();
+    var i = bnS.cur, T = BN_TRIALS[i];
+    bnEls.trialWhy.textContent = T.why;
+    bnEls.trialHost.innerHTML = "";
+    if (i === 0) bnRenderT1();
+    else if (i === 1) bnRenderT2();
+    else bnRenderT3();
+    bnRenderChecks();
+    var n = bnS.trials.filter(function (s) { return s.certified; }).length;
+    bnEls.progress.textContent = "CERTIFIED: " + n + "/3";
+    bnEls.cert.style.display = n === 3 ? "" : "none";
+    bnDrawCurrentScope();
+  }
+
+  function bnDrawCurrentScope() {
+    var i = bnS.cur;
+    if (i === 0) {
+      var st = bnS.trials[0];
+      var show = st.lastKind === "filt" ? st.lastFilt : st.lastRaw;
+      if (!show || !show.train) { bnDrawScope(bnEls.scope, [], [], 12); return; }
+      bnDrawScope(bnEls.scope, show.train, show.acc, 12);
+    } else if (i === 1) {
+      var s2 = bnS.trials[1];
+      if (!s2.scopeEv) { bnDrawScope(bnEls.scope, [], [], 40); return; }
+      bnDrawScope(bnEls.scope, s2.scopeEv, s2.scopeAcc, s2.scopeTEnd);
+    } else {
+      var s3 = bnS.trials[2];
+      if (!s3.scopeEv) { bnDrawScope(bnEls.scope, [], [], 60); return; }
+      bnDrawScope(bnEls.scope, s3.scopeEv, s3.scopeAcc, s3.scopeTEnd);
+    }
+  }
+
+  /* ---------- trial 1: press it raw ---------- */
+  function bnRenderT1() {
+    var st = bnS.trials[0], T = BN_TRIALS[0];
+    var card = bnEl("div", "bn-card");
+    card.appendChild(bnEl("h4", null, "STEP 1: CALL THE COUNT"));
+    var pred = bnEl("div", "bn-pred");
+    pred.appendChild(bnEl("span", "bn-plab", "Predict: one finger press, no filter. How many presses will the raw counter report?"));
+    ["1", "2", "3 OR MORE"].forEach(function (opt) {
+      var po = bnEl("button", "bn-btn bn-popt", opt);
+      po.setAttribute("aria-pressed", st.predicted === opt ? "true" : "false");
+      po.addEventListener("click", function () {
+        st.predicted = opt;
+        bnRenderAll();
+        bnLog("Prediction recorded: <b>" + opt + "</b>. Now press the key.");
+      });
+      pred.appendChild(po);
+    });
+    card.appendChild(pred);
+    bnEls.trialHost.appendChild(card);
+
+    var card2 = bnEl("div", "bn-card");
+    card2.appendChild(bnEl("h4", null, "STEP 2: PRESS THE KEY"));
+    var ctrl = bnEl("div", "bn-ctrl");
+    var press = bnEl("button", "bn-btn primary big", st.filterOn ? "PRESS THE KEY (FILTER ON)" : "PRESS THE KEY (NO FILTER)");
+    press.addEventListener("click", bnOnT1Press);
+    ctrl.appendChild(press);
+    var filt = bnEl("button", "bn-btn", st.filterOn ? "DISENGAGE FILTER" : "ENGAGE FILTER (1 ms x 5)");
+    filt.setAttribute("aria-pressed", st.filterOn ? "true" : "false");
+    filt.addEventListener("click", function () {
+      st.filterOn = !st.filterOn;
+      bnRenderAll();
+      if (st.filterOn) {
+        bnLog("Filter engaged: sample every 1 ms, demand 5 consecutive steady samples (5 ms window). Press the key again.");
+        toast("Filter engaged");
+      } else {
+        bnLog("Filter disengaged: the raw chatter is back. The counter will overcount again.");
+        toast("Filter off");
+      }
+    });
+    ctrl.appendChild(filt);
+    card2.appendChild(ctrl);
+    bnEls.trialHost.appendChild(card2);
+  }
+
+  function bnOnT1Press() {
+    var st = bnS.trials[0], T = BN_TRIALS[0];
+    if (!st.predicted) {
+      toast("Call the count first: pick 1, 2, or 3 OR MORE.");
+      bnLog("<span class='bad'>Predict first: the bench wants your call before the evidence.</span>");
+      return;
+    }
+    var r = bnTrial1Press();
+    if (!st.filterOn) {
+      st.rawPresses++;
+      st.rawRising = r.rising;
+      st.lastRaw = { train: r.train, acc: [] };
+      st.lastKind = "raw";
+      var verdict = st.predicted === "3 OR MORE" ? "right" : (st.predicted === String(r.rising) ? "right" : "wrong");
+      bnLog("Raw press: contact chattered <b>" + r.train.length + " times</b>, the unfiltered counter reported " +
+        "<b>" + r.rising + " presses</b>. Your call was <b>" + st.predicted + "</b>: " +
+        (verdict === "right" ? "<span class='good'>called it.</span>" : "<span class='bad'>the chatter fooled you, which is the whole point.</span>") +
+        " Now engage the filter and press again.");
+      toast("Raw counter: " + r.rising + " presses");
+    } else {
+      var acc = bnDebounce(r.train, T.periodMs, T.stableCount, 14).accepted;
+      st.filtPresses++;
+      st.filtCount = acc.filter(function (e) { return e.level === 1; }).length;
+      st.lastFilt = { train: r.train, acc: acc };
+      st.lastKind = "filt";
+      var lat = acc.length ? acc[0].t : 0;
+      bnLog("Filtered press: <b>" + st.filtCount + " press</b> accepted, " + bnFmt(lat) +
+        " ms after the finger landed. Different chatter, same truth. You can CERTIFY TRIAL now.");
+      toast("Filtered: exactly " + st.filtCount);
+    }
+    bnRenderAll();
+  }
+
+  /* ---------- trial 2: tune the filter ---------- */
+  function bnRenderT2() {
+    var st = bnS.trials[1], T = BN_TRIALS[1];
+    var card = bnEl("div", "bn-card");
+    card.appendChild(bnEl("h4", null, "FILTER KNOBS"));
+    var ctrl = bnEl("div", "bn-ctrl");
+    var pf = bnEl("div", "bn-field");
+    var plab = bnEl("label", null, "Sample period");
+    plab.setAttribute("for", "bnPeriod");
+    pf.appendChild(plab);
+    var pr = document.createElement("input");
+    pr.type = "range"; pr.id = "bnPeriod"; pr.min = "0.5"; pr.max = "4"; pr.step = "0.5";
+    pr.value = String(st.periodMs);
+    pr.setAttribute("aria-label", "Sample period in milliseconds");
+    var pv = bnEl("span", "bn-val", bnFmt(st.periodMs) + " ms");
+    pr.addEventListener("input", function () {
+      st.periodMs = parseFloat(pr.value);
+      pv.textContent = bnFmt(st.periodMs) + " ms";
+      st.passed = false; st.lastTest = null;
+      bnRenderAll();
+    });
+    pf.appendChild(pr); pf.appendChild(pv);
+    ctrl.appendChild(pf);
+    var cf = bnEl("div", "bn-field");
+    var clab = bnEl("label", null, "Steady count");
+    clab.setAttribute("for", "bnCount");
+    cf.appendChild(clab);
+    var cr = document.createElement("input");
+    cr.type = "range"; cr.id = "bnCount"; cr.min = "2"; cr.max = "12"; cr.step = "1";
+    cr.value = String(st.stableCount);
+    cr.setAttribute("aria-label", "Consecutive steady samples required");
+    var cvv = bnEl("span", "bn-val", st.stableCount + " samples");
+    cr.addEventListener("input", function () {
+      st.stableCount = parseInt(cr.value, 10);
+      cvv.textContent = st.stableCount + " samples";
+      st.passed = false; st.lastTest = null;
+      bnRenderAll();
+    });
+    cf.appendChild(cr); cf.appendChild(cvv);
+    ctrl.appendChild(cf);
+    card.appendChild(ctrl);
+    var win = st.periodMs * st.stableCount;
+    var ruleOk = win > T.bounceMs, latOk = win <= T.budgetMs;
+    card.appendChild(bnEl("p", "bn-readout",
+      "WINDOW: " + bnFmt(win) + " ms " + (ruleOk ? "<span class='ok'>CLEARS</span>" : "<span class='bad'>SHORT OF</span>") +
+      " the " + T.bounceMs + " ms worst bounce (design rule).<br>" +
+      "LATENCY ESTIMATE: " + bnFmt(win) + " ms " + (latOk ? "<span class='ok'>INSIDE</span>" : "<span class='bad'>OVER</span>") +
+      " the " + T.budgetMs + " ms budget."));
+    var run = bnEl("button", "bn-btn primary", "RUN 20-PRESS TEST");
+    run.addEventListener("click", bnOnT2Run);
+    card.appendChild(run);
+    bnEls.trialHost.appendChild(card);
+    if (st.lastTest) {
+      var rc = bnEl("div", "bn-card");
+      rc.appendChild(bnEl("h4", null, "LAST TEST"));
+      var r = st.lastTest;
+      rc.appendChild(bnEl("p", "bn-readout",
+        r.sent + " sent, " + r.counted + " accepted, doubles " + r.doubles + ", missed " + r.missed +
+        ", max latency " + bnFmt(r.maxLatency) + " ms.<br>" +
+        (r.pass ? "<span class='ok'>VERDICT: PASS.</span> " : "<span class='bad'>VERDICT: FAIL.</span> ") +
+        bnVerdictLine(r, T.bounceMs, T.budgetMs)));
+      bnEls.trialHost.appendChild(rc);
+    }
+  }
+
+  function bnOnT2Run() {
+    var st = bnS.trials[1], T = BN_TRIALS[1];
+    var cfg = { seed: T.seed, bounceMs: T.bounceMs, n: T.presses, holdMs: T.holdMs, gapMs: T.gapMs,
+      periodMs: st.periodMs, stableCount: st.stableCount, budgetMs: T.budgetMs };
+    var r = bnPressTest(cfg);
+    st.lastTest = r;
+    st.passed = r.pass;
+    var ev = [], a, pressT = 0;
+    var pt = bnBounceTrain(T.seed, T.bounceMs);
+    for (a = 0; a < pt.length; a++) ev.push({ t: pt[a].t, level: pt[a].level });
+    var rt = bnReleaseTrain(T.seed + 1, T.holdMs, T.bounceMs);
+    for (a = 0; a < rt.length; a++) ev.push(rt[a]);
+    ev.sort(function (x, y) { return x.t - y.t; });
+    var tEnd = T.holdMs + T.bounceMs + st.periodMs * st.stableCount + 8;
+    st.scopeEv = ev;
+    st.scopeAcc = bnDebounce(ev, st.periodMs, st.stableCount, tEnd).accepted;
+    st.scopeTEnd = tEnd;
+    bnLog("20-press test at " + bnFmt(st.periodMs) + " ms x " + st.stableCount + ": " +
+      (r.pass ? "<span class='good'>PASS.</span> " : "<span class='bad'>FAIL.</span> ") +
+      bnVerdictLine(r, T.bounceMs, T.budgetMs));
+    toast(r.pass ? "Test PASSED" : "Test FAILED");
+    bnRenderAll();
+  }
+
+  /* ---------- trial 3: three keys ---------- */
+  function bnT3Cfg(ki, count) {
+    var K = BN_TRIALS[2].keys[ki];
+    return { seed: K.seed, bounceMs: K.bounceMs, n: K.n, holdMs: K.holdMs, gapMs: K.gapMs,
+      periodMs: 1, stableCount: count, budgetMs: K.budgetMs };
+  }
+  function bnRenderT3() {
+    var st = bnS.trials[2], keys = BN_TRIALS[2].keys;
+    var card = bnEl("div", "bn-card");
+    card.appendChild(bnEl("h4", null, "SELECT KEY"));
+    var sel = bnEl("div", "bn-keysel");
+    keys.forEach(function (K, ki) {
+      var kb = bnEl("button", "bn-key",
+        K.name + "<span class='bn-kprof'>bounce " + K.bounceMs + " ms // budget " + K.budgetMs + " ms</span>");
+      kb.setAttribute("aria-pressed", st.sel === ki ? "true" : "false");
+      kb.addEventListener("click", function () { st.sel = ki; bnRenderAll(); });
+      sel.appendChild(kb);
+    });
+    card.appendChild(sel);
+    var K = keys[st.sel];
+    var fld = bnEl("div", "bn-field");
+    var lab = bnEl("label", null, K.name + " steady count (period fixed 1 ms)");
+    lab.setAttribute("for", "bnKeyN");
+    fld.appendChild(lab);
+    var rg = document.createElement("input");
+    rg.type = "range"; rg.id = "bnKeyN"; rg.min = "2"; rg.max = "12"; rg.step = "1";
+    rg.value = String(st.counts[st.sel]);
+    rg.setAttribute("aria-label", K.name + " consecutive steady samples required");
+    var vv = bnEl("span", "bn-val", st.counts[st.sel] + " samples = " + st.counts[st.sel] + " ms window");
+    rg.addEventListener("input", function () {
+      st.counts[st.sel] = parseInt(rg.value, 10);
+      vv.textContent = st.counts[st.sel] + " samples = " + st.counts[st.sel] + " ms window";
+      st.passed[st.sel] = false; st.tests[st.sel] = null;
+      bnRenderAll();
+    });
+    fld.appendChild(rg); fld.appendChild(vv);
+    card.appendChild(fld);
+    var ctrl = bnEl("div", "bn-ctrl");
+    var run = bnEl("button", "bn-btn primary", "RUN " + K.n + "-PRESS TEST (" + K.name + ")");
+    run.addEventListener("click", bnOnT3Run);
+    ctrl.appendChild(run);
+    var man = bnEl("button", "bn-btn", "PRESS " + K.name + " BY HAND");
+    man.addEventListener("click", bnOnT3Manual);
+    ctrl.appendChild(man);
+    card.appendChild(ctrl);
+    bnEls.trialHost.appendChild(card);
+
+    var tc = bnEl("div", "bn-card");
+    tc.appendChild(bnEl("h4", null, "QUALIFICATION TABLE (KEPT VISIBLE)"));
+    var html = "<table class='bn-table'><tr><th>KEY</th><th>WINDOW</th><th>TEST</th><th>STATUS</th></tr>";
+    keys.forEach(function (K2, ki) {
+      var t = st.tests[ki];
+      var win = "1 ms x " + st.counts[ki] + " = " + st.counts[ki] + " ms";
+      var tres = t ? (t.counted + "/" + t.sent + ", lat " + bnFmt(t.maxLatency) + " ms") : "<span class='na'>not run</span>";
+      var stat = st.passed[ki] ? "<span class='ok'>QUALIFIED</span>" : (t ? "<span class='bad'>FAILED</span>" : "<span class='na'>OPEN</span>");
+      html += "<tr><td>" + K2.name + "</td><td>" + win + "</td><td>" + tres + "</td><td>" + stat + "</td></tr>";
+    });
+    html += "</table>";
+    var tbl = bnEl("div", null, html);
+    tc.appendChild(tbl);
+    if (st.tests[st.sel]) {
+      var rr = st.tests[st.sel], K3 = keys[st.sel];
+      tc.appendChild(bnEl("p", "bn-readout",
+        (rr.pass ? "<span class='ok'>VERDICT: PASS.</span> " : "<span class='bad'>VERDICT: FAIL.</span> ") +
+        bnVerdictLine(rr, K3.bounceMs, K3.budgetMs)));
+    }
+    bnEls.trialHost.appendChild(tc);
+  }
+
+  function bnOnT3Run() {
+    var st = bnS.trials[2], ki = st.sel, keys = BN_TRIALS[2].keys, K = keys[ki];
+    var r = bnPressTest(bnT3Cfg(ki, st.counts[ki]));
+    st.tests[ki] = r;
+    st.passed[ki] = r.pass;
+    var ev = [], a;
+    var pt = bnBounceTrain(K.seed, K.bounceMs);
+    for (a = 0; a < pt.length; a++) ev.push({ t: pt[a].t, level: pt[a].level });
+    var rt = bnReleaseTrain(K.seed + 1, K.holdMs, K.bounceMs);
+    for (a = 0; a < rt.length; a++) ev.push(rt[a]);
+    ev.sort(function (x, y) { return x.t - y.t; });
+    var tEnd = K.holdMs + K.bounceMs + st.counts[ki] + 8;
+    st.scopeEv = ev; st.scopeKey = ki;
+    st.scopeAcc = bnDebounce(ev, 1, st.counts[ki], tEnd).accepted;
+    st.scopeTEnd = tEnd;
+    bnLog(K.name + " " + K.n + "-press test at 1 ms x " + st.counts[ki] + ": " +
+      (r.pass ? "<span class='good'>PASS.</span> " : "<span class='bad'>FAIL.</span> ") +
+      bnVerdictLine(r, K.bounceMs, K.budgetMs));
+    toast(K.name + ": " + (r.pass ? "QUALIFIED" : "FAILED"));
+    bnRenderAll();
+  }
+
+  function bnOnT3Manual() {
+    var st = bnS.trials[2], ki = st.sel, keys = BN_TRIALS[2].keys, K = keys[ki];
+    st.manual[ki]++;
+    var seed = K.seed + 5000 + st.manual[ki] * 131;
+    var train = bnBounceTrain(seed, K.bounceMs);
+    var acc = bnDebounce(train, 1, st.counts[ki], K.bounceMs + st.counts[ki] + 8).accepted;
+    var n = acc.filter(function (e) { return e.level === 1; }).length;
+    st.scopeEv = train; st.scopeKey = ki; st.scopeAcc = acc;
+    st.scopeTEnd = K.bounceMs + st.counts[ki] + 8;
+    bnLog(K.name + " pressed by hand: raw chattered " + train.length + " times, filter accepted <b>" + n +
+      "</b> press" + (n === 1 ? "" : "es") + " at 1 ms x " + st.counts[ki] + ".");
+    toast(K.name + " hand press: " + n + " accepted");
+    bnRenderAll();
+  }
+
+  /* ---------- certify ---------- */
+  function bnRenderChecks() {
+    var i = bnS.cur, st = bnS.trials[i], T = BN_TRIALS[i], ok = false, why = "";
+    if (i === 0) {
+      ok = !!st.predicted && st.rawPresses > 0 && st.filtPresses > 0 && st.filtCount === 1;
+      why = "Checks: prediction recorded " + (st.predicted ? "(yes: " + st.predicted + ")" : "(no)") +
+        ", raw press done " + (st.rawPresses > 0 ? "(yes)" : "(no)") +
+        ", filtered press accepted exactly once " + (st.filtPresses > 0 && st.filtCount === 1 ? "(yes)" : "(no)") + ".";
+    } else if (i === 1) {
+      ok = st.passed && !!st.lastTest && st.lastTest.pass;
+      why = "Checks: a 20-press test passes at the current knob settings " +
+        (st.lastTest ? (st.lastTest.pass ? "(yes)" : "(no, last run failed)") : "(no test run yet)") + ".";
+    } else {
+      ok = st.passed[0] && st.passed[1] && st.passed[2];
+      why = "Checks: TACTILE " + (st.passed[0] ? "qualified" : "open") +
+        ", DOME " + (st.passed[1] ? "qualified" : "open") +
+        ", WORN " + (st.passed[2] ? "qualified" : "open") + ".";
+    }
+    bnEls.checks.innerHTML = why;
+    bnEls.certBtn.disabled = !ok || st.certified;
+    bnEls.certBtn.textContent = st.certified ? "TRIAL CERTIFIED" : "CERTIFY TRIAL";
+  }
+
+  function bnOnCertify() {
+    var i = bnS.cur, st = bnS.trials[i];
+    st.certified = true;
+    bnLog("<span class='good'>Trial " + BN_TRIALS[i].n + " certified.</span>");
+    toast("Trial " + BN_TRIALS[i].n + " certified");
+    bnRenderAll();
+  }
+
+  function bnDownloadCert() {
+    var lines = ["THE BOUNCE ROOM // OLD IRON SWITCH DEBOUNCE LAB", "Certificate of qualification", ""];
+    var s1 = bnS.trials[0];
+    lines.push("TRIAL 1 PRESS IT RAW: prediction " + s1.predicted + ", raw counter " + s1.rawRising +
+      " for one press, filtered exactly 1 at 1 ms x 5.");
+    var s2 = bnS.trials[1], r2 = s2.lastTest;
+    lines.push("TRIAL 2 TUNE THE FILTER: " + s2.periodMs + " ms x " + s2.stableCount + " = " +
+      bnFmt(s2.periodMs * s2.stableCount) + " ms window; 20-press test " +
+      (r2 ? r2.counted + "/" + r2.sent + ", max latency " + bnFmt(r2.maxLatency) + " ms" : "n/a") + ".");
+    var s3 = bnS.trials[2], keys = BN_TRIALS[2].keys;
+    keys.forEach(function (K, ki) {
+      var t = s3.tests[ki];
+      lines.push("TRIAL 3 " + K.name + ": 1 ms x " + s3.counts[ki] + " = " + s3.counts[ki] + " ms window; " +
+        (t ? t.counted + "/" + t.sent + ", max latency " + bnFmt(t.maxLatency) + " ms" : "n/a") + ".");
+    });
+    lines.push("", "One press counts only after the signal proves itself steady longer than the worst bounce.");
+    var blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "bounce-room-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  function bnOpen() {
+    if (!bnEls.overlay) bnBuild();
+    bnEls.overlay.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+  function bnClose() {
+    if (bnEls.overlay) bnEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", bnBuild);
+    } else {
+      bnBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      BN: {
+        TRIALS: BN_TRIALS,
+        bnRng: bnRng, bnBounceTrain: bnBounceTrain, bnReleaseTrain: bnReleaseTrain,
+        bnDebounce: bnDebounce, bnPressTest: bnPressTest, bnRising: bnRising,
+        bnVerdictLine: bnVerdictLine, newTrialState: bnNewTrialState, newState: bnNewState,
+        t3cfg: bnT3Cfg
+      }
+    });
+  }
+})();
