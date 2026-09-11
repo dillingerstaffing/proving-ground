@@ -29984,3 +29984,799 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+/* Bench 43 staging: The Borrow Room module (appended to features.js at ship time). */
+/* ============================================================
+   THE BORROW ROOM
+   Silicon bench 43. The one atomic mechanism: hardware never
+   subtracts. Every SUB adds the bitwise inverse of the subtrahend
+   with the carry-in forced to 1, and the borrow is the inverted
+   carry-out, which doubles as the unsigned less-than bit (SLTU).
+   One sentence takeaway: subtraction is addition with the operand
+   inverted and carry-in set, and the flipped carry-out is the
+   borrow, the bit every unsigned comparison is really asking about.
+   Trial 1: 8-bit primer with a do-first lane stepper on the worked
+   example 0x35 - 0x27, then 3 predict-the-byte-and-borrow questions.
+   Trial 2: 16-bit subtract built from two 8-bit lanes with borrow
+   chaining; the visitor predicts each lane and the failure mode
+   (what the high byte reads when the borrow-in is ignored).
+   Trial 3: the compare bit, 4 SLTU predictions including the
+   0x80 vs 0x7F trap where the sign bit lies and the borrow tells
+   the truth. Per-trial and bench certificates as downloadable text.
+   Self-contained IIFE, appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- pure logic: subtraction as addition ---------------- */
+
+  function bwHex(u, digits) {
+    var s = (u >>> 0).toString(16).toUpperCase();
+    while (s.length < digits) s = "0" + s;
+    return "0x" + s;
+  }
+
+  /* 8-bit subtract with explicit carry-in: s9 = a + ~b + cin.
+     borrow = NOT carry-out. cin=1 gives plain a-b. */
+  function bwSub8Cin(a, b, cin) {
+    a = a & 0xff; b = b & 0xff; cin = cin ? 1 : 0;
+    var inv = (~b) & 0xff;
+    var s9 = a + inv + cin;
+    var diff = s9 & 0xff;
+    var carry = (s9 >>> 8) & 1;
+    return { a: a, b: b, cin: cin, inv: inv, plus1: (inv + 1) & 0xff,
+             s9: s9, diff: diff, carry: carry, borrow: carry ^ 1 };
+  }
+
+  function bwSub8(a, b) { return bwSub8Cin(a, b, 1); }
+
+  /* 16-bit subtract as two chained 8-bit lanes. The low lane's carry
+     feeds the high lane's carry-in; the borrow-in is the flipped
+     low carry. Returns per-lane detail plus the honest 16-bit answer. */
+  function bwSub16(a, b) {
+    a = a & 0xffff; b = b & 0xffff;
+    var lo = bwSub8Cin(a & 0xff, b & 0xff, 1);
+    var hi = bwSub8Cin((a >>> 8) & 0xff, (b >>> 8) & 0xff, lo.carry);
+    var hiIgnored = bwSub8Cin((a >>> 8) & 0xff, (b >>> 8) & 0xff, 1);
+    return {
+      a: a, b: b, lo: lo, hi: hi,
+      diff: ((hi.diff << 8) | lo.diff) & 0xffff,
+      borrow: hi.borrow,
+      hiIgnoredDiff: hiIgnored.diff
+    };
+  }
+
+  /* Unsigned less-than: the bit SLTU writes. Equals the borrow of a-b. */
+  function bwSltu(a, b) { return (((a & 0xff) < (b & 0xff)) ? 1 : 0); }
+
+  /* ---------------- trial data ---------------- */
+
+  var BW_T1 = [
+    { a: 0x35, b: 0x27 },
+    { a: 0x27, b: 0x35 },
+    { a: 0x80, b: 0x01 }
+  ];
+  var BW_T2 = [
+    { a: 0x1234, b: 0x00FF },
+    { a: 0x1000, b: 0x0001 },
+    { a: 0xAB00, b: 0x00CD }
+  ];
+  var BW_T3 = [
+    { a: 0x27, b: 0x35 },
+    { a: 0x35, b: 0x27 },
+    { a: 0x80, b: 0x7F },
+    { a: 0x00, b: 0xFF }
+  ];
+  var BW_TITLES = ["THE 8-BIT PRIMER", "CHAIN THE BORROW", "THE COMPARE BIT"];
+
+  /* ---------------- tiny DOM helpers (module-local) ---------------- */
+
+  function bwEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  var BW_CSS = [
+    ".bw-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".bw-overlay.open{display:block}",
+    ".bw-panel{max-width:860px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".bw-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".bw-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".bw-sub{font-size:13px;color:#b9b2a4;margin:0 0 22px;max-width:60ch}",
+    ".bw-card{border:1px solid var(--line,#2b2b30);background:var(--panel,#141416);border-radius:10px;padding:18px;margin:0 0 16px}",
+    ".bw-card h3{font-family:'Space Grotesk',sans-serif;font-size:17px;margin:0 0 6px;color:var(--paper,#f2ede4);letter-spacing:.02em}",
+    ".bw-card .why{font-size:13px;line-height:1.65;color:#d8d2c4;margin:0 0 10px;max-width:68ch}",
+    ".bw-card .why b{color:var(--ember,#ff5a1f);font-weight:600}",
+    ".bw-lanes{font-size:13px;line-height:1.9;background:#0c0c0e;border:1px solid var(--line,#2b2b30);border-radius:8px;padding:12px 14px;margin:10px 0;min-height:80px}",
+    ".bw-lanes .k{color:#8f8a7d}.bw-lanes .v{color:var(--paper,#f2ede4)}.bw-lanes .hit{color:var(--ember,#ff5a1f);font-weight:600}",
+    ".bw-q{border-top:1px solid var(--line,#2b2b30);padding:12px 0}",
+    ".bw-q .qp{font-size:14px;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".bw-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}",
+    ".bw-lab{font-size:11px;letter-spacing:.14em;color:#8f8a7d}",
+    ".bw-in{background:#0c0c0e;border:1px solid var(--line,#2b2b30);color:var(--paper,#f2ede4);border-radius:6px;padding:12px 10px;font-family:inherit;font-size:15px;width:110px;min-height:48px}",
+    ".bw-in:focus{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".bw-btn{background:transparent;border:1px solid var(--ember,#ff5a1f);color:var(--ember,#ff5a1f);border-radius:8px;padding:12px 18px;font-family:inherit;font-size:13px;letter-spacing:.08em;cursor:pointer;min-height:48px;min-width:48px}",
+    ".bw-btn:hover{background:rgba(255,90,31,.12)}",
+    ".bw-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".bw-btn.solid{background:var(--ember,#ff5a1f);color:#101012;font-weight:600}",
+    ".bw-btn:disabled{opacity:.35;cursor:default}",
+    ".bw-btn[aria-pressed=true]{background:var(--ember,#ff5a1f);color:#101012}",
+    ".bw-verdict{font-size:14px;font-weight:600;letter-spacing:.06em;margin:10px 0 0;min-height:22px}",
+    ".bw-verdict.pass{color:#7fd67f}.bw-verdict.miss{color:var(--ember,#ff5a1f)}",
+    ".bw-note{font-size:12px;color:#8f8a7d;line-height:1.6;margin:8px 0 0;max-width:68ch}",
+    ".bw-log{border:1px solid var(--line,#2b2b30);border-radius:8px;background:#0c0c0e;padding:10px 14px;font-size:12px;line-height:1.7;max-height:150px;overflow-y:auto;margin:0 0 16px;color:#b9b2a4}",
+    ".bw-log .ok{color:#7fd67f}.bw-log .bad{color:var(--ember,#ff5a1f)}",
+    ".bw-banner{display:none;border:1px solid var(--ember,#ff5a1f);border-radius:10px;padding:16px;margin:0 0 16px;background:rgba(255,90,31,.07)}",
+    ".bw-banner h3{font-family:'Space Grotesk',sans-serif;color:var(--ember,#ff5a1f);margin:0 0 6px;font-size:18px}",
+    ".bw-banner p{font-size:13px;color:#d8d2c4;margin:0 0 10px}",
+    ".bw-steps{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}",
+    "@media (prefers-reduced-motion:no-preference){.bw-pop{animation:bwpop .2s ease-out}}",
+    "@keyframes bwpop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    "@media (max-width:560px){.bw-panel{padding:56px 14px 110px}.bw-in{width:96px}}"
+  ].join("\n");
+
+  var BW_INTRO_A =
+    "<div class='bw-card'><h3>WHY IT MATTERS</h3>" +
+    "<p class='why'>Every loop bound, every <b>if (a &lt; b)</b>, every memory-bounds check bottoms out in one question: when you take b away from a, does it <b>borrow</b>? " +
+    "Here is the part nobody tells you up front: there is no subtract circuit in the ALU. The same adder that adds also subtracts. Feed it the bitwise inverse of b, force the carry-in to 1, " +
+    "and the <b>inverted carry-out is the borrow</b>. Learn the borrow and you can read every unsigned comparison a processor ever makes, because SLTU, the unsigned less-than instruction, writes exactly this bit. " +
+    "(Bench 41, The Carry Room, builds the carry this room assumes.)</p></div>";
+
+  var BW_INTRO_B =
+    "<div class='bw-card'><h3>WORKED EXAMPLE, CHECK IT BY HAND</h3>" +
+    "<p class='why'><b>0x35 minus 0x27.</b> Invert 0x27 bit by bit: <b>0xD8</b>. Add one: <b>0xD9</b>. Add: 0x35 + 0xD9 = <b>0x10E</b>. Keep the low byte: <b>0x0E</b>. " +
+    "The carry out of bit 7 is 1, so the borrow is 0: no borrow. And 53 minus 39 is 14, which is 0x0E. The carry survived, so nothing was borrowed. " +
+    "Press STEP below and watch each lane do exactly this before any trial asks you anything.</p>";
+
+  var BW_INTRO_C =
+    "<p class='why'><b>THE FAILURE MODE.</b> Now 0x27 minus 0x35: 0x27 + 0xCB = 0xF2, carry out 0, borrow 1. The result byte 0xF2 is not negative 14 in 8 bits, it is 242, and the borrow flag is the only honest part of the answer. " +
+    "The second failure mode lives in trial 2: chain two 8-bit lanes into a 16-bit subtract and forget the borrow-in on the high lane, and the high byte silently reads wrong. This room trains the reflex that never ships that bug.</p></div>";
+
+  /* Full intro copy (no element ids) for tests and single-source copy checks. */
+  var BW_INTRO_HTML = BW_INTRO_A + BW_INTRO_B + BW_INTRO_C;
+
+  var BW_STEPS = [
+    "<span class='k'>a = </span><span class='v'>0x35</span><span class='k'> (53), b = </span><span class='v'>0x27</span><span class='k'> (39). The adder is about to add, not subtract.</span>",
+    "<span class='k'>Invert b bit by bit: ~</span><span class='v'>0x27</span><span class='k'> = </span><span class='hit'>0xD8</span>",
+    "<span class='k'>Add one: </span><span class='v'>0xD8 + 1</span><span class='k'> = </span><span class='hit'>0xD9</span><span class='k'>. That is negative 39 in 8-bit two's complement.</span>",
+    "<span class='k'>Add: </span><span class='v'>0x35 + 0xD9 = 0x10E</span><span class='k'>. Keep the low byte: </span><span class='hit'>0x0E</span>",
+    "<span class='k'>Carry out of bit 7: </span><span class='v'>1</span><span class='k'>, so borrow = NOT carry = </span><span class='hit'>0 (no borrow)</span>",
+    "<span class='k'>Check by hand: 53 - 39 = 14 = </span><span class='hit'>0x0E</span><span class='k'>. No borrow means a was at least b. The borrow bit is the unsigned less-than answer: 0x35 &lt; 0x27 is </span><span class='hit'>false</span><span class='k'>.</span>"
+  ];
+
+  /* ---------------- state ---------------- */
+
+  function bwNewTrialState() {
+    return { attempts: 0, strikes: 0, passed: false, committed: false, qs: [] };
+  }
+  var bwState = {
+    trials: [bwNewTrialState(), bwNewTrialState(), bwNewTrialState()],
+    step: 0
+  };
+  var bwEls = null;
+
+  /* ---------------- log + pop ---------------- */
+
+  function bwLog(msg, cls) {
+    if (!bwEls || !bwEls.log) return;
+    var d = bwEl("div", cls || "", msg);
+    bwEls.log.appendChild(d);
+    bwEls.log.scrollTop = bwEls.log.scrollHeight;
+  }
+  function bwPop(card) {
+    if (!card) return;
+    card.classList.remove("bw-pop");
+    void card.offsetWidth;
+    card.classList.add("bw-pop");
+  }
+
+  /* ---------------- shared controls ---------------- */
+
+  /* A borrow toggle: two buttons labelled 0 and 1, aria-pressed tracked. */
+  function bwBorrowToggle() {
+    var wrap = bwEl("span", "bw-row");
+    var b0 = bwEl("button", "bw-btn", "0");
+    var b1 = bwEl("button", "bw-btn", "1");
+    b0.type = "button"; b1.type = "button";
+    b0.setAttribute("aria-pressed", "false");
+    b1.setAttribute("aria-pressed", "false");
+    b0.setAttribute("aria-label", "Borrow 0, no borrow");
+    b1.setAttribute("aria-label", "Borrow 1, borrowed");
+    b0.addEventListener("click", function () {
+      b0.setAttribute("aria-pressed", "true");
+      b1.setAttribute("aria-pressed", "false");
+    });
+    b1.addEventListener("click", function () {
+      b1.setAttribute("aria-pressed", "true");
+      b0.setAttribute("aria-pressed", "false");
+    });
+    wrap.appendChild(b0); wrap.appendChild(b1);
+    wrap.getValue = function () {
+      if (b1.getAttribute("aria-pressed") === "true") return 1;
+      if (b0.getAttribute("aria-pressed") === "true") return 0;
+      return null;
+    };
+    wrap.setValue = function (v) {
+      b0.setAttribute("aria-pressed", v === 0 ? "true" : "false");
+      b1.setAttribute("aria-pressed", v === 1 ? "true" : "false");
+    };
+    wrap.lock = function () { b0.disabled = true; b1.disabled = true; };
+    wrap.unlock = function () {
+      b0.disabled = false; b1.disabled = false;
+      b0.setAttribute("aria-pressed", "false");
+      b1.setAttribute("aria-pressed", "false");
+    };
+    return wrap;
+  }
+
+  function bwHexInput() {
+    var inp = bwEl("input", "bw-in");
+    inp.type = "text"; inp.maxLength = 4;
+    inp.setAttribute("aria-label", "Result byte in hex, for example 0E");
+    inp.setAttribute("placeholder", "0x..");
+    inp.setAttribute("spellcheck", "false");
+    inp.setAttribute("autocomplete", "off");
+    return inp;
+  }
+  function bwParseHex(str) {
+    var s = String(str).trim().replace(/^0x/i, "");
+    if (!/^[0-9a-fA-F]{1,4}$/.test(s)) return null;
+    return parseInt(s, 16);
+  }
+
+  function bwWorkOf(a, b) {
+    var r = bwSub8(a, b);
+    return "a=" + bwHex(a, 2) + " b=" + bwHex(b, 2) +
+      " | ~b=" + bwHex(r.inv, 2) + " | ~b+1=" + bwHex(r.plus1, 2) +
+      " | a+(~b+1)=" + bwHex(r.s9, 3) + " keep " + bwHex(r.diff, 2) +
+      " | carry=" + r.carry + " borrow=" + r.borrow +
+      " | check: " + a + "-" + b + "=" + (a - b);
+  }
+
+  /* ---------------- trial builders (state-driven, rebuildable) ---------------- */
+
+  function bwTrialShell(card, ti, whyText) {
+    card.appendChild(bwEl("h3", null, "TRIAL " + (ti + 1) + ": " + BW_TITLES[ti]));
+    card.appendChild(bwEl("p", "why", whyText));
+  }
+
+  function bwCheckResetRow(card, ti, checkLabel) {
+    var row = bwEl("div", "bw-row");
+    var check = bwEl("button", "bw-btn solid", checkLabel);
+    check.type = "button";
+    var reset = bwEl("button", "bw-btn", "RESET TRIAL " + (ti + 1));
+    reset.type = "button";
+    row.appendChild(check); row.appendChild(reset);
+    card.appendChild(row);
+    var verdict = bwEl("p", "bw-verdict", "No check yet.");
+    card.appendChild(verdict);
+    var cert = bwEl("button", "bw-btn", "CERTIFY TRIAL " + (ti + 1));
+    cert.type = "button";
+    cert.disabled = true;
+    cert.addEventListener("click", function () { bwCommit(ti); });
+    card.appendChild(cert);
+    reset.addEventListener("click", function () { bwResetTrial(ti); });
+    return { check: check, verdict: verdict, cert: cert };
+  }
+
+  function bwSetVerdict(built, ti) {
+    var st = bwState.trials[ti];
+    if (st.passed) {
+      built.verdict.textContent = "TRIAL " + (ti + 1) + " PASSED in " + st.attempts +
+        " check(s), " + st.strikes + " strike(s)." +
+        (st.committed ? " Certified." : " CERTIFY is lit.");
+      built.verdict.className = "bw-verdict pass";
+    }
+    built.cert.disabled = !(st.passed && !st.committed);
+  }
+
+  /* --- trial 1 --- */
+  function bwBuildT1(card) {
+    var st = bwState.trials[0];
+    bwTrialShell(card, 0,
+      "Do first, read later: step the worked example above, then predict the result byte and the borrow for three subtracts. The lanes print their work under every miss.");
+    while (st.qs.length < BW_T1.length) st.qs.push({ hv: null, bv: null, done: false, note: "" });
+    var ui = [];
+    BW_T1.forEach(function (p, i) {
+      var qs = st.qs[i];
+      var q = bwEl("div", "bw-q");
+      q.appendChild(bwEl("p", "qp", "Q" + (i + 1) + ": " + bwHex(p.a, 2) + " minus " + bwHex(p.b, 2) +
+        ". Predict the result byte and the borrow."));
+      var row = bwEl("div", "bw-row");
+      row.appendChild(bwEl("span", "bw-lab", "RESULT"));
+      var hi = bwHexInput(); row.appendChild(hi);
+      row.appendChild(bwEl("span", "bw-lab", "BORROW"));
+      var bt = bwBorrowToggle(); row.appendChild(bt);
+      q.appendChild(row);
+      var note = bwEl("p", "bw-note", qs.note);
+      if (qs.done) {
+        hi.value = bwHex(qs.hv, 2); hi.disabled = true;
+        bt.setValue(qs.bv); bt.lock();
+        note.style.color = "#7fd67f";
+      }
+      q.appendChild(note);
+      card.appendChild(q);
+      ui.push({ hi: hi, bt: bt, note: note });
+    });
+    var res = bwEl("div", "bw-lanes");
+    res.innerHTML = st.passed ?
+      "<span class='k'>All three subtractions verified against the lanes. The borrow was the inverted carry every time.</span>" :
+      "<span class='k'>Press CHECK when every question has a result and a borrow.</span>";
+    card.appendChild(res);
+    var built = bwCheckResetRow(card, 0, "CHECK TRIAL 1");
+    bwSetVerdict(built, 0);
+
+    built.check.addEventListener("click", function () {
+      st.attempts++;
+      var allIn = true, changed = false;
+      BW_T1.forEach(function (p, i) {
+        var qs = st.qs[i], u = ui[i];
+        if (qs.done) return;
+        var hv = bwParseHex(u.hi.value), bv = u.bt.getValue();
+        if (hv === null || bv === null) { allIn = false; return; }
+        changed = true;
+        var r = bwSub8(p.a, p.b);
+        if ((hv & 0xff) === r.diff && bv === r.borrow) {
+          qs.done = true; qs.hv = r.diff; qs.bv = r.borrow;
+          qs.note = "Correct. " + bwWorkOf(p.a, p.b);
+          u.hi.value = bwHex(r.diff, 2); u.hi.disabled = true;
+          u.bt.setValue(bv); u.bt.lock();
+          u.note.textContent = qs.note; u.note.style.color = "#7fd67f";
+        } else {
+          st.strikes++;
+          qs.note = "Not yet. The lanes say: " + bwWorkOf(p.a, p.b) + ". Read it, then fix your answer.";
+          u.note.textContent = qs.note; u.note.style.color = "#ff5a1f";
+          bwLog("Trial 1 Q" + (i + 1) + " missed (" + bwHex(p.a, 2) + "-" + bwHex(p.b, 2) +
+            "): expected " + bwHex(r.diff, 2) + "/borrow " + r.borrow + ".", "bad");
+        }
+      });
+      if (!allIn && !changed) {
+        built.verdict.textContent = "Fill in every result and borrow first.";
+        built.verdict.className = "bw-verdict";
+        return;
+      }
+      if (st.qs.every(function (x) { return x.done; }) && !st.passed) {
+        st.passed = true;
+        res.innerHTML = "<span class='k'>All three subtractions verified against the lanes. " +
+          "The borrow was the inverted carry every time.</span>";
+        bwLog("Trial 1 PASSED (" + st.attempts + " checks, " + st.strikes + " strikes).", "ok");
+      }
+      if (st.passed) {
+        built.verdict.textContent = "TRIAL 1 PASSED: every byte and borrow called correctly in " +
+          st.attempts + " check(s), " + st.strikes + " strike(s). CERTIFY is lit.";
+        built.verdict.className = "bw-verdict pass";
+      } else {
+        built.verdict.textContent = "Some answers missed. The lane work is printed under each question: read it and try again.";
+        built.verdict.className = "bw-verdict miss";
+      }
+      bwSetVerdict(built, 0);
+      bwPop(card);
+    });
+  }
+
+  /* --- trial 2 --- */
+  function bwBuildT2(card) {
+    var st = bwState.trials[1];
+    bwTrialShell(card, 1,
+      "Two 8-bit lanes make one 16-bit subtract. The low lane's borrow feeds the high lane. Predict each lane, and name the corruption the high byte suffers when the borrow-in is ignored.");
+    while (st.qs.length < BW_T2.length) st.qs.push({ lo: null, lb: null, hi: null, ig: null, done: false, note: "" });
+    var ui = [];
+    BW_T2.forEach(function (p, i) {
+      var qs = st.qs[i];
+      var r16 = bwSub16(p.a, p.b);
+      var q = bwEl("div", "bw-q");
+      q.appendChild(bwEl("p", "qp", "Q" + (i + 1) + ": " + bwHex(p.a, 4) + " minus " + bwHex(p.b, 4) +
+        ", done as two 8-bit lanes. Predict the low byte, the borrow out of the low lane, " +
+        "then the high byte WITH the borrow-in, and what the high byte would read if the borrow-in were ignored."));
+      var row = bwEl("div", "bw-row");
+      row.appendChild(bwEl("span", "bw-lab", "LOW BYTE"));
+      var loIn = bwHexInput(); row.appendChild(loIn);
+      row.appendChild(bwEl("span", "bw-lab", "LOW BORROW"));
+      var loB = bwBorrowToggle(); row.appendChild(loB);
+      q.appendChild(row);
+      var row2 = bwEl("div", "bw-row");
+      row2.appendChild(bwEl("span", "bw-lab", "HIGH BYTE"));
+      var hiIn = bwHexInput(); row2.appendChild(hiIn);
+      row2.appendChild(bwEl("span", "bw-lab", "HIGH IF IGNORED"));
+      var ignIn = bwHexInput(); row2.appendChild(ignIn);
+      q.appendChild(row2);
+      var note = bwEl("p", "bw-note", qs.note);
+      if (qs.done) {
+        loIn.value = bwHex(qs.lo, 2); loIn.disabled = true;
+        loB.setValue(qs.lb); loB.lock();
+        hiIn.value = bwHex(qs.hi, 2); hiIn.disabled = true;
+        ignIn.value = bwHex(qs.ig, 2); ignIn.disabled = true;
+        note.style.color = "#7fd67f";
+      }
+      q.appendChild(note);
+      card.appendChild(q);
+      ui.push({ loIn: loIn, loB: loB, hiIn: hiIn, ignIn: ignIn, note: note });
+    });
+    var res = bwEl("div", "bw-lanes");
+    res.innerHTML = st.passed ?
+      "<span class='k'>The low lane's borrow reached the high lane every time. Forgetting it is the bug you will now never ship.</span>" :
+      "<span class='k'>The low lane's carry feeds the high lane's carry-in. Borrow-in is the flipped low carry.</span>";
+    card.appendChild(res);
+    var built = bwCheckResetRow(card, 1, "CHECK TRIAL 2");
+    bwSetVerdict(built, 1);
+
+    built.check.addEventListener("click", function () {
+      st.attempts++;
+      var allIn = true, changed = false;
+      BW_T2.forEach(function (p, i) {
+        var qs = st.qs[i], u = ui[i], r = bwSub16(p.a, p.b);
+        if (qs.done) return;
+        var lo = bwParseHex(u.loIn.value), lb = u.loB.getValue(),
+            hi = bwParseHex(u.hiIn.value), ig = bwParseHex(u.ignIn.value);
+        if (lo === null || lb === null || hi === null || ig === null) { allIn = false; return; }
+        changed = true;
+        var okLo = (lo & 0xff) === r.lo.diff && lb === r.lo.borrow;
+        var okHi = (hi & 0xff) === r.hi.diff;
+        var okIg = (ig & 0xff) === r.hiIgnoredDiff;
+        if (okLo && okHi && okIg) {
+          qs.done = true; qs.lo = r.lo.diff; qs.lb = r.lo.borrow; qs.hi = r.hi.diff; qs.ig = r.hiIgnoredDiff;
+          qs.note = "Correct. 16-bit answer " + bwHex(r.diff, 4) + ", borrow " + r.borrow +
+            ". Ignoring the borrow-in would have printed " + bwHex(r.hiIgnoredDiff, 2) +
+            " up top: the silent-corruption bug.";
+          u.loIn.value = bwHex(qs.lo, 2); u.loIn.disabled = true;
+          u.loB.setValue(lb); u.loB.lock();
+          u.hiIn.value = bwHex(qs.hi, 2); u.hiIn.disabled = true;
+          u.ignIn.value = bwHex(qs.ig, 2); u.ignIn.disabled = true;
+          u.note.textContent = qs.note; u.note.style.color = "#7fd67f";
+        } else {
+          st.strikes++;
+          var why = [];
+          if (!okLo) why.push("low lane is " + bwHex(r.lo.diff, 2) + " with borrow-out " + r.lo.borrow +
+            " (" + bwWorkOf(r.lo.a, r.lo.b) + ")");
+          if (!okHi) why.push("high lane with borrow-in " + r.lo.borrow + " is " + bwHex(r.hi.diff, 2));
+          if (!okIg) why.push("ignoring the borrow-in, the high lane reads " + bwHex(r.hiIgnoredDiff, 2));
+          qs.note = "Not yet. " + why.join("; ") + ".";
+          u.note.textContent = qs.note; u.note.style.color = "#ff5a1f";
+          bwLog("Trial 2 Q" + (i + 1) + " missed.", "bad");
+        }
+      });
+      if (!allIn && !changed) {
+        built.verdict.textContent = "Fill in every lane and the ignored-borrow byte first.";
+        built.verdict.className = "bw-verdict";
+        return;
+      }
+      if (st.qs.every(function (x) { return x.done; }) && !st.passed) {
+        st.passed = true;
+        res.innerHTML = "<span class='k'>The low lane's borrow reached the high lane every time. " +
+          "Forgetting it is the bug you will now never ship.</span>";
+        bwLog("Trial 2 PASSED (" + st.attempts + " checks, " + st.strikes + " strikes).", "ok");
+      }
+      if (st.passed) {
+        built.verdict.textContent = "TRIAL 2 PASSED: borrow chained across all three 16-bit subtracts in " +
+          st.attempts + " check(s), " + st.strikes + " strike(s). CERTIFY is lit.";
+        built.verdict.className = "bw-verdict pass";
+      } else {
+        built.verdict.textContent = "Some lanes missed. The correct lane work is printed under each question.";
+        built.verdict.className = "bw-verdict miss";
+      }
+      bwSetVerdict(built, 1);
+      bwPop(card);
+    });
+  }
+
+  /* --- trial 3 --- */
+  function bwBuildT3(card) {
+    var st = bwState.trials[2];
+    bwTrialShell(card, 2,
+      "The payoff: SLTU is the borrow of a minus b. Call the unsigned less-than bit for four pairs, including the one where the sign bit lies.");
+    while (st.qs.length < BW_T3.length) st.qs.push({ bv: null, done: false, note: "" });
+    var ui = [];
+    BW_T3.forEach(function (p, i) {
+      var qs = st.qs[i];
+      var trap = (p.a === 0x80 && p.b === 0x7F) ? " Careful: the sign bit says one thing here." : "";
+      var q = bwEl("div", "bw-q");
+      q.appendChild(bwEl("p", "qp", "Q" + (i + 1) + ": unsigned, is " + bwHex(p.a, 2) + " < " + bwHex(p.b, 2) +
+        "? Predict the SLTU bit (1 if less, else 0)." + trap));
+      var row = bwEl("div", "bw-row");
+      row.appendChild(bwEl("span", "bw-lab", "SLTU"));
+      var bt = bwBorrowToggle(); row.appendChild(bt);
+      q.appendChild(row);
+      var note = bwEl("p", "bw-note", qs.note);
+      if (qs.done) {
+        bt.setValue(qs.bv); bt.lock();
+        note.style.color = "#7fd67f";
+      }
+      q.appendChild(note);
+      card.appendChild(q);
+      ui.push({ bt: bt, note: note });
+    });
+    var res = bwEl("div", "bw-lanes");
+    res.innerHTML = st.passed ?
+      "<span class='k'>You just read the branch bit. Every unsigned branch in every program is this borrow, flipped carry, no comparator.</span>" :
+      "<span class='k'>SLTU is the borrow of a minus b. No separate comparator, just the carry, flipped.</span>";
+    card.appendChild(res);
+    var built = bwCheckResetRow(card, 2, "CHECK TRIAL 3");
+    bwSetVerdict(built, 2);
+
+    built.check.addEventListener("click", function () {
+      st.attempts++;
+      var allIn = true, changed = false;
+      BW_T3.forEach(function (p, i) {
+        var qs = st.qs[i], u = ui[i];
+        if (qs.done) return;
+        var bv = u.bt.getValue();
+        if (bv === null) { allIn = false; return; }
+        changed = true;
+        var want = bwSltu(p.a, p.b);
+        var r = bwSub8(p.a, p.b);
+        if (bv === want) {
+          qs.done = true; qs.bv = want;
+          qs.note = "Correct. Borrow of " + bwHex(p.a, 2) + "-" + bwHex(p.b, 2) +
+            " is " + r.borrow + ", so SLTU writes " + want + ".";
+          u.bt.setValue(bv); u.bt.lock();
+          u.note.textContent = qs.note; u.note.style.color = "#7fd67f";
+        } else {
+          st.strikes++;
+          var extra = (p.a === 0x80) ?
+            " Signed eyes see -128 < 127 and want 1, but SLTU is unsigned: 128 < 127 is false, and the borrow agrees." : "";
+          qs.note = "Not yet. The borrow of " + bwHex(p.a, 2) + "-" + bwHex(p.b, 2) +
+            " is " + r.borrow + " (" + bwWorkOf(p.a, p.b) + "), so SLTU writes " + want + "." + extra;
+          u.note.textContent = qs.note; u.note.style.color = "#ff5a1f";
+          bwLog("Trial 3 Q" + (i + 1) + " missed: SLTU(" + bwHex(p.a, 2) + "," + bwHex(p.b, 2) +
+            ") = " + want + ".", "bad");
+        }
+      });
+      if (!allIn && !changed) {
+        built.verdict.textContent = "Call every SLTU bit first.";
+        built.verdict.className = "bw-verdict";
+        return;
+      }
+      if (st.qs.every(function (x) { return x.done; }) && !st.passed) {
+        st.passed = true;
+        res.innerHTML = "<span class='k'>You just read the branch bit. Every unsigned branch in every " +
+          "program is this borrow, flipped carry, no comparator.</span>";
+        bwLog("Trial 3 PASSED (" + st.attempts + " checks, " + st.strikes + " strikes).", "ok");
+      }
+      if (st.passed) {
+        built.verdict.textContent = "TRIAL 3 PASSED: every unsigned comparison called from the borrow bit in " +
+          st.attempts + " check(s), " + st.strikes + " strike(s). CERTIFY is lit.";
+        built.verdict.className = "bw-verdict pass";
+      } else {
+        built.verdict.textContent = "Some calls missed. The borrow work is printed under each question.";
+        built.verdict.className = "bw-verdict miss";
+      }
+      bwSetVerdict(built, 2);
+      bwPop(card);
+    });
+  }
+
+  /* ---------------- certify ---------------- */
+
+  function bwGrade(st) {
+    if (st.strikes === 0) return "GOLD";
+    if (st.strikes <= 2) return "SILVER";
+    return "BRONZE";
+  }
+
+  function bwCommit(ti) {
+    var st = bwState.trials[ti];
+    if (!(st.passed && !st.committed)) return false;
+    st.committed = true;
+    var detail;
+    if (ti === 0) {
+      detail = ["Predicted the result byte and borrow for 3 eight-bit subtracts:",
+        "  0x35-0x27 = 0x0E borrow 0; 0x27-0x35 = 0xF2 borrow 1; 0x80-0x01 = 0x7F borrow 0.",
+        "Attempts: " + st.attempts + ", strikes: " + st.strikes + ", grade " + bwGrade(st) + "."];
+    } else if (ti === 1) {
+      detail = ["Chained the borrow across 3 sixteen-bit subtracts built from 8-bit lanes:",
+        "  0x1234-0x00FF = 0x1135; 0x1000-0x0001 = 0x0FFF; 0xAB00-0x00CD = 0xAA33.",
+        "Named the ignored-borrow-in corruption on every high byte.",
+        "Attempts: " + st.attempts + ", strikes: " + st.strikes + ", grade " + bwGrade(st) + "."];
+    } else {
+      detail = ["Called the SLTU bit from the borrow on 4 unsigned comparisons,",
+        "including the 0x80 vs 0x7F trap where the sign bit lies and the borrow tells the truth.",
+        "Attempts: " + st.attempts + ", strikes: " + st.strikes + ", grade " + bwGrade(st) + "."];
+    }
+    var lines = ["THE BORROW ROOM, TRIAL " + (ti + 1) + " CERTIFICATE",
+      "Bench 43 // " + BW_TITLES[ti], ""].concat(detail);
+    lines.push("", "BORROWKEEPER // THE PROVING GROUND");
+    var blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "borrow-room-trial" + (ti + 1) + "-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    bwLog("Trial " + (ti + 1) + " CERTIFIED (" + bwGrade(st) + "). Certificate downloaded.", "ok");
+    /* rebuild this card so the CERTIFY button shows disabled */
+    bwRebuildCard(ti);
+    var all = bwState.trials.every(function (s) { return s.committed; });
+    if (all) {
+      bwEls.banner.style.display = "block";
+      bwEls.certAll.style.display = "";
+      bwLog("BORROWKEEPER: all three trials certified. The borrow crossed every lane.", "ok");
+    }
+    return true;
+  }
+
+  function bwCertAll() {
+    var lines = ["THE BORROW ROOM, BENCH CERTIFICATE", "All three trials certified:", ""];
+    for (var i = 0; i < 3; i++) {
+      var st = bwState.trials[i];
+      lines.push("Trial " + (i + 1) + " " + BW_TITLES[i] + ": CERTIFIED (" + st.attempts +
+        " checks, " + st.strikes + " strikes, grade " + bwGrade(st) + ")");
+    }
+    lines.push("", "Hardware never subtracts: a minus b is a plus ~b plus 1,",
+      "and the flipped carry-out is the borrow, the unsigned less-than bit.",
+      "", "BORROWKEEPER // THE PROVING GROUND");
+    var blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "borrow-room-bench-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    bwLog("Bench certificate downloaded.", "ok");
+  }
+
+  function bwResetTrial(ti) {
+    bwState.trials[ti] = bwNewTrialState();
+    bwRebuildCard(ti);
+    bwLog("Trial " + (ti + 1) + " reset.", "");
+  }
+
+  /* ---------------- build ---------------- */
+
+  var bwBuilders = [bwBuildT1, bwBuildT2, bwBuildT3];
+
+  function bwRebuildCard(ti) {
+    var host = bwEls.cardHosts[ti];
+    host.innerHTML = "";
+    var card = bwEl("div", "bw-card");
+    host.appendChild(card);
+    bwBuilders[ti](card);
+    bwPop(card);
+  }
+
+  function bwOpen() {
+    bwEls.overlay.classList.add("open");
+    bwEls.overlay.scrollTop = 0;
+  }
+  function bwClose() {
+    bwEls.overlay.classList.remove("open");
+  }
+
+  function bwBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("bwBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = BW_CSS;
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "bwBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Borrow Room";
+    b.addEventListener("click", bwOpen);
+    box.appendChild(b);
+
+    var ov = bwEl("div", "bw-overlay");
+    ov.id = "bwOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Borrow Room");
+    var x = bwEl("button", "bw-btn", "CLOSE");
+    x.id = "bwXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Borrow Room");
+    x.addEventListener("click", bwClose);
+    ov.appendChild(x);
+
+    var panel = bwEl("div", "bw-panel");
+    panel.appendChild(bwEl("div", "bw-kicker", "SILICON BENCH 43"));
+    panel.appendChild(bwEl("h2", "bw-title", "The Borrow Room"));
+    panel.appendChild(bwEl("p", "bw-sub",
+      "Hardware never subtracts. Predict the result byte and the borrow, chain borrows across lanes, then read the unsigned less-than bit."));
+
+    var introA = bwEl("div", null, "");
+    introA.innerHTML = BW_INTRO_A;
+    panel.appendChild(introA);
+
+    /* stepper card: copy B, then programmatic STEP controls (ids set via
+       the id property so DOM stubs that do not parse innerHTML still work),
+       then copy C closing the card */
+    var stepCard = bwEl("div", null, "");
+    stepCard.innerHTML = BW_INTRO_B;
+    panel.appendChild(stepCard);
+    var stepsRow = bwEl("div", "bw-steps");
+    var stepBtn = bwEl("button", "bw-btn", "STEP");
+    stepBtn.type = "button"; stepBtn.id = "bwStepBtn";
+    var stepReset = bwEl("button", "bw-btn", "RESET STEPPER");
+    stepReset.type = "button"; stepReset.id = "bwStepReset";
+    stepsRow.appendChild(stepBtn); stepsRow.appendChild(stepReset);
+    stepCard.appendChild(stepsRow);
+    var stepper = bwEl("div", "bw-lanes");
+    stepper.id = "bwStepper";
+    stepper.setAttribute("aria-live", "polite");
+    stepper.innerHTML = "<span class='k'>Press STEP to walk the worked example, one lane at a time.</span>";
+    stepCard.appendChild(stepper);
+    var introC = bwEl("div", null, "");
+    introC.innerHTML = BW_INTRO_C;
+    stepCard.appendChild(introC);
+
+    var banner = bwEl("div", "bw-banner");
+    banner.appendChild(bwEl("h3", null, "BENCH CERTIFIED"));
+    banner.appendChild(bwEl("p", null,
+      "All three trials certified. You can read the borrow: the flipped carry that every unsigned comparison is really asking about."));
+    var certAll = bwEl("button", "bw-btn solid", "DOWNLOAD BENCH CERTIFICATE");
+    certAll.type = "button";
+    certAll.id = "bwCertAllBtn";
+    certAll.addEventListener("click", bwCertAll);
+    banner.appendChild(certAll);
+    panel.appendChild(banner);
+
+    var trials = bwEl("div", null, "");
+    trials.id = "bwTrials";
+    var cardHosts = [];
+    for (var i = 0; i < 3; i++) {
+      var host = bwEl("div", null, "");
+      trials.appendChild(host);
+      cardHosts.push(host);
+    }
+    panel.appendChild(trials);
+
+    var log = bwEl("div", "bw-log");
+    log.setAttribute("aria-live", "polite");
+    panel.appendChild(log);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    bwEls = { overlay: ov, log: log, banner: banner, certAll: certAll, cardHosts: cardHosts };
+    for (var j = 0; j < 3; j++) bwRebuildCard(j);
+    var all = bwState.trials.every(function (s) { return s.committed; });
+    bwEls.banner.style.display = all ? "block" : "none";
+    bwEls.certAll.style.display = all ? "" : "none";
+
+    /* stepper wiring (do-before-explain) */
+    stepBtn.addEventListener("click", function () {
+      if (bwState.step >= BW_STEPS.length) return;
+      if (bwState.step === 0) stepper.innerHTML = "";
+      var d = bwEl("div", null, "");
+      d.innerHTML = "<span class='k'>STEP " + (bwState.step + 1) + ": </span>" + BW_STEPS[bwState.step];
+      stepper.appendChild(d);
+      bwState.step++;
+      if (bwState.step >= BW_STEPS.length) stepBtn.disabled = true;
+      bwPop(stepper);
+    });
+    stepReset.addEventListener("click", function () {
+      bwState.step = 0;
+      stepper.innerHTML = "<span class='k'>Press STEP to walk the worked example, one lane at a time.</span>";
+      stepBtn.disabled = false;
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && ov.classList.contains("open")) bwClose();
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bwBuild);
+  } else {
+    bwBuild();
+  }
+
+  /* test hooks */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      BW: {
+        TRIALS1: BW_T1, TRIALS2: BW_T2, TRIALS3: BW_T3,
+        sub8: bwSub8, sub8cin: bwSub8Cin, sub16: bwSub16, sltu: bwSltu,
+        hex: bwHex, introHTML: BW_INTRO_HTML, steps: BW_STEPS,
+        grade: bwGrade,
+        ui: {
+          open: bwOpen, close: bwClose,
+          commit: bwCommit, resetTrial: bwResetTrial,
+          certAll: bwCertAll,
+          state: function () { return bwState; },
+          els: function () { return bwEls; }
+        }
+      }
+    });
+  }
+})();

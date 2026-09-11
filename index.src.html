@@ -666,7 +666,11 @@ var PG_BENCHES = [
   { section: "tapeout", n: "42", name: "The SPI Room", btn: "spBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "SPI bring-up on the bench: a real bit-cell bus model. Match the sampling edge (CPHA), respect the idle level (CPOL) and the rated ceiling, read each chip's JEDEC ID.",
     how: "Read the datasheet, set CPOL, CPHA, and the clock, predict the six hex digits, run the transfer.",
-    spec: "SPI MODES \u00B7 3 CHIPS" }
+    spec: "SPI MODES \u00B7 3 CHIPS" },
+  { section: "silicon", n: "43", name: "The Borrow Room", btn: "bwBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "Hardware never subtracts: every SUB adds the inverted operand plus one, and the inverted carry-out is the borrow. Chain borrows across bytes, then read the unsigned less-than bit that every branch is really asking about.",
+    how: "Predict the result byte and the borrow, step the lanes to see why, then call every unsigned comparison.",
+    spec: "SUB/BORROW \u00B7 3 TRIALS" }
 ];
 
 var pgFilter = "all";
