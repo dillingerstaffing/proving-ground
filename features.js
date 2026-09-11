@@ -37314,3 +37314,691 @@ if (typeof module !== "undefined" && module.exports) {
     drBuild();
   }
 })();
+/* ============================================================
+   BENCH 53: THE TRANSISTOR ROOM (oldiron)
+   One atomic mechanism: an NPN transistor's base current gates a
+   much larger collector current (beta, the current gain), so a
+   small base resistor decides whether the transistor saturates
+   (fully on, Vce 0.2 V, cool) or starves (half-open, hot, load
+   crawls). Everything else is arithmetic: Rb sets Ib, Ib * beta
+   either clears the load current or it does not, and a pin with
+   no resistor dumps amps into the base until the pin dies.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------- the one mechanism, stated as data ---------- */
+  var TN_VIN = 3.3;      /* GPIO drive voltage, V */
+  var TN_VBE = 0.7;      /* base-emitter drop, V */
+  var TN_BETA = 100;     /* current gain: 1 mA in, 100 mA through */
+  var TN_VCE_SAT = 0.2;  /* saturated collector-emitter drop, V */
+  var TN_PIN_MAX = 12;   /* GPIO pin rating, mA */
+
+  /* trial 1: size the base resistor. vin/vbe/beta/pin from the room. */
+  var TN_T1 = [
+    { id: "t1a", load: "12 V FAN",  vcc: 12, ic: 0.20, choices: [100, 220, 470, 1000, 2200, 4700] },
+    { id: "t1b", load: "12 V RELAY", vcc: 12, ic: 0.08, choices: [100, 470, 1000, 2200, 4700, 10000] },
+    { id: "t1c", load: "5 V PUMP",  vcc: 5,  ic: 0.50, choices: [22, 47, 100, 220, 470, 1000] }
+  ];
+  /* trial 2: diagnose the dead bench. readings are bench-meter mode. */
+  var TN_T2 = [
+    { id: "t2a", fault: "starved",
+      title: "BENCH A: HOT TRANSISTOR, SLOW FAN",
+      symptom: "12 V fan crawling. The transistor is too hot to touch.",
+      fitted: "4.7 k base resistor",
+      mVce: "8.7 V", mVb: "3.3 V (GPIO driving)",
+      note: "The fan still spins, so the load path is intact. The transistor is alive: it reads 8.7 V at Vce, half-open." },
+    { id: "t2b", fault: "flyback",
+      title: "BENCH B: CLICKED ONCE, THEN NEVER AGAIN",
+      symptom: "12 V relay clicked one time at power-up, then silence. No flyback diode fitted.",
+      fitted: "1 k base resistor, NO diode across the coil",
+      mVce: "12.0 V (base driven, nothing switches)", mVb: "3.3 V (GPIO driving)",
+      mCoil: "150 ohms, nameplate",
+      note: "The coil meters its nameplate 150 ohms. The base is driven. Nothing switches: the transistor is open." }
+  ];
+  /* trial 3: the no-resistor lesson. GPIO straight to the base. */
+  var TN_T3 = { load: "12 V LED STRIP", vcc: 12, ic: 0.10, fixChoices: [100, 220, 470, 1000, 4700] };
+
+  /* ---------- pure sims (no DOM) ---------- */
+  function tnSolve(p, rb) {
+    /* returns { ibMa, icMa, vce, pW, mode } for a base resistor rb ohms. */
+    var ibMa = ((TN_VIN - TN_VBE) / rb) * 1000;
+    var icNeedMa = p.ic * 1000;
+    var rc = p.vcc / p.ic;
+    var r = { ibMa: ibMa, icMa: 0, vce: p.vcc, pW: 0, mode: "OFF" };
+    if (ibMa <= 0) return r;
+    if (ibMa * TN_BETA >= icNeedMa) {
+      r.mode = "SAT";
+      r.vce = TN_VCE_SAT;
+      r.icMa = ((p.vcc - TN_VCE_SAT) / rc) * 1000;
+      r.pW = (r.vce * r.icMa / 1000) + (TN_VBE * ibMa / 1000);
+    } else {
+      r.mode = "LINEAR";
+      r.icMa = ibMa * TN_BETA;
+      r.vce = p.vcc - (r.icMa / 1000) * rc;
+      r.pW = (r.vce * r.icMa / 1000) + (TN_VBE * ibMa / 1000);
+    }
+    return r;
+  }
+  function tnFmtMa(ma) { return ma.toFixed(1) + " mA"; }
+  function tnVerdict(p, rb) {
+    var r = tnSolve(p, rb);
+    var need = (p.ic * 1000).toFixed(0);
+    if (r.ibMa > TN_PIN_MAX) {
+      return { ok: false, r: r,
+        why: "PIN VIOLATION at " + tnFmtMa(r.ibMa) + " of base current: the GPIO pin is rated " +
+             TN_PIN_MAX + " mA. The pin burns before the transistor even gets warm. " +
+             "Recheck: (" + TN_VIN + " - " + TN_VBE + ") / " + rb + " is too much base current, " +
+             "so the resistor is too small." };
+    }
+    if (r.mode === "SAT") {
+      return { ok: true, r: r,
+        why: "SATURATED at Vce " + r.vce.toFixed(1) + " V: the transistor is fully on, the load draws " +
+             r.icMa.toFixed(0) + " mA, and the pin only sources " + tnFmtMa(r.ibMa) + ". Cool and safe." };
+    }
+    if (r.pW >= 0.6) {
+      return { ok: false, r: r,
+        why: "COOKS at Vce " + r.vce.toFixed(1) + " V and " + r.pW.toFixed(2) + " W in the transistor: " +
+             "starved of base current, it sits half-open and burns the rest of the rail as heat. " +
+             "Recheck: " + r.ibMa.toFixed(2) + " mA of base current times beta " + TN_BETA + " = " +
+             r.icMa.toFixed(0) + " mA, short of the " + need + " mA the load needs." };
+    }
+    return { ok: false, r: r,
+      why: "STARVED at Vce " + r.vce.toFixed(1) + " V: " + r.ibMa.toFixed(2) + " mA of base current only buys " +
+           r.icMa.toFixed(0) + " mA of collector current, short of the " + need + " mA the load needs, " +
+           "so the load crawls and the transistor runs warm. Smaller resistor, more base current." };
+  }
+  function tnT3Predict(ix) {
+    /* 0: pin burns (right), 1: saturates fine, 2: nothing happens */
+    if (ix === 0) return { ok: true,
+      why: "Called it. The base-emitter junction clamps at 0.7 V, so the pin sees a near short: " +
+           "(3.3 - 0.7) / wire resistance is amps, and the pin is rated 12 mA." };
+    if (ix === 1) return { ok: false,
+      why: "The transistor does saturate, briefly. But saturation is not the question: with no resistor " +
+           "nothing limits the base current, and the 12 mA pin is the part that dies, not the transistor." };
+    return { ok: false,
+      why: "Something happens: the base clamps at 0.7 V, the pin drives a near short, and current climbs " +
+           "into the amps on a 12 mA pin. Nothing survives that." };
+  }
+
+  /* node/jsdom test hooks: assigned before any DOM is touched, so a
+     hostile docStub still gets the exports. */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.TN = {
+      VIN: TN_VIN, VBE: TN_VBE, BETA: TN_BETA, VCE_SAT: TN_VCE_SAT, PIN_MAX: TN_PIN_MAX,
+      T1: TN_T1, T2: TN_T2, T3: TN_T3,
+      solve: tnSolve, verdict: tnVerdict, predict: tnT3Predict,
+      introHTML: null /* filled after the copy const below */
+    };
+  }
+
+  /* ---------- intro copy: why first, worked example, failure modes ---------- */
+  var TN_INTRO_HTML = [
+    "<div class=\"tn-card\"><h3>WHY THIS ROOM EXISTS</h3>",
+    "<p class=\"why\">A microcontroller pin can source 12 mA. A 12 V fan wants 200 mA. The transistor bridges that gap. ",
+    "One milliamp into its base lets a hundred milliamps flow from its collector to its emitter, and that ratio, ",
+    "<b>beta</b>, the current gain, is printed on the datasheet. Flooded with base current the transistor drops to ",
+    "0.2 V between collector and emitter: that is <b>saturation</b>, fully on and cool. Starved of base current it ",
+    "sits half-open, dropping volts and burning watts. This room is the whole skill: size the base resistor so the ",
+    "transistor saturates hard, read Vce to tell a starved base from a dead part, and respect the one component ",
+    "that kills perfectly wired transistors: the inductor with no flyback diode.</p>",
+    "<p class=\"why\">The worked example, by hand. A 12 V fan drawing 200 mA, a 3.3 V GPIO pin, beta 100. ",
+    "Saturation needs base current of at least Ic / beta = 200 / 100 = 2 mA. The design rule is five times that, ",
+    "10 mA, so a weak pin or a hot day cannot drag it out of saturation. Base resistor: (3.3 - 0.7) / 0.010 = 260 ohms. ",
+    "The nearest standard value that keeps the pin under its 12 mA limit is 220 ohms: base current (3.3 - 0.7) / 220 = ",
+    "11.8 mA, the transistor drops to Vce 0.2 V, fully on and cool. Choose 220 ohms in Trial 1 and the bench shows ",
+    "exactly that.</p></div>",
+    "<div class=\"tn-card tn-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3>",
+    "<ul><li><b>NO BASE RESISTOR:</b> the base-emitter junction clamps at 0.7 V and offers no mercy. ",
+    "The pin sees a near short, dumps amps, and its bond wire fuses. The transistor survives; the pin is gone.</li>",
+    "<li><b>STARVED BASE:</b> too big a resistor, too little base current, and the transistor sits half-open. ",
+    "Vce reads several volts, hundreds of milliwatts cook the package, and the load crawls. Smaller resistor.</li>",
+    "<li><b>INDUCTIVE KICK:</b> a relay, solenoid, or motor coil fights every current change. Open the switch and the ",
+    "coil hurls its stored energy as a voltage spike, hundreds of volts, that punches straight through the transistor. ",
+    "Symptom: it worked once, then never again. The fix is a diode across the coil, giving the spike a safe loop.</li>",
+    "<li><b>FLOATING BASE:</b> an unconnected base is an antenna and switches on noise. If the driver can go ",
+    "high-impedance, park the base with a 10 k resistor to ground so off means off.</li></ul></div>"
+  ].join("");
+  var TN_METER_HTML = [
+    "<p class=\"why\">METER DISCIPLINE, IN ONE LINE: black probe on ground, red probe on the point named. ",
+    "<b>Vce</b> tells the whole story: 0.2 V means saturated and on, the full rail means off or open, ",
+    "and anything in between means the transistor is half-open and burning watts. <b>Vb</b> tells whether the ",
+    "pin is driving at all: 3.3 V means drive, 0 V means the pin is dead or silent.</p>"
+  ].join("");
+
+  if (typeof module !== "undefined" && module.exports && module.exports.TN) {
+    module.exports.TN.introHTML = TN_INTRO_HTML;
+  }
+
+  /* ---------- css ---------- */
+  var TN_CSS = [
+    ".tn-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".tn-overlay.open{display:block}",
+    ".tn-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".tn-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".tn-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".tn-sub{font-size:14px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.92;margin:0 0 18px;max-width:68ch}",
+    ".tn-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".tn-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".tn-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".tn-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".tn-card b{color:var(--ember,#ff5a1f)}",
+    ".tn-fail{border:1px solid var(--ember,#ff5a1f)}",
+    ".tn-fail li{font-size:13px;line-height:1.6;margin:0 0 6px;list-style:none}",
+    ".tn-fail ul{padding:0;margin:0}",
+    ".tn-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}",
+    ".tn-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
+    ".tn-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".tn-btn:disabled{opacity:.35;cursor:default}",
+    ".tn-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".tn-btn.sel{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12)}",
+    ".tn-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#101014}",
+    ".tn-verdict{font-size:14px;line-height:1.6;margin:10px 0 0;min-height:24px}",
+    ".tn-verdict.ok{color:#9fe870}",
+    ".tn-verdict.bad{color:#ff5a1f}",
+    ".tn-read{font-size:14px;line-height:1.7;margin:8px 0 0;min-height:22px}",
+    ".tn-log{font-size:12.5px;line-height:1.7;max-height:280px;overflow-y:auto}",
+    ".tn-log div{margin:0 0 6px;padding-bottom:6px;border-bottom:1px dotted var(--line,rgba(242,237,228,.14))}",
+    ".tn-log .ok{color:#9fe870}",
+    ".tn-log .bad{color:#ff5a1f}",
+    ".tn-log .dim{opacity:.6}",
+    ".tn-banner{display:none;border:1px solid var(--ember,#ff5a1f);padding:18px;margin:0 0 14px}",
+    ".tn-banner h3{font-family:'Space Grotesk',sans-serif;letter-spacing:.14em;font-size:16px;color:var(--ember,#ff5a1f);margin:0 0 8px}",
+    ".tn-banner p{font-size:13px;line-height:1.65;margin:0 0 12px}",
+    ".tn-pop{animation:tnPop 200ms ease-out}",
+    "@keyframes tnPop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    "@media (prefers-reduced-motion:reduce){.tn-pop{animation:none}}",
+    ".tn-parthead{font-size:12px;letter-spacing:.18em;color:var(--ember,#ff5a1f);margin-bottom:6px}",
+    ".tn-spec{font-size:13px;line-height:1.7;margin:0 0 8px}",
+    ".tn-fan{font-size:12px;letter-spacing:.12em;border:1px solid var(--line,rgba(242,237,228,.28));padding:10px 14px;margin:10px 0;max-width:280px;text-align:center}",
+    ".tn-fan.spin{border-color:var(--ember,#ff5a1f);color:var(--ember,#ff5a1f)}",
+    ".tn-smoke{font-size:13px;letter-spacing:.2em;color:#ff5a1f;margin:8px 0 0;min-height:20px}"
+  ].join("\n");
+
+  /* ---------- tiny DOM helpers (page-local, prefixed) ---------- */
+  var tnEls = null;
+  var tnState = null;
+  function tnEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  function tnLog(msg, cls) {
+    if (!tnEls || !tnEls.log) return;
+    var d = tnEl("div", cls || "", msg);
+    tnEls.log.appendChild(d);
+    tnEls.log.scrollTop = tnEls.log.scrollHeight;
+  }
+  function tnPop(card) {
+    card.classList.remove("tn-pop");
+    void card.offsetWidth;
+    card.classList.add("tn-pop");
+  }
+  function tnReadLine(r) {
+    var temp = r.pW >= 0.6 ? "COOKING" : (r.pW >= 0.15 ? "WARM" : "COOL");
+    return "Vce " + r.vce.toFixed(1) + " V \u00B7 Ic " + r.icMa.toFixed(0) + " mA \u00B7 " +
+           "Ib " + r.ibMa.toFixed(1) + " mA \u00B7 " + temp +
+           (r.ibMa > TN_PIN_MAX ? " \u00B7 PIN OVER LIMIT" : " \u00B7 PIN SAFE");
+  }
+  function tnCertLine() {
+    return "Three loads switched on a saturated transistor, two dead benches diagnosed by Vce, " +
+           "and one GPIO pin sacrificed to the no-resistor lesson. The room remembers.";
+  }
+  function tnAllPassed() {
+    var s = tnState;
+    return s.t1.every(function (x) { return x.passed; }) &&
+           s.t2.every(function (x) { return x.passed && x.repaired; }) &&
+           s.t3.predicted && s.t3.powered && s.t3.fixed;
+  }
+  function tnMaybeCertify() {
+    if (tnEls && tnEls.banner) tnEls.banner.style.display = tnAllPassed() ? "block" : "none";
+  }
+
+  /* ---------- do-first card: consequence-free base drive ---------- */
+  function tnDoFirstCard() {
+    var card = tnEl("div", "tn-card");
+    card.appendChild(tnEl("h3", null, "DO FIRST: DRIVE IT, FREE"));
+    card.appendChild(tnEl("p", "why",
+      "The room hands you a 12 V fan on a transistor with a 220 ohm base resistor, already sized. " +
+      "Press DRIVE THE BASE. The pin sources 11.8 mA, the transistor saturates at Vce 0.2 V, and the fan runs. " +
+      "Nothing here is graded."));
+    var fan = tnEl("div", "tn-fan", "FAN STOPPED");
+    fan.id = "tnDoFirst_fan";
+    card.appendChild(fan);
+    var read = tnEl("p", "tn-read", "Vce 12.0 V \u00B7 BASE OFF \u00B7 COOL");
+    read.id = "tnDoFirst_read";
+    card.appendChild(read);
+    var row = tnEl("div", "tn-row");
+    var drive = tnEl("button", "tn-btn solid", "DRIVE THE BASE");
+    drive.type = "button"; drive.id = "tnDoFirst_drive";
+    drive.setAttribute("aria-label", "Drive the base, ungraded");
+    var on = false;
+    drive.addEventListener("click", function () {
+      on = !on;
+      fan.textContent = on ? "FAN AT FULL SPEED" : "FAN STOPPED";
+      fan.classList.toggle("spin", on);
+      read.textContent = on ? "Vce 0.2 V \u00B7 SATURATED \u00B7 FAN 200 mA \u00B7 COOL"
+                            : "Vce 12.0 V \u00B7 BASE OFF \u00B7 COOL";
+      tnLog("do-first: base " + (on ? "driven, fan at full speed, Vce 0.2 V." : "released, fan stopped."), "dim");
+      tnPop(card);
+    });
+    row.appendChild(drive);
+    card.appendChild(row);
+    return card;
+  }
+
+  /* ---------- trial 1 card: size the base resistor ---------- */
+  function tnT1Card(p, num) {
+    var st = tnState.t1[num - 1];
+    var card = tnEl("div", "tn-card");
+    card.id = "tnT1_" + p.id;
+    card.appendChild(tnEl("div", "tn-parthead", "TRIAL 1 \u00B7 PART " + num + " OF 3"));
+    card.appendChild(tnEl("p", "tn-spec",
+      p.load + " \u00B7 " + p.vcc + " V RAIL \u00B7 " + (p.ic * 1000).toFixed(0) + " mA LOAD \u00B7 " +
+      "3.3 V GPIO \u00B7 BETA 100 \u00B7 PIN RATED 12 mA"));
+    card.appendChild(tnEl("p", "why",
+      "Pick the base resistor, then COMMIT SIZING. The bench measures Vce, the load current, the pin current, " +
+      "and the package temperature. Saturated and pin-safe passes. Pin over 12 mA, starved, or cooking fails."));
+    var row = tnEl("div", "tn-row");
+    var sel = null, btns = [];
+    p.choices.forEach(function (r) {
+      var b = tnEl("button", "tn-btn", r >= 1000 ? (r / 1000) + " k\u03A9" : r + " \u03A9");
+      b.type = "button"; b.id = "tnT1_" + p.id + "_r" + r;
+      b.setAttribute("aria-label", "Choose " + r + " ohms as the base resistor");
+      b.addEventListener("click", function () {
+        if (st.passed) return;
+        sel = r;
+        btns.forEach(function (x) { x.classList.remove("sel"); });
+        b.classList.add("sel");
+      });
+      btns.push(b); row.appendChild(b);
+    });
+    card.appendChild(row);
+    var read = tnEl("p", "tn-read", "No resistor fitted yet.");
+    read.id = "tnT1_" + p.id + "_read";
+    card.appendChild(read);
+    var commit = tnEl("button", "tn-btn solid", "COMMIT SIZING");
+    commit.type = "button"; commit.id = "tnT1_" + p.id + "_commit";
+    commit.setAttribute("aria-label", "Commit the base resistor sizing");
+    var verdict = tnEl("p", "tn-verdict", "");
+    verdict.id = "tnT1_" + p.id + "_verdict";
+    commit.addEventListener("click", function () {
+      if (st.passed) return;
+      if (sel === null) {
+        verdict.textContent = "Pick a resistor first.";
+        verdict.className = "tn-verdict bad";
+        return;
+      }
+      var v = tnVerdict(p, sel);
+      read.textContent = tnReadLine(v.r);
+      if (v.ok) {
+        st.passed = true;
+        verdict.textContent = "PASS: " + v.why;
+        verdict.className = "tn-verdict ok";
+        tnLog("trial 1 part " + num + ": " + sel + " ohms -> saturated, " + v.r.ibMa.toFixed(1) +
+              " mA base, pin safe.", "ok");
+        btns.forEach(function (x) { x.disabled = true; });
+        commit.disabled = true;
+      } else {
+        st.strikes++;
+        verdict.textContent = "MISS: " + v.why;
+        verdict.className = "tn-verdict bad";
+        tnLog("trial 1 part " + num + ": " + sel + " ohms misses (" +
+              (v.r.ibMa > TN_PIN_MAX ? "pin violation" : v.r.pW >= 0.6 ? "cooks" : "starved") + ").", "bad");
+      }
+      tnMaybeCertify();
+      tnPop(card);
+    });
+    card.appendChild(commit);
+    card.appendChild(verdict);
+    return card;
+  }
+
+  /* ---------- trial 2 card: diagnose the dead bench ---------- */
+  function tnT2Card(p, num) {
+    var st = tnState.t2[num - 1];
+    var card = tnEl("div", "tn-card");
+    card.id = "tnT2_" + p.id;
+    card.appendChild(tnEl("div", "tn-parthead", "TRIAL 2 \u00B7 " + p.title));
+    card.appendChild(tnEl("p", "tn-spec", p.symptom));
+    card.appendChild(tnEl("p", "tn-spec", "FITTED: " + p.fitted + "."));
+    card.appendChild(tnEl("p", "why",
+      "Probe it, free and ungraded, then commit a verdict. A right verdict unlocks the repair; a wrong one costs nothing but the explanation."));
+    var read = tnEl("p", "tn-read", "Meter in hand. Probe something.");
+    read.id = "tnT2_" + p.id + "_read";
+    card.appendChild(read);
+    var mrow = tnEl("div", "tn-row");
+    function probe(label, id, text) {
+      var b = tnEl("button", "tn-btn", label);
+      b.type = "button"; b.id = "tnT2_" + p.id + "_" + id;
+      b.setAttribute("aria-label", "Measure " + label + ", ungraded");
+      b.addEventListener("click", function () {
+        read.textContent = text;
+        tnLog("trial 2 " + p.id + ": " + label + " -> " + text, "dim");
+        tnPop(card);
+      });
+      mrow.appendChild(b);
+    }
+    probe("MEASURE Vce", "mVce", "Vce = " + p.mVce);
+    probe("MEASURE Vb", "mVb", "Vb = " + p.mVb);
+    if (p.mCoil) probe("MEASURE COIL", "mCoil", "Coil = " + p.mCoil);
+    card.appendChild(mrow);
+    var verdict = tnEl("p", "tn-verdict", "");
+    verdict.id = "tnT2_" + p.id + "_verdict";
+    var vrow = tnEl("div", "tn-row");
+    var guesses = p.id === "t2a"
+      ? [["STARVED BASE", "starved"], ["DEAD TRANSISTOR", "dead"], ["SHORTED LOAD", "short"]]
+      : [["FLYBACK KILL", "flyback"], ["STARVED BASE", "starved"], ["BAD COIL", "coil"]];
+    var vbtns = [];
+    guesses.forEach(function (g) {
+      var b = tnEl("button", "tn-btn", g[0]);
+      b.type = "button"; b.id = "tnT2_" + p.id + "_v" + g[1];
+      b.setAttribute("aria-label", "Verdict: " + g[0]);
+      b.addEventListener("click", function () {
+        if (st.passed) return;
+        if (g[1] === p.fault) {
+          st.passed = true;
+          verdict.textContent = "PASS: " + (p.id === "t2a"
+            ? "STARVED BASE. Vce 8.7 V is the half-open signature: the 4.7 k resistor feeds 0.55 mA, " +
+              "which buys 55 mA against a 200 mA load, so the transistor burns the rest as heat. " +
+              "The fan still spins, so the load is innocent."
+            : "FLYBACK KILL. The coil meters its nameplate 150 ohms and the base is driven, yet Vce sits at " +
+              "the full 12 V: the transistor is open, not starved. One unclamped turn-off spike from the coil " +
+              "punched through it. The missing diode is the murder weapon.");
+          verdict.className = "tn-verdict ok";
+          tnLog("trial 2 " + p.id + ": verdict " + g[0] + ", correct.", "ok");
+          vbtns.forEach(function (x) { x.disabled = true; });
+          fix.style.display = "";
+        } else {
+          st.strikes++;
+          verdict.textContent = "MISS: " + (p.id === "t2a"
+            ? (g[1] === "dead"
+              ? "not dead. A dead transistor reads the full rail at Vce with the base driven, open, or 0.0 V shorted. " +
+                "This one reads 8.7 V and the fan still crawls: it is alive and half-open, the signature of a starved base."
+              : "not shorted. A shorted load would pin Vce at 0.2 V or 0.0 V with the transistor screaming. " +
+                "The fan still spins, so the load path is intact; the transistor is simply under-driven.")
+            : (g[1] === "starved"
+              ? "not starved. The base is driven at 3.3 V through the 1 k that worked last week, and Vce reads " +
+                "12.0 V, not a half-open 3 to 9 V. A starved base still switches some current; this one switches none: it is open."
+              : "not the coil. It meters 150 ohms, exactly its nameplate. The coil is innocent; the transistor died of the unclamped spike."));
+          verdict.className = "tn-verdict bad";
+          tnLog("trial 2 " + p.id + ": verdict " + g[0] + ", wrong.", "bad");
+        }
+        tnPop(card);
+      });
+      vbtns.push(b); vrow.appendChild(b);
+    });
+    card.appendChild(vrow);
+    card.appendChild(verdict);
+    var fix = tnEl("button", "tn-btn solid", p.id === "t2a" ? "FIT 220 OHM BASE RESISTOR" : "FIT NEW TRANSISTOR + FLYBACK DIODE");
+    fix.type = "button"; fix.id = "tnT2_" + p.id + "_fix";
+    fix.style.display = "none";
+    fix.setAttribute("aria-label", p.id === "t2a" ? "Repair: fit a 220 ohm base resistor" : "Repair: fit a new transistor and a flyback diode");
+    fix.addEventListener("click", function () {
+      if (st.repaired) return;
+      st.repaired = true;
+      read.textContent = p.id === "t2a"
+        ? "Vce 0.2 V \u00B7 SATURATED \u00B7 FAN 200 mA \u00B7 COOL. The same transistor, fed properly."
+        : "Vce 0.2 V \u00B7 SATURATED \u00B7 RELAY CLICKS \u00B7 COOL. The spike now loops through the diode, never the transistor.";
+      tnLog("trial 2 " + p.id + ": repaired. " + (p.id === "t2a"
+        ? "220 ohms -> 11.8 mA base, saturated."
+        : "new transistor + 1N4007 across the coil, saturated."), "ok");
+      fix.disabled = true;
+      tnMaybeCertify();
+      tnPop(card);
+    });
+    card.appendChild(fix);
+    return card;
+  }
+
+  /* ---------- trial 3: the no-resistor lesson ---------- */
+  function tnT3Card() {
+    var st = tnState.t3;
+    var p = TN_T3;
+    var card = tnEl("div", "tn-card");
+    card.id = "tnT3";
+    card.appendChild(tnEl("div", "tn-parthead", "TRIAL 3 \u00B7 PREDICT, THEN POWER"));
+    card.appendChild(tnEl("p", "tn-spec", "GPIO PIN STRAIGHT TO THE BASE \u00B7 R = 0 \u03A9 (a wire)"));
+    card.appendChild(tnEl("p", "why",
+      "The base-emitter junction clamps at 0.7 V, so the pin sees a near short. First, call what happens, " +
+      "before any power flows. Then APPLY POWER and watch what the math was hiding."));
+    var read = tnEl("p", "tn-read", "PIN CURRENT: no power applied yet.");
+    read.id = "tnT3_read";
+    card.appendChild(read);
+    var smoke = tnEl("p", "tn-smoke", "");
+    smoke.id = "tnT3_smoke";
+    card.appendChild(smoke);
+
+    var pRow = tnEl("div", "tn-row");
+    pRow.id = "tnT3_predRow";
+    ["THE PIN BURNS OUT", "SATURATES, ALL FINE", "NOTHING HAPPENS"].forEach(function (label, ix) {
+      var pb = tnEl("button", "tn-btn", label);
+      pb.type = "button"; pb.id = "tnT3_p" + ix;
+      pb.setAttribute("aria-label", "Predict: " + label);
+      pb.addEventListener("click", function () {
+        if (st.predicted || st.powered) return;
+        var r = tnT3Predict(ix);
+        var note = document.getElementById("tnT3_predNote");
+        if (r.ok) {
+          st.predicted = true;
+          note.textContent = "PREDICTION LOGGED: " + r.why + " APPLY POWER is armed.";
+          note.className = "tn-verdict ok";
+          document.getElementById("tnT3_power").disabled = false;
+          tnLog("trial 3: predicted the pin burn, correctly.", "ok");
+        } else {
+          note.textContent = "MISS: " + r.why;
+          note.className = "tn-verdict bad";
+          tnLog("trial 3: wrong prediction.", "bad");
+        }
+        tnPop(card);
+      });
+      pRow.appendChild(pb);
+    });
+    card.appendChild(pRow);
+    var predNote = tnEl("p", "tn-verdict", "");
+    predNote.id = "tnT3_predNote";
+    card.appendChild(predNote);
+
+    var power = tnEl("button", "tn-btn solid", "APPLY POWER");
+    power.type = "button"; power.id = "tnT3_power";
+    power.disabled = true;
+    power.setAttribute("aria-label", "Apply power to the base with no resistor");
+    power.addEventListener("click", function () {
+      if (st.powered || !st.predicted) return;
+      st.powered = true;
+      power.disabled = true;
+      var steps = [45, 130, 380, 950, 2400], i = 0;
+      tnLog("trial 3: power applied, no base resistor in circuit.", "dim");
+      var tick = setInterval(function () {
+        var ma = steps[i];
+        read.textContent = "PIN CURRENT: " + ma.toFixed(0) + " mA and climbing...";
+        i++;
+        if (i >= steps.length) {
+          clearInterval(tick);
+          read.textContent = "PIN CURRENT: 0.0 mA. Pin dead.";
+          smoke.textContent = "POP. THE PIN IS DEAD.";
+          var note2 = document.getElementById("tnT3_predNote");
+          note2.textContent = "2.4 A through a 12 mA pin. The bond wire inside the microcontroller fused: " +
+            "that is the no-resistor failure mode. The transistor is fine; the pin is gone. " +
+            "Now do it right: size the base resistor that keeps this pin alive.";
+          note2.className = "tn-verdict bad";
+          tnLog("trial 3: 2.4 A, pin bond wire fused. Predicted and witnessed.", "bad");
+          document.getElementById("tnT3_fixRow").style.display = "flex";
+          fixCommit.style.display = "";
+          tnPop(card);
+        }
+      }, 90);
+    });
+    card.appendChild(power);
+
+    var fixWrap = tnEl("div", "");
+    fixWrap.id = "tnT3_fixWrap";
+    fixWrap.appendChild(tnEl("p", "tn-spec",
+      "DO IT RIGHT: 12 V LED strip, 100 mA load, 3.3 V GPIO. " +
+      "Saturation needs at least 1 mA of base current; the pin allows 12 mA."));
+    var fixRow = tnEl("div", "tn-row");
+    fixRow.id = "tnT3_fixRow";
+    fixRow.style.display = "none";
+    var fixBtns = [], fixSel = null;
+    p.fixChoices.forEach(function (r) {
+      var fb = tnEl("button", "tn-btn", r >= 1000 ? (r / 1000) + " k\u03A9" : r + " \u03A9");
+      fb.type = "button"; fb.id = "tnT3_r" + r;
+      fb.setAttribute("aria-label", "Choose " + r + " ohms for the fix");
+      fb.addEventListener("click", function () {
+        if (st.fixed) return;
+        fixSel = r;
+        fixBtns.forEach(function (x) { x.classList.remove("sel"); });
+        fb.classList.add("sel");
+      });
+      fixBtns.push(fb); fixRow.appendChild(fb);
+    });
+    fixWrap.appendChild(fixRow);
+    var fixCommit = tnEl("button", "tn-btn solid", "COMMIT THE FIX");
+    fixCommit.type = "button"; fixCommit.id = "tnT3_commit";
+    fixCommit.style.display = "none";
+    var fixVerdict = tnEl("p", "tn-verdict", "");
+    fixVerdict.id = "tnT3_fixVerdict";
+    fixCommit.addEventListener("click", function () {
+      if (st.fixed) return;
+      if (fixSel === null) {
+        fixVerdict.textContent = "Pick a resistor first.";
+        fixVerdict.className = "tn-verdict bad";
+        return;
+      }
+      var v = tnVerdict(p, fixSel);
+      if (v.ok) {
+        st.fixed = true;
+        read.textContent = "PIN CURRENT: " + v.r.ibMa.toFixed(1) + " mA \u00B7 Vce 0.2 V \u00B7 STRIP LIT, PIN SAFE";
+        smoke.textContent = "";
+        fixVerdict.textContent = "PASS: " + v.why + " The same pin that died in seconds now switches the strip cool.";
+        fixVerdict.className = "tn-verdict ok";
+        tnLog("trial 3: fix committed, " + fixSel + " ohms -> " + v.r.ibMa.toFixed(1) + " mA base. Pin alive.", "ok");
+        fixBtns.forEach(function (x) { x.disabled = true; });
+        fixCommit.disabled = true;
+      } else {
+        fixVerdict.textContent = "MISS: " + v.why;
+        fixVerdict.className = "tn-verdict bad";
+        tnLog("trial 3: fix miss at " + fixSel + " ohms.", "bad");
+      }
+      tnMaybeCertify();
+      tnPop(card);
+    });
+    fixWrap.appendChild(fixCommit);
+    fixWrap.appendChild(fixVerdict);
+    card.appendChild(fixWrap);
+    return card;
+  }
+
+  /* ---------- overlay open/close ---------- */
+  function tnOpen() { if (tnEls) tnEls.overlay.classList.add("open"); }
+  function tnClose() { if (tnEls) tnEls.overlay.classList.remove("open"); }
+
+  function tnBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("tnBtn")) return;
+    tnState = {
+      t1: [{ passed: false, strikes: 0 }, { passed: false, strikes: 0 }, { passed: false, strikes: 0 }],
+      t2: [{ passed: false, repaired: false, strikes: 0 }, { passed: false, repaired: false, strikes: 0 }],
+      t3: { predicted: false, powered: false, fixed: false }
+    };
+    tnEls = { overlay: null, log: null, banner: null };
+
+    var sty = document.createElement("style");
+    sty.textContent = TN_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "tnBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Transistor Room";
+    b.addEventListener("click", tnOpen);
+    box.appendChild(b);
+
+    var ov = tnEl("div", "tn-overlay");
+    ov.id = "tnOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Transistor Room");
+    var x = tnEl("button", "tn-btn", "CLOSE");
+    x.id = "tnXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Transistor Room");
+    x.addEventListener("click", tnClose);
+    ov.appendChild(x);
+    tnEls.overlay = ov;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && ov.classList.contains("open")) tnClose();
+    });
+
+    var panel = tnEl("div", "tn-panel");
+    panel.appendChild(tnEl("div", "tn-kicker", "OLD IRON BENCH 53"));
+    panel.appendChild(tnEl("h2", "tn-title", "The Transistor Room"));
+    panel.appendChild(tnEl("p", "tn-sub",
+      "One milliamp into the base switches a hundred milliamps through the load: that is the transistor's whole trick. " +
+      "Size the base resistor for three loads, diagnose two dead benches by measurement, " +
+      "and watch one GPIO pin die with no resistor."));
+
+    var introWrap = tnEl("div", "");
+    introWrap.innerHTML = TN_INTRO_HTML;
+    panel.appendChild(introWrap);
+
+    panel.appendChild(tnDoFirstCard());
+
+    var t1Head = tnEl("div", "tn-card");
+    t1Head.appendChild(tnEl("h3", null, "TRIAL 1: SIZE THE BASE"));
+    t1Head.appendChild(tnEl("p", "why",
+      "Three loads on three rails. For each: the base current must clear Ic / beta = the load current divided by 100, " +
+      "stay under the 12 mA pin limit, and land the transistor at Vce 0.2 V, saturated. " +
+      "There is a window of right answers, not one: pick inside it."));
+    var mWrap = tnEl("div", "");
+    mWrap.innerHTML = TN_METER_HTML;
+    t1Head.appendChild(mWrap);
+    panel.appendChild(t1Head);
+    TN_T1.forEach(function (part, i) { panel.appendChild(tnT1Card(part, i + 1)); });
+
+    var t2Head = tnEl("div", "tn-card");
+    t2Head.appendChild(tnEl("h3", null, "TRIAL 2: DIAGNOSE THE DEAD BENCH"));
+    t2Head.appendChild(tnEl("p", "why",
+      "Two dead benches, two different diseases. Probe each, free and ungraded: Vce tells whether the transistor " +
+      "is saturated, half-open, or open; Vb tells whether the pin is driving; the coil meter settles the rest. " +
+      "Then commit a verdict. A right verdict unlocks the repair."));
+    panel.appendChild(t2Head);
+    TN_T2.forEach(function (p, i) { panel.appendChild(tnT2Card(p, i + 1)); });
+
+    var t3Head = tnEl("div", "tn-card");
+    t3Head.appendChild(tnEl("h3", null, "TRIAL 3: THE NO-RESISTOR LESSON"));
+    t3Head.appendChild(tnEl("p", "why",
+      "A GPIO pin wired straight to the base. No resistor. First, call what happens, before any power flows. " +
+      "Then APPLY POWER and watch what the math was hiding. Then size the resistor that keeps this exact pin alive."));
+    panel.appendChild(t3Head);
+    panel.appendChild(tnT3Card());
+
+    /* certification banner */
+    var banner = tnEl("div", "tn-banner");
+    banner.id = "tnBanner";
+    banner.appendChild(tnEl("h3", null, "ROOM CERTIFIED"));
+    banner.appendChild(tnEl("p", null, tnCertLine()));
+    panel.appendChild(banner);
+    tnEls.banner = banner;
+
+    /* bench log */
+    var logCard = tnEl("div", "tn-card");
+    logCard.appendChild(tnEl("h3", null, "BENCH LOG"));
+    var log = tnEl("div", "tn-log");
+    log.id = "tnLog";
+    log.setAttribute("aria-live", "polite");
+    logCard.appendChild(log);
+    panel.appendChild(logCard);
+    tnEls.log = log;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    tnLog("bench open. One 12 V fan on the bench, meter in hand, resistor drawer unlocked.", "dim");
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", tnBuild);
+  } else {
+    tnBuild();
+  }
+})();
