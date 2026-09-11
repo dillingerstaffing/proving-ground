@@ -634,7 +634,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "34", name: "The Bounce Room", btn: "bnBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "Switch debounce for the OLD IRON bench: a real contact-bounce model with chattering edges and an unfiltered counter that overcounts. Demand N consecutive steady samples, outlast the worst bounce, stay inside the latency budget, and qualify three keys.",
     how: "Press the raw key and call the count first, tune the filter window against the latency budget, then qualify all three keys.",
-    spec: "CONTACT BOUNCE \u00B7 3 TRIALS" }
+    spec: "CONTACT BOUNCE \u00B7 3 TRIALS" },
+  { section: "tapeout", n: "35", name: "The Buck Room", btn: "bkBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+    desc: "GPU VRM qualification: a real discrete-time synchronous buck converter on the bench. Set the duty, tame the ripple, dodge inductor saturation, survive the load step, and hold three rails.",
+    how: "Call the duty, set frequency, inductor, and capacitor, run the sim, hold each rail inside its ripple budget.",
+    spec: "BUCK VRM \u00B7 3 RAILS" }
 ];
 
 var pgFilter = "all";
@@ -1046,9 +1050,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=8a5de02fca" defer></script>
-<script src="rvdata.js?v=8a5de02fca" defer></script>
-<script src="riscv-lab.js?v=8a5de02fca" defer></script>
-<script src="features.js?v=8a5de02fca" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=f5391bd0b4" defer></script>
+<script src="rvdata.js?v=f5391bd0b4" defer></script>
+<script src="riscv-lab.js?v=f5391bd0b4" defer></script>
+<script src="features.js?v=f5391bd0b4" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
