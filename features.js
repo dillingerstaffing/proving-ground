@@ -32503,7 +32503,7 @@ if (typeof module !== "undefined" && module.exports) {
     var shiftBtn = shEl("button", "sh-btn solid", "SHIFT");
     shiftBtn.type = "button"; shiftBtn.id = "shShiftBtn";
     laneRow3.appendChild(shiftBtn);
-    laneRow3.appendChild(shEl("span", "sh-lab", "TIP: FILL IS IGNORED GOING LEFT, ZEROS ALWAYS FILL IN"));
+    laneRow3.appendChild(shEl("span", "sh-lab", "FILL ONLY APPLIES GOING RIGHT; LEFT ALWAYS FILLS ZEROS"));
     laneCard.appendChild(laneRow3);
     var laneHost = shEl("div", null, "");
     laneHost.id = "shLane";
@@ -32572,6 +32572,15 @@ if (typeof module !== "undefined" && module.exports) {
     shEls.certAll.style.display = all ? "" : "none";
 
     /* lane explorer wiring (do-first) */
+    var fillBtns = fillT.querySelectorAll("button");
+    function shSyncFill() {
+      /* the fill contract only exists going right: disable it going left */
+      var left = dirT.getValue() === "L";
+      for (var fi = 0; fi < fillBtns.length; fi++) fillBtns[fi].disabled = left;
+      if (left) fillT.setValue(false);
+    }
+    dirT.addEventListener("click", shSyncFill);
+    shSyncFill();
     function shLaneGo() {
       var v = shParseHex(valIn.value);
       var n = shParseNum(amtIn.value, 0, 41);
