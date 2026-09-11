@@ -26577,3 +26577,848 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+/* Bench 39 staging: The Gate Room module (appended to features.js at ship time). */
+/* ============================================================
+   THE GATE ROOM
+   Silicon bench 39. NAND universality as the one atomic mechanism:
+   every circuit on the bench is built from NAND gates and nothing
+   else. Four trials: NOT (1 gate), AND (2 gates), XOR (4 gates),
+   half-adder (6 gates). The visitor wires gates with dropdowns
+   (A, B, constant 1, or another gate's output), predicts one probe
+   row of the truth table, RUNs the full table, and commits when
+   every row matches inside the gate budget. Failure modes are
+   named and enforced: floating inputs, combinational loops, wrong
+   rows, over-budget builds. A live NAND primer gives the
+   do-before-explain first interaction. Certificates per trial plus
+   a bench certificate when all four are certified.
+   Self-contained, appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- pure logic: NAND circuits ---------------- */
+
+  function gtNand(a, b) { return (a && b) ? 0 : 1; }
+
+  var GT_TRIALS = [
+    { n: 1, id: "not-01", board: "GATE-01",
+      title: "TRIAL 1: THE INVERTER'S PRICE",
+      goal: "Build OUT = NOT A. Budget: 1 NAND gate.",
+      useB: false, budget: 1, outs: ["OUT"],
+      target: function (a, b) { return { OUT: a ? 0 : 1 }; },
+      probe: { A: 1, B: 0 }, probeLabel: "A=1",
+      hint: "A NAND with both inputs tied to the same signal inverts it. The intro's worked example is the whole answer." },
+    { n: 2, id: "and-02", board: "GATE-02",
+      title: "TRIAL 2: AND FROM SPITE",
+      goal: "Build OUT = A AND B. Budget: 2 NAND gates.",
+      useB: true, budget: 2, outs: ["OUT"],
+      target: function (a, b) { return { OUT: (a && b) ? 1 : 0 }; },
+      probe: { A: 1, B: 0 }, probeLabel: "A=1, B=0",
+      hint: "NAND is AND followed by NOT. You already own a NOT from trial 1: NAND the inputs first, then invert the result." },
+    { n: 3, id: "xor-03", board: "GATE-03",
+      title: "TRIAL 3: THE EXCLUSIVE",
+      goal: "Build OUT = A XOR B. Budget: 4 NAND gates.",
+      useB: true, budget: 4, outs: ["OUT"],
+      target: function (a, b) { return { OUT: (a !== b) ? 1 : 0 }; },
+      probe: { A: 1, B: 1 }, probeLabel: "A=1, B=1",
+      hint: "XOR is 1 exactly when the inputs differ. Four gates suffice: NAND A and B together, fold each input against that result, then NAND the two folds." },
+    { n: 4, id: "ha-04", board: "GATE-04",
+      title: "TRIAL 4: THE HALF-ADDER",
+      goal: "Build S = A XOR B and C = A AND B. Budget: 6 NAND gates.",
+      useB: true, budget: 6, outs: ["S", "C"],
+      target: function (a, b) { return { S: (a !== b) ? 1 : 0, C: (a && b) ? 1 : 0 }; },
+      probe: { A: 1, B: 1 }, probeLabel: "A=1, B=1",
+      hint: "You built both halves already: trial 3 gives S, trial 2 gives C. Rebuild them side by side inside one circuit." }
+  ];
+
+  /* Canonical minimal solutions, used by the node tests to prove every
+     trial is winnable inside its budget. */
+  var GT_SOL = [
+    { gates: [{ i1: "A", i2: "A" }], outs: { OUT: "G1" } },
+    { gates: [{ i1: "A", i2: "B" }, { i1: "G1", i2: "G1" }], outs: { OUT: "G2" } },
+    { gates: [{ i1: "A", i2: "B" }, { i1: "A", i2: "G1" }, { i1: "B", i2: "G1" },
+              { i1: "G2", i2: "G3" }], outs: { OUT: "G4" } },
+    { gates: [{ i1: "A", i2: "B" }, { i1: "A", i2: "G1" }, { i1: "B", i2: "G1" },
+              { i1: "G2", i2: "G3" }, { i1: "A", i2: "B" }, { i1: "G5", i2: "G5" }],
+      outs: { S: "G4", C: "G6" } }
+  ];
+
+  function gtNewTrialState(t) {
+    var outs = {};
+    for (var k = 0; k < t.outs.length; k++) outs[t.outs[k]] = "?";
+    return { a: 0, b: 0, gates: [], outs: outs, pred: null,
+             lastRun: null, passed: false, committed: false };
+  }
+
+  /* Resolve one signal for one input combination. Returns 0/1, or a
+     string sentinel: "FLOAT" (unwired or dangling reference) or
+     "CYCLE:<gi>" (combinational loop through gate gi). */
+  function gtResolve(sig, gates, vals, stack) {
+    if (sig === "A") return vals.A;
+    if (sig === "B") return vals.B;
+    if (sig === "1") return 1;
+    var m = /^G(\d+)$/.exec(sig || "");
+    if (!m) return "FLOAT";
+    var gi = parseInt(m[1], 10) - 1;
+    if (gi < 0 || gi >= gates.length) return "FLOAT";
+    if (stack.indexOf(gi) >= 0) return "CYCLE:" + gi;
+    var gg = gates[gi], nx = stack.concat([gi]);
+    var x = gtResolve(gg.i1, gates, vals, nx);
+    if (typeof x === "string") return x;
+    var y = gtResolve(gg.i2, gates, vals, nx);
+    if (typeof y === "string") return y;
+    return gtNand(x, y);
+  }
+
+  /* Full truth-table evaluation of a circuit against a trial.
+     circuit: { gates: [{i1,i2}...], outs: {NAME: sig} }. */
+  function gtEvalCircuit(t, circuit) {
+    var gates = circuit.gates || [], n = gates.length, g, k, on;
+    for (g = 0; g < n; g++) {
+      var gg = gates[g];
+      if (!gg.i1 || gg.i1 === "?" || !gg.i2 || gg.i2 === "?")
+        return { error: "FLOAT: G" + (g + 1) + " has an unwired input. Every gate input must point at A, B, 1, or a gate." };
+    }
+    for (k = 0; k < t.outs.length; k++) {
+      on = t.outs[k];
+      if (!circuit.outs || !circuit.outs[on] || circuit.outs[on] === "?")
+        return { error: "FLOAT: output " + on + " is unwired. Point it at a gate output." };
+    }
+    var combos = t.useB ? [[0, 0], [0, 1], [1, 0], [1, 1]] : [[0, 0], [1, 0]];
+    var rows = [];
+    for (var c = 0; c < combos.length; c++) {
+      var vals = { A: combos[c][0], B: combos[c][1] };
+      var got = {}, bad = null;
+      for (k = 0; k < t.outs.length; k++) {
+        on = t.outs[k];
+        var r = gtResolve(circuit.outs[on], gates, vals, []);
+        if (typeof r === "string") { bad = r; break; }
+        got[on] = r;
+      }
+      if (bad) {
+        if (bad.indexOf("CYCLE") === 0) {
+          var gi = parseInt(bad.split(":")[1], 10);
+          return { error: "LOOP: G" + (gi + 1) + " feeds back into itself through the wiring. A combinational loop can never settle, so the bench refuses to evaluate it. Break the cycle." };
+        }
+        return { error: "FLOAT: a signal references a gate that no longer exists. Rewire it to a live gate." };
+      }
+      var want = t.target(vals.A, vals.B), okRow = true;
+      for (k = 0; k < t.outs.length; k++) {
+        on = t.outs[k];
+        if (got[on] !== want[on]) { okRow = false; break; }
+      }
+      rows.push({ a: vals.A, b: vals.B, got: got, want: want, ok: okRow });
+    }
+    var pass = n <= t.budget;
+    for (var q = 0; q < rows.length; q++) if (!rows[q].ok) { pass = false; break; }
+    return { rows: rows, pass: pass, gatesUsed: n, budget: t.budget };
+  }
+
+  /* ---------------- intro copy (why-first, BFP compliant) ---------------- */
+
+  function gtIntroHTML() {
+    return (
+      "<p class='gt-why'><b>WHY IT MATTERS.</b> A GPU board, a memory module, the RV32I core " +
+      "in the Silicon Anvil: at the bottom they are all one kind of gate, repeated millions " +
+      "of times. The NAND gate is universal: NOT, AND, OR, XOR, adders, and whole processors " +
+      "can all be built from NAND gates and nothing else. Fabs characterize the NAND cell " +
+      "before any other cell, because everything else is made of it. Understand this one " +
+      "gate and you understand what silicon is made of. Four trials, one gate, no other parts.</p>" +
+      "<p class='gt-worked'><b>WORKED EXAMPLE, by hand, before you touch the bench.</b> One NAND " +
+      "gate. A NAND outputs 0 only when both inputs are 1, otherwise it outputs 1. Now tie " +
+      "both inputs of the gate to the same signal A. With A at 1, the gate sees 1 NAND 1 and " +
+      "outputs 0. With A at 0, it sees 0 NAND 0 and outputs 1. The output is always the opposite " +
+      "of A: you just built a NOT gate from a single NAND. That is trial 1, solved on paper " +
+      "before the first click.</p>" +
+      "<p class='gt-terms'><b>TERMS, earned in order.</b> Gate: a device with inputs and one " +
+      "output. Truth table: every input combination listed with its output, the whole contract " +
+      "of a circuit. Universal: a gate type that every other circuit can be built from (NAND " +
+      "and NOR are the two). Budget: the most gates a trial allows. Real silicon pays area and " +
+      "power per gate, so fewer is better, and the bench enforces it.</p>" +
+      "<p class='gt-failmodes'><b>FAILURE MODES, stated up front.</b> Three ways to fail a run. " +
+      "Floating input: a gate input wired to nothing (every input must point at A, B, 1, or a " +
+      "gate). Combinational loop: a gate feeding itself, directly or through other gates, which " +
+      "can never settle and is refused outright. Wrong table: any row where your outputs differ " +
+      "from the target; the bench shows exactly which rows and what they should be.</p>" +
+      "<p class='gt-scale'><b>ONE NUMBER TO CARRY.</b> Trial 3's XOR costs 4 gates for a single " +
+      "bit. A full adder is two half-adders plus an OR, about 15 gates, so adding two 32-bit " +
+      "numbers is 32 of those: hundreds of gates before anything multiplies. Every one of them " +
+      "is a NAND.</p>"
+    );
+  }
+
+  /* ---------------- styles ---------------- */
+
+  var GT_CSS = [
+    ".gt-overlay{position:fixed;inset:0;z-index:90;display:none;background:rgba(8,8,10,.86);padding:0;}",
+    ".gt-overlay.open{display:block;}",
+    ".gt-panel{position:absolute;inset:0;overflow-y:auto;background:var(--ink);color:var(--paper);padding:20px 16px 120px;}",
+    ".gt-wrap{max-width:860px;margin:0 auto;}",
+    ".gt-head h3{font-family:'Space Grotesk',sans-serif;font-size:26px;letter-spacing:.04em;margin:0 0 4px;color:var(--paper);}",
+    ".gt-spec{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);margin:0 0 12px;}",
+    ".gt-why,.gt-worked,.gt-terms,.gt-failmodes,.gt-scale{font-size:14px;line-height:1.65;margin:0 0 12px;color:var(--paper);}",
+    ".gt-why b,.gt-worked b,.gt-terms b,.gt-failmodes b,.gt-scale b{color:var(--ember);font-weight:600;}",
+    ".gt-worked{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--ember);padding:12px 14px;}",
+    ".gt-terms,.gt-failmodes,.gt-scale{background:var(--panel);border:1px solid var(--line);padding:12px 14px;}",
+    ".gt-how{font-size:14px;margin:18px 0 10px;color:var(--paper);}",
+    ".gt-how b{color:var(--ember);}",
+    ".gt-sec{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);margin:22px 0 8px;}",
+    ".gt-primer{background:var(--panel);border:1px solid var(--line);padding:14px;margin:0 0 6px;}",
+    ".gt-primer .gt-gate{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-family:'IBM Plex Mono',monospace;}",
+    ".gt-lamp{font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:600;min-width:52px;min-height:48px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--line);padding:6px 10px;background:var(--ink);color:var(--paper);}",
+    ".gt-lamp.hot{border-color:var(--ember);color:var(--ember);}",
+    ".gt-lamp.dim{opacity:.45;}",
+    ".gt-tbtn{font-family:'IBM Plex Mono',monospace;font-size:14px;min-width:48px;min-height:48px;padding:10px 14px;background:var(--ink);color:var(--paper);border:1px solid var(--line);cursor:pointer;}",
+    ".gt-tbtn[aria-pressed='true']{border-color:var(--ember);color:var(--ember);font-weight:600;}",
+    ".gt-trial{background:var(--panel);border:1px solid var(--line);padding:14px;margin:14px 0;}",
+    ".gt-trial.passed{border-color:var(--ember);}",
+    ".gt-ttitle{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.14em;color:var(--ember);margin:0 0 6px;}",
+    ".gt-tgoal{font-size:14px;margin:0 0 4px;color:var(--paper);}",
+    ".gt-thint{font-size:13px;color:var(--paper);opacity:.8;margin:0 0 10px;}",
+    ".gt-ctlrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0;}",
+    ".gt-ctlrow .gt-cap{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.1em;color:var(--paper);opacity:.7;}",
+    ".gt-btn{font-family:'IBM Plex Mono',monospace;font-size:12.5px;letter-spacing:.06em;min-height:48px;padding:12px 16px;background:transparent;color:var(--paper);border:1px solid var(--line);cursor:pointer;}",
+    ".gt-btn.primary{border-color:var(--ember);color:var(--ember);font-weight:600;}",
+    ".gt-btn:disabled{opacity:.35;cursor:default;}",
+    ".gt-btn:not(:disabled):hover{border-color:var(--ember);}",
+    ".gt-btn:focus-visible,.gt-tbtn:focus-visible,.gt-sel:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".gt-sel{font-family:'IBM Plex Mono',monospace;font-size:13px;min-height:48px;background:var(--ink);color:var(--paper);border:1px solid var(--line);padding:8px 10px;}",
+    ".gt-gaterow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0;font-family:'IBM Plex Mono',monospace;font-size:13px;}",
+    ".gt-gaterow .gt-gid{min-width:40px;color:var(--ember);font-weight:600;}",
+    ".gt-budget{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.08em;color:var(--paper);}",
+    ".gt-budget.over{color:var(--ember);font-weight:600;}",
+    ".gt-pred{font-family:'IBM Plex Mono',monospace;font-size:12.5px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0;}",
+    ".gt-table{width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:12.5px;margin:10px 0;}",
+    ".gt-table th{font-size:10.5px;letter-spacing:.12em;text-align:left;color:var(--paper);opacity:.7;padding:8px;border-bottom:1px solid var(--line);}",
+    ".gt-table td{padding:8px;border-bottom:1px solid var(--line);color:var(--paper);}",
+    ".gt-table tr.bad td{color:var(--ember);}",
+    ".gt-verdict{font-family:'IBM Plex Mono',monospace;font-size:13px;line-height:1.7;background:var(--ink);border:1px solid var(--line);padding:12px 14px;margin:12px 0;white-space:pre-wrap;}",
+    ".gt-verdict.pass{border-color:var(--ember);}",
+    ".gt-log{background:#0a0a0c;border:1px solid var(--line);padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;max-height:220px;overflow-y:auto;margin:10px 0;}",
+    ".gt-log .lt{color:var(--paper);opacity:.55;}",
+    ".gt-log .ok{color:var(--ember);}",
+    ".gt-foot{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px;}",
+    ".gt-banner{font-family:'IBM Plex Mono',monospace;font-size:14px;letter-spacing:.1em;color:var(--ember);border:1px solid var(--ember);padding:14px;margin:16px 0;text-align:center;}",
+    ".gt-pop{animation:gtPop .2s ease-out;}",
+    "@keyframes gtPop{0%{transform:scale(.96);}100%{transform:scale(1);}}",
+    "@media (prefers-reduced-motion: reduce){.gt-pop{animation:none;}}",
+    "button.gt-btn{min-width:48px;}"
+  ].join("\n");
+
+  /* ---------------- DOM helpers and state ---------------- */
+
+  function gtEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  function gtEsc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  var gtEls = {};
+  var gtState = { open: false, primer: { a: 0, b: 0 }, trials: [] };
+  var GT_REDUCED = (typeof window !== "undefined" && window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+  function gtLog(html, cls) {
+    var box = gtEls.log;
+    if (!box) return;
+    var line = gtEl("div", null, null);
+    line.innerHTML = "<span class='lt'>&gt; </span><span class='" + (cls || "") + "'>" + html + "</span>";
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function gtSigOptions(t) {
+    var opts = ["?", "A"];
+    if (t.useB) opts.push("B");
+    opts.push("1");
+    for (var g = 1; g <= t.budget; g++) opts.push("G" + g);
+    return opts;
+  }
+
+  function gtFillSelect(sel, opts, cur) {
+    sel.innerHTML = "";
+    for (var i = 0; i < opts.length; i++) {
+      var o = document.createElement("option");
+      o.value = opts[i];
+      o.textContent = opts[i] === "?" ? "(unwired)" : opts[i];
+      sel.appendChild(o);
+    }
+    if (opts.indexOf(cur) >= 0) sel.value = cur;
+  }
+
+  /* Live single-combo values for the lamps: {G1:0/1...} or {error}. */
+  function gtLiveVals(t, st) {
+    var gates = st.gates, vals = { A: st.a, B: st.b }, out = {}, g;
+    for (g = 0; g < gates.length; g++) {
+      var gg = gates[g];
+      if (!gg.i1 || gg.i1 === "?" || !gg.i2 || gg.i2 === "?")
+        return { error: "FLOAT" };
+      var r = gtResolve("G" + (g + 1), gates, vals, []);
+      if (typeof r === "string") return { error: r.indexOf("CYCLE") === 0 ? "LOOP" : "FLOAT" };
+      out["G" + (g + 1)] = r;
+    }
+    return { vals: out };
+  }
+
+  /* ---------------- build: button, overlay, primer ---------------- */
+
+  function gtBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("gtBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = GT_CSS;
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "gtBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Gate Room";
+    b.addEventListener("click", gtOpen);
+    box.appendChild(b);
+
+    var ov = gtEl("div", "gt-overlay");
+    ov.id = "gtOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Gate Room");
+    var panel = gtEl("div", "gt-panel");
+    var wrap = gtEl("div", "gt-wrap");
+
+    var head = gtEl("div", "gt-head");
+    head.appendChild(gtEl("h3", null, "The Gate Room"));
+    head.appendChild(gtEl("p", "gt-spec", "SILICON // NAND UNIVERSALITY // 4 TRIALS"));
+    var intro = gtEl("div", null, null);
+    intro.innerHTML = gtIntroHTML();
+    head.appendChild(intro);
+    head.appendChild(gtEl("p", "gt-how",
+      "HOW: toggle the trial inputs, wire NAND gates with the dropdowns, predict the probe row, " +
+      "RUN the full truth table, and match every row inside the gate budget."));
+    wrap.appendChild(head);
+
+    /* the one gate: do-before-explain primer */
+    wrap.appendChild(gtEl("p", "gt-sec", "THE ONE GATE, LIVE"));
+    var primer = gtEl("div", "gt-primer");
+    var grow = gtEl("div", "gt-gate");
+    grow.appendChild(gtEl("span", "gt-cap", "A"));
+    var pa = gtEl("button", "gt-tbtn", "0");
+    pa.id = "gtPrimerA";
+    pa.setAttribute("aria-pressed", "false");
+    pa.setAttribute("aria-label", "Primer input A, toggle 0 or 1");
+    grow.appendChild(pa);
+    grow.appendChild(gtEl("span", "gt-cap", "B"));
+    var pb = gtEl("button", "gt-tbtn", "0");
+    pb.id = "gtPrimerB";
+    pb.setAttribute("aria-pressed", "false");
+    pb.setAttribute("aria-label", "Primer input B, toggle 0 or 1");
+    grow.appendChild(pb);
+    grow.appendChild(gtEl("span", "gt-cap", "NAND"));
+    var pl = gtEl("span", "gt-lamp", "1");
+    pl.id = "gtPrimerOut";
+    grow.appendChild(pl);
+    primer.appendChild(grow);
+    primer.appendChild(gtEl("p", "gt-thint",
+      "Press A and B. This is the only part you get: a NAND outputs 0 only when both inputs are 1. " +
+      "Everything below is built from copies of this gate."));
+    wrap.appendChild(primer);
+    gtEls.primerA = pa; gtEls.primerB = pb; gtEls.primerOut = pl;
+    pa.addEventListener("click", function () { gtTogglePrimer("a"); });
+    pb.addEventListener("click", function () { gtTogglePrimer("b"); });
+
+    /* trial cards */
+    wrap.appendChild(gtEl("p", "gt-sec", "THE TRIALS"));
+    gtEls.cards = [];
+    for (var ti = 0; ti < GT_TRIALS.length; ti++) {
+      gtState.trials[ti] = gtNewTrialState(GT_TRIALS[ti]);
+      wrap.appendChild(gtBuildTrialCard(GT_TRIALS[ti], ti));
+    }
+
+    wrap.appendChild(gtEl("p", "gt-sec", "BENCH LOG"));
+    var log = gtEl("div", "gt-log");
+    log.id = "gtLog";
+    wrap.appendChild(log);
+    gtEls.log = log;
+
+    var banner = gtEl("div", "gt-banner", "GATEWRIGHT: ALL FOUR TRIALS CERTIFIED FROM NAND ALONE");
+    banner.id = "gtBanner";
+    banner.style.display = "none";
+    wrap.appendChild(banner);
+    gtEls.banner = banner;
+
+    var foot = gtEl("div", "gt-foot", null);
+    var certAll = gtEl("button", "gt-btn", "DOWNLOAD BENCH CERTIFICATE");
+    certAll.id = "gtCertAllBtn";
+    certAll.style.display = "none";
+    certAll.addEventListener("click", gtCertAll);
+    foot.appendChild(certAll);
+    gtEls.certAll = certAll;
+    var close = gtEl("button", "gt-btn", "CLOSE");
+    close.id = "gtCloseBtn";
+    close.addEventListener("click", gtClose);
+    foot.appendChild(close);
+    wrap.appendChild(foot);
+
+    panel.appendChild(wrap);
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    gtEls.overlay = ov;
+    gtRefreshPrimer();
+  }
+
+  function gtTogglePrimer(which) {
+    var p = gtState.primer;
+    if (which === "a") p.a = p.a ? 0 : 1; else p.b = p.b ? 0 : 1;
+    gtRefreshPrimer();
+  }
+
+  function gtRefreshPrimer() {
+    var p = gtState.primer;
+    if (!gtEls.primerA) return;
+    gtEls.primerA.textContent = String(p.a);
+    gtEls.primerA.setAttribute("aria-pressed", p.a ? "true" : "false");
+    gtEls.primerB.textContent = String(p.b);
+    gtEls.primerB.setAttribute("aria-pressed", p.b ? "true" : "false");
+    var o = gtNand(p.a, p.b);
+    gtEls.primerOut.textContent = String(o);
+    gtEls.primerOut.classList.toggle("hot", o === 1);
+  }
+
+  /* ---------------- trial cards ---------------- */
+
+  function gtBuildTrialCard(t, ti) {
+    var card = gtEl("div", "gt-trial");
+    card.id = "gtTrial" + ti;
+    card.appendChild(gtEl("p", "gt-ttitle", t.title));
+    card.appendChild(gtEl("p", "gt-tgoal", t.goal));
+    card.appendChild(gtEl("p", "gt-thint", t.hint));
+
+    /* trial inputs */
+    var inrow = gtEl("div", "gt-ctlrow");
+    inrow.appendChild(gtEl("span", "gt-cap", "TRIAL INPUTS"));
+    inrow.appendChild(gtEl("span", "gt-cap", "A"));
+    var ta = gtEl("button", "gt-tbtn", "0");
+    ta.setAttribute("aria-pressed", "false");
+    ta.setAttribute("aria-label", "Trial " + t.n + " input A");
+    ta.addEventListener("click", function () { gtSetAB(ti, 1 - gtState.trials[ti].a, gtState.trials[ti].b); });
+    inrow.appendChild(ta);
+    var tb = null;
+    if (t.useB) {
+      inrow.appendChild(gtEl("span", "gt-cap", "B"));
+      tb = gtEl("button", "gt-tbtn", "0");
+      tb.setAttribute("aria-pressed", "false");
+      tb.setAttribute("aria-label", "Trial " + t.n + " input B");
+      tb.addEventListener("click", function () { gtSetAB(ti, gtState.trials[ti].a, 1 - gtState.trials[ti].b); });
+      inrow.appendChild(tb);
+    } else {
+      inrow.appendChild(gtEl("span", "gt-cap", "(this trial uses A only)"));
+    }
+    card.appendChild(inrow);
+
+    /* gates */
+    var gateCap = gtEl("div", "gt-ctlrow");
+    gateCap.appendChild(gtEl("span", "gt-cap", "NAND GATES"));
+    var budget = gtEl("span", "gt-budget", "GATES 0/" + t.budget);
+    gateCap.appendChild(budget);
+    var add = gtEl("button", "gt-btn", "ADD GATE");
+    add.addEventListener("click", function () { gtAddGate(ti); });
+    gateCap.appendChild(add);
+    var rem = gtEl("button", "gt-btn", "REMOVE GATE");
+    rem.addEventListener("click", function () { gtRemoveGate(ti); });
+    gateCap.appendChild(rem);
+    card.appendChild(gateCap);
+    var gatesBox = gtEl("div", null, null);
+    card.appendChild(gatesBox);
+
+    /* required outputs */
+    var orow = gtEl("div", "gt-ctlrow");
+    orow.appendChild(gtEl("span", "gt-cap", "CIRCUIT OUTPUTS"));
+    var outSels = {};
+    for (var k = 0; k < t.outs.length; k++) (function (name) {
+      orow.appendChild(gtEl("span", "gt-cap", name));
+      var s = gtEl("select", "gt-sel");
+      s.setAttribute("aria-label", "Trial " + t.n + " output " + name + " source");
+      s.addEventListener("change", function () {
+        gtState.trials[ti].outs[name] = s.value;
+        gtState.trials[ti].passed = false;
+        gtRefresh(ti);
+      });
+      orow.appendChild(s);
+      outSels[name] = s;
+    })(t.outs[k]);
+    card.appendChild(orow);
+
+    /* predict-then-verify */
+    var prow = gtEl("div", "gt-pred");
+    prow.appendChild(gtEl("span", null, "PREDICT FIRST (" + t.probeLabel + "): "));
+    var predBtns = {};
+    for (var q = 0; q < t.outs.length; q++) (function (name) {
+      prow.appendChild(gtEl("span", null, name + " ="));
+      var b0 = gtEl("button", "gt-tbtn", "0");
+      var b1 = gtEl("button", "gt-tbtn", "1");
+      b0.setAttribute("aria-label", "Predict " + name + " is 0");
+      b1.setAttribute("aria-label", "Predict " + name + " is 1");
+      b0.addEventListener("click", function () { gtPredict(ti, name, 0); });
+      b1.addEventListener("click", function () { gtPredict(ti, name, 1); });
+      prow.appendChild(b0); prow.appendChild(b1);
+      predBtns[name] = [b0, b1];
+    })(t.outs[q]);
+    card.appendChild(prow);
+
+    /* run / commit / reset */
+    var arow = gtEl("div", "gt-ctlrow");
+    var run = gtEl("button", "gt-btn primary", "RUN TRUTH TABLE");
+    run.addEventListener("click", function () { gtRun(ti); });
+    arow.appendChild(run);
+    var commit = gtEl("button", "gt-btn", "CERTIFY TRIAL");
+    commit.disabled = true;
+    commit.addEventListener("click", function () { gtCommit(ti); });
+    arow.appendChild(commit);
+    var reset = gtEl("button", "gt-btn", "RESET");
+    reset.addEventListener("click", function () { gtResetTrial(ti); });
+    arow.appendChild(reset);
+    card.appendChild(arow);
+
+    var tres = gtEl("div", null, null);
+    card.appendChild(tres);
+    var verdict = gtEl("div", "gt-verdict", "No run yet. Wire gates, predict the probe row, then RUN.");
+    card.appendChild(verdict);
+
+    gtEls.cards[ti] = { card: card, ta: ta, tb: tb, budget: budget, add: add,
+      rem: rem, gatesBox: gatesBox, outSels: outSels, predBtns: predBtns,
+      run: run, commit: commit, tres: tres, verdict: verdict };
+    gtRefresh(ti);
+    return card;
+  }
+
+  function gtSetAB(ti, a, b) {
+    var st = gtState.trials[ti];
+    st.a = a ? 1 : 0; st.b = b ? 1 : 0;
+    st.passed = false;
+    gtRefresh(ti);
+  }
+
+  function gtAddGate(ti) {
+    var t = GT_TRIALS[ti], st = gtState.trials[ti];
+    if (st.gates.length >= t.budget) {
+      gtLog("Trial " + t.n + ": budget is " + t.budget + " gates. No more can be added.", "");
+      return;
+    }
+    st.gates.push({ i1: "?", i2: "?" });
+    st.passed = false;
+    gtLog("Trial " + t.n + ": G" + st.gates.length + " placed (" +
+      st.gates.length + "/" + t.budget + ").", "");
+    gtRefresh(ti);
+  }
+
+  function gtRemoveGate(ti) {
+    var st = gtState.trials[ti];
+    if (!st.gates.length) return;
+    var gone = st.gates.length;
+    st.gates.pop();
+    /* rewire anything that pointed at the removed gate */
+    for (var g = 0; g < st.gates.length; g++) {
+      if (st.gates[g].i1 === "G" + gone) st.gates[g].i1 = "?";
+      if (st.gates[g].i2 === "G" + gone) st.gates[g].i2 = "?";
+    }
+    for (var on in st.outs) if (st.outs[on] === "G" + gone) st.outs[on] = "?";
+    st.passed = false;
+    gtLog("Trial " + GT_TRIALS[ti].n + ": G" + gone + " removed; dangling wires reset to unwired.", "");
+    gtRefresh(ti);
+  }
+
+  function gtPredict(ti, name, v) {
+    var st = gtState.trials[ti];
+    if (!st.pred) st.pred = {};
+    st.pred[name] = v;
+    gtRefresh(ti);
+  }
+
+  /* Re-render the dynamic parts of a trial card from state. */
+  function gtRefresh(ti) {
+    var t = GT_TRIALS[ti], st = gtState.trials[ti], C = gtEls.cards[ti];
+    if (!C) return;
+    C.card.classList.toggle("passed", st.committed);
+    C.ta.textContent = String(st.a);
+    C.ta.setAttribute("aria-pressed", st.a ? "true" : "false");
+    if (C.tb) {
+      C.tb.textContent = String(st.b);
+      C.tb.setAttribute("aria-pressed", st.b ? "true" : "false");
+    }
+    C.budget.textContent = "GATES " + st.gates.length + "/" + t.budget;
+    C.budget.classList.toggle("over", st.gates.length > t.budget);
+    C.add.disabled = st.gates.length >= t.budget || st.committed;
+    C.rem.disabled = !st.gates.length || st.committed;
+
+    /* gate rows */
+    C.gatesBox.innerHTML = "";
+    var opts = gtSigOptions(t);
+    var live = gtLiveVals(t, st);
+    for (var g = 0; g < st.gates.length; g++) (function (gi) {
+      var row = gtEl("div", "gt-gaterow");
+      row.appendChild(gtEl("span", "gt-gid", "G" + (gi + 1)));
+      var s1 = gtEl("select", "gt-sel");
+      s1.setAttribute("aria-label", "Trial " + t.n + " gate G" + (gi + 1) + " input 1");
+      gtFillSelect(s1, opts, st.gates[gi].i1);
+      s1.addEventListener("change", function () {
+        st.gates[gi].i1 = s1.value; st.passed = false; gtRefresh(ti);
+      });
+      row.appendChild(s1);
+      row.appendChild(gtEl("span", null, "NAND"));
+      var s2 = gtEl("select", "gt-sel");
+      s2.setAttribute("aria-label", "Trial " + t.n + " gate G" + (gi + 1) + " input 2");
+      gtFillSelect(s2, opts, st.gates[gi].i2);
+      s2.addEventListener("change", function () {
+        st.gates[gi].i2 = s2.value; st.passed = false; gtRefresh(ti);
+      });
+      row.appendChild(s2);
+      row.appendChild(gtEl("span", null, "->"));
+      var lamp = gtEl("span", "gt-lamp", "?");
+      if (!live.error && live.vals["G" + (gi + 1)] !== undefined) {
+        var v = live.vals["G" + (gi + 1)];
+        lamp.textContent = String(v);
+        lamp.classList.toggle("hot", v === 1);
+      } else {
+        lamp.textContent = live.error === "LOOP" ? "LOOP" : "?";
+        lamp.classList.add("dim");
+      }
+      row.appendChild(lamp);
+      C.gatesBox.appendChild(row);
+    })(g);
+
+    for (var on in C.outSels) gtFillSelect(C.outSels[on], opts, st.outs[on]);
+
+    for (var pn in C.predBtns) {
+      var pv = st.pred ? st.pred[pn] : null;
+      C.predBtns[pn][0].setAttribute("aria-pressed", pv === 0 ? "true" : "false");
+      C.predBtns[pn][1].setAttribute("aria-pressed", pv === 1 ? "true" : "false");
+    }
+
+    C.commit.disabled = !(st.lastRun && st.lastRun.pass && !st.committed);
+    if (st.committed) {
+      C.verdict.textContent = "TRIAL " + t.n + " CERTIFIED: " + st.gates.length +
+        " NAND gate(s), every truth-table row matches.";
+      C.verdict.classList.add("pass");
+    }
+  }
+
+  /* ---------------- run, verify, certify ---------------- */
+
+  function gtRun(ti) {
+    var t = GT_TRIALS[ti], st = gtState.trials[ti], C = gtEls.cards[ti];
+    var needPred = [];
+    for (var k = 0; k < t.outs.length; k++)
+      if (!st.pred || st.pred[t.outs[k]] === undefined || st.pred[t.outs[k]] === null)
+        needPred.push(t.outs[k]);
+    if (needPred.length) {
+      gtLog("Trial " + t.n + ": predict first. Call " + needPred.join(" and ") +
+        " for " + t.probeLabel + ", then RUN.", "");
+      return { error: "NOPRED" };
+    }
+    var res = gtEvalCircuit(t, { gates: st.gates, outs: st.outs });
+    st.lastRun = res;
+    gtRenderTable(ti, res);
+    if (res.error) {
+      C.verdict.textContent = res.error;
+      C.verdict.classList.remove("pass");
+      gtLog("Trial " + t.n + " RUN refused: " + gtEsc(res.error), "");
+      gtRefresh(ti);
+      return res;
+    }
+    /* predict-then-verify against the probe row */
+    var probeRow = null;
+    for (var r = 0; r < res.rows.length; r++)
+      if (res.rows[r].a === t.probe.A && res.rows[r].b === t.probe.B) { probeRow = res.rows[r]; break; }
+    if (probeRow) {
+      var calls = [];
+      for (var q = 0; q < t.outs.length; q++) {
+        var on = t.outs[q];
+        calls.push(on + ": you said " + st.pred[on] + ", the table says " + probeRow.got[on] +
+          (st.pred[on] === probeRow.got[on] ? " (confirmed)" : " (off)"));
+      }
+      gtLog("Trial " + t.n + " prediction, " + t.probeLabel + ": " + gtEsc(calls.join("; ")), "");
+    }
+    if (res.pass) {
+      st.passed = true;
+      C.verdict.textContent = "ALL " + res.rows.length + " ROWS MATCH inside the " +
+        t.budget + "-gate budget. CERTIFY TRIAL to sign it.";
+      C.verdict.classList.add("pass");
+      gtLog("Trial " + t.n + ": truth table clean, " + res.gatesUsed + "/" +
+        res.budget + " gates. Ready to certify.", "ok");
+    } else {
+      st.passed = false;
+      var bad = [];
+      for (var w = 0; w < res.rows.length; w++)
+        if (!res.rows[w].ok) bad.push("A=" + res.rows[w].a + (t.useB ? " B=" + res.rows[w].b : ""));
+      C.verdict.textContent = "MISMATCH on " + bad.length + " row(s): " + bad.join(", ") +
+        ". Rewire and RUN again.";
+      C.verdict.classList.remove("pass");
+      gtLog("Trial " + t.n + ": " + bad.length + " row(s) differ (" +
+        gtEsc(bad.join(", ")) + ").", "");
+    }
+    if (!GT_REDUCED) { C.card.classList.remove("gt-pop"); void C.card.offsetWidth; C.card.classList.add("gt-pop"); }
+    gtRefresh(ti);
+    return res;
+  }
+
+  function gtRenderTable(ti, res) {
+    var t = GT_TRIALS[ti], C = gtEls.cards[ti];
+    C.tres.innerHTML = "";
+    if (res.error) return;
+    var tab = gtEl("table", "gt-table");
+    var hr = gtEl("tr", null, null);
+    hr.appendChild(gtEl("th", null, "A"));
+    if (t.useB) hr.appendChild(gtEl("th", null, "B"));
+    for (var k = 0; k < t.outs.length; k++) {
+      hr.appendChild(gtEl("th", null, t.outs[k] + " (YOURS)"));
+      hr.appendChild(gtEl("th", null, t.outs[k] + " (TARGET)"));
+    }
+    hr.appendChild(gtEl("th", null, "ROW"));
+    tab.appendChild(hr);
+    for (var r = 0; r < res.rows.length; r++) {
+      var row = res.rows[r], tr = gtEl("tr", row.ok ? "" : "bad", null);
+      tr.appendChild(gtEl("td", null, String(row.a)));
+      if (t.useB) tr.appendChild(gtEl("td", null, String(row.b)));
+      for (var q = 0; q < t.outs.length; q++) {
+        var on = t.outs[q];
+        tr.appendChild(gtEl("td", null, String(row.got[on])));
+        tr.appendChild(gtEl("td", null, String(row.want[on])));
+      }
+      tr.appendChild(gtEl("td", null, row.ok ? "MATCH" : "DIFF"));
+      tab.appendChild(tr);
+    }
+    C.tres.appendChild(tab);
+  }
+
+  function gtCommit(ti) {
+    var t = GT_TRIALS[ti], st = gtState.trials[ti];
+    if (!(st.lastRun && st.lastRun.pass) || st.committed) return false;
+    st.committed = true;
+    gtLog("Trial " + t.n + " CERTIFIED: " + t.title + ", " + st.gates.length +
+      " NAND gate(s). Certificate ready below.", "ok");
+    var dl = gtEl("button", "gt-btn", "DOWNLOAD TRIAL " + t.n + " CERTIFICATE");
+    dl.addEventListener("click", function () { gtDownloadCert(t, st); });
+    gtEls.cards[ti].tres.appendChild(dl);
+    gtRefresh(ti);
+    var all = true;
+    for (var i = 0; i < GT_TRIALS.length; i++)
+      if (!gtState.trials[i].committed) { all = false; break; }
+    if (all) {
+      gtEls.banner.style.display = "block";
+      gtEls.certAll.style.display = "";
+      gtLog("GATEWRIGHT: all four trials certified from NAND alone.", "ok");
+    }
+    return true;
+  }
+
+  function gtResetTrial(ti) {
+    gtState.trials[ti] = gtNewTrialState(GT_TRIALS[ti]);
+    var C = gtEls.cards[ti];
+    C.tres.innerHTML = "";
+    C.verdict.textContent = "No run yet. Wire gates, predict the probe row, then RUN.";
+    C.verdict.classList.remove("pass");
+    gtLog("Trial " + GT_TRIALS[ti].n + " reset.", "");
+    gtRefresh(ti);
+  }
+
+  function gtCertText(t, st) {
+    var lines = ["THE GATE ROOM, TRIAL " + t.n + " CERTIFICATE",
+      "Board " + t.board + " // " + t.title,
+      "Built from NAND gates only: " + st.gates.length + " of " + t.budget + " allowed.",
+      "Wiring:"];
+    for (var g = 0; g < st.gates.length; g++)
+      lines.push("  G" + (g + 1) + " = NAND(" + st.gates[g].i1 + ", " + st.gates[g].i2 + ")");
+    lines.push("Outputs: " + t.outs.map(function (on) { return on + " <- " + st.outs[on]; }).join(", "));
+    lines.push("Truth table, all rows MATCH the target:");
+    var res = st.lastRun;
+    for (var r = 0; r < res.rows.length; r++) {
+      var row = res.rows[r];
+      lines.push("  A=" + row.a + (t.useB ? " B=" + row.b : "") + " -> " +
+        t.outs.map(function (on) { return on + "=" + row.got[on]; }).join(" "));
+    }
+    lines.push("GATEWRIGHT // THE PROVING GROUND");
+    return lines.join("\n") + "\n";
+  }
+
+  function gtDownloadCert(t, st) {
+    var blob = new Blob([gtCertText(t, st)], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "gate-room-trial" + t.n + "-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    gtLog("Certificate downloaded: " + a.download, "ok");
+  }
+
+  function gtCertAll() {
+    var lines = ["THE GATE ROOM, BENCH CERTIFICATE", "All four trials certified from NAND gates alone:", ""];
+    for (var i = 0; i < GT_TRIALS.length; i++) {
+      var t = GT_TRIALS[i], st = gtState.trials[i];
+      lines.push("Trial " + t.n + " " + t.title + ": " + st.gates.length + "/" + t.budget + " gates, CERTIFIED");
+    }
+    lines.push("", "Every digital circuit is a NAND circuit. GATEWRIGHT // THE PROVING GROUND");
+    var blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "gate-room-bench-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    gtLog("Bench certificate downloaded.", "ok");
+  }
+
+  /* ---------------- open / close / boot ---------------- */
+
+  function gtOpen() {
+    if (!gtEls.overlay) gtBuild();
+    gtEls.overlay.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+  function gtClose() {
+    if (gtEls.overlay) gtEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", gtBuild);
+    } else {
+      gtBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      GT: {
+        TRIALS: GT_TRIALS, SOL: GT_SOL, nand: gtNand,
+        newTrialState: gtNewTrialState, evalCircuit: gtEvalCircuit,
+        liveVals: gtLiveVals, introHTML: gtIntroHTML,
+        certText: gtCertText,
+        ui: {
+          open: gtOpen, close: gtClose,
+          setAB: gtSetAB, addGate: gtAddGate, removeGate: gtRemoveGate,
+          setGate: function (ti, g, which, sig) {
+            gtState.trials[ti].gates[g][which] = sig;
+            gtState.trials[ti].passed = false;
+            gtRefresh(ti);
+          },
+          setOut: function (ti, name, sig) {
+            gtState.trials[ti].outs[name] = sig;
+            gtState.trials[ti].passed = false;
+            gtRefresh(ti);
+          },
+          predict: gtPredict,
+          run: gtRun, commit: gtCommit, resetTrial: gtResetTrial,
+          certAll: gtCertAll,
+          state: function () { return gtState; },
+          els: function () { return gtEls; }
+        }
+      }
+    });
+  }
+})();

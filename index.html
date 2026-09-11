@@ -650,7 +650,11 @@ var PG_BENCHES = [
   { section: "tapeout", n: "38", name: "The Scan Room", btn: "jsBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "JTAG boundary scan for GPU board bring-up: a real 16-cell scan chain, EXTEST interconnect tests, and three dead boards. Find the open, the short, and the stuck pin.",
     how: "Pick a drive pattern, run the sweep, read the nets, then commit the diagnosis.",
-    spec: "JTAG EXTEST \u00B7 16-CELL CHAIN \u00B7 3 BOARDS" }
+    spec: "JTAG EXTEST \u00B7 16-CELL CHAIN \u00B7 3 BOARDS" },
+  { section: "silicon", n: "39", name: "The Gate Room", btn: "gtBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "The atom of digital hardware: NAND is universal, so every circuit on the bench is built from NAND gates and nothing else. Wire up NOT, AND, XOR, and a half-adder from the one gate, truth table against truth table.",
+    how: "Wire NAND gates with the dropdowns, predict one probe row, RUN the full truth table, match every row inside the gate budget.",
+    spec: "NAND-ONLY \u00B7 4 TRIALS \u00B7 GATE BUDGETS" }
 ];
 
 var pgFilter = "all";
@@ -1062,9 +1066,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=c723eb21f4" defer></script>
-<script src="rvdata.js?v=c723eb21f4" defer></script>
-<script src="riscv-lab.js?v=c723eb21f4" defer></script>
-<script src="features.js?v=c723eb21f4" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=2aead2d433" defer></script>
+<script src="rvdata.js?v=2aead2d433" defer></script>
+<script src="riscv-lab.js?v=2aead2d433" defer></script>
+<script src="features.js?v=2aead2d433" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
