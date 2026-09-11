@@ -23395,3 +23395,803 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+/* Bench 35 staging: The Buck Room module (appended to features.js at ship time). */
+/* ============================================================
+   THE BUCK ROOM
+   Tapeout bench 35. A GPU VRM qualification bench: a real
+   discrete-time open-loop buck converter on the bench, 12 V in,
+   three rails to qualify. The switch chops the input into pulses
+   at the duty you set, the inductor averages the pulses into
+   smooth DC, and the output equals duty times input in continuous
+   conduction. Real inductor physics throughout: current ripple
+   from volt-second balance, saturation when peak current passes
+   the inductor's Isat (inductance collapses, ripple explodes),
+   discontinuous conduction at light load (the averaging breaks
+   and the open-loop rail floats high), capacitor ESR in the
+   transient dip when the load steps. Trial 1 certifies the 1.2 V
+   GPU core rail at 8 A, trial 2 the 1.8 V memory rail at 3 A,
+   trial 3 the same core rail through a 2 A to 10 A load step.
+   Teaches one atomic mechanism: a buck converter steps voltage
+   down by chopping the input and letting the inductor average
+   the pulses, so the output is duty times the input.
+   Self-contained, appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- data: the converter ---------------- */
+
+  var BK_VIN = 12; /* the 12 V rail feeding the VRM, fixed */
+
+  var BK_FREQS = [
+    { name: "250 kHz", hz: 250000 },
+    { name: "500 kHz", hz: 500000 },
+    { name: "1 MHz",   hz: 1000000 },
+    { name: "2 MHz",   hz: 2000000 }
+  ];
+
+  /* Shelf inductors. The 4.7 uH part is the deliberate trap: big
+     inductance and tiny ripple, but a 5 A saturation rating that
+     cannot carry the trial-1 rail's 8 A of DC. */
+  var BK_INDUCTORS = [
+    { name: "0.47 uH / 30 A sat", L: 0.47e-6, isat: 30 },
+    { name: "1.0 uH / 22 A sat",  L: 1.0e-6,  isat: 22 },
+    { name: "2.2 uH / 12 A sat",  L: 2.2e-6,  isat: 12 },
+    { name: "4.7 uH / 5 A sat",   L: 4.7e-6,  isat: 5 }
+  ];
+
+  var BK_CAPS = [
+    { name: "100 uF / 15 mOhm",  C: 100e-6,  esr: 0.015 },
+    { name: "220 uF / 10 mOhm",  C: 220e-6,  esr: 0.010 },
+    { name: "470 uF / 6 mOhm",   C: 470e-6,  esr: 0.006 },
+    { name: "1000 uF / 4 mOhm",  C: 1000e-6, esr: 0.004 }
+  ];
+
+  var BK_TRIALS = [
+    { n: 1, id: "core", name: "TRIAL 1: THE FIRST RAIL",
+      rail: "GPU core", vtarget: 1.2, iload: 8, iload2: null,
+      rippleMax: 0.025, vtol: 0.012, dipMax: 0,
+      story: "The GPU core rail: 1.2 V at 8 A, ripple inside 25 mV (about 2 percent of the rail). " +
+             "First, call the duty before you touch anything: which setting turns 12 V into 1.2 V? " +
+             "Then run the sim and certify the rail. The frequency, inductor, and capacitor knobs are " +
+             "preset to honest defaults that pass; they become the whole game in trials 2 and 3." },
+    { n: 2, id: "mem", name: "TRIAL 2: THE MEMORY RAIL",
+      rail: "GDDR memory", vtarget: 1.8, iload: 3, iload2: null,
+      rippleMax: 0.040, vtol: 0.018, dipMax: 0,
+      story: "The GDDR rail: 1.8 V at 3 A, ripple inside 40 mV. Same circuit, new target, so the duty " +
+             "moves: the worked example generalizes, duty equals target over input. Now the shelf parts " +
+             "earn their keep. A small inductor at a slow switching frequency lets the current fall to " +
+             "zero each cycle (discontinuous conduction), the averaging breaks, and this open-loop rail " +
+             "floats high. A big inductor tames the ripple but check its saturation rating against the " +
+             "peak current, DC plus half the ripple." },
+    { n: 3, id: "step", name: "TRIAL 3: THE LOAD STEP",
+      rail: "GPU core", vtarget: 1.2, iload: 2, iload2: 10,
+      rippleMax: 0.025, vtol: 0.012, postVtol: 0.050, dipMax: 0.180,
+      story: "The same core rail, now under fire: the load slams from 2 A to 10 A mid-run, the way a " +
+             "GPU does when a frame starts. The inductor current can only slew so fast, so the output " +
+             "capacitor carries the step alone for a moment and the rail dips. The dip must stay inside " +
+             "180 mV (15 percent of the rail, the most a core tolerates before it glitches). This trial " +
+             "is won at three knobs at once: the smallest inductor slews the current fastest, the highest " +
+             "frequency keeps the light 2 A load in continuous conduction, and the biggest capacitor is " +
+             "the charge reservoir. The ESR term hits instantly, before the inductor even starts slewing." }
+  ];
+
+  var BK_PREDICT_OPTS = [5, 10, 20]; /* duty percent choices, trial 1 */
+
+  /* ---------------- pure logic: the discrete-time buck ---------------- */
+
+  /* Open-loop synchronous buck, integrated per switching-period slice.
+     This is the honest modern VRM: the low-side MOSFET replaces the
+     freewheel diode, so the off-phase drop is millivolts, not a diode's
+     0.4 V, and output equals duty times input minus tiny resistive
+     drops. Switch on: the inductor sees Vin - Vout across it. Switch
+     off: the low-side switch carries the current (diode emulation, so
+     current never reverses; when it reaches zero it stays zero, which
+     is DCM). The load is a resistor (R = Vtarget / Iload): a real CPU
+     is closer to constant-power, which is harsher, so the resistor is
+     the kind interpretation, and it honestly damps the post-step ring
+     the way real board losses do. Saturation: past Isat the core gives
+     up and effective inductance collapses to a quarter, which is
+     exactly the failure you are qualifying against. Returns
+     steady-state measurements plus downsampled traces for the scope,
+     and, when R2 is set, pre-step average, post-step average, and the
+     transient dip. */
+  function bkSim(o) {
+    var T = 1 / o.freq, dt = T / 240;
+    var RDS = 0.0005, RLS = 0.0005; /* high-side / low-side switch resistance */
+    var vin = BK_VIN;
+    var hasStep = (typeof o.R2 === "number");
+    var settlePeriods = 60;
+    var stepPeriod = hasStep ? 60 : -1;
+    var totalPeriods = hasStep ? 1300 : 80;
+    var postStart = hasStep ? totalPeriods - 40 : settlePeriods;
+    var steps = Math.ceil(totalPeriods * T / dt);
+    /* Start at the valley of the expected ripple triangle (start of the
+       on-phase), so the only transient is second-order and the LC ring
+       never pollutes the measurement, even at high Q. */
+    var dI = (vin - o.duty * vin) * o.duty * T / o.L;
+    var iAvg0 = o.vtarget / o.R1;
+    var il = Math.max(0, iAvg0 - dI / 2), vc = o.duty * vin;
+    var R = o.R1;
+    var vSum = 0, vN = 0, vmax = -1e9, vmin = 1e9;
+    var iPeak = -1e9, iVal = 1e9, saturated = false, dcm = false;
+    var preSum = 0, preN = 0, postSum = 0, postN = 0, dipMin = 1e9;
+    var ripVmax = -1e9, ripVmin = 1e9; /* ripple measured over the last 5 periods */
+    var ripStart = (totalPeriods - 5) * T;
+    var traceStart = (totalPeriods - 4) * T;
+    var traces = { vsw: [], il: [], vout: [], stepAt: hasStep ? (stepPeriod * T - traceStart) : -1 };
+    var t = 0, s;
+    for (s = 0; s < steps; s++, t += dt) {
+      var per = t / T, pIdx = Math.floor(per), ph = per - pIdx;
+      if (hasStep && pIdx >= stepPeriod) R = o.R2;
+      var Leff = (il > o.isat) ? o.L * 0.25 : o.L;
+      var vsw, on = ph < o.duty;
+      if (on) {
+        vsw = vin;
+        il += (vin - vc - il * RDS) / Leff * dt;
+      } else {
+        vsw = 0;
+        il += (-vc - il * RLS) / Leff * dt;
+        if (il < 0) {
+          il = 0;
+          vsw = vc; /* inductor current at zero: the switch node floats to Vout */
+          if (pIdx >= settlePeriods) dcm = true;
+        }
+      }
+      if (il > o.isat) {
+        /* The collapse physics always applies (it honestly worsens the
+           transient), but the verdict flag latches only in settled
+           windows, so a momentary post-step overshoot is judged by the
+           dip it causes, not by a startle flag. */
+        if (pIdx >= postStart || (pIdx >= settlePeriods && (!hasStep || pIdx < stepPeriod - 20))) saturated = true;
+      }
+      var ic = il - vc / R;
+      vc += ic / o.C * dt;
+      var vout = vc + ic * o.esr;
+      if (pIdx >= settlePeriods) {
+        vSum += vout; vN++;
+        if (vout > vmax) vmax = vout;
+        if (vout < vmin) vmin = vout;
+        if (il > iPeak) iPeak = il;
+        if (il < iVal) iVal = il;
+      }
+      if (hasStep && pIdx >= stepPeriod - 20 && pIdx < stepPeriod) { preSum += vout; preN++; }
+      if (hasStep && pIdx >= stepPeriod) {
+        if (pIdx >= postStart) { postSum += vout; postN++; }
+        if (vout < dipMin) dipMin = vout;
+      }
+      if (t >= ripStart) {
+        if (vout > ripVmax) ripVmax = vout;
+        if (vout < ripVmin) ripVmin = vout;
+      }
+      if (t >= traceStart && (s % 4 === 0)) {
+        traces.vsw.push(vsw); traces.il.push(il); traces.vout.push(vout);
+      }
+    }
+    return {
+      voutAvg: vSum / vN,
+      ripplePP: vmax - vmin,
+      rippleSteady: ripVmax - ripVmin,
+      iPeak: iPeak, iValley: iVal,
+      saturated: saturated, dcm: dcm,
+      preAvg: preN ? preSum / preN : 0,
+      postAvg: postN ? postSum / postN : 0,
+      dip: hasStep ? (preSum / preN - dipMin) : 0,
+      traces: traces
+    };
+  }
+
+  function bkKnobs(ti, st) {
+    var T = BK_TRIALS[ti];
+    return {
+      duty: st.dutyPct / 100,
+      freq: BK_FREQS[st.freqIdx].hz,
+      L: BK_INDUCTORS[st.indIdx].L,
+      isat: BK_INDUCTORS[st.indIdx].isat,
+      C: BK_CAPS[st.capIdx].C,
+      esr: BK_CAPS[st.capIdx].esr,
+      vtarget: T.vtarget,
+      R1: T.vtarget / T.iload,
+      R2: T.iload2 === null ? undefined : T.vtarget / T.iload2
+    };
+  }
+
+  function bkFmtV(v) { return (v * 1000).toFixed(1) + " mV"; }
+  function bkFmtA(a) { return a.toFixed(2) + " A"; }
+
+  /* Verdict for trial ti against knob state st. Returns pass plus a
+     check list whose labels always accompany any color. */
+  function bkVerdict(ti, st) {
+    var T = BK_TRIALS[ti], r = bkSim(bkKnobs(ti, st)), checks = [];
+    var vMeas = (T.iload2 === null) ? r.voutAvg : r.preAvg;
+    var vOk = Math.abs(vMeas - T.vtarget) <= T.vtol;
+    checks.push({ label: "rail voltage", ok: vOk,
+      detail: bkFmtV(vMeas) + " measured vs " + T.vtarget.toFixed(1) + " V target, tolerance " +
+              bkFmtV(T.vtol) + (vOk ? ": inside." : ": OUT OF SPEC.") });
+    var ripMeas = r.rippleSteady, ripOk = ripMeas <= T.rippleMax;
+    checks.push({ label: "ripple", ok: ripOk,
+      detail: bkFmtV(ripMeas) + " peak-to-peak, budget " + bkFmtV(T.rippleMax) +
+              (ripOk ? ": inside." : ": OVER BUDGET, the rail wobbles too much.") });
+    var satOk = !r.saturated;
+    checks.push({ label: "inductor saturation", ok: satOk,
+      detail: satOk ? "peak " + bkFmtA(r.iPeak) + " stays under the " +
+              BK_INDUCTORS[st.indIdx].isat + " A saturation rating: no saturation."
+              : "peak " + bkFmtA(r.iPeak) + " exceeds the " + BK_INDUCTORS[st.indIdx].isat +
+                " A rating: SATURATED, the core gave up and the ripple exploded." });
+    var dcmNote = r.dcm ? " DCM reached: at this light load the inductor current hits zero each cycle." : "";
+    if (T.iload2 !== null) {
+      var postTol = T.postVtol || T.vtol;
+      var postOk = Math.abs(r.postAvg - T.vtarget) <= postTol;
+      checks.push({ label: "rail after step", ok: postOk,
+        detail: bkFmtV(r.postAvg) + " at " + T.iload2 + " A vs " + T.vtarget.toFixed(1) +
+                " V target, recovery tolerance " + bkFmtV(postTol) +
+                (postOk ? ": holds." : ": OUT OF SPEC after the step.") });
+      var dipOk = r.dip <= T.dipMax;
+      checks.push({ label: "load-step dip", ok: dipOk,
+        detail: bkFmtV(r.dip) + " dip on the 2 A to 10 A step, budget " + bkFmtV(T.dipMax) +
+                (dipOk ? ": inside." : ": TOO DEEP, the rail sagged past budget.") + dcmNote });
+    } else if (dcmNote) {
+      checks.push({ label: "conduction mode", ok: true,
+        detail: "note:" + dcmNote });
+    }
+    var pass = checks.every(function (c) { return c.ok; });
+    return { pass: pass, checks: checks, r: r };
+  }
+
+  /* ---------------- state ---------------- */
+
+  function bkNewTrialState() {
+    return {
+      predicted: null,      /* duty percent the visitor called, trial 1 */
+      dutyPct: 10, freqIdx: 1, indIdx: 1, capIdx: 2,
+      ran: false, last: null, certified: false
+    };
+  }
+  function bkNewState() {
+    return { cur: 0, trials: [bkNewTrialState(), bkNewTrialState(), bkNewTrialState()] };
+  }
+  var bkS = bkNewState();
+  var bkEls = {};
+
+  var BK_CSS = [
+    ".bk-overlay{position:fixed;inset:0;z-index:60;display:none;align-items:flex-start;justify-content:center;background:rgba(8,8,10,.82);padding:18px 12px;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".bk-overlay.open{display:flex}",
+    ".bk-panel{width:min(880px,100%);background:var(--panel,#141416);border:1px solid var(--line,#2a2a2e);border-radius:10px;color:var(--paper,#f2efe9);font-family:'Space Grotesk',system-ui,sans-serif;margin:2vh auto;max-height:96vh;display:flex;flex-direction:column}",
+    ".bk-head{padding:16px 18px 10px;border-bottom:1px solid var(--line,#2a2a2e)}",
+    ".bk-head h3{margin:0 0 4px;font-size:20px;letter-spacing:.02em}",
+    ".bk-spec{margin:0 0 8px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ember,#ff5a1f);letter-spacing:.12em}",
+    ".bk-why{margin:0 0 8px;font-size:13.5px;line-height:1.55;color:#d8d4cc}",
+    ".bk-worked{margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#2a2a2e);border-left:3px solid var(--ember,#ff5a1f);border-radius:0 6px 6px 0;background:rgba(255,90,31,.05);font-size:13px;line-height:1.6}",
+    ".bk-worked b{color:#fff}",
+    ".bk-failmodes{margin:0 0 4px;font-size:12.5px;line-height:1.5;color:#a9a49a}",
+    ".bk-body{padding:12px 18px;overflow-y:auto}",
+    ".bk-tabs{display:flex;gap:8px;margin:2px 0 12px;flex-wrap:wrap}",
+    ".bk-tab{flex:1;min-width:150px;min-height:48px;border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;padding:8px 6px;text-align:center}",
+    ".bk-tab .bk-tname{display:block;font-size:13px;font-weight:600}",
+    ".bk-tab .bk-tprof{display:block;font-size:11px;color:#a9a49a;margin-top:2px}",
+    ".bk-tab[aria-selected='true']{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.1)}",
+    ".bk-tab.done{border-color:#3fa34d}",
+    ".bk-tab.done .bk-tname::after{content:' \\2713';color:#3fa34d}",
+    ".bk-trialwhy{margin:0 0 10px;font-size:12.5px;line-height:1.55;color:#a9a49a}",
+    ".bk-card{border:1px solid var(--line,#2a2a2e);border-radius:8px;padding:12px;margin:0 0 12px;background:rgba(255,255,255,.015)}",
+    ".bk-card h4{margin:0 0 8px;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:#a9a49a}",
+    ".bk-knobs{display:grid;grid-template-columns:1fr 1fr;gap:10px}",
+    "@media(max-width:560px){.bk-knobs{grid-template-columns:1fr}}",
+    ".bk-knob label{display:block;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.1em;color:#a9a49a;margin:0 0 6px}",
+    ".bk-knob output{display:block;font-family:'IBM Plex Mono',monospace;font-size:14px;color:var(--paper,#f2efe9);margin:0 0 2px}",
+    ".bk-knob input[type=range]{width:100%;min-height:48px;accent-color:var(--ember,#ff5a1f)}",
+    ".bk-knob select{width:100%;min-height:48px;background:#0e0e10;color:var(--paper,#f2efe9);border:1px solid var(--line,#2a2a2e);border-radius:6px;font-family:'IBM Plex Mono',monospace;font-size:13px;padding:0 10px}",
+    ".bk-btn{min-height:48px;min-width:48px;border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.06em;cursor:pointer;padding:12px 18px}",
+    ".bk-btn.primary{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12);font-weight:700}",
+    ".bk-btn:disabled{opacity:.38;cursor:not-allowed}",
+    ".bk-btn:focus-visible,.bk-tab:focus-visible,.bk-knob select:focus-visible,.bk-knob input[type=range]:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".bk-popts{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}",
+    ".bk-popt{flex:1;min-width:110px;min-height:48px;border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:15px;cursor:pointer}",
+    ".bk-popt[aria-pressed='true']{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.14)}",
+    ".bk-readout{font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.7;color:#d8d4cc;margin:0;white-space:pre-wrap}",
+    ".bk-readout .good{color:#3fa34d;font-weight:700}",
+    ".bk-readout .bad{color:#e5484d;font-weight:700}",
+    ".bk-scope{width:100%;height:250px;display:block;background:#0b0b0d;border:1px solid var(--line,#2a2a2e);border-radius:6px}",
+    ".bk-log{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.65;color:#c9c4b9;border-top:1px solid var(--line,#2a2a2e);padding-top:10px;max-height:220px;overflow-y:auto}",
+    ".bk-log p{margin:0 0 6px}",
+    ".bk-log .good{color:#3fa34d}.bk-log .bad{color:#e5484d}.bk-log .dim{color:#8a857a}",
+    ".bk-foot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 18px;border-top:1px solid var(--line,#2a2a2e)}",
+    ".bk-progress{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.1em;color:#a9a49a;margin-right:auto}",
+    "@media(prefers-reduced-motion:reduce){.bk-overlay.open .bk-panel{animation:none}}"
+  ];
+
+  /* ---------------- small DOM helpers ---------------- */
+
+  function bkEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  function bkLog(html) {
+    var p = document.createElement("p");
+    p.innerHTML = html;
+    bkEls.log.appendChild(p);
+    bkEls.log.scrollTop = bkEls.log.scrollHeight;
+  }
+
+  /* ---------------- scope ---------------- */
+
+  function bkDrawScope() {
+    var cv = bkEls.scope;
+    if (!cv || !cv.getContext) return;
+    var ctx = cv.getContext("2d");
+    var W = cv.clientWidth || 600, H = 250;
+    var dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+    cv.width = W * dpr; cv.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    var st = bkS.trials[bkS.cur];
+    ctx.font = "10px 'IBM Plex Mono',monospace";
+    if (!st.last) {
+      ctx.fillStyle = "#8a857a";
+      ctx.fillText("PRESS RUN SIMULATION: THE SCOPE DRAWS THE SWITCH NODE, THE INDUCTOR CURRENT, AND THE OUTPUT RIPPLE.", 14, H / 2);
+      return;
+    }
+    var tr = st.last.r.traces, n = tr.vout.length;
+    if (!n) return;
+    var lanes = [
+      { key: "vsw", label: "SWITCH NODE (V)", lo: -1, hi: 13, unit: "V" },
+      { key: "il", label: "INDUCTOR CURRENT (A)", lo: 0, hi: Math.max(2, st.last.r.iPeak * 1.15), unit: "A" },
+      { key: "vout", label: "OUTPUT RIPPLE, ZOOMED (V)", lo: null, hi: null, unit: "V" }
+    ];
+    var T = BK_TRIALS[bkS.cur];
+    var zlo = T.vtarget - Math.max(0.05, T.rippleMax * 3);
+    var zhi = T.vtarget + Math.max(0.05, T.rippleMax * 3);
+    lanes[2].lo = zlo; lanes[2].hi = zhi;
+    var laneH = H / 3;
+    lanes.forEach(function (ln, li) {
+      var y0 = li * laneH, pad = 8;
+      ctx.strokeStyle = "#2a2a2e"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, y0 + laneH - pad); ctx.lineTo(W, y0 + laneH - pad); ctx.stroke();
+      ctx.fillStyle = "#8a857a";
+      ctx.fillText(ln.label, 10, y0 + 14);
+      var data = tr[ln.key];
+      var span = (ln.hi - ln.lo) || 1;
+      function X(i) { return 10 + (i / (n - 1)) * (W - 20); }
+      function Y(v) { return y0 + laneH - pad - ((v - ln.lo) / span) * (laneH - pad - 20); }
+      if (li === 2) {
+        ctx.strokeStyle = "#3fa34d"; ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(10, Y(T.vtarget)); ctx.lineTo(W - 10, Y(T.vtarget)); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#3fa34d";
+        ctx.fillText("TARGET " + T.vtarget.toFixed(1) + " V", W - 110, Y(T.vtarget) - 4);
+      }
+      ctx.strokeStyle = li === 2 ? "#ff5a1f" : "#c9c4b9";
+      ctx.lineWidth = li === 2 ? 1.6 : 1.2;
+      ctx.beginPath();
+      for (var i = 0; i < n; i++) {
+        var px = X(i), py = Y(data[i]);
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+      var last = data[n - 1];
+      ctx.fillStyle = li === 2 ? "#ff5a1f" : "#c9c4b9";
+      ctx.fillText(last.toFixed(ln.key === "il" ? 2 : 3) + " " + ln.unit, W - 78, y0 + 14);
+    });
+    if (tr.stepAt >= 0) {
+      var frac2 = Math.min(0.98, Math.max(0.02, (function () {
+        var per = 1 / BK_FREQS[st.freqIdx].hz;
+        return tr.stepAt / (4 * per);
+      })()));
+      var sx2 = 10 + frac2 * (W - 20);
+      ctx.strokeStyle = "#e5484d"; ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(sx2, 0); ctx.lineTo(sx2, H); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#e5484d";
+      ctx.fillText("LOAD STEP", sx2 + 6, 14);
+    }
+  }
+
+  /* ---------------- trial rendering ---------------- */
+
+  function bkKnobChanged() {
+    var st = bkS.trials[bkS.cur];
+    st.dutyPct = parseFloat(bkEls.duty.value);
+    st.freqIdx = bkEls.freq.selectedIndex;
+    st.indIdx = bkEls.ind.selectedIndex;
+    st.capIdx = bkEls.cap.selectedIndex;
+    bkEls.dutyOut.textContent = st.dutyPct.toFixed(1) + " %  (predicts " +
+      (BK_VIN * st.dutyPct / 100).toFixed(2) + " V open-loop)";
+    if (st.certified) {
+      st.certified = false;
+      bkLog("<span class='dim'>Knob moved: trial certification revoked. Re-run and re-certify.</span>");
+    }
+    st.ran = false; st.last = null;
+    bkRenderAll();
+  }
+
+  function bkOnPredict(pct) {
+    var st = bkS.trials[bkS.cur];
+    st.predicted = pct;
+    var opts = bkEls.trialHost.querySelectorAll(".bk-popt");
+    for (var i = 0; i < opts.length; i++) {
+      opts[i].setAttribute("aria-pressed", opts[i].getAttribute("data-pct") == String(pct) ? "true" : "false");
+    }
+    bkLog("Prediction recorded: <b>" + pct + " %</b> duty. Run the sim to check it against the rail.");
+    bkRenderAll();
+  }
+
+  function bkOnRun() {
+    var ti = bkS.cur, st = bkS.trials[ti], T = BK_TRIALS[ti];
+    if (ti === 0 && st.predicted === null) {
+      toast("Call the duty first: pick 5, 10, or 20 %.");
+      bkLog("<span class='dim'>The sim waits: call the duty (5, 10, or 20 %) before the first run.</span>");
+      return;
+    }
+    var v = bkVerdict(ti, st);
+    st.ran = true; st.last = v;
+    var lines = [];
+    if (ti === 0) {
+      var called = (st.predicted === 10);
+      lines.push(called
+        ? "<span class='good'>Called it:</span> " + st.predicted + " % duty gives " + bkFmtV(v.r.voutAvg) +
+          ", the 1.2 V rail, because 0.10 x 12 = 1.20."
+        : "<span class='bad'>Not quite:</span> " + st.predicted + " % duty gives " + bkFmtV(v.r.voutAvg) +
+          ", not the 1.2 V rail. The worked example says duty = target / input = 1.2 / 12 = 10 %.");
+    }
+    v.checks.forEach(function (c) {
+      lines.push((c.ok ? "<span class='good'>PASS</span> " : "<span class='bad'>FAIL</span> ") +
+                 c.label + ": " + c.detail);
+    });
+    if (v.pass) lines.push("<span class='good'>Rail qualified.</span> Certify the trial when ready.");
+    else lines.push("<span class='bad'>Rail NOT qualified.</span> Tune the knobs and run again.");
+    bkLog("RUN: duty " + st.dutyPct.toFixed(1) + " %, " + BK_FREQS[st.freqIdx].name + ", " +
+          BK_INDUCTORS[st.indIdx].name + ", " + BK_CAPS[st.capIdx].name + ".<br>" + lines.join("<br>"));
+    toast(T.rail + " rail: " + (v.pass ? "QUALIFIED" : "FAILED"));
+    bkDrawScope();
+    bkRenderAll();
+  }
+
+  function bkRenderChecks() {
+    var ti = bkS.cur, st = bkS.trials[ti], T = BK_TRIALS[ti];
+    var needPredict = (ti === 0);
+    var ok = st.ran && st.last && st.last.pass && (!needPredict || st.predicted === 10);
+    var why = "Checks: ";
+    if (needPredict) why += "prediction " + (st.predicted === null ? "(none yet)" : st.predicted + " %" + (st.predicted === 10 ? ", correct" : ", wrong")) + ", ";
+    why += "a passing sim run " + (st.ran && st.last && st.last.pass ? "(yes)" : "(no)") + ".";
+    bkEls.checks.innerHTML = why;
+    bkEls.certBtn.disabled = !ok || st.certified;
+    bkEls.certBtn.textContent = st.certified ? "TRIAL CERTIFIED" : "CERTIFY TRIAL";
+  }
+
+  function bkOnCertify() {
+    var ti = bkS.cur, st = bkS.trials[ti];
+    st.certified = true;
+    bkLog("<span class='good'>Trial " + BK_TRIALS[ti].n + " certified: the " + BK_TRIALS[ti].rail + " rail holds.</span>");
+    toast("Trial " + BK_TRIALS[ti].n + " certified");
+    bkRenderAll();
+  }
+
+  function bkRenderTrial() {
+    var ti = bkS.cur, st = bkS.trials[ti], T = BK_TRIALS[ti];
+    var host = bkEls.trialHost;
+    host.innerHTML = "";
+    bkEls.trialWhy.textContent = T.story;
+
+    /* prediction card, trial 1 only */
+    if (ti === 0) {
+      var pc = bkEl("div", "bk-card");
+      pc.appendChild(bkEl("h4", null, "PREDICT, THEN VERIFY"));
+      var pq = bkEl("p", "bk-readout",
+        "12 V in, 1.2 V wanted. What duty does the switch need?\nCall it before the first run.");
+      pc.appendChild(pq);
+      var popts = bkEl("div", "bk-popts");
+      BK_PREDICT_OPTS.forEach(function (pct) {
+        var b = bkEl("button", "bk-popt", pct + " %");
+        b.setAttribute("data-pct", String(pct));
+        b.setAttribute("aria-pressed", st.predicted === pct ? "true" : "false");
+        b.addEventListener("click", function () { bkOnPredict(pct); });
+        popts.appendChild(b);
+      });
+      pc.appendChild(popts);
+      host.appendChild(pc);
+    }
+
+    /* knob card */
+    var kc = bkEl("div", "bk-card");
+    kc.appendChild(bkEl("h4", null, "CONVERTER KNOBS"));
+    var grid = bkEl("div", "bk-knobs");
+
+    var dutyWrap = bkEl("div", "bk-knob");
+    var dl = document.createElement("label");
+    dl.setAttribute("for", "bkDuty"); dl.textContent = "DUTY (SWITCH ON FRACTION)";
+    dutyWrap.appendChild(dl);
+    bkEls.dutyOut = bkEl("output", null, "");
+    dutyWrap.appendChild(bkEls.dutyOut);
+    bkEls.duty = document.createElement("input");
+    bkEls.duty.type = "range"; bkEls.duty.id = "bkDuty";
+    bkEls.duty.min = "2"; bkEls.duty.max = "40"; bkEls.duty.step = "0.5";
+    bkEls.duty.value = String(st.dutyPct);
+    bkEls.duty.setAttribute("aria-label", "Duty cycle percent");
+    bkEls.duty.addEventListener("input", bkKnobChanged);
+    dutyWrap.appendChild(bkEls.duty);
+    grid.appendChild(dutyWrap);
+
+    function selectKnob(id, label, options, selIdx) {
+      var wrap = bkEl("div", "bk-knob");
+      var lb = document.createElement("label");
+      lb.setAttribute("for", id); lb.textContent = label;
+      wrap.appendChild(lb);
+      var sel = document.createElement("select");
+      sel.id = id;
+      options.forEach(function (o, i) {
+        var op = document.createElement("option");
+        op.value = String(i); op.textContent = o.name;
+        if (i === selIdx) op.selected = true;
+        sel.appendChild(op);
+      });
+      sel.addEventListener("change", bkKnobChanged);
+      wrap.appendChild(sel);
+      grid.appendChild(wrap);
+      return sel;
+    }
+    bkEls.freq = selectKnob("bkFreq", "SWITCHING FREQUENCY", BK_FREQS, st.freqIdx);
+    bkEls.ind = selectKnob("bkInd", "INDUCTOR (WITH SATURATION RATING)", BK_INDUCTORS, st.indIdx);
+    bkEls.cap = selectKnob("bkCap", "OUTPUT CAPACITOR (WITH ESR)", BK_CAPS, st.capIdx);
+    kc.appendChild(grid);
+    var loadLine = bkEl("p", "bk-readout",
+      "Load: " + T.iload + " A" + (T.iload2 !== null ? " stepping to " + T.iload2 + " A mid-run" : "") +
+      ". Input: 12 V fixed. Budget: rail " + T.vtarget.toFixed(1) + " V +/-" + bkFmtV(T.vtol) +
+      ", ripple <=" + bkFmtV(T.rippleMax) + (T.dipMax ? ", step dip <=" + bkFmtV(T.dipMax) : "") + ".");
+    kc.appendChild(loadLine);
+    var run = bkEl("button", "bk-btn primary", "RUN SIMULATION");
+    run.addEventListener("click", bkOnRun);
+    kc.appendChild(run);
+    host.appendChild(kc);
+    bkEls.dutyOut.textContent = st.dutyPct.toFixed(1) + " %  (predicts " +
+      (BK_VIN * st.dutyPct / 100).toFixed(2) + " V open-loop)";
+
+    /* readout card */
+    var rc = bkEl("div", "bk-card");
+    rc.appendChild(bkEl("h4", null, "READOUT (KEPT VISIBLE)"));
+    bkEls.readout = bkEl("p", "bk-readout", "No run yet. Set the knobs and press RUN SIMULATION.");
+    rc.appendChild(bkEls.readout);
+    host.appendChild(rc);
+
+    /* scope card */
+    var sc = bkEl("div", "bk-card");
+    sc.appendChild(bkEl("h4", null, "SCOPE"));
+    bkEls.scope = bkEl("canvas", "bk-scope");
+    bkEls.scope.setAttribute("role", "img");
+    bkEls.scope.setAttribute("aria-label", "Oscilloscope: switch node voltage, inductor current, output ripple");
+    sc.appendChild(bkEls.scope);
+    host.appendChild(sc);
+
+    /* certify card */
+    var cc = bkEl("div", "bk-card");
+    cc.appendChild(bkEl("h4", null, "CERTIFY CHECKS"));
+    bkEls.checks = bkEl("p", "bk-readout", "");
+    cc.appendChild(bkEls.checks);
+    bkEls.certBtn = bkEl("button", "bk-btn primary", "CERTIFY TRIAL");
+    bkEls.certBtn.addEventListener("click", bkOnCertify);
+    cc.appendChild(bkEls.certBtn);
+    host.appendChild(cc);
+
+    bkRenderChecks();
+    bkUpdateReadout();
+    bkDrawScope();
+  }
+
+  function bkUpdateReadout() {
+    var ti = bkS.cur, st = bkS.trials[ti], T = BK_TRIALS[ti];
+    if (!st.last) {
+      bkEls.readout.textContent = "No run yet. Set the knobs and press RUN SIMULATION.";
+      return;
+    }
+    var r = st.last.r, L = [];
+    var vMeas = (T.iload2 === null) ? r.voutAvg : r.preAvg;
+    L.push("VOUT  " + bkFmtV(vMeas) + "  (target " + T.vtarget.toFixed(1) + " V)");
+    L.push("RIPPLE " + bkFmtV(r.rippleSteady) + " pp  (budget " + bkFmtV(T.rippleMax) + ")");
+    L.push("IPEAK  " + bkFmtA(r.iPeak) + "  (Isat " + BK_INDUCTORS[st.indIdx].isat + " A)" +
+           (r.saturated ? "  SATURATED" : ""));
+    if (r.dcm) L.push("MODE   DCM (current hits zero each cycle)");
+    if (T.iload2 !== null) {
+      L.push("POST-STEP " + bkFmtV(r.postAvg) + " at " + T.iload2 + " A");
+      L.push("DIP    " + bkFmtV(r.dip) + "  (budget " + bkFmtV(T.dipMax) + ")");
+    }
+    L.push("DUTY " + st.dutyPct.toFixed(1) + " %  F " + BK_FREQS[st.freqIdx].name +
+           "  L " + BK_INDUCTORS[st.indIdx].name + "  C " + BK_CAPS[st.capIdx].name);
+    bkEls.readout.textContent = L.join("\n");
+  }
+
+  /* ---------------- tabs, progress, certificate ---------------- */
+
+  function bkRenderTabs() {
+    bkEls.tabs.innerHTML = "";
+    BK_TRIALS.forEach(function (T, i) {
+      var st = bkS.trials[i];
+      var t = bkEl("button", "bk-tab" + (st.certified ? " done" : ""), null);
+      t.setAttribute("role", "tab");
+      t.setAttribute("aria-selected", i === bkS.cur ? "true" : "false");
+      var nm = bkEl("span", "bk-tname", T.name);
+      var pf = bkEl("span", "bk-tprof", T.rail + " " + T.vtarget.toFixed(1) + " V");
+      t.appendChild(nm); t.appendChild(pf);
+      t.addEventListener("click", function () { bkS.cur = i; bkRenderAll(); });
+      bkEls.tabs.appendChild(t);
+    });
+    bkEls.tabs.onkeydown = function (e) {
+      if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+      var d = e.key === "ArrowRight" ? 1 : -1;
+      bkS.cur = (bkS.cur + d + BK_TRIALS.length) % BK_TRIALS.length;
+      bkRenderAll();
+      var tabs = bkEls.tabs.querySelectorAll(".bk-tab");
+      if (tabs[bkS.cur]) tabs[bkS.cur].focus();
+      e.preventDefault();
+    };
+  }
+
+  function bkRenderAll() {
+    bkRenderTabs();
+    bkRenderTrial();
+    var n = bkS.trials.filter(function (s) { return s.certified; }).length;
+    bkEls.progress.textContent = "CERTIFIED: " + n + "/3";
+    bkEls.dlBtn.disabled = n < 3;
+  }
+
+  function bkDownloadCert() {
+    var lines = ["THE BUCK ROOM // TAPEOUT GPU VRM QUALIFICATION LAB", "Certificate of qualification", ""];
+    BK_TRIALS.forEach(function (T, i) {
+      var st = bkS.trials[i], r = st.last ? st.last.r : null;
+      lines.push("TRIAL " + T.n + " " + T.rail.toUpperCase() + " " + T.vtarget.toFixed(1) + " V: duty " +
+        st.dutyPct.toFixed(1) + " %, " + BK_FREQS[st.freqIdx].name + ", " +
+        BK_INDUCTORS[st.indIdx].name + ", " + BK_CAPS[st.capIdx].name + "; " +
+        (r ? ("measured " + bkFmtV(T.iload2 === null ? r.voutAvg : r.preAvg) +
+          ", ripple " + bkFmtV(r.rippleSteady) +
+          (T.iload2 !== null ? ", step dip " + bkFmtV(r.dip) : "") + ", " +
+          (r.saturated ? "SATURATED" : "no saturation")) : "no run") + ".");
+    });
+    lines.push("", "One mechanism: the switch chops 12 V into pulses, the inductor averages them,",
+      "and the output is duty times the input. Hold the rail, tame the ripple, survive the step.");
+    var blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "buck-room-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  /* ---------------- DOM build ---------------- */
+
+  function bkBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("bkBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = BK_CSS.join("\n");
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "bkBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Buck Room";
+    b.addEventListener("click", bkOpen);
+    box.appendChild(b);
+
+    var ov = bkEl("div", "bk-overlay");
+    ov.id = "bkOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Buck Room");
+    var panel = bkEl("div", "bk-panel");
+
+    var head = bkEl("div", "bk-head");
+    head.appendChild(bkEl("h3", null, "The Buck Room"));
+    head.appendChild(bkEl("p", "bk-spec", "TAPEOUT // GPU VRM QUALIFICATION"));
+    head.appendChild(bkEl("p", "bk-why",
+      "Every GPU core on a TAPEOUT card runs near one volt, but the card is fed twelve. Something has " +
+      "to step twelve volts down to one at twenty amps, and the obvious part, a linear regulator, would " +
+      "burn the difference as heat: (12 - 1.2) volts times 20 amps is 216 watts, a space heater where a " +
+      "regulator should be. The buck converter is the answer the industry actually ships: a switch chops " +
+      "the 12 V into pulses, an inductor refuses to let its current change instantly and averages those " +
+      "pulses into smooth DC, and the output equals duty times input. This bench is that circuit, open " +
+      "loop, with real inductor physics: ripple, saturation, and the load step that tests every VRM."));
+    var worked = bkEl("p", "bk-worked");
+    worked.innerHTML =
+      "<b>Worked example, trial 1, check it by hand:</b> the GPU core rail wants 1.2 V from the 12 V " +
+      "input. Set the duty to 10 percent: the switch spends one tenth of every cycle at 12 V and the " +
+      "rest at zero, and the inductor averages the pulses to 0.10 x 12 = <b>1.20 V</b> on the ideal math. " +
+      "The bench lands within a few millivolts of that, because the switches drop almost nothing, which " +
+      "is exactly why real VRMs use MOSFETs instead of diodes. That is " +
+      "the whole trick, and it is why the knob that matters most is labeled DUTY. The trap in the " +
+      "obvious alternative: a resistor divider also makes 1.2 V from 12 V on paper, until the 8 A load " +
+      "lands in parallel with the lower resistor and the voltage collapses. Division is not regulation.";
+    head.appendChild(worked);
+    head.appendChild(bkEl("p", "bk-failmodes",
+      "Failure modes, stated plainly. Duty wrong: the rail sits off target and the verdict names the " +
+      "miss in millivolts. Ripple over budget: the leftover wobble exceeds the rail's tolerance " +
+      "(25 mV here, about 2 percent of 1.2 V) and a real GPU would glitch under load. Inductor " +
+      "saturation: push peak current past the inductor's Isat and the core gives up, inductance " +
+      "collapses, current spikes, ripple explodes. Light-load DCM: at very light load the inductor " +
+      "current hits zero each cycle, the averaging breaks, and in this open-loop bench the rail floats " +
+      "high. The load step: slam the load from 2 A to 10 A and the inductor current can only slew so " +
+      "fast, so the output dips until it catches up. Certification demands the steady rail, the " +
+      "ripple, and the step, all inside budget."));
+    panel.appendChild(head);
+
+    var body = bkEl("div", "bk-body");
+    bkEls.tabs = bkEl("div", "bk-tabs");
+    bkEls.tabs.setAttribute("role", "tablist");
+    body.appendChild(bkEls.tabs);
+    bkEls.trialWhy = bkEl("p", "bk-trialwhy");
+    body.appendChild(bkEls.trialWhy);
+    bkEls.trialHost = bkEl("div", null);
+    body.appendChild(bkEls.trialHost);
+    bkEls.log = bkEl("div", "bk-log");
+    bkEls.log.setAttribute("aria-live", "polite");
+    body.appendChild(bkEls.log);
+    panel.appendChild(body);
+
+    var foot = bkEl("div", "bk-foot");
+    bkEls.progress = bkEl("span", "bk-progress", "CERTIFIED: 0/3");
+    foot.appendChild(bkEls.progress);
+    var resetTrial = bkEl("button", "bk-btn", "RESET TRIAL");
+    resetTrial.addEventListener("click", function () {
+      var keep = bkS.trials[bkS.cur];
+      bkS.trials[bkS.cur] = bkNewTrialState();
+      bkS.trials[bkS.cur].dutyPct = keep.dutyPct;
+      bkS.trials[bkS.cur].freqIdx = keep.freqIdx;
+      bkS.trials[bkS.cur].indIdx = keep.indIdx;
+      bkS.trials[bkS.cur].capIdx = keep.capIdx;
+      bkRenderAll();
+      bkLog("<span class='dim'>Trial " + BK_TRIALS[bkS.cur].n + " reset. Knobs kept, checks cleared.</span>");
+    });
+    foot.appendChild(resetTrial);
+    var resetBench = bkEl("button", "bk-btn", "RESET BENCH");
+    resetBench.addEventListener("click", function () {
+      bkS = bkNewState();
+      bkRenderAll();
+      bkLog("<span class='dim'>Bench reset. Three rails to qualify.</span>");
+    });
+    foot.appendChild(resetBench);
+    bkEls.dlBtn = bkEl("button", "bk-btn primary", "DOWNLOAD CERTIFICATE");
+    bkEls.dlBtn.disabled = true;
+    bkEls.dlBtn.addEventListener("click", bkDownloadCert);
+    foot.appendChild(bkEls.dlBtn);
+    var closeBtn = bkEl("button", "bk-btn", "CLOSE");
+    closeBtn.addEventListener("click", bkClose);
+    foot.appendChild(closeBtn);
+    panel.appendChild(foot);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    bkEls.overlay = ov;
+    bkRenderAll();
+  }
+
+  function bkOpen() {
+    if (!bkEls.overlay) bkBuild();
+    bkEls.overlay.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+  function bkClose() {
+    if (bkEls.overlay) bkEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", bkBuild);
+    } else {
+      bkBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      BK: {
+        TRIALS: BK_TRIALS, FREQS: BK_FREQS, INDUCTORS: BK_INDUCTORS, CAPS: BK_CAPS,
+        VIN: BK_VIN, PREDICT_OPTS: BK_PREDICT_OPTS,
+        bkSim: bkSim, bkKnobs: bkKnobs, bkVerdict: bkVerdict,
+        newTrialState: bkNewTrialState, newState: bkNewState
+      }
+    });
+  }
+})();
