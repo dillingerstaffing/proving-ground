@@ -21800,3 +21800,772 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+/* Bench 33 staging: The Flash Room module (appended to features.js at ship time). */
+"use strict";
+/* Bench 33: The Flash Room. A real NAND-flash FTL simulation on the bench:
+   erase-before-write (a page is written exactly once, a rewrite lands on a
+   fresh page and the old copy goes stale), a sector-to-page map, garbage
+   collection that copies valid pages out before a whole-block erase, and an
+   erase budget per block that kills the block when exceeded. Three drives,
+   three workloads, one atomic mechanism: you cannot overwrite flash, you can
+   only invalidate and relocate, and every erase wears the block out. */
+(function () {
+  var FR_CSS = [
+    ".fr-overlay{position:fixed;inset:0;z-index:60;display:none;align-items:flex-start;justify-content:center;background:rgba(8,8,10,.82);padding:18px 12px;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".fr-overlay.open{display:flex}",
+    ".fr-panel{width:min(880px,100%);background:var(--panel,#141416);border:1px solid var(--line,#2a2a2e);border-radius:10px;color:var(--paper,#f2efe9);font-family:'Space Grotesk',system-ui,sans-serif;margin:2vh auto;max-height:96vh;display:flex;flex-direction:column}",
+    ".fr-head{padding:16px 18px 10px;border-bottom:1px solid var(--line,#2a2a2e)}",
+    ".fr-head h3{margin:0 0 4px;font-size:20px;letter-spacing:.02em}",
+    ".fr-spec{margin:0 0 8px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ember,#ff5a1f);letter-spacing:.12em}",
+    ".fr-why{margin:0 0 8px;font-size:13.5px;line-height:1.55;color:#d8d4cc}",
+    ".fr-worked{margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#2a2a2e);border-left:3px solid var(--ember,#ff5a1f);border-radius:0 6px 6px 0;background:rgba(255,90,31,.05);font-size:13px;line-height:1.6}",
+    ".fr-worked b{color:#fff}",
+    ".fr-failmodes{margin:0 0 4px;font-size:12.5px;line-height:1.5;color:#a9a49a}",
+    ".fr-body{padding:12px 18px;overflow-y:auto}",
+    ".fr-tabs{display:flex;gap:8px;margin:2px 0 12px;flex-wrap:wrap}",
+    ".fr-tab{flex:1;min-width:150px;min-height:48px;border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;padding:8px 6px;text-align:center}",
+    ".fr-tab .fr-tname{display:block;font-size:13px;font-weight:600}",
+    ".fr-tab .fr-tprof{display:block;font-size:11px;color:#a9a49a;margin-top:2px}",
+    ".fr-tab[aria-selected='true']{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.1)}",
+    ".fr-tab.done{border-color:#3fa34d}",
+    ".fr-tab.done .fr-tname::after{content:' \\2713';color:#3fa34d}",
+    ".fr-trialwhy{margin:0 0 10px;font-size:12.5px;line-height:1.55;color:#a9a49a}",
+    ".fr-cols{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}",
+    "@media (max-width:720px){.fr-cols{grid-template-columns:1fr}}",
+    ".fr-card{border:1px solid var(--line,#2a2a2e);border-radius:8px;padding:10px 12px}",
+    ".fr-card h4{margin:0 0 6px;font-size:13px;letter-spacing:.06em}",
+    ".fr-wl{font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.7;max-height:132px;overflow-y:auto;margin:0 0 8px;color:#c9c4b9}",
+    ".fr-wl .done{color:#6d6961;text-decoration:line-through}",
+    ".fr-wl .next{color:var(--ember,#ff5a1f);font-weight:700}",
+    ".fr-prog{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#d8d4cc;margin:0 0 8px}",
+    ".fr-grid{font-family:'IBM Plex Mono',monospace;font-size:11px}",
+    ".fr-brow{display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap}",
+    ".fr-blab{width:86px;font-size:10.5px;color:#a9a49a;flex:none}",
+    ".fr-blab .dead{color:var(--ember,#ff5a1f);font-weight:700}",
+    ".fr-cell{width:34px;height:34px;border:1px solid var(--line,#2a2a2e);border-radius:5px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;color:#6d6961;background:#0c0c0e;flex:none}",
+    ".fr-cell.valid{border-color:var(--ember,#ff5a1f);color:#fff}",
+    ".fr-cell.stale{color:#6d6961;text-decoration:line-through}",
+    ".fr-cell.deadcell{border-color:var(--ember,#ff5a1f);color:var(--ember,#ff5a1f)}",
+    ".fr-erase{font-size:10px;color:#a9a49a;flex:none;min-width:74px}",
+    ".fr-erase.hot{color:var(--ember,#ff5a1f);font-weight:700}",
+    ".fr-legend{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#6d6961;margin:2px 0 0;line-height:1.6}",
+    ".fr-ctrl{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;border:1px solid var(--line,#2a2a2e);border-radius:8px;padding:12px;margin-bottom:12px}",
+    ".fr-field{display:flex;flex-direction:column;gap:6px;min-width:130px}",
+    ".fr-field label{font-size:12px;color:#d8d4cc}",
+    ".fr-field select,.fr-field input{background:#0c0c0e;border:1px solid var(--line,#2a2a2e);color:var(--paper,#f2efe9);border-radius:6px;font-family:'IBM Plex Mono',monospace;font-size:13px;min-height:48px;padding:0 10px}",
+    ".fr-btn{border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;min-height:48px;padding:0 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Space Grotesk',system-ui,sans-serif}",
+    ".fr-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".fr-btn:disabled{opacity:.35;cursor:not-allowed}",
+    ".fr-btn.primary{background:var(--ember,#ff5a1f);border:none;color:#101012}",
+    ".fr-btn:focus-visible,.fr-tab:focus-visible,.fr-field select:focus-visible,.fr-field input:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".fr-map{width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:11.5px;margin:0 0 12px}",
+    ".fr-map th{text-align:left;color:#a9a49a;font-weight:400;padding:4px 8px 4px 0;border-bottom:1px solid var(--line,#2a2a2e)}",
+    ".fr-map td{padding:4px 8px 4px 0;border-bottom:1px solid rgba(42,42,46,.5);color:#d8d4cc}",
+    ".fr-checks{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#a9a49a;margin:0 0 4px;line-height:1.7}",
+    ".fr-checks .met{color:#3fa34d}",
+    ".fr-checks .unmet{color:#d8d4cc}",
+    ".fr-log{border:1px solid var(--line,#2a2a2e);border-radius:8px;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6;max-height:150px;overflow-y:auto;color:#c9c4b9;margin-bottom:4px}",
+    ".fr-log .dim{color:#6d6961}",
+    ".fr-log .good{color:#3fa34d}",
+    ".fr-log .bad{color:var(--ember,#ff5a1f)}",
+    ".fr-foot{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px 18px;border-top:1px solid var(--line,#2a2a2e)}",
+    ".fr-progress{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#d8d4cc}",
+    ".fr-strikes{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#a9a49a}",
+    ".fr-refhint{border:1px dashed var(--ember,#ff5a1f);border-radius:8px;padding:10px 12px;font-size:12.5px;line-height:1.6;color:#d8d4cc;margin-bottom:12px}",
+    "@media (prefers-reduced-motion:reduce){.fr-overlay,.fr-panel,.fr-tab,.fr-btn{transition:none}}"
+  ];
+
+  /* ---- drive model (shared with the node test hook) ---- */
+  function frPage() { return { st: "free", sector: -1, value: 0 }; }
+  /* One block is always SPARE: fully erased, never written by the host. This is
+     overprovisioning, the same 15-20 percent of hidden flash a real SSD keeps
+     so garbage collection always has somewhere to put the valid pages. After
+     every collection the just-erased block becomes the new spare. */
+  function frNewDrive(DB, P, limit, useSpare) {
+    var nB = useSpare ? DB + 1 : DB;
+    var blocks = [];
+    for (var b = 0; b < nB; b++) {
+      var pages = [];
+      for (var p = 0; p < P; p++) pages.push(frPage());
+      blocks.push({ pages: pages, erases: 0, dead: false });
+    }
+    return { B: nB, DB: DB, P: P, limit: limit, spare: useSpare ? DB : -1, blocks: blocks,
+             map: {}, wi: 0, gcs: 0, writes: [] };
+  }
+  function frIsFreeCell(d, b, p) {
+    return b !== d.spare && !d.blocks[b].dead && d.blocks[b].pages[p].st === "free";
+  }
+  /* write placement: greedy fills the lowest-numbered block with a free page
+     first, exactly like the cheapest real FTLs. */
+  function frPlace(d) {
+    for (var b = 0; b < d.DB; b++) {
+      if (d.blocks[b].dead) continue;
+      for (var p = 0; p < d.P; p++) {
+        if (frIsFreeCell(d, b, p)) return { b: b, p: p };
+      }
+    }
+    return null;
+  }
+  function frDataFree(d) {
+    var n = 0;
+    for (var b = 0; b < d.DB; b++) {
+      if (d.blocks[b].dead) continue;
+      for (var p = 0; p < d.P; p++) if (d.blocks[b].pages[p].st === "free") n++;
+    }
+    return n;
+  }
+  function frStaleCount(d, b) {
+    var n = 0;
+    for (var p = 0; p < d.P; p++) if (d.blocks[b].pages[p].st === "stale") n++;
+    return n;
+  }
+  function frValidList(d, b) {
+    var out = [];
+    for (var p = 0; p < d.P; p++) {
+      var pg = d.blocks[b].pages[p];
+      if (pg.st === "valid") out.push({ p: p, sector: pg.sector, value: pg.value });
+    }
+    return out;
+  }
+  function frHex(v) {
+    var s = v.toString(16).toUpperCase();
+    return "0x" + (s.length < 2 ? "0" + s : s);
+  }
+  /* one host write: the old copy goes stale, the new copy lands on a free
+     page, the map follows. Never overwrites in place: that is the law. */
+  function frHostWrite(d) {
+    if (d.wi >= d.writes.length) return { ok: false, reason: "workload complete" };
+    var w = d.writes[d.wi], s = w[0], v = w[1];
+    var old = d.map[s];
+    if (frDataFree(d) === 0)
+      return { ok: false, reason: "no free data page: the drive is full of stale pages, garbage-collect a block first" +
+        (d.spare >= 0 ? " (the spare block is reserved and never takes host writes)" :
+          " (no spare on this drive: only a fully-stale block can be collected with nowhere to relocate to)") };
+    var slot = frPlace(d);
+    if (!slot) return { ok: false, reason: "no free page: garbage-collect a block first" };
+    if (old) {
+      var opg = d.blocks[old.b].pages[old.p];
+      if (opg.st === "valid" && opg.sector === s) opg.st = "stale";
+    }
+    d.blocks[slot.b].pages[slot.p] = { st: "valid", sector: s, value: v };
+    d.map[s] = { b: slot.b, p: slot.p };
+    d.wi++;
+    return { ok: true, sector: s, value: v, at: slot, staleAt: old || null };
+  }
+  /* garbage collection: copy every valid page out, then erase the whole
+     block. The erase is what wears the block, not the writes. */
+  function frCollect(d, b, migrate) {
+    var what = migrate ? "MIGRATE" : "GC";
+    if (b < 0 || b >= d.B) return { ok: false, reason: "no such block" };
+    if (b === d.spare)
+      return { ok: false, reason: "block " + b + " is the spare: the reserve, nothing to " + (migrate ? "move" : "collect") };
+    var blk = d.blocks[b];
+    if (blk.dead) return { ok: false, reason: "block " + b + " is dead and can never be written again" };
+    var valids = frValidList(d, b);
+    if (valids.length === 0 && frStaleCount(d, b) === 0)
+      return { ok: false, reason: "block " + b + " is already empty: nothing to " + (migrate ? "move" : "collect") };
+    /* Relocate the valid pages into free pages anywhere except the block being
+       collected (the spare is normally fully free, which is the free-block
+       pool every real FTL keeps). After a block death the pool is degraded
+       and this scan may refuse: that is the drive dying, honestly reported. */
+    var slots = [];
+    for (var sb = 0; sb < d.B && slots.length < valids.length; sb++) {
+      if (sb === b || d.blocks[sb].dead) continue;
+      for (var q = 0; q < d.P && slots.length < valids.length; q++) {
+        if (d.blocks[sb].pages[q].st === "free") slots.push({ b: sb, p: q });
+      }
+    }
+    if (slots.length < valids.length)
+      return { ok: false, reason: "only " + slots.length + " free pages for " +
+        valids.length + " valid pages" +
+        (d.spare >= 0 ? ": the drive is dying, reset the trial"
+          : ": collect a fully-stale block instead, or reset the trial") };
+    for (var i = 0; i < valids.length; i++) {
+      d.blocks[slots[i].b].pages[slots[i].p] = { st: "valid", sector: valids[i].sector, value: valids[i].value };
+      d.map[valids[i].sector] = { b: slots[i].b, p: slots[i].p };
+    }
+    for (var p = 0; p < d.P; p++) d.blocks[b].pages[p] = frPage();
+    blk.erases++;
+    d.gcs++;
+    var died = false;
+    if (blk.erases > d.limit) { blk.dead = true; died = true; }
+    else d.spare = b; /* the just-erased block becomes the new spare */
+    return { ok: true, block: b, copied: valids.length, erases: blk.erases, died: died,
+             spare: d.spare, migrate: !!migrate };
+  }
+  function frGC(d, b) { return frCollect(d, b, false); }
+  function frMigrate(d, b) { return frCollect(d, b, true); }
+  function frRead(d, s) {
+    var loc = d.map[s];
+    if (!loc) return { ok: false, reason: "sector " + s + " was never written" };
+    var pg = d.blocks[loc.b].pages[loc.p];
+    if (pg.st !== "valid" || pg.sector !== s)
+      return { ok: false, reason: "sector " + s + " map entry is corrupt" };
+    return { ok: true, value: pg.value, at: loc };
+  }
+  function frExpected(d) {
+    var exp = {};
+    for (var i = 0; i < d.wi; i++) exp[d.writes[i][0]] = d.writes[i][1];
+    return exp;
+  }
+  function frIntegrity(d) {
+    var exp = frExpected(d), bad = [];
+    for (var s in exp) {
+      if (!exp.hasOwnProperty(s)) continue;
+      var r = frRead(d, parseInt(s, 10));
+      if (!r.ok || r.value !== exp[s]) bad.push(parseInt(s, 10));
+    }
+    return bad;
+  }
+  function frDeadBlocks(d) {
+    var out = [];
+    for (var b = 0; b < d.B; b++) if (d.blocks[b].dead) out.push(b);
+    return out;
+  }
+  function frWritesDone(d) { return d.wi >= d.writes.length; }
+
+  var FR_TRIALS = [
+    { n: 1, name: "FIRST REWRITE", prof: "4 data blocks x 8 pages, 36 host writes, 1 spare block",
+      DB: 4, P: 8, sectors: 8, limit: 30,
+      writes: null, /* built by frWorkload1 */
+      why: "Watch one rewrite at a time. Press RUN NEXT HOST WRITE and see the old page go stale while the map moves to the fresh page. After 32 writes the data blocks are full and the host refuses to write: garbage-collect the stale-heavy block and watch one erase buy back eight free pages. Nothing here can break.",
+      hint: "Run the host writes until the drive refuses, garbage-collect the block with the most stale pages (block 0: eight stale, zero valid, so nothing to copy), finish the workload, and certify." },
+    { n: 2, name: "THE HOT SECTOR", prof: "4 data blocks x 8 pages, 64 writes, sector 0 rewritten 44 times",
+      DB: 4, P: 8, sectors: 8, limit: 30,
+      writes: null, /* built by frWorkload2 */
+      why: "Sector 0 is rewritten 44 times while only 8 sectors hold live data: a few hot keys, mostly garbage, exactly like a real workload. The 32 data pages fill up again and again. Predict how many valid pages each garbage collection will copy, then collect the stale-heavy blocks to stay alive.",
+      hint: "The stale-heavy block is the one whose hot-sector copies all went stale. Garbage-collect it whenever the host refuses a write, keep going, and certify." },
+    { n: 3, name: "WEAR LEVELS", prof: "4 blocks x 8 pages, 116 hot writes, erase budget 6, no spare block",
+      DB: 4, P: 8, sectors: 8, limit: 6, spare: false,
+      writes: null, /* built by frWorkload3 */
+      why: "Sectors 0 to 3 are rewritten 116 times: all hot, no cold data to hide behind. Every erase lands on exactly one block, and this budget drive has no spare block, so a collection can only relocate valid pages into free data pages. Collect the same block every time and it dies at 6 erases. Rotate your victims across the stale-heavy blocks and the erases spread: that rotation is wear leveling.",
+      hint: "Never collect the same block twice in a row. Collect a fully-stale block each time (nothing to relocate, nothing to lose), rotate through blocks 0 to 3, and watch the erase meters stay level." }
+  ];
+  function frWorkload1() {
+    var w = [];
+    for (var i = 0; i < 36; i++) w.push([i % 8, 0x10 + i]);
+    return w;
+  }
+  function frWorkload2() {
+    var hot = [], cold = [], i;
+    for (i = 0; i < 44; i++) hot.push([0, 0x20 + i]);
+    for (i = 0; i < 20; i++) cold.push([1 + (i % 7), 0xA0 + i]);
+    /* interleave: two hot writes, then one cold write, keeps the hot sector dominant */
+    var out = [], h = 0, c = 0;
+    while (h < hot.length || c < cold.length) {
+      if (h < hot.length) out.push(hot[h++]);
+      if (h < hot.length) out.push(hot[h++]);
+      if (c < cold.length) out.push(cold[c++]);
+    }
+    return out;
+  }
+  function frWorkload3() {
+    var out = [], i;
+    for (i = 0; i < 116; i++) out.push([i % 4, 0x40 + i]); /* hot: sectors 0-3, 116 rewrites */
+    return out;
+  }
+  function frNewTrialState(ti) {
+    var t = FR_TRIALS[ti];
+    var d = frNewDrive(t.DB, t.P, t.limit, t.spare !== false);
+    d.writes = ti === 0 ? frWorkload1() : ti === 1 ? frWorkload2() : frWorkload3();
+    return { d: d, strikes: 0, certified: false, refShown: false, pred: null,
+             best: null, log: [] };
+  }
+  function frCertify(ti, tr) {
+    var t = FR_TRIALS[ti], d = tr.d, bad = [];
+    if (!frWritesDone(d)) bad.push("workload incomplete: " + d.wi + "/" + d.writes.length + " host writes done");
+    var integ = frIntegrity(d);
+    if (integ.length) bad.push("sectors misread: " + integ.join(", "));
+    var dead = frDeadBlocks(d);
+    if (dead.length) bad.push("block " + dead.join(", ") + " dead: over the erase budget, reset the trial");
+    return { ok: bad.length === 0, reasons: bad };
+  }
+
+  /* ---- UI state ---- */
+  var frS = null, frEls = {};
+  function frNewState() {
+    return { cur: 0, trials: [frNewTrialState(0), frNewTrialState(1), frNewTrialState(2)] };
+  }
+  function frEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  function frLog(html, cls) {
+    var box = frEls.log;
+    if (!box) return;
+    var line = frEl("div", cls || null);
+    line.innerHTML = html;
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+  }
+  function frCertifiedCount() {
+    var c = 0;
+    for (var i = 0; i < 3; i++) if (frS.trials[i].certified) c++;
+    return c;
+  }
+  function frStalestBlock(d) {
+    var best = -1, bn = -1;
+    for (var b = 0; b < d.B; b++) {
+      if (b === d.spare || d.blocks[b].dead) continue;
+      var n = frStaleCount(d, b);
+      if (n > bn) { bn = n; best = b; }
+    }
+    return best;
+  }
+
+  function frBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("frBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = FR_CSS.join("\n");
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "frBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Flash Room";
+    b.addEventListener("click", frOpen);
+    box.appendChild(b);
+
+    var ov = frEl("div", "fr-overlay");
+    ov.id = "frOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Flash Room");
+    var panel = frEl("div", "fr-panel");
+
+    var head = frEl("div", "fr-head");
+    head.appendChild(frEl("h3", null, "The Flash Room"));
+    head.appendChild(frEl("p", "fr-spec", "OLD IRON // NAND FLASH FTL LAB"));
+    head.appendChild(frEl("p", "fr-why",
+      "Every SSD lies about where your bytes live, and the lie is what keeps it alive. " +
+      "A flash page can be written exactly once: a rewrite must land on a fresh page while " +
+      "the old copy goes stale, and only a whole-block erase frees pages again, which wears " +
+      "the block out a little every time. This bench is that lie, running honestly: you are " +
+      "the flash translation layer for three small drives."));
+    var worked = frEl("p", "fr-worked");
+    worked.innerHTML =
+      "<b>Worked example, trial 1:</b> write W7 stores sector 7 = 0x17 at block 0, page 7. " +
+      "Write W15 rewrites sector 7 = 0x1F: page b0p7 goes <b>stale</b> (it can never be " +
+      "reused as-is), the new copy lands at block 1, page 7, and the sector map moves " +
+      "sector 7 to it. After W31 the four data blocks are full: 8 valid pages, 24 stale. " +
+      "Garbage-collect block 0 (8 stale, 0 valid): the collection copies nothing, erases " +
+      "the block, and hands back 8 free pages for 1 erase.";
+    head.appendChild(worked);
+    head.appendChild(frEl("p", "fr-failmodes",
+      "Failure modes, stated plainly: a block pushed past its erase budget dies and can " +
+      "never be written again, which fails certification. A drive with no free page and no " +
+      "stale block worth collecting is stuck: reset the trial, no shame in it. Collection " +
+      "itself never loses data (valid pages are copied out first); the danger is erasing " +
+      "too often, not collecting. Trials 1 and 2 keep one block marked SPARE: it never " +
+      "takes host writes, it is the 20 percent of hidden flash a real SSD overprovisions " +
+      "so collection always has somewhere to put the valid pages. Trial 3 is a budget " +
+      "drive with no spare: a full drive can only collect fully-stale blocks. Real NAND " +
+      "survives thousands of erases per block; this bench throttles each block to 30 " +
+      "(trial 3: 6) so you can watch one die in a sitting."));
+    panel.appendChild(head);
+
+    var body = frEl("div", "fr-body");
+    frEls.tabs = frEl("div", "fr-tabs");
+    frEls.tabs.setAttribute("role", "tablist");
+    body.appendChild(frEls.tabs);
+    frEls.trialWhy = frEl("p", "fr-trialwhy");
+    body.appendChild(frEls.trialWhy);
+
+    var cols = frEl("div", "fr-cols");
+    var wlCard = frEl("div", "fr-card");
+    wlCard.appendChild(frEl("h4", null, "HOST WORKLOAD"));
+    frEls.wl = frEl("div", "fr-wl");
+    wlCard.appendChild(frEls.wl);
+    frEls.wlProg = frEl("p", "fr-prog", "");
+    wlCard.appendChild(frEls.wlProg);
+    frEls.nextWrite = frEl("button", "fr-btn primary", "RUN NEXT HOST WRITE");
+    frEls.nextWrite.addEventListener("click", frOnNextWrite);
+    wlCard.appendChild(frEls.nextWrite);
+    cols.appendChild(wlCard);
+
+    var mapCard = frEl("div", "fr-card");
+    mapCard.appendChild(frEl("h4", null, "SECTOR MAP (KEPT VISIBLE)"));
+    frEls.mapWrap = frEl("div", null);
+    mapCard.appendChild(frEls.mapWrap);
+    cols.appendChild(mapCard);
+    body.appendChild(cols);
+
+    var gridCard = frEl("div", "fr-card");
+    gridCard.style.marginBottom = "12px";
+    gridCard.appendChild(frEl("h4", null, "THE DRIVE"));
+    frEls.grid = frEl("div", "fr-grid");
+    gridCard.appendChild(frEls.grid);
+    var legend = frEl("p", "fr-legend",
+      "Legend: a number is a valid copy of that sector. A struck number is a stale copy " +
+      "(dead data, still occupying the page). An empty cell is a free page. X marks a " +
+      "dead block. The SPARE row is the overprovisioned reserve: host writes never land " +
+      "there. Erase counts sit at the end of each row.");
+    gridCard.appendChild(legend);
+    body.appendChild(gridCard);
+
+    var ctrl = frEl("div", "fr-ctrl");
+    var rdF = frEl("div", "fr-field");
+    rdF.appendChild(frEl("label", null, "Read sector"));
+    frEls.readSel = frEl("select", null);
+    frEls.readSel.setAttribute("aria-label", "Sector to read");
+    rdF.appendChild(frEls.readSel);
+    ctrl.appendChild(rdF);
+    frEls.readBtn = frEl("button", "fr-btn", "READ");
+    frEls.readBtn.addEventListener("click", frOnRead);
+    ctrl.appendChild(frEls.readBtn);
+    frEls.readOut = frEl("span", "fr-prog", "");
+    ctrl.appendChild(frEls.readOut);
+
+    var gcF = frEl("div", "fr-field");
+    gcF.appendChild(frEl("label", null, "Garbage-collect block"));
+    frEls.gcSel = frEl("select", null);
+    frEls.gcSel.setAttribute("aria-label", "Block to garbage-collect");
+    gcF.appendChild(frEls.gcSel);
+    ctrl.appendChild(gcF);
+    frEls.gcBtn = frEl("button", "fr-btn", "GARBAGE-COLLECT");
+    frEls.gcBtn.addEventListener("click", frOnGC);
+    ctrl.appendChild(frEls.gcBtn);
+
+    frEls.predWrap = frEl("div", "fr-field");
+    frEls.predWrap.appendChild(frEl("label", null, "Predict: valid pages the next GC will copy"));
+    frEls.pred = frEl("input", null);
+    frEls.pred.type = "number"; frEls.pred.min = "0"; frEls.pred.max = "8";
+    frEls.pred.setAttribute("aria-label", "Predicted valid pages copied by the next garbage collection");
+    frEls.predWrap.appendChild(frEls.pred);
+    ctrl.appendChild(frEls.predWrap);
+    body.appendChild(ctrl);
+
+    var chkCard = frEl("div", "fr-card");
+    chkCard.style.marginBottom = "12px";
+    chkCard.appendChild(frEl("h4", null, "CERTIFY CHECKS"));
+    frEls.checks = frEl("p", "fr-checks", "");
+    chkCard.appendChild(frEls.checks);
+    frEls.certBtn = frEl("button", "fr-btn primary", "CERTIFY TRIAL");
+    frEls.certBtn.addEventListener("click", frOnCertify);
+    chkCard.appendChild(frEls.certBtn);
+    body.appendChild(chkCard);
+
+    frEls.refHint = frEl("div", "fr-refhint");
+    frEls.refHint.style.display = "none";
+    body.appendChild(frEls.refHint);
+
+    frEls.log = frEl("div", "fr-log");
+    frEls.log.setAttribute("aria-live", "polite");
+    body.appendChild(frEls.log);
+    panel.appendChild(body);
+
+    var foot = frEl("div", "fr-foot");
+    frEls.progress = frEl("span", "fr-progress", "CERTIFIED: 0/3");
+    foot.appendChild(frEls.progress);
+    frEls.strikes = frEl("span", "fr-strikes", "STRIKES: 0/3");
+    foot.appendChild(frEls.strikes);
+    var resetTrial = frEl("button", "fr-btn", "RESET TRIAL");
+    resetTrial.addEventListener("click", function () {
+      frS.trials[frS.cur] = frNewTrialState(frS.cur);
+      frRenderAll();
+      frLog("<span class='dim'>Trial " + FR_TRIALS[frS.cur].n + " reset. Fresh drive, strikes cleared.</span>", null);
+    });
+    foot.appendChild(resetTrial);
+    var resetBench = frEl("button", "fr-btn", "RESET BENCH");
+    resetBench.addEventListener("click", function () {
+      frS = frNewState();
+      frRenderAll();
+      frLog("<span class='dim'>Bench reset. All trials open, strikes cleared.</span>", null);
+    });
+    foot.appendChild(resetBench);
+    frEls.cert = frEl("button", "fr-btn primary", "DOWNLOAD CERTIFICATE");
+    frEls.cert.style.display = "none";
+    frEls.cert.addEventListener("click", frDownloadCert);
+    foot.appendChild(frEls.cert);
+    var close = frEl("button", "fr-btn", "CLOSE THE BENCH");
+    close.addEventListener("click", frClose);
+    foot.appendChild(close);
+    panel.appendChild(foot);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    frEls.overlay = ov;
+    ov.addEventListener("click", function (ev) { if (ev.target === ov) frClose(); });
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && frEls.overlay.classList.contains("open")) frClose();
+    });
+
+    frS = frNewState();
+    frRenderAll();
+    frLog("<span class='dim'>Trial 1 is loaded with 36 host writes queued. Press RUN NEXT HOST WRITE: " +
+      "the first write cannot break anything, watch where sector 0 lands.</span>", null);
+  }
+
+  /* ---- actions ---- */
+  function frOnNextWrite() {
+    var st = frS.trials[frS.cur], d = st.d;
+    if (st.certified) return;
+    var r = frHostWrite(d);
+    if (!r.ok) {
+      frLog("<span class='bad'>HOST WRITE REFUSED: " + r.reason + ".</span>", null);
+      frRenderAll();
+      return;
+    }
+    var msg = "W" + (d.wi - 1) + ": sector " + r.sector + " = " + frHex(r.value) +
+      " landed at block " + r.at.b + ", page " + r.at.p + ".";
+    if (r.staleAt) msg += " The old copy at block " + r.staleAt.b + ", page " + r.staleAt.p + " went stale.";
+    else msg += " First copy of sector " + r.sector + ".";
+    frLog(msg, null);
+    if (frWritesDone(d)) {
+      frLog("<span class='dim'>Workload complete: " + d.writes.length + " host writes. " +
+        "READ sectors back, garbage-collect the stale-heavy blocks, then CERTIFY TRIAL.</span>", null);
+    }
+    frRenderAll();
+  }
+  function frOnRead() {
+    var st = frS.trials[frS.cur];
+    var s = parseInt(frEls.readSel.value, 10);
+    var r = frRead(st.d, s);
+    if (r.ok) {
+      frEls.readOut.textContent = "sector " + s + " = " + frHex(r.value) + " at b" + r.at.b + "p" + r.at.p;
+      frLog("READ sector " + s + ": <b>" + frHex(r.value) + "</b> at block " + r.at.b + ", page " + r.at.p + ".", null);
+    } else {
+      frEls.readOut.textContent = r.reason;
+      frLog("<span class='bad'>READ failed: " + r.reason + ".</span>", null);
+    }
+  }
+  function frOnGC() {
+    var st = frS.trials[frS.cur], d = st.d;
+    if (st.certified) return;
+    var b = parseInt(frEls.gcSel.value, 10);
+    var predRaw = frEls.predWrap.style.display === "none" ? null : frEls.pred.value;
+    var r = frGC(d, b);
+    if (!r.ok) {
+      frLog("<span class='bad'>GC REFUSED: " + r.reason + ".</span>", null);
+      frRenderAll();
+      return;
+    }
+    var msg = "GC block " + b + ": copied <b>" + r.copied + "</b> valid page" + (r.copied === 1 ? "" : "s") +
+      " out, erased the block (erase " + r.erases + "/" + d.limit + ").";
+    if (r.died) {
+      msg += " <span class='bad'>BLOCK " + b + " IS DEAD: past its erase budget, it can never be written again.</span>";
+    }
+    if (predRaw !== null && predRaw !== "") {
+      var pred = parseInt(predRaw, 10);
+      if (pred === r.copied) msg += " <b>Called it:</b> you predicted " + pred + ".";
+      else msg += " You predicted " + pred + ", the collection copied " + r.copied +
+        " (off by " + Math.abs(pred - r.copied) + "). Valid pages are the ones the map still points at.";
+    }
+    frLog(msg, null);
+    frEls.pred.value = "";
+    frRenderAll();
+  }
+  function frOnCertify() {
+    var st = frS.trials[frS.cur];
+    if (st.certified) return;
+    var v = frCertify(frS.cur, st);
+    if (v.ok) {
+      st.certified = true;
+      st.best = st.d.gcs;
+      frLog("<span class='good'>TRIAL " + FR_TRIALS[frS.cur].n + " CERTIFIED</span>: " +
+        st.d.wi + " host writes, " + st.d.gcs + " collections, every sector reads back, no dead blocks" +
+        (v.policy ? ", policy " + v.policy.toUpperCase() : "") + ".", null);
+    } else {
+      st.strikes++;
+      frLog("<span class='bad'>CERTIFY FAILED</span>: " + v.reasons.join("; ") +
+        ". Strike " + st.strikes + "/3.", null);
+      if (st.strikes >= 3 && !st.refShown) {
+        st.refShown = true;
+        frEls.refHint.style.display = "";
+        frEls.refHint.textContent = "Three strikes: the worked fix. " + FR_TRIALS[frS.cur].hint +
+          " Right now block " + frStalestBlock(st.d) + " holds the most stale pages.";
+        frLog("<span class='dim'>Three strikes: the worked fix is shown above the log. Read it before your next attempt.</span>", null);
+      }
+    }
+    frRenderAll();
+    if (frCertifiedCount() === 3) {
+      frLog("<span class='good'>BENCH COMPLETE: all three drives certified. Download the certificate.</span>", null);
+    }
+  }
+
+  /* ---- rendering ---- */
+  function frRenderTabs() {
+    frEls.tabs.innerHTML = "";
+    FR_TRIALS.forEach(function (t, i) {
+      var st = frS.trials[i];
+      var b = frEl("button", "fr-tab" + (st.certified ? " done" : ""));
+      b.setAttribute("role", "tab");
+      b.setAttribute("aria-selected", frS.cur === i ? "true" : "false");
+      var nm = frEl("span", "fr-tname", "TRIAL " + t.n + ": " + t.name);
+      var pf = frEl("span", "fr-tprof", t.prof);
+      b.appendChild(nm); b.appendChild(pf);
+      b.addEventListener("click", function () { frS.cur = i; frRenderAll(); });
+      frEls.tabs.appendChild(b);
+    });
+    frEls.trialWhy.textContent = "Trial " + FR_TRIALS[frS.cur].n + ": " + FR_TRIALS[frS.cur].why;
+  }
+  function frRenderWorkload() {
+    var st = frS.trials[frS.cur], d = st.d;
+    frEls.wl.innerHTML = "";
+    d.writes.forEach(function (w, i) {
+      var line = frEl("div", i < d.wi ? "done" : (i === d.wi ? "next" : null),
+        "W" + i + "  sector " + w[0] + " = " + frHex(w[1]) + (i < d.wi ? " (done)" : (i === d.wi ? " (next)" : "")));
+      frEls.wl.appendChild(line);
+    });
+    frEls.wlProg.textContent = "WRITES " + d.wi + "/" + d.writes.length +
+      "  |  COLLECTIONS " + d.gcs + "  |  DEAD " + frDeadBlocks(d).length;
+    frEls.nextWrite.disabled = st.certified || frWritesDone(d);
+  }
+  function frRenderMap() {
+    var st = frS.trials[frS.cur], d = st.d, t = FR_TRIALS[frS.cur];
+    var wrap = frEls.mapWrap;
+    wrap.innerHTML = "";
+    var tab = frEl("table", "fr-map");
+    tab.setAttribute("aria-label", "Sector to physical page map");
+    var trh = frEl("tr");
+    ["SECTOR", "PHYSICAL", "VALUE"].forEach(function (h) { trh.appendChild(frEl("th", null, h)); });
+    tab.appendChild(trh);
+    var exp = frExpected(d);
+    for (var s = 0; s < t.sectors; s++) {
+      var tr = frEl("tr");
+      tr.appendChild(frEl("td", null, String(s)));
+      var loc = d.map[s];
+      tr.appendChild(frEl("td", null, loc ? "b" + loc.b + "p" + loc.p : "never written"));
+      tr.appendChild(frEl("td", null, exp.hasOwnProperty(s) ? frHex(exp[s]) : "-"));
+      tab.appendChild(tr);
+    }
+    wrap.appendChild(tab);
+  }
+  function frRenderGrid() {
+    var st = frS.trials[frS.cur], d = st.d;
+    var g = frEls.grid;
+    g.innerHTML = "";
+    d.blocks.forEach(function (blk, b) {
+      var row = frEl("div", "fr-brow");
+      var isSpare = (b === d.spare);
+      var lab = frEl("span", "fr-blab", "BLOCK " + b + (blk.dead ? " DEAD" : isSpare ? " SPARE" : ""));
+      if (blk.dead) lab.innerHTML = "BLOCK " + b + " <span class='dead'>DEAD</span>";
+      row.appendChild(lab);
+      blk.pages.forEach(function (pg) {
+        var c = frEl("span", "fr-cell" + (blk.dead ? " deadcell" : pg.st === "valid" ? " valid" : pg.st === "stale" ? " stale" : ""));
+        c.textContent = blk.dead ? "X" : pg.st === "free" ? "" : String(pg.sector);
+        c.setAttribute("aria-label", blk.dead ? "dead block" : isSpare ? "spare reserve page" :
+          pg.st === "free" ? "free page" : pg.st + " copy of sector " + pg.sector);
+        row.appendChild(c);
+      });
+      var er = frEl("span", "fr-erase" + (blk.erases >= d.limit - 2 ? " hot" : ""),
+        "erase " + blk.erases + "/" + d.limit);
+      row.appendChild(er);
+      g.appendChild(row);
+    });
+  }
+  function frRenderControls() {
+    var st = frS.trials[frS.cur], d = st.d, t = FR_TRIALS[frS.cur];
+    var rs = frEls.readSel;
+    rs.innerHTML = "";
+    for (var s = 0; s < t.sectors; s++) {
+      var o = frEl("option", null, "sector " + s);
+      o.value = String(s);
+      rs.appendChild(o);
+    }
+    var gs = frEls.gcSel;
+    gs.innerHTML = "";
+    for (var b = 0; b < d.B; b++) {
+      if (b === d.spare) continue;
+      var ob = frEl("option", null, "block " + b + (d.blocks[b].dead ? " (dead)" : ""));
+      ob.value = String(b);
+      gs.appendChild(ob);
+    }
+    gs.value = String(frStalestBlock(d));
+    frEls.predWrap.style.display = frS.cur === 1 ? "" : "none";
+    var locked = st.certified;
+    frEls.readBtn.disabled = locked;
+    frEls.gcBtn.disabled = locked;
+    frEls.certBtn.disabled = locked;
+  }
+  function frRenderChecks() {
+    var st = frS.trials[frS.cur], t = FR_TRIALS[frS.cur], d = st.d;
+    var v = frCertify(frS.cur, st);
+    function line(met, text) {
+      return "<span class='" + (met ? "met" : "unmet") + "'>" + (met ? "[x]" : "[ ]") + "</span> " + text;
+    }
+    var integ = frIntegrity(d), dead = frDeadBlocks(d);
+    frEls.checks.innerHTML =
+      line(frWritesDone(d), "workload complete (" + d.wi + "/" + d.writes.length + ")") + "<br>" +
+      line(integ.length === 0 && d.wi > 0, "every sector reads back its last value" + (integ.length ? ": bad " + integ.join(",") : "")) + "<br>" +
+      line(dead.length === 0, "no dead blocks") + "<br>" +
+      "<span class='unmet'>[i]</span> collections performed: " + d.gcs +
+      " (completing the workload proves the mechanism: the drive cannot finish without collecting)";
+  }
+  function frRenderFoot() {
+    frEls.progress.textContent = "CERTIFIED: " + frCertifiedCount() + "/3";
+    frEls.strikes.textContent = "STRIKES: " + frS.trials[frS.cur].strikes + "/3";
+    frEls.cert.style.display = frCertifiedCount() === 3 ? "" : "none";
+    frEls.refHint.style.display = frS.trials[frS.cur].refShown ? "" : "none";
+  }
+  function frRenderAll() {
+    frRenderTabs();
+    frRenderWorkload();
+    frRenderMap();
+    frRenderGrid();
+    frRenderControls();
+    frRenderChecks();
+    frRenderFoot();
+  }
+
+  function frDownloadCert() {
+    var lines = [];
+    lines.push("THE PROVING GROUND // THE FLASH ROOM");
+    lines.push("NAND flash FTL qualification certificate");
+    lines.push("Date: " + new Date().toISOString());
+    lines.push("");
+    FR_TRIALS.forEach(function (t, i) {
+      var st = frS.trials[i], d = st.d;
+      lines.push("TRIAL " + t.n + " " + t.name + ": " +
+        (st.certified ? "CERTIFIED" : "not certified"));
+      lines.push("  host writes: " + d.wi + ", collections: " + d.gcs +
+        ", strikes: " + st.strikes + (t.n === 3 ? ", policy: " + d.policy : ""));
+      lines.push("  erases per block: " + d.blocks.map(function (b, bi) {
+        return "b" + bi + "=" + b.erases + (b.dead ? "(dead)" : "");
+      }).join(" "));
+    });
+    var blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "flash-room-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  function frOpen() {
+    if (!frEls.overlay) frBuild();
+    frEls.overlay.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+  function frClose() {
+    if (frEls.overlay) frEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", frBuild);
+    } else {
+      frBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      FR: {
+        TRIALS: FR_TRIALS,
+        newDrive: frNewDrive, newTrialState: frNewTrialState,
+        hostWrite: frHostWrite, gc: frGC, migrate: frMigrate, read: frRead,
+        integrity: frIntegrity, expected: frExpected, certify: frCertify,
+        dataFree: frDataFree, staleCount: frStaleCount,
+        deadBlocks: frDeadBlocks, hex: frHex,
+        workload1: frWorkload1, workload2: frWorkload2, workload3: frWorkload3
+      }
+    });
+  }
+})();

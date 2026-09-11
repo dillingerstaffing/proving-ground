@@ -626,7 +626,11 @@ var PG_BENCHES = [
   { section: "tapeout", n: "32", name: "The Decoupling Bay", btn: "dcBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "A real lumped-element power-delivery simulation. Place ceramic, tantalum, and bulk capacitors across three mounting zones and hold a 1.0 V core rail inside its 100 mV droop budget through three load steps.",
     how: "Add capacitors to the near, mid, and far zones, predict the droop, then run the load step. Certify all three trials.",
-    spec: "PDN SIM \u00B7 3 TRIALS" }
+    spec: "PDN SIM \u00B7 3 TRIALS" },
+  { section: "oldiron", n: "33", name: "The Flash Room", btn: "frBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "A real NAND-flash FTL on the bench: erase-before-write, stale pages, a sector map, garbage collection including spare-block overprovisioning, and a per-block erase budget. Keep every sector readable and no block over budget.",
+    how: "Run the host workload, garbage-collect the stale-heavy blocks, rotate your victims on trial 3, certify all three drives.",
+    spec: "ERASE-BEFORE-WRITE \u00B7 3 DRIVES" }
 ];
 
 var pgFilter = "all";
@@ -1038,9 +1042,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=2a53f3daf7" defer></script>
-<script src="rvdata.js?v=2a53f3daf7" defer></script>
-<script src="riscv-lab.js?v=2a53f3daf7" defer></script>
-<script src="features.js?v=2a53f3daf7" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=d1e1c5c30b" defer></script>
+<script src="rvdata.js?v=d1e1c5c30b" defer></script>
+<script src="riscv-lab.js?v=d1e1c5c30b" defer></script>
+<script src="features.js?v=d1e1c5c30b" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
