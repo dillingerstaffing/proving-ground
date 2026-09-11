@@ -4531,9 +4531,11 @@ if (typeof module !== "undefined" && module.exports) {
     panel.innerHTML =
       '<button class="sb-close" id="sbClose">CLOSE [x]</button>' +
       '<h3>The Spill <span class="sb-acid">Bin</span></h3>' +
-      '<p class="sb-sub">A register allocator decides which values live in the chip&#39;s ' +
+      '<p class="sb-sub">A program usually has more values alive than the chip has registers, ' +
+      'and every value that misses a register waits in memory, which costs cycles. ' +
+      'A register allocator decides which values live in the chip&#39;s ' +
       'handful of registers and which wait in memory. Waiting in memory is called a spill, ' +
-      'and every spill costs cycles, so the allocator spills the cheapest victim it can find. ' +
+      'so the allocator spills the cheapest victim it can find. ' +
       'Trial 2 makes it concrete: eleven virtuals, four physical registers, something has to spill. ' +
       'Each value is a node; two nodes alive at the same time share an edge, and that web of edges ' +
       'is the interference graph. Color it with four colors, or spill the cheapest node to the stack, ' +
