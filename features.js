@@ -31645,3 +31645,1000 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+/* Bench 45 staging: The Shift Room module (appended to features.js at ship time). */
+/* ============================================================
+   THE SHIFT ROOM
+   Silicon bench 45. The one atomic mechanism: a shift moves every
+   bit by N positions. Shift left to multiply by 2^N until bits fall
+   off the top (silently, no warning). Shift right to divide, and the
+   right shift keeps two honest contracts: logical (SRL) fills the new
+   bits with 0, arithmetic (SRA) fills them with the sign bit. Picking
+   the wrong one on a negative value is a real, deployed bug.
+   One sentence takeaway: left shift multiplies by powers of two until
+   bits fall off, and the right-shift contract (zeros vs sign) decides
+   whether a negative value is divided or destroyed.
+   Do-first: a live 8-bit BIT LANE explorer (set value, amount,
+   direction, fill; SHIFT moves the bits and shows what fell off),
+   then a STEP walkthrough of the worked example 0x35 << 2 and the
+   0xC0 >> 1 sign split.
+   Trial 1: THE DOUBLING LANE, 4 predict-the-byte questions on the
+   8-bit lane (two left shifts, one logical right, one RV32 shamt
+   trap: amount 41 masks to 9, and the visitor calls the effective
+   amount, the result byte, and the lost bits).
+   Trial 2: THE SIGN SPLIT, 4 questions calling both the SRL and the
+   SRA answer on 0xC0, 0x80, 0xF0, and the -12 sensor story (0xF4).
+   Trial 3: BUILD A MULTIPLY, 4 shift-and-add multiplies where the
+   visitor predicts the partial products and the 8-bit sum, ending
+   with 200 x 3 = 88, the silent wrap the hardware never complains
+   about. Per-trial and bench certificates as downloadable text.
+   Self-contained IIFE, appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- pure logic: the 8-bit shift lane ---------------- */
+
+  function shHex(u, digits) {
+    var s = (u >>> 0).toString(16).toUpperCase();
+    while (s.length < digits) s = "0" + s;
+    return "0x" + s;
+  }
+  function shBin(v) {
+    var s = "";
+    for (var i = 7; i >= 0; i--) s += ((v >>> i) & 1) ? "1" : "0";
+    return s;
+  }
+  function shPopcount(v) {
+    v &= 0xff;
+    var c = 0;
+    while (v) { c += v & 1; v >>>= 1; }
+    return c;
+  }
+  function shSigned8(v) {
+    v &= 0xff;
+    return v >= 0x80 ? v - 256 : v;
+  }
+  /* The 8-bit teaching lane. dir "L" or "R". arith selects SRA over SRL
+     for right shifts (left shifts always fill with 0). lost counts the
+     1-bits that fell off the edge: they are gone, not rounded. */
+  function shShift8(v, dir, n, arith) {
+    v &= 0xff;
+    n = Math.max(0, n | 0);
+    var result, lost;
+    if (dir === "L") {
+      if (n >= 8) { result = 0; lost = shPopcount(v); }
+      else { result = (v << n) & 0xff; lost = shPopcount(v >>> (8 - n)); }
+    } else {
+      var out = n >= 8 ? v : (v & ((1 << n) - 1));
+      lost = shPopcount(out);
+      if (n >= 8) { result = (arith && (v & 0x80)) ? 0xff : 0x00; }
+      else {
+        result = v >>> n;
+        if (arith && (v & 0x80)) result |= (0xff << (8 - n));
+        result &= 0xff;
+      }
+    }
+    return { v: v, dir: dir, n: n, arith: !!arith, result: result, lost: lost };
+  }
+  /* RISC-V honesty: RV32 reads only the low 5 bits of the shift amount,
+     RV64 the low 6. The hardware never warns; it just masks. */
+  function shShamt32(n) { return n & 31; }
+  function shShamt64(n) { return n & 63; }
+
+  /* ---------------- trial data ---------------- */
+
+  /* T1: the doubling lane. {v, dir, n, shamt} where shamt marks the
+     RV32 trap question (the amount is a raw register value). */
+  var SH_T1 = [
+    { v: 0x35, dir: "L", n: 2,  arith: false, shamt: false },
+    { v: 0x35, dir: "L", n: 3,  arith: false, shamt: false },
+    { v: 0xF0, dir: "R", n: 2,  arith: false, shamt: false },
+    { v: 0x01, dir: "L", n: 41, arith: false, shamt: true }
+  ];
+  /* T2: the sign split. Every question wants both contracts. */
+  var SH_T2 = [
+    { v: 0xC0, n: 1 },
+    { v: 0x80, n: 3 },
+    { v: 0xF0, n: 4 },
+    { v: 0xF4, n: 2 }
+  ];
+  /* T3: build a multiply. a x b = (a << p0) + (a << p1) on the 8-bit
+     lane, sums wrap mod 256. lost1 = bits lost by the first shift. */
+  var SH_T3 = [
+    { a: 13,  b: 12, p0: 3, p1: 2 },
+    { a: 21,  b: 10, p0: 3, p1: 1 },
+    { a: 9,   b: 6,  p0: 2, p1: 1 },
+    { a: 200, b: 3,  p0: 1, p1: 0 }
+  ];
+  function shT3Expected(q) {
+    var t0 = shShift8(q.a, "L", q.p0, false);
+    var t1 = shShift8(q.a, "L", q.p1, false);
+    return { t0: t0.result, lost0: t0.lost, t1: t1.result,
+             sum: (t0.result + t1.result) & 0xff };
+  }
+  var SH_TITLES = ["THE DOUBLING LANE", "THE SIGN SPLIT", "BUILD A MULTIPLY"];
+
+  /* ---------------- tiny DOM helpers (module-local) ---------------- */
+
+  function shEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  var SH_CSS = [
+    ".sh-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".sh-overlay.open{display:block}",
+    ".sh-panel{max-width:860px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".sh-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".sh-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".sh-sub{font-size:13px;color:#b9b2a4;margin:0 0 22px;max-width:60ch}",
+    ".sh-card{border:1px solid var(--line,#2b2b30);background:var(--panel,#141416);border-radius:10px;padding:18px;margin:0 0 16px}",
+    ".sh-card h3{font-family:'Space Grotesk',sans-serif;font-size:17px;margin:0 0 6px;color:var(--paper,#f2ede4);letter-spacing:.02em}",
+    ".sh-card .why{font-size:13px;line-height:1.65;color:#d8d2c4;margin:0 0 10px;max-width:68ch}",
+    ".sh-card .why b{color:var(--ember,#ff5a1f);font-weight:600}",
+    ".sh-lanes{font-size:13px;line-height:1.9;background:#0c0c0e;border:1px solid var(--line,#2b2b30);border-radius:8px;padding:12px 14px;margin:10px 0;min-height:80px}",
+    ".sh-lanes .k{color:#8f8a7d}.sh-lanes .v{color:var(--paper,#f2ede4)}.sh-lanes .hit{color:var(--ember,#ff5a1f);font-weight:600}",
+    ".sh-bitlane{display:flex;flex-wrap:wrap;gap:4px;margin:8px 0;align-items:center}",
+    ".sh-bitlane .k{color:#8f8a7d;font-size:12px}",
+    ".sh-bit{width:34px;height:44px;display:flex;align-items:center;justify-content:center;border:1px solid var(--line,#2b2b30);border-radius:6px;background:#0c0c0e;font-size:16px;color:var(--paper,#f2ede4)}",
+    ".sh-bit.fill{border-color:var(--ember,#ff5a1f);color:var(--ember,#ff5a1f)}",
+    ".sh-bit.lost{border-color:var(--ember,#ff5a1f);color:var(--ember,#ff5a1f);text-decoration:line-through;opacity:.75}",
+    ".sh-bitrowlab{font-size:11px;letter-spacing:.14em;color:#8f8a7d;min-width:74px}",
+    ".sh-arrow{font-size:16px;color:var(--ember,#ff5a1f);padding:0 6px}",
+    ".sh-q{border-top:1px solid var(--line,#2b2b30);padding:12px 0}",
+    ".sh-q .qp{font-size:14px;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".sh-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}",
+    ".sh-lab{font-size:11px;letter-spacing:.14em;color:#8f8a7d}",
+    ".sh-in{background:#0c0c0e;border:1px solid var(--line,#2b2b30);color:var(--paper,#f2ede4);border-radius:6px;padding:12px 10px;font-family:inherit;font-size:15px;width:110px;min-height:48px}",
+    ".sh-in:focus{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".sh-btn{background:transparent;border:1px solid var(--ember,#ff5a1f);color:var(--ember,#ff5a1f);border-radius:8px;padding:12px 18px;font-family:inherit;font-size:13px;letter-spacing:.08em;cursor:pointer;min-height:48px;min-width:48px}",
+    ".sh-btn:hover{background:rgba(255,90,31,.12)}",
+    ".sh-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".sh-btn.solid{background:var(--ember,#ff5a1f);color:#101012;font-weight:600}",
+    ".sh-btn:disabled{opacity:.35;cursor:default}",
+    ".sh-btn[aria-pressed=true]{background:var(--ember,#ff5a1f);color:#101012}",
+    ".sh-verdict{font-size:14px;font-weight:600;letter-spacing:.06em;margin:10px 0 0;min-height:22px}",
+    ".sh-verdict.pass{color:#7fd67f}.sh-verdict.miss{color:var(--ember,#ff5a1f)}",
+    ".sh-note{font-size:12px;color:#8f8a7d;line-height:1.6;margin:8px 0 0;max-width:68ch}",
+    ".sh-log{border:1px solid var(--line,#2b2b30);border-radius:8px;background:#0c0c0e;padding:10px 14px;font-size:12px;line-height:1.7;max-height:150px;overflow-y:auto;margin:0 0 16px;color:#b9b2a4}",
+    ".sh-log .ok{color:#7fd67f}.sh-log .bad{color:var(--ember,#ff5a1f)}",
+    ".sh-banner{display:none;border:1px solid var(--ember,#ff5a1f);border-radius:10px;padding:16px;margin:0 0 16px;background:rgba(255,90,31,.07)}",
+    ".sh-banner h3{font-family:'Space Grotesk',sans-serif;color:var(--ember,#ff5a1f);margin:0 0 6px;font-size:18px}",
+    ".sh-banner p{font-size:13px;color:#d8d2c4;margin:0 0 10px}",
+    ".sh-steps{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}",
+    "@media (prefers-reduced-motion:no-preference){.sh-pop{animation:shpop .2s ease-out}}",
+    "@keyframes shpop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    "@media (max-width:560px){.sh-panel{padding:56px 14px 110px}.sh-in{width:96px}.sh-bit{width:30px;height:42px}}"
+  ].join("\n");
+
+  var SH_INTRO_A =
+    "<div class='sh-card'><h3>WHY IT MATTERS</h3>" +
+    "<p class='why'>The cheapest multiply in the machine is a shift: one cycle, no multiplier circuit, and every bit-field extract in every driver is a shift plus a mask. " +
+    "C's <b>&lt;&lt;</b> and <b>&gt;&gt;</b> compile straight to RISC-V <b>SLL</b>, <b>SRL</b>, and <b>SRA</b>. " +
+    "The right shift is where the hardware keeps two honest contracts: <b>logical</b> fills the new bits with 0, <b>arithmetic</b> fills them with copies of the sign bit. " +
+    "Pick the wrong contract on a negative value and the answer is not close, it is more than a hundred away.</p></div>";
+
+  var SH_INTRO_B =
+    "<div class='sh-card'><h3>WORKED EXAMPLE, CHECK IT BY HAND</h3>" +
+    "<p class='why'><b>0x35 &lt;&lt; 2.</b> The bits 00110101 slide left two: 11010100 = <b>0xD4 = 212</b>, and 53 times 4 is 212. A left shift by 2 <b>is</b> multiply by 4. " +
+    "Now the honest fork: <b>0xC0 &gt;&gt; 1</b> has two correct answers. Logical (SRL): a 0 slides in, 11000000 becomes 01100000 = <b>0x60 = 96</b>. " +
+    "Arithmetic (SRA): the sign bit 1 slides in, 11000000 becomes 11100000 = <b>0xE0</b>, which is <b>-32</b> as a signed byte. " +
+    "Same input, two answers, and only the instruction's contract decides. Press STEP and watch both.</p>";
+
+  var SH_INTRO_C =
+    "<p class='why'><b>THE FAILURE MODES.</b> Bits that fall off are gone: 0x35 &lt;&lt; 3 loses the top bit and lands at 0xA8, not at 53 times 8, and the hardware never warns you. " +
+    "Logical shift on a negative is a divide that lies: -12 &gt;&gt; 2 logical reads <b>61</b>. " +
+    "And the amount itself: on RV32 only the low 5 bits of the shift amount count, so a shift amount of 41 behaves exactly like 9. " +
+    "Trial 3 ends with the silent wrap: 200 times 3 is <b>88</b> in 8 bits, and nothing complains. This room trains the reflex that checks the contract before the code ships.</p></div>";
+
+  /* Full intro copy (no element ids) for tests and single-source copy checks. */
+  var SH_INTRO_HTML = SH_INTRO_A + SH_INTRO_B + SH_INTRO_C;
+
+  var SH_STEPS = [
+    "<span class='k'>0x35 &lt;&lt; 2: start with </span><span class='v'>00110101</span><span class='k'> (0x35 = 53). Bits move; values follow.</span>",
+    "<span class='k'>Slide every bit left 2: </span><span class='v'>11010100</span><span class='k'>. The two lowest bits fill with </span><span class='hit'>0</span><span class='k'>. Nothing fell off the top yet.</span>",
+    "<span class='k'>Read the byte: </span><span class='hit'>0xD4 = 212</span><span class='k'>, and 53 x 4 = 212. Left shift by 2 <b>is</b> multiply by 4.</span>",
+    "<span class='k'>Now 0xC0 &gt;&gt; 1: start with </span><span class='v'>11000000</span><span class='k'> (0xC0, which is -64 as a signed byte).</span>",
+    "<span class='k'>LOGICAL (SRL): a 0 slides in from the left: </span><span class='v'>01100000</span><span class='k'> = </span><span class='hit'>0x60 = 96</span><span class='k'>. That is not -64 divided by 2.</span>",
+    "<span class='k'>ARITHMETIC (SRA): the sign bit 1 slides in from the left: </span><span class='v'>11100000</span><span class='k'> = </span><span class='hit'>0xE0 = -32 signed</span><span class='k'>. That is -64 divided by 2, exactly.</span>",
+    "<span class='k'>Same input, two honest answers. The </span><span class='hit'>contract</span><span class='k'>, not the number, decides. The trials ask you to call both, every time.</span>"
+  ];
+
+  /* ---------------- state ---------------- */
+
+  function shNewTrialState() {
+    return { attempts: 0, strikes: 0, passed: false, committed: false, qs: [] };
+  }
+  var shState = {
+    trials: [shNewTrialState(), shNewTrialState(), shNewTrialState()],
+    step: 0,
+    lane: { v: 0x35, n: 2, dir: "L", arith: false }
+  };
+  var shEls = null;
+
+  /* ---------------- log + pop ---------------- */
+
+  function shLog(msg, cls) {
+    if (!shEls || !shEls.log) return;
+    var d = shEl("div", cls || "", msg);
+    shEls.log.appendChild(d);
+    shEls.log.scrollTop = shEls.log.scrollHeight;
+  }
+  function shPop(card) {
+    if (!card) return;
+    card.classList.remove("sh-pop");
+    void card.offsetWidth;
+    card.classList.add("sh-pop");
+  }
+
+  /* ---------------- shared controls ---------------- */
+
+  /* A two-way toggle: LEFT/RIGHT or LOGICAL/ARITHMETIC. aria-pressed tracked. */
+  function shTwoToggle(aLabel, bLabel, aVal, bVal, ariaA, ariaB) {
+    var wrap = shEl("span", "sh-row");
+    var ba = shEl("button", "sh-btn", aLabel);
+    var bb = shEl("button", "sh-btn", bLabel);
+    ba.type = "button"; bb.type = "button";
+    ba.setAttribute("aria-pressed", "true");
+    bb.setAttribute("aria-pressed", "false");
+    ba.setAttribute("aria-label", ariaA);
+    bb.setAttribute("aria-label", ariaB);
+    ba.addEventListener("click", function () {
+      ba.setAttribute("aria-pressed", "true");
+      bb.setAttribute("aria-pressed", "false");
+    });
+    bb.addEventListener("click", function () {
+      bb.setAttribute("aria-pressed", "true");
+      ba.setAttribute("aria-pressed", "false");
+    });
+    wrap.appendChild(ba); wrap.appendChild(bb);
+    wrap.getValue = function () {
+      return bb.getAttribute("aria-pressed") === "true" ? bVal : aVal;
+    };
+    wrap.setValue = function (v) {
+      ba.setAttribute("aria-pressed", v === aVal ? "true" : "false");
+      bb.setAttribute("aria-pressed", v === bVal ? "true" : "false");
+    };
+    wrap.lock = function () { ba.disabled = true; bb.disabled = true; };
+    wrap.unlock = function () {
+      ba.disabled = false; bb.disabled = false;
+      ba.setAttribute("aria-pressed", "true");
+      bb.setAttribute("aria-pressed", "false");
+    };
+    return wrap;
+  }
+
+  function shHexInput(ariaLabel, placeholder) {
+    var inp = shEl("input", "sh-in");
+    inp.type = "text"; inp.maxLength = 4;
+    inp.setAttribute("aria-label", ariaLabel || "Value in hex, for example 35");
+    inp.setAttribute("placeholder", placeholder || "0x..");
+    inp.setAttribute("spellcheck", "false");
+    inp.setAttribute("autocomplete", "off");
+    return inp;
+  }
+  function shNumInput(ariaLabel, placeholder) {
+    var inp = shEl("input", "sh-in");
+    inp.type = "text"; inp.maxLength = 3; inp.inputMode = "numeric";
+    inp.setAttribute("aria-label", ariaLabel || "Number");
+    inp.setAttribute("placeholder", placeholder || "0");
+    inp.setAttribute("spellcheck", "false");
+    inp.setAttribute("autocomplete", "off");
+    return inp;
+  }
+  function shParseHex(str) {
+    var s = String(str).trim().replace(/^0x/i, "");
+    if (!/^[0-9a-fA-F]{1,4}$/.test(s)) return null;
+    return parseInt(s, 16);
+  }
+  function shParseNum(str, lo, hi) {
+    var s = String(str).trim();
+    if (!/^[0-9]{1,3}$/.test(s)) return null;
+    var v = parseInt(s, 10);
+    if (v < lo || v > hi) return null;
+    return v;
+  }
+
+  function shDirSym(dir) { return dir === "L" ? "<<" : ">>"; }
+
+  /* Renders the 8-bit lane: before row, arrow, after row, lost bits. */
+  function shRenderLane(host, v, dir, n, arith) {
+    var r = shShift8(v, dir, n, arith);
+    host.innerHTML = "";
+    function bitRow(label, bits, clsOf) {
+      var row = shEl("div", "sh-bitlane");
+      row.appendChild(shEl("span", "sh-bitrowlab", label));
+      for (var i = 7; i >= 0; i--) {
+        var b = shEl("span", "sh-bit" + (clsOf(i) ? " " + clsOf(i) : ""), ((bits >>> i) & 1) ? "1" : "0");
+        row.appendChild(b);
+      }
+      return row;
+    }
+    host.appendChild(bitRow("BEFORE", r.v, function () { return ""; }));
+    var arrow = shEl("div", "sh-bitlane");
+    arrow.appendChild(shEl("span", "sh-bitrowlab", dir === "L" ? "SHIFT LEFT" : "SHIFT RIGHT"));
+    var a = shEl("span", "sh-arrow", dir === "L" ? "<< " + n : ">> " + n);
+    arrow.appendChild(a);
+    arrow.appendChild(shEl("span", "k", arith && dir === "R" ? "ARITHMETIC, sign fills in" : (dir === "R" ? "LOGICAL, zeros fill in" : "zeros fill in")));
+    host.appendChild(arrow);
+    /* the filled-in bits are the ones that arrived from the edge */
+    function afterCls(i) {
+      if (dir === "L") return i < n && n < 8 ? "fill" : "";
+      if (arith && (r.v & 0x80) && i >= 8 - n && n < 8) return "fill";
+      if (!arith || !(r.v & 0x80)) return (i >= 8 - n && n < 8 && dir === "R") ? "fill" : "";
+      return "";
+    }
+    host.appendChild(bitRow("AFTER", r.result, afterCls));
+    if (r.lost > 0) {
+      var lost = shEl("div", "sh-bitlane");
+      lost.appendChild(shEl("span", "sh-bitrowlab", "FELL OFF"));
+      var lostBits = dir === "L"
+        ? (n >= 8 ? r.v : (r.v >>> (8 - n)))
+        : (n >= 8 ? r.v : (r.v & ((1 << n) - 1)));
+      for (var j = Math.min(n, 8) - 1; j >= 0; j--) {
+        lost.appendChild(shEl("span", "sh-bit lost", ((lostBits >>> j) & 1) ? "1" : "0"));
+      }
+      host.appendChild(lost);
+    }
+    var res = shEl("div", "sh-lanes");
+    var op = shHex(r.v, 2) + " " + shDirSym(r.dir) + " " + r.n;
+    if (r.dir === "R") op += (r.arith ? " (SRA)" : " (SRL)");
+    res.innerHTML = "<span class='k'>" + op + " = </span><span class='hit'>" +
+      shHex(r.result, 2) + "</span><span class='k'> (" + r.result + " unsigned, " +
+      shSigned8(r.result) + " signed). </span>" +
+      (r.lost > 0
+        ? "<span class='hit'>" + r.lost + " bit" + (r.lost === 1 ? "" : "s") + " fell off.</span>"
+        : "<span class='v'>No bits fell off.</span>");
+    host.appendChild(res);
+    shPop(host);
+    return r;
+  }
+
+  /* ---------------- trial builders (state-driven, rebuildable) ---------------- */
+
+  function shTrialShell(card, ti, whyText) {
+    card.appendChild(shEl("h3", null, "TRIAL " + (ti + 1) + ": " + SH_TITLES[ti]));
+    card.appendChild(shEl("p", "why", whyText));
+  }
+
+  function shCheckResetRow(card, ti, checkLabel) {
+    var row = shEl("div", "sh-row");
+    var check = shEl("button", "sh-btn solid", checkLabel);
+    check.type = "button";
+    var reset = shEl("button", "sh-btn", "RESET TRIAL " + (ti + 1));
+    reset.type = "button";
+    row.appendChild(check); row.appendChild(reset);
+    card.appendChild(row);
+    var verdict = shEl("p", "sh-verdict", "No check yet.");
+    card.appendChild(verdict);
+    var cert = shEl("button", "sh-btn", "CERTIFY TRIAL " + (ti + 1));
+    cert.type = "button";
+    cert.disabled = true;
+    cert.addEventListener("click", function () { shCommit(ti); });
+    card.appendChild(cert);
+    reset.addEventListener("click", function () { shResetTrial(ti); });
+    return { check: check, verdict: verdict, cert: cert };
+  }
+
+  function shSetVerdict(built, ti) {
+    var st = shState.trials[ti];
+    if (st.passed) {
+      built.verdict.textContent = "TRIAL " + (ti + 1) + " PASSED in " + st.attempts +
+        " check(s), " + st.strikes + " strike(s)." +
+        (st.committed ? " Certified." : " CERTIFY is lit.");
+      built.verdict.className = "sh-verdict pass";
+    }
+    built.cert.disabled = !(st.passed && !st.committed);
+  }
+
+  function shWorkOfT1(p) {
+    var n = p.shamt ? shShamt32(p.n) : p.n;
+    var r = shShift8(p.v, p.dir, n, p.arith);
+    var s = shHex(p.v, 2) + " " + shDirSym(p.dir) + " " + n + " = " + shHex(r.result, 2) +
+      " (" + r.result + "), " + r.lost + " bit(s) fell off";
+    if (p.shamt) s = "RV32 masks 41 to " + shShamt32(p.n) + "; " + s;
+    return s;
+  }
+
+  /* --- trial 1: the doubling lane --- */
+  function shBuildT1(card) {
+    var st = shState.trials[0];
+    shTrialShell(card, 0,
+      "Drive the bit lane above first, then predict the result byte and how many 1-bits fell off for four shifts. Q4 is the RV32 trap: the hardware masks the amount before it shifts.");
+    while (st.qs.length < SH_T1.length) st.qs.push({ rv: null, lv: null, ev: null, done: false, note: "" });
+    var ui = [];
+    SH_T1.forEach(function (p, i) {
+      var qs = st.qs[i];
+      var n = p.shamt ? shShamt32(p.n) : p.n;
+      var r = shShift8(p.v, p.dir, n, p.arith);
+      var q = shEl("div", "sh-q");
+      var qtext = p.shamt
+        ? "Q" + (i + 1) + ": " + shHex(p.v, 2) + " << " + p.n + " on an RV32 machine. Predict the effective amount after the 5-bit mask, then the result byte and the fallen bits."
+        : "Q" + (i + 1) + ": " + shHex(p.v, 2) + " " + shDirSym(p.dir) + " " + p.n + " (logical). Predict the result byte and how many 1-bits fell off.";
+      q.appendChild(shEl("p", "qp", qtext));
+      var row = shEl("div", "sh-row");
+      if (p.shamt) {
+        row.appendChild(shEl("span", "sh-lab", "EFFECTIVE"));
+        var ei = shNumInput("Effective shift amount after the RV32 5-bit mask", "0..31");
+        row.appendChild(ei);
+      }
+      row.appendChild(shEl("span", "sh-lab", "RESULT"));
+      var ri = shHexInput("Result byte in hex, for example D4", "0x..");
+      row.appendChild(ri);
+      row.appendChild(shEl("span", "sh-lab", "FELL OFF"));
+      var li = shNumInput("Number of 1-bits that fell off", "0..8");
+      row.appendChild(li);
+      q.appendChild(row);
+      var note = shEl("p", "sh-note", qs.note);
+      if (qs.done) {
+        if (p.shamt) { ei.value = String(qs.ev); ei.disabled = true; }
+        ri.value = shHex(qs.rv, 2); ri.disabled = true;
+        li.value = String(qs.lv); li.disabled = true;
+        note.style.color = "#7fd67f";
+      }
+      q.appendChild(note);
+      card.appendChild(q);
+      ui.push({ ei: p.shamt ? ei : null, ri: ri, li: li, note: note });
+    });
+    var res = shEl("div", "sh-lanes");
+    res.innerHTML = st.passed ?
+      "<span class='k'>Every shifted byte called, every fallen bit counted, and the 5-bit mask named.</span>" :
+      "<span class='k'>Press CHECK when every question has its predictions.</span>";
+    card.appendChild(res);
+    var built = shCheckResetRow(card, 0, "CHECK TRIAL 1");
+    shSetVerdict(built, 0);
+
+    built.check.addEventListener("click", function () {
+      st.attempts++;
+      var allIn = true, changed = false;
+      SH_T1.forEach(function (p, i) {
+        var qs = st.qs[i], u = ui[i];
+        if (qs.done) return;
+        var n = p.shamt ? shShamt32(p.n) : p.n;
+        var r = shShift8(p.v, p.dir, n, p.arith);
+        var ev = p.shamt ? shParseNum(u.ei.value, 0, 31) : -1;
+        var rv = shParseHex(u.ri.value), lv = shParseNum(u.li.value, 0, 8);
+        if (rv === null || lv === null || (p.shamt && ev === null)) { allIn = false; return; }
+        changed = true;
+        var okAll = ((rv & 0xff) === r.result) && (lv === r.lost) && (!p.shamt || ev === shShamt32(p.n));
+        if (okAll) {
+          qs.done = true; qs.rv = r.result; qs.lv = r.lost; qs.ev = p.shamt ? shShamt32(p.n) : null;
+          qs.note = "Correct. " + shWorkOfT1(p) + ".";
+          if (p.shamt) { u.ei.value = String(qs.ev); u.ei.disabled = true; }
+          u.ri.value = shHex(r.result, 2); u.ri.disabled = true;
+          u.li.value = String(r.lost); u.li.disabled = true;
+          u.note.textContent = qs.note; u.note.style.color = "#7fd67f";
+        } else {
+          st.strikes++;
+          qs.note = "Not yet. The lane says: " + shWorkOfT1(p) + ". Read it, then fix your answer.";
+          u.note.textContent = qs.note; u.note.style.color = "#ff5a1f";
+          shLog("Trial 1 Q" + (i + 1) + " missed: expected " + shHex(r.result, 2) +
+            " / " + r.lost + " fell off.", "bad");
+        }
+      });
+      if (!allIn && !changed) {
+        built.verdict.textContent = "Fill in every field first.";
+        built.verdict.className = "sh-verdict";
+        return;
+      }
+      if (st.qs.every(function (x) { return x.done; }) && !st.passed) {
+        st.passed = true;
+        res.innerHTML = "<span class='k'>Every shifted byte called, every fallen bit counted, and the 5-bit mask named.</span>";
+        shLog("Trial 1 PASSED (" + st.attempts + " checks, " + st.strikes + " strikes).", "ok");
+      }
+      if (st.passed) {
+        built.verdict.textContent = "TRIAL 1 PASSED: every byte, fallen bit, and the mask called correctly in " +
+          st.attempts + " check(s), " + st.strikes + " strike(s). CERTIFY is lit.";
+        built.verdict.className = "sh-verdict pass";
+      } else {
+        built.verdict.textContent = "Some answers missed. The lane work is printed under each question: read it and try again.";
+        built.verdict.className = "sh-verdict miss";
+      }
+      shSetVerdict(built, 0);
+      shPop(card);
+    });
+  }
+
+  /* --- trial 2: the sign split --- */
+  function shBuildT2(card) {
+    var st = shState.trials[1];
+    shTrialShell(card, 1,
+      "One input, two honest answers. For each value, call the LOGICAL (SRL, zeros fill in) and the ARITHMETIC (SRA, sign bit fills in) result. Q4 is the sensor that divides -12 by 4: one contract keeps it alive, the other reports 61.");
+    while (st.qs.length < SH_T2.length) st.qs.push({ lg: null, ar: null, done: false, note: "" });
+    var ui = [];
+    SH_T2.forEach(function (p, i) {
+      var qs = st.qs[i];
+      var rl = shShift8(p.v, "R", p.n, false), ra = shShift8(p.v, "R", p.n, true);
+      var q = shEl("div", "sh-q");
+      var signed = shSigned8(p.v);
+      q.appendChild(shEl("p", "qp", "Q" + (i + 1) + ": " + shHex(p.v, 2) + " >> " + p.n +
+        " (" + p.v + " unsigned, " + signed + " signed). Predict the LOGICAL and the ARITHMETIC result bytes."));
+      var row = shEl("div", "sh-row");
+      row.appendChild(shEl("span", "sh-lab", "LOGICAL"));
+      var lgIn = shHexInput("Logical shift result byte in hex", "0x..");
+      row.appendChild(lgIn);
+      row.appendChild(shEl("span", "sh-lab", "ARITHMETIC"));
+      var arIn = shHexInput("Arithmetic shift result byte in hex", "0x..");
+      row.appendChild(arIn);
+      q.appendChild(row);
+      var note = shEl("p", "sh-note", qs.note);
+      if (qs.done) {
+        lgIn.value = shHex(qs.lg, 2); lgIn.disabled = true;
+        arIn.value = shHex(qs.ar, 2); arIn.disabled = true;
+        note.style.color = "#7fd67f";
+      }
+      q.appendChild(note);
+      card.appendChild(q);
+      ui.push({ lgIn: lgIn, arIn: arIn, note: note });
+    });
+    var res = shEl("div", "sh-lanes");
+    res.innerHTML = st.passed ?
+      "<span class='k'>Logical and arithmetic called on every value. The contract, not the number, decides.</span>" :
+      "<span class='k'>Press CHECK when every question names both contracts.</span>";
+    card.appendChild(res);
+    var built = shCheckResetRow(card, 1, "CHECK TRIAL 2");
+    shSetVerdict(built, 1);
+
+    built.check.addEventListener("click", function () {
+      st.attempts++;
+      var allIn = true, changed = false;
+      SH_T2.forEach(function (p, i) {
+        var qs = st.qs[i], u = ui[i];
+        if (qs.done) return;
+        var rl = shShift8(p.v, "R", p.n, false), ra = shShift8(p.v, "R", p.n, true);
+        var lg = shParseHex(u.lgIn.value), ar = shParseHex(u.arIn.value);
+        if (lg === null || ar === null) { allIn = false; return; }
+        changed = true;
+        if (((lg & 0xff) === rl.result) && ((ar & 0xff) === ra.result)) {
+          qs.done = true; qs.lg = rl.result; qs.ar = ra.result;
+          qs.note = "Correct. SRL: " + shHex(rl.result, 2) + " (" + rl.result + "); SRA: " +
+            shHex(ra.result, 2) + " (" + ra.result + " unsigned, " + shSigned8(ra.result) + " signed).";
+          u.lgIn.value = shHex(rl.result, 2); u.lgIn.disabled = true;
+          u.arIn.value = shHex(ra.result, 2); u.arIn.disabled = true;
+          u.note.textContent = qs.note; u.note.style.color = "#7fd67f";
+        } else {
+          st.strikes++;
+          qs.note = "Not yet. The lane says: SRL " + shHex(rl.result, 2) + " (" + rl.result +
+            "), SRA " + shHex(ra.result, 2) + " (" + ra.result + " unsigned, " +
+            shSigned8(ra.result) + " signed). Read it, then fix your answer.";
+          u.note.textContent = qs.note; u.note.style.color = "#ff5a1f";
+          shLog("Trial 2 Q" + (i + 1) + " missed: expected SRL " + shHex(rl.result, 2) +
+            " / SRA " + shHex(ra.result, 2) + ".", "bad");
+        }
+      });
+      if (!allIn && !changed) {
+        built.verdict.textContent = "Fill in every logical and arithmetic answer first.";
+        built.verdict.className = "sh-verdict";
+        return;
+      }
+      if (st.qs.every(function (x) { return x.done; }) && !st.passed) {
+        st.passed = true;
+        res.innerHTML = "<span class='k'>Logical and arithmetic called on every value. The contract, not the number, decides.</span>";
+        shLog("Trial 2 PASSED (" + st.attempts + " checks, " + st.strikes + " strikes).", "ok");
+      }
+      if (st.passed) {
+        built.verdict.textContent = "TRIAL 2 PASSED: both contracts called on all four values in " +
+          st.attempts + " check(s), " + st.strikes + " strike(s). CERTIFY is lit.";
+        built.verdict.className = "sh-verdict pass";
+      } else {
+        built.verdict.textContent = "Some answers missed. The lane work is printed under each question: read it and try again.";
+        built.verdict.className = "sh-verdict miss";
+      }
+      shSetVerdict(built, 1);
+      shPop(card);
+    });
+  }
+
+  /* --- trial 3: build a multiply --- */
+  function shBuildT3(card) {
+    var st = shState.trials[2];
+    shTrialShell(card, 2,
+      "No multiplier circuit, just shifts and one add. Decompose the second operand into powers of two, shift the first operand by each, and add. The 8-bit lane wraps its sums; the last question calls the wrap.");
+    while (st.qs.length < SH_T3.length) st.qs.push({ t0: null, l0: null, t1: null, sm: null, done: false, note: "" });
+    var ui = [];
+    SH_T3.forEach(function (p, i) {
+      var qs = st.qs[i];
+      var ex = shT3Expected(p);
+      var isWrap = (i === SH_T3.length - 1);
+      var q = shEl("div", "sh-q");
+      var decomp = p.b + " = " + (1 << p.p0) + " + " + (1 << p.p1);
+      var qtext = "Q" + (i + 1) + ": " + p.a + " x " + p.b + " (" + decomp + "). " +
+        "Predict (" + p.a + " << " + p.p0 + "), (" + p.a + " << " + p.p1 + "), and the 8-bit sum" +
+        (isWrap ? ", plus the 1-bits the first shift lost (the wrap question)." : ".");
+      q.appendChild(shEl("p", "qp", qtext));
+      var row = shEl("div", "sh-row");
+      row.appendChild(shEl("span", "sh-lab", "TERM A"));
+      var t0In = shNumInput("First partial product, 0 to 255", "0..255");
+      row.appendChild(t0In);
+      row.appendChild(shEl("span", "sh-lab", "TERM B"));
+      var t1In = shNumInput("Second partial product, 0 to 255", "0..255");
+      row.appendChild(t1In);
+      q.appendChild(row);
+      var row2 = shEl("div", "sh-row");
+      if (isWrap) {
+        row2.appendChild(shEl("span", "sh-lab", "LOST IN SHIFT 1"));
+        var l0In = shNumInput("1-bits lost by the first shift, 0 to 8", "0..8");
+        row2.appendChild(l0In);
+      }
+      row2.appendChild(shEl("span", "sh-lab", "SUM"));
+      var smIn = shNumInput("8-bit sum of the terms, 0 to 255", "0..255");
+      row2.appendChild(smIn);
+      q.appendChild(row2);
+      var note = shEl("p", "sh-note", qs.note);
+      if (qs.done) {
+        t0In.value = String(qs.t0); t0In.disabled = true;
+        t1In.value = String(qs.t1); t1In.disabled = true;
+        if (isWrap) { l0In.value = String(qs.l0); l0In.disabled = true; }
+        smIn.value = String(qs.sm); smIn.disabled = true;
+        note.style.color = "#7fd67f";
+      }
+      q.appendChild(note);
+      card.appendChild(q);
+      ui.push({ t0In: t0In, t1In: t1In, l0In: isWrap ? l0In : null, smIn: smIn, note: note });
+    });
+    var res = shEl("div", "sh-lanes");
+    res.innerHTML = st.passed ?
+      "<span class='k'>Four multiplies built from shifts and adds. The multiplier circuit never got involved.</span>" :
+      "<span class='k'>Press CHECK when every multiply has its terms and sum.</span>";
+    card.appendChild(res);
+    var built = shCheckResetRow(card, 2, "CHECK TRIAL 3");
+    shSetVerdict(built, 2);
+
+    built.check.addEventListener("click", function () {
+      st.attempts++;
+      var allIn = true, changed = false;
+      SH_T3.forEach(function (p, i) {
+        var qs = st.qs[i], u = ui[i];
+        if (qs.done) return;
+        var isWrap = (i === SH_T3.length - 1);
+        var ex = shT3Expected(p);
+        var t0 = shParseNum(u.t0In.value, 0, 255), t1 = shParseNum(u.t1In.value, 0, 255);
+        var sm = shParseNum(u.smIn.value, 0, 255);
+        var l0 = isWrap ? shParseNum(u.l0In.value, 0, 8) : -1;
+        if (t0 === null || t1 === null || sm === null || (isWrap && l0 === null)) { allIn = false; return; }
+        changed = true;
+        var okAll = (t0 === ex.t0) && (t1 === ex.t1) && (sm === ex.sum) && (!isWrap || l0 === ex.lost0);
+        if (okAll) {
+          qs.done = true; qs.t0 = ex.t0; qs.t1 = ex.t1; qs.l0 = isWrap ? ex.lost0 : null; qs.sm = ex.sum;
+          qs.note = "Correct. " + p.a + " << " + p.p0 + " = " + ex.t0 + ", " + p.a + " << " + p.p1 +
+            " = " + ex.t1 + ", sum = " + ex.sum + (isWrap ? " (the wrap: 344 mod 256, one bit lost, no complaint)." : ".");
+          u.t0In.value = String(ex.t0); u.t0In.disabled = true;
+          u.t1In.value = String(ex.t1); u.t1In.disabled = true;
+          if (isWrap) { u.l0In.value = String(ex.lost0); u.l0In.disabled = true; }
+          u.smIn.value = String(ex.sum); u.smIn.disabled = true;
+          u.note.textContent = qs.note; u.note.style.color = "#7fd67f";
+        } else {
+          st.strikes++;
+          qs.note = "Not yet. The lane says: " + p.a + " << " + p.p0 + " = " + ex.t0 +
+            (isWrap ? " (" + ex.lost0 + " bit lost)" : "") + ", " + p.a + " << " + p.p1 + " = " +
+            ex.t1 + ", sum = " + ex.sum + ". Read it, then fix your answer.";
+          u.note.textContent = qs.note; u.note.style.color = "#ff5a1f";
+          shLog("Trial 3 Q" + (i + 1) + " missed: expected " + ex.t0 + " + " + ex.t1 + " = " + ex.sum + ".", "bad");
+        }
+      });
+      if (!allIn && !changed) {
+        built.verdict.textContent = "Fill in every term and sum first.";
+        built.verdict.className = "sh-verdict";
+        return;
+      }
+      if (st.qs.every(function (x) { return x.done; }) && !st.passed) {
+        st.passed = true;
+        res.innerHTML = "<span class='k'>Four multiplies built from shifts and adds. The multiplier circuit never got involved.</span>";
+        shLog("Trial 3 PASSED (" + st.attempts + " checks, " + st.strikes + " strikes).", "ok");
+      }
+      if (st.passed) {
+        built.verdict.textContent = "TRIAL 3 PASSED: four multiplies built from shifts in " +
+          st.attempts + " check(s), " + st.strikes + " strike(s). CERTIFY is lit.";
+        built.verdict.className = "sh-verdict pass";
+      } else {
+        built.verdict.textContent = "Some answers missed. The lane work is printed under each question: read it and try again.";
+        built.verdict.className = "sh-verdict miss";
+      }
+      shSetVerdict(built, 2);
+      shPop(card);
+    });
+  }
+
+  /* ---------------- grade / certify ---------------- */
+
+  function shGrade(st) {
+    if (st.strikes === 0) return "GOLD";
+    if (st.strikes <= 2) return "SILVER";
+    return "BRONZE";
+  }
+
+  function shCommit(ti) {
+    var st = shState.trials[ti];
+    if (!(st.passed && !st.committed)) return false;
+    st.committed = true;
+    var detail;
+    if (ti === 0) {
+      detail = ["Called the result byte and the fallen bits on 4 eight-bit shifts:",
+        "  0x35<<2 = 0xD4 (0 lost); 0x35<<3 = 0xA8 (1 lost); 0xF0>>2 = 0x3C (0 lost);",
+        "  0x01<<41 on RV32: the 5-bit mask gives 9, 0x01<<9 = 0x00 (1 lost).",
+        "Attempts: " + st.attempts + ", strikes: " + st.strikes + ", grade " + shGrade(st) + "."];
+    } else if (ti === 1) {
+      detail = ["Called both shift contracts on 4 right shifts:",
+        "  0xC0>>1: SRL 0x60 / SRA 0xE0; 0x80>>3: SRL 0x10 / SRA 0xF0;",
+        "  0xF0>>4: SRL 0x0F / SRA 0xFF; 0xF4>>2 (-12): SRL 0x3D (61) / SRA 0xFD (-3).",
+        "Attempts: " + st.attempts + ", strikes: " + st.strikes + ", grade " + shGrade(st) + "."];
+    } else {
+      detail = ["Built 4 multiplies from shifts and adds on the 8-bit lane:",
+        "  13x12 = 104+52 = 156; 21x10 = 168+42 = 210; 9x6 = 36+18 = 54;",
+        "  200x3 = 144+200 = 88, the silent wrap (1 bit lost, no complaint).",
+        "Attempts: " + st.attempts + ", strikes: " + st.strikes + ", grade " + shGrade(st) + "."];
+    }
+    var lines = ["THE SHIFT ROOM, TRIAL " + (ti + 1) + " CERTIFICATE",
+      "Bench 45 // " + SH_TITLES[ti], ""].concat(detail);
+    lines.push("", "SHIFTKEEPER // THE PROVING GROUND");
+    var blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "shift-room-trial" + (ti + 1) + "-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    shLog("Trial " + (ti + 1) + " CERTIFIED (" + shGrade(st) + "). Certificate downloaded.", "ok");
+    /* rebuild this card so the CERTIFY button shows disabled */
+    shRebuildCard(ti);
+    var all = shState.trials.every(function (s) { return s.committed; });
+    if (all) {
+      shEls.banner.style.display = "block";
+      shEls.certAll.style.display = "";
+      shLog("SHIFTKEEPER: all three trials certified. The contract decides.", "ok");
+    }
+    return true;
+  }
+
+  function shCertAll() {
+    var lines = ["THE SHIFT ROOM, BENCH CERTIFICATE", "All three trials certified:", ""];
+    for (var i = 0; i < 3; i++) {
+      var st = shState.trials[i];
+      lines.push("Trial " + (i + 1) + " " + SH_TITLES[i] + ": CERTIFIED (" + st.attempts +
+        " checks, " + st.strikes + " strikes, grade " + shGrade(st) + ")");
+    }
+    lines.push("", "Left shift multiplies by powers of two until bits fall off;",
+      "right shift divides under the logical contract (zeros) or the arithmetic",
+      "contract (sign bit), and the RV32 amount masks to 5 bits.", "",
+      "SHIFTKEEPER // THE PROVING GROUND");
+    var blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "shift-room-bench-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    shLog("Bench certificate downloaded.", "ok");
+  }
+
+  function shResetTrial(ti) {
+    shState.trials[ti] = shNewTrialState();
+    shRebuildCard(ti);
+    shLog("Trial " + (ti + 1) + " reset.", "");
+  }
+
+  /* ---------------- build ---------------- */
+
+  var shBuilders = [shBuildT1, shBuildT2, shBuildT3];
+
+  function shRebuildCard(ti) {
+    var host = shEls.cardHosts[ti];
+    host.innerHTML = "";
+    var card = shEl("div", "sh-card");
+    shBuilders[ti](card);
+    host.appendChild(card);
+    shPop(card);
+  }
+
+  function shOpen() {
+    shEls.overlay.classList.add("open");
+    shEls.overlay.scrollTop = 0;
+  }
+  function shClose() {
+    shEls.overlay.classList.remove("open");
+  }
+
+  function shBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("shBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = SH_CSS;
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "shBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Shift Room";
+    b.addEventListener("click", shOpen);
+    box.appendChild(b);
+
+    var ov = shEl("div", "sh-overlay");
+    ov.id = "shOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Shift Room");
+    var x = shEl("button", "sh-btn", "CLOSE");
+    x.id = "shXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Shift Room");
+    x.addEventListener("click", shClose);
+    ov.appendChild(x);
+
+    var panel = shEl("div", "sh-panel");
+    panel.appendChild(shEl("div", "sh-kicker", "SILICON BENCH 45"));
+    panel.appendChild(shEl("h2", "sh-title", "The Shift Room"));
+    panel.appendChild(shEl("p", "sh-sub",
+      "The cheapest multiply in the machine. Drive the bit lane, call every shifted byte and its fallen bits, split logical from arithmetic on negative values, then build a multiply out of shifts."));
+
+    /* do-first: the bit lane explorer */
+    var laneCard = shEl("div", "sh-card");
+    laneCard.appendChild(shEl("h3", null, "DO FIRST: THE BIT LANE"));
+    var laneWhy = shEl("p", "why",
+      "Set a value, an amount, and a direction, then SHIFT. Consequence-free: watch the bits move, see which ones fill in, and which fall off the edge. Nothing is scored here; the trials ask for predictions later.");
+    laneCard.appendChild(laneWhy);
+    var laneRow = shEl("div", "sh-row");
+    laneRow.appendChild(shEl("span", "sh-lab", "VALUE"));
+    var valIn = shHexInput("Lane value in hex, for example 35", "0x..");
+    valIn.id = "shValIn"; valIn.value = "0x35";
+    laneRow.appendChild(valIn);
+    laneRow.appendChild(shEl("span", "sh-lab", "AMOUNT"));
+    var amtIn = shNumInput("Shift amount, 0 to 41", "0..41");
+    amtIn.id = "shAmtIn"; amtIn.value = "2";
+    laneRow.appendChild(amtIn);
+    laneCard.appendChild(laneRow);
+    var laneRow2 = shEl("div", "sh-row");
+    laneRow2.appendChild(shEl("span", "sh-lab", "DIRECTION"));
+    var dirT = shTwoToggle("LEFT", "RIGHT", "L", "R", "Shift left", "Shift right");
+    dirT.id = "shDirT";
+    laneRow2.appendChild(dirT);
+    laneRow2.appendChild(shEl("span", "sh-lab", "FILL"));
+    var fillT = shTwoToggle("LOGICAL", "ARITHMETIC", false, true,
+      "Logical fill, zeros slide in", "Arithmetic fill, the sign bit slides in");
+    fillT.id = "shFillT";
+    laneRow2.appendChild(fillT);
+    laneCard.appendChild(laneRow2);
+    var laneRow3 = shEl("div", "sh-row");
+    var shiftBtn = shEl("button", "sh-btn solid", "SHIFT");
+    shiftBtn.type = "button"; shiftBtn.id = "shShiftBtn";
+    laneRow3.appendChild(shiftBtn);
+    laneRow3.appendChild(shEl("span", "sh-lab", "TIP: FILL IS IGNORED GOING LEFT, ZEROS ALWAYS FILL IN"));
+    laneCard.appendChild(laneRow3);
+    var laneHost = shEl("div", null, "");
+    laneHost.id = "shLane";
+    laneHost.setAttribute("aria-live", "polite");
+    laneCard.appendChild(laneHost);
+    panel.appendChild(laneCard);
+
+    var introA = shEl("div", null, "");
+    introA.innerHTML = SH_INTRO_A;
+    panel.appendChild(introA);
+
+    /* stepper card: copy B, then programmatic STEP controls, then copy C */
+    var stepCard = shEl("div", null, "");
+    stepCard.innerHTML = SH_INTRO_B;
+    panel.appendChild(stepCard);
+    var stepsRow = shEl("div", "sh-steps");
+    var stepBtn = shEl("button", "sh-btn", "STEP");
+    stepBtn.type = "button"; stepBtn.id = "shStepBtn";
+    var stepReset = shEl("button", "sh-btn", "RESET STEPPER");
+    stepReset.type = "button"; stepReset.id = "shStepReset";
+    stepsRow.appendChild(stepBtn); stepsRow.appendChild(stepReset);
+    stepCard.appendChild(stepsRow);
+    var stepper = shEl("div", "sh-lanes");
+    stepper.id = "shStepper";
+    stepper.setAttribute("aria-live", "polite");
+    stepper.innerHTML = "<span class='k'>Press STEP to walk the worked example, one lane at a time.</span>";
+    stepCard.appendChild(stepper);
+    var introC = shEl("div", null, "");
+    introC.innerHTML = SH_INTRO_C;
+    stepCard.appendChild(introC);
+
+    var banner = shEl("div", "sh-banner");
+    banner.appendChild(shEl("h3", null, "BENCH CERTIFIED"));
+    banner.appendChild(shEl("p", null,
+      "All three trials certified. Left shift multiplies until bits fall off, the right shift keeps its contract, and the RV32 amount masks to five bits."));
+    var certAll = shEl("button", "sh-btn solid", "DOWNLOAD BENCH CERTIFICATE");
+    certAll.type = "button";
+    certAll.id = "shCertAllBtn";
+    certAll.addEventListener("click", shCertAll);
+    banner.appendChild(certAll);
+    panel.appendChild(banner);
+
+    var trials = shEl("div", null, "");
+    trials.id = "shTrials";
+    var cardHosts = [];
+    for (var i = 0; i < 3; i++) {
+      var host = shEl("div", null, "");
+      trials.appendChild(host);
+      cardHosts.push(host);
+    }
+    panel.appendChild(trials);
+
+    var log = shEl("div", "sh-log");
+    log.setAttribute("aria-live", "polite");
+    panel.appendChild(log);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    shEls = { overlay: ov, log: log, banner: banner, certAll: certAll, cardHosts: cardHosts,
+              laneHost: laneHost, valIn: valIn, amtIn: amtIn, dirT: dirT, fillT: fillT, shiftBtn: shiftBtn };
+    for (var j = 0; j < 3; j++) shRebuildCard(j);
+
+    var all = shState.trials.every(function (s) { return s.committed; });
+    shEls.banner.style.display = all ? "block" : "none";
+    shEls.certAll.style.display = all ? "" : "none";
+
+    /* lane explorer wiring (do-first) */
+    function shLaneGo() {
+      var v = shParseHex(valIn.value);
+      var n = shParseNum(amtIn.value, 0, 41);
+      if (v === null) {
+        laneHost.innerHTML = "<span class='k'>Enter a lane value in hex first, for example 0x35.</span>";
+        return;
+      }
+      if (n === null) {
+        laneHost.innerHTML = "<span class='k'>Enter an amount from 0 to 41. Past 7 every bit falls off the edge.</span>";
+        return;
+      }
+      var dir = dirT.getValue(), arith = fillT.getValue() && dir === "R";
+      var r = shRenderLane(laneHost, v & 0xff, dir, n, arith);
+      shState.lane = { v: v & 0xff, n: n, dir: dir, arith: arith };
+      shLog("Lane: " + shHex(v & 0xff, 2) + " " + shDirSym(dir) + " " + n +
+        (dir === "R" ? (arith ? " SRA" : " SRL") : "") + " = " + shHex(r.result, 2) +
+        ", " + r.lost + " bit(s) fell off.", "");
+    }
+    shiftBtn.addEventListener("click", shLaneGo);
+    /* render the default lane once so the first interaction is one tap away */
+    shRenderLane(laneHost, shState.lane.v, shState.lane.dir, shState.lane.n, shState.lane.arith);
+
+    /* stepper wiring (do-before-explain) */
+    stepBtn.addEventListener("click", function () {
+      if (shState.step >= SH_STEPS.length) return;
+      if (shState.step === 0) stepper.innerHTML = "";
+      var d = shEl("div", null, "");
+      d.innerHTML = "<span class='k'>STEP " + (shState.step + 1) + ": </span>" + SH_STEPS[shState.step];
+      stepper.appendChild(d);
+      shState.step++;
+      if (shState.step >= SH_STEPS.length) stepBtn.disabled = true;
+      shPop(stepper);
+    });
+    stepReset.addEventListener("click", function () {
+      shState.step = 0;
+      stepper.innerHTML = "<span class='k'>Press STEP to walk the worked example, one lane at a time.</span>";
+      stepBtn.disabled = false;
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && ov.classList.contains("open")) shClose();
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", shBuild);
+  } else {
+    shBuild();
+  }
+
+  /* test hooks */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      SH: {
+        T1: SH_T1, T2: SH_T2, T3: SH_T3, TITLES: SH_TITLES,
+        shift8: shShift8, shamt32: shShamt32, shamt64: shShamt64,
+        popcount: shPopcount, signed8: shSigned8, bin: shBin,
+        hex: shHex, t3Expected: shT3Expected,
+        introHTML: SH_INTRO_HTML, steps: SH_STEPS,
+        grade: shGrade,
+        ui: {
+          open: shOpen, close: shClose,
+          commit: shCommit, resetTrial: shResetTrial,
+          certAll: shCertAll,
+          state: function () { return shState; },
+          els: function () { return shEls; }
+        }
+      }
+    });
+  }
+})();

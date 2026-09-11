@@ -674,7 +674,11 @@ var PG_BENCHES = [
   { section: "silicon", n: "44", name: "The Watchdog Room", btn: "wdBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "A frozen machine never calls for help. Meet the watchdog: the hardware countdown that resets the board when software stops proving it is alive. Size the timeout, place the kick, and set the early edge that catches a runaway.",
     how: "Pet the watchdog, predict the worst-case loop, then survive the hang, the misplaced kick, and the runaway.",
-    spec: "WATCHDOG TIMER \u00B7 3 TRIALS" }
+    spec: "WATCHDOG TIMER \u00B7 3 TRIALS" },
+  { section: "silicon", n: "45", name: "The Shift Room", btn: "shBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "The cheapest multiply in the machine: slide bits left to multiply by powers of two, slide right to divide, and meet the two honest contracts of the right shift, logical zeros and arithmetic sign fill.",
+    how: "Drive the bit lane, call every shifted byte and its fallen bits, split logical from arithmetic on negative values, then build a multiply out of shifts and adds.",
+    spec: "SHIFT ALU \u00B7 3 TRIALS" }
 ];
 
 var pgFilter = "all";
