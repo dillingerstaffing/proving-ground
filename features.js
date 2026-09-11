@@ -14035,7 +14035,7 @@ if (typeof module !== "undefined" && module.exports) {
     { net: "3V3",    label: "+3.3V", lo: 3.135,  hi: 3.465,  rip: 50,  note: "" },
     { net: "5VSB",   label: "+5VSB", lo: 4.75,   hi: 5.25,   rip: 50,  note: "live with mains plugged in, PSU off" },
     { net: "N12V",   label: "-12V",  lo: -13.20, hi: -10.80, rip: 120, note: "" },
-    { net: "PWR_OK", label: "PWR_OK", lo: 2.4,   hi: 5.25,   rip: null, note: "TTL high, asserts 100 to 500 ms after rails stabilize" }
+    { net: "PWR_OK", label: "PWR_OK", lo: 2.4,   hi: 5.25,   rip: null, note: "logic high, asserts 100 to 500 ms after rails stabilize" }
   ];
 
   var RR_REQ = ["12V", "5V", "3V3", "5VSB", "PWR_OK"];
@@ -14053,19 +14053,19 @@ if (typeof module !== "undefined" && module.exports) {
     { tag: "PSU-A", name: "Stock 450W",
       blurb: "A stock 450W pull from a decommissioned office box. The traveler claims it is healthy. Trust, but verify: the refurb line ships nothing on a claim.",
       r12: 12.04, r5: 5.02, r33: 3.31, rn12: -11.95, vsb: 5.03, pg: 4.92,
-      q12: 35, q5: 25, q33: 22, qsb: 20,
+      q12: 35, q5: 25, q33: 22, qsb: 20, qn12: 15,
       verdict: "PASS",
       why: "Every rail sits inside its ATX window with margin, ripple is under the ceiling on all rails, and PWR_OK asserts cleanly after power-up. This one ships." },
     { tag: "PSU-B", name: "Recond 550W",
       blurb: "A reconditioned 550W unit. The traveler says the last box it fed would boot, then die the moment the GPU spun up. The 12V rail is where graphics cards live.",
       r12: 10.92, r5: 5.01, r33: 3.30, rn12: -12.05, vsb: 5.04, pg: 4.90,
-      q12: 90, q5: 28, q33: 24, qsb: 20,
+      q12: 90, q5: 28, q33: 24, qsb: 20, qn12: 25,
       verdict: "FAIL",
       why: "The 12V rail reads 10.92V against an 11.40V floor. A rail outside its window is a failed rail, no matter how healthy the rest look. This one goes to the scrap cage." },
     { tag: "PSU-C", name: "Pull 600W",
       blurb: "A 600W pull from a dusty tower. All rails light up and PWR_OK asserts, but the 5V line looks nervous on the shop scope. An average is not the whole story.",
       r12: 12.10, r5: 4.79, r33: 3.34, rn12: -11.90, vsb: 5.02, pg: 4.88,
-      q12: 40, q5: 130, q33: 25, qsb: 22,
+      q12: 40, q5: 130, q33: 25, qsb: 22, qn12: 18,
       verdict: "HOLD",
       why: "The 5V rail averages 4.79V, inside the 4.75 to 5.25 window, but it rides the floor and its 130mV ripple breaks the 50mV ceiling. In-spec average with out-of-spec ripple is a hold for load testing, not a pass." }
   ];
@@ -14087,7 +14087,7 @@ if (typeof module !== "undefined" && module.exports) {
       case "12V":    return { v: psu.r12,  q: psu.q12 };
       case "5V":     return { v: psu.r5,   q: psu.q5 };
       case "3V3":    return { v: psu.r33,  q: psu.q33 };
-      case "N12V":   return { v: psu.rn12, q: psu.q12 };
+      case "N12V":   return { v: psu.rn12, q: psu.qn12 };
       case "PWR_OK": return { v: psu.pg,   q: 8 };
       case "PSON":   return { v: 0.04,     q: 5 };
       case "GND":    return { v: 0,        q: 2 };
