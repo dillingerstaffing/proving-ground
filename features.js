@@ -12099,7 +12099,7 @@ if (typeof module !== "undefined" && module.exports) {
     { id: "HVY-02", sub: "4 oz copper pour", tau: 18, moist: false,
       note: "Heavy planes act as a thermal sink: the joints lag the air. Needs a hotter, longer peak." },
     { id: "MST-03", sub: "MSL-3 expired", tau: 8, moist: true,
-      note: "Sat in damp storage. Joints ramping past 2.2 C/s popcorn-crack. Bake it out first." }
+      note: "Sat in damp storage. Moisture in the joints flashes to steam and popcorn-cracks them if they ramp past 2.2 C/s. Bake it out first." }
   ];
   var RF_COLORS = ["#f2ede3", "#7cc4ff", "#7de0a8"];
   var rfBaked = { "MST-03": false };
@@ -12279,7 +12279,7 @@ if (typeof module !== "undefined" && module.exports) {
       "peak temp, peak dwell (hold so lagging joints catch up and wet). " +
       "REF-01 is the reference: clean 2-layer, dry storage. " +
       "HVY-02 is the copper trap: a 4 oz pour that acts as a thermal sink, so the joints lag the air and need a hotter, longer peak. " +
-      "MST-03 is the damp trap: joints ramping past 2.2 C/s popcorn-crack, bake it out first. " +
+      "MST-03 is the damp trap: moisture soaked into the board flashes to steam inside the joints when they ramp past 2.2 C/s, and the pressure popcorn-cracks them, so bake it out first. " +
       "Bake what needs baking, read the joint traces, ship all three. Built for " +
       "<a href=\"https://dillingerstaffing.github.io/tapeout/\" target=\"_blank\" " +
       "rel=\"noopener\">TAPEOUT</a> board qualification.";
@@ -29160,6 +29160,820 @@ if (typeof module !== "undefined" && module.exports) {
           commit: crCommit, resetTrial: crResetTrial, certAll: crCertAll,
           state: function () { return crState; },
           els: function () { return crEls; }
+        }
+      }
+    });
+  }
+})();
+/* Bench 42 staging: The SPI Room module (appended to features.js at ship time). */
+/* ============================================================
+   THE SPI ROOM
+   TAPEOUT bench 42. The one atomic mechanism: on a serial bus the
+   sampling edge is the handshake. CPOL is the level the clock rests
+   at; CPHA picks which edge of each clock pulse latches the data.
+   The chip moves MISO on its shift edge, the master latches on its
+   sample edge. CPHA agreement puts the sample inside the chip's
+   stable window; CPHA disagreement lands every sample on a shift
+   edge (RACE: metastable on real silicon, shown here as the
+   pre-edge value, every bit one sample late). Idle-strict chips
+   (datasheet-marked) need the exact CPOL or the edge detector never
+   arms (MISO stuck at 0). Above the rated ceiling the datasheet
+   promises nothing; the bench models the overclocked chip as
+   shifting at half rate, so every bit appears twice.
+   One sentence takeaway: match the sampling edge or the bytes come
+   back raced; respect the idle level and the ceiling, and the chip
+   tells you its name.
+   Stated model: half-cycle timeline; bit cell i is [2i, 2i+2);
+   32-cell transfer = 8 command cells (0x9F, always decoded) + 24
+   answer cells carrying the JEDEC ID, MSB first. CPHA=0: sample on
+   the leading edge, shift on the trailing; the chip drives the first
+   answer bit before the read phase. CPHA=1: sample on the trailing
+   edge, shift on the leading; the line reads 0 before the first
+   shift. Verified exhaustively in node: every legal config recovers
+   the ID exactly with no flags; every illegal config is detected
+   (wrong bytes or a named flag: RACE, IDLE FAULT, OVERCLOCK).
+   Three trials: T1 first contact (modes 0/3, tolerant, 50 MHz max),
+   T2 at the ceiling (modes 1/2, 104 MHz, certify requires 104),
+   T3 read the diagram (mode table missing; deduce CPOL/CPHA from a
+   rendered timing figure; idle-strict chip). Predict-then-verify on
+   every trial; per-trial and bench certificates as downloadable text.
+   Self-contained IIFE, appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- pure logic: the bit-cell bus model ---------------- */
+
+  var SP_R = 8, SP_RESP = 24; // read phase starts at cell 8, 24 answer bits
+
+  function spBitVal(idBytes, r) {
+    var byte = idBytes[r >> 3] & 0xff;
+    return (byte >> (7 - (r & 7))) & 1;
+  }
+
+  function spHex(n, digits) {
+    var s = (n & 0xff).toString(16).toUpperCase();
+    while (s.length < digits) s = "0" + s;
+    return s;
+  }
+
+  function spHex6(bytes) {
+    return spHex(bytes[0], 2) + spHex(bytes[1], 2) + spHex(bytes[2], 2);
+  }
+
+  /* Returns { bytes:[b0,b1,b2], race, idleFault, overclock, idleNote }.
+     race: CPHA disagreement, sample edge == shift edge. bytes shown are
+     the pre-edge values so the one-sample slip is visible.
+     idleFault: strict chip, wrong CPOL, edge detector never armed.
+     overclock: clk > max, chip shifts at half rate (bits doubled). */
+  function spTransfer(idBytes, chip, cpolM, cphaM, clkMHz) {
+    var cphaC = chip.cpha, cpolC = chip.cpol, r, b;
+    var out = [0, 0, 0];
+    if (cphaM !== cphaC) {
+      for (r = 0; r < SP_RESP; r++) {
+        if (cphaC === 0) b = (r === 0) ? spBitVal(idBytes, 0) : spBitVal(idBytes, r - 1);
+        else b = (r === 0) ? 0 : spBitVal(idBytes, r - 1);
+        out[r >> 3] = (out[r >> 3] << 1) | b;
+      }
+      return { bytes: out, race: true, idleFault: false, overclock: false, idleNote: false };
+    }
+    if (chip.strict && cpolM !== cpolC) {
+      return { bytes: [0, 0, 0], race: false, idleFault: true, overclock: false, idleNote: false };
+    }
+    if (clkMHz > chip.max) {
+      for (r = 0; r < SP_RESP; r++) {
+        var reff = Math.min(11, Math.floor(r / 2));
+        b = spBitVal(idBytes, reff);
+        out[r >> 3] = (out[r >> 3] << 1) | b;
+      }
+      return { bytes: out, race: false, idleFault: false, overclock: true, idleNote: false };
+    }
+    for (r = 0; r < SP_RESP; r++) {
+      b = spBitVal(idBytes, r);
+      out[r >> 3] = (out[r >> 3] << 1) | b;
+    }
+    return { bytes: out, race: false, idleFault: false, overclock: false,
+             idleNote: (cpolM !== cpolC) };
+  }
+
+  /* MISO level per half-cycle h (0..47) of the read phase, for the
+     waveform renderer. Mirrors spTransfer's assumptions. */
+  function spMisoAt(idBytes, chip, cpolM, cphaM, clkMHz, h) {
+    var cphaC = chip.cpha;
+    function bv(r) { return spBitVal(idBytes, Math.max(0, Math.min(23, r))); }
+    if (cphaM !== cphaC) { // race: show the drive schedule, samples land on edges
+      if (cphaC === 0) return (h % 2 === 0) ? bv(h / 2) : bv(h / 2 + 1);
+      return (h % 2 === 0) ? bv(h / 2) : bv(h / 2); // driven at even h, 0 before h=0
+    }
+    if (chip.strict && cpolM !== chip.cpol) return 0;
+    if (clkMHz > chip.max) return spBitVal(idBytes, Math.min(11, Math.floor(h / 4)));
+    if (cphaC === 0) return (h % 2 === 0) ? bv(h / 2) : bv(h / 2 + 1);
+    return bv(Math.floor(h / 2));
+  }
+
+  function spSckAt(cpolM, h) {
+    var active = cpolM === 0 ? 1 : 0;
+    var idle = cpolM === 0 ? 0 : 1;
+    return (h % 2 === 0) ? active : idle;
+  }
+
+  /* ---------------- chips and trials ---------------- */
+
+  var SP_CHIPS = [
+    { id: "spi-01", name: "SPI-01", cpol: 0, cpha: 0, strict: false, max: 50,
+      jedec: [0xEF, 0x40, 0x18], modes: "0 and 3",
+      edge: "rises", idleLine: "idle level tolerated" },
+    { id: "spi-02", name: "SPI-02", cpol: 0, cpha: 1, strict: false, max: 104,
+      jedec: [0xC2, 0x20, 0x18], modes: "1 and 2",
+      edge: "falls", idleLine: "idle level tolerated" },
+    { id: "spi-03", name: "SPI-03", cpol: 0, cpha: 0, strict: true, max: 25,
+      jedec: [0x1F, 0x45, 0x01], modes: "0 and 3",
+      edge: "rises", idleLine: "idle-STRICT: SCK must rest at 0" }
+  ];
+
+  var SP_SPEEDS = [5, 10, 25, 50, 104, 133];
+
+  var SP_TRIALS = [
+    { n: 1, chip: 0, board: "SPI-01",
+      title: "TRIAL 1: FIRST CONTACT",
+      goal: "The datasheet says modes 0 and 3: this chip latches on the rising " +
+        "edge, and it tolerates either idle level. Ceiling 50 MHz. Type the six " +
+        "hex digits you expect the bus to return, RUN the transfer, certify. " +
+        "Then flip to mode 3 and watch it still work (same sampling edge), and " +
+        "to mode 1 to watch the race.",
+      hint: "The default knobs already agree with the datasheet: CPOL 0, CPHA 0, " +
+        "25 MHz. The predict box is the whole trial: call EF4018 before you run." },
+    { n: 2, chip: 1, board: "SPI-02",
+      title: "TRIAL 2: AT THE CEILING",
+      goal: "The datasheet says modes 1 and 2: this chip latches on the falling " +
+        "edge. Ceiling 104 MHz, and this trial certifies only at the ceiling: " +
+        "prove the part at its rated speed. Type the ID, set 104 MHz, RUN, " +
+        "certify. Try 133 MHz once, on purpose, and read what half-rate " +
+        "shifting does to the bytes.",
+      hint: "C2 20 18 is the answer the bus must return. Mode 0 or 3 races " +
+        "against this chip: the sample edge lands on the shift edge.",
+      needSpeed: 104 },
+    { n: 3, chip: 2, board: "SPI-03",
+      title: "TRIAL 3: READ THE DIAGRAM",
+      goal: "The mode table fell off this datasheet; all that survived is " +
+        "Figure 3A, the timing diagram of the first answer byte. Deduce CPOL " +
+        "from where SCK rests and CPHA from which edge moves MISO, then type " +
+        "the ID, RUN, certify. Warning, in the datasheet's own words: this " +
+        "chip is idle-strict, SCK must rest at 0, or the edge detector never arms.",
+      hint: "SCK rests at 0 between pulses, so CPOL is 0. MISO steps exactly " +
+        "on SCK's falling edges, so the chip shifts on the trailing edge and " +
+        "you must sample on the leading one: CPHA 0." }
+  ];
+
+  /* ---------------- intro copy (why-first, BFP compliant) ---------------- */
+
+  function spIntroHTML() {
+    return (
+      "<p class='sp-why'><b>WHY IT MATTERS.</b> Every GPU that leaves a " +
+      "bring-up bench carries a flash chip holding the board's firmware, and " +
+      "the first thing the bring-up tech does is ask the chip its name: the " +
+      "READ ID command, 0x9F, answered with three JEDEC bytes. Get the clock " +
+      "handshake wrong and the chip answers in garbage, and a good board gets " +
+      "the wrong firmware. The handshake is two bits. CPOL is the level the " +
+      "clock rests at. CPHA picks which edge of each clock pulse latches the " +
+      "data. Two bits, four modes, and one wrong bit scrambles every byte. " +
+      "Three chips, three datasheets, one rule: the sampling edge is the " +
+      "handshake.</p>" +
+      "<p class='sp-model'><b>THE BENCH'S BIT-CELL MODEL (stated, so every " +
+      "number is checkable).</b> Time runs in half clock cycles. One bit cell " +
+      "is two half-cycles: the leading edge leaves the resting level, the " +
+      "trailing edge returns to it. Each transfer is 32 cells: 8 command " +
+      "cells carrying 0x9F (the chip always hears the command), then 24 " +
+      "answer cells carrying the JEDEC ID, most significant bit first. The " +
+      "chip moves MISO on its shift edge; the master latches MISO on its " +
+      "sample edge. CPHA 0 means sample on the leading edge and shift on the " +
+      "trailing; the chip drives the first answer bit before the read phase " +
+      "starts. CPHA 1 means sample on the trailing edge and shift on the " +
+      "leading; the line reads 0 before the first shift. If the master's " +
+      "CPHA disagrees with the chip's, every sample lands exactly on a shift " +
+      "edge: RACE. Real silicon goes metastable there; this bench shows the " +
+      "pre-edge value (every bit one sample late) and refuses to certify it. " +
+      "Idle-strict chips, marked so in their datasheet, need the exact CPOL " +
+      "or their edge detector never arms and MISO sticks at 0. Above the " +
+      "rated ceiling the datasheet promises nothing; this bench models the " +
+      "overclocked chip as shifting at half rate, so every bit appears twice.</p>" +
+      "<p class='sp-worked'><b>WORKED EXAMPLE, by hand, before you touch the " +
+      "bench.</b> Mode 0, chip SPI-01, true answer EF 40 18. The read phase " +
+      "is cells 8 through 31; your sample instants are the leading edges, " +
+      "half-cycles 16, 18, 20, 22, 24, 26, 28, 30. The chip shifts on the " +
+      "trailing edges between them, so MISO is rock steady at every sample. " +
+      "Read the line at those eight instants: 1, 1, 1, 0, 1, 1, 1, 1. That " +
+      "is 0xEF, the first byte, exactly as the datasheet promises. Now flip " +
+      "your CPHA to 1 and run again without touching anything else: your " +
+      "samples land exactly on the chip's shift edges. The bus returns " +
+      "F7 A0 0C, every bit one sample late, flagged RACE. That one-bit slip " +
+      "is the entire failure, and it is deterministic: check it against the " +
+      "waveform below.</p>" +
+      "<p class='sp-terms'><b>TERMS, earned in order.</b> CPOL, clock " +
+      "polarity: the resting level of SCK, 0 for low, 1 for high. The leading " +
+      "edge is the first transition out of rest; the trailing edge is the " +
+      "return. CPHA, clock phase: 0 latches on the leading edge, 1 on the " +
+      "trailing edge. JEDEC ID: three bytes, manufacturer then memory type " +
+      "then capacity, the chip's name tag. Sample edge: the clock edge where " +
+      "the master latches MISO. Shift edge: the clock edge where the chip " +
+      "moves the next bit onto MISO. MSB-first: bit 7 leaves before bit 0. " +
+      "RACE: sample edge equals shift edge, the latch catches a moving line. " +
+      "Half-rate: the bench's overclock model, every bit shifted twice.</p>" +
+      "<p class='sp-failmodes'><b>FAILURE MODES, stated up front.</b> Wrong " +
+      "CPHA: RACE, the bytes come back one sample late (a true EF 40 18 " +
+      "reads back F7 A0 0C), and no race ever certifies. Wrong CPOL on an " +
+      "idle-strict chip: 00 00 00, the edge detector never armed. Clock past " +
+      "the ceiling: half-rate doubling, a true C2 20 18 reads back F0 0C 0C " +
+      "at 133 MHz. A tolerant chip with the wrong CPOL still reads clean, " +
+      "and the verdict says so out loud instead of hiding it.</p>" +
+      "<p class='sp-scale'><b>ONE NUMBER TO CARRY.</b> Two bits of agreement. " +
+      "CPOL and CPHA, four modes, and the data moves on exactly one edge " +
+      "per bit. Everything else is datasheet.</p>"
+    );
+  }
+
+  /* ---------------- styles ---------------- */
+
+  var SP_CSS = [
+    ".sp-overlay{position:fixed;inset:0;z-index:90;display:none;background:rgba(8,8,10,.86);padding:0;}",
+    ".sp-overlay.open{display:block;}",
+    ".sp-panel{position:absolute;inset:0;overflow-y:auto;background:var(--ink);color:var(--paper);padding:20px 16px 120px;}",
+    ".sp-wrap{max-width:860px;margin:0 auto;}",
+    ".sp-head h3{font-family:'Space Grotesk',sans-serif;font-size:26px;letter-spacing:.04em;margin:0 0 4px;color:var(--paper);}",
+    ".sp-spec{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);margin:0 0 12px;}",
+    ".sp-why,.sp-model,.sp-worked,.sp-terms,.sp-failmodes,.sp-scale{font-size:14px;line-height:1.65;margin:0 0 12px;color:var(--paper);}",
+    ".sp-why b,.sp-model b,.sp-worked b,.sp-terms b,.sp-failmodes b,.sp-scale b{color:var(--ember);font-weight:600;}",
+    ".sp-worked{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--ember);padding:12px 14px;}",
+    ".sp-model,.sp-terms,.sp-failmodes,.sp-scale{background:var(--panel);border:1px solid var(--line);padding:12px 14px;}",
+    ".sp-how{font-size:14px;margin:18px 0 10px;color:var(--paper);}",
+    ".sp-how b{color:var(--ember);}",
+    ".sp-sec{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);margin:22px 0 8px;}",
+    ".sp-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:0 0 8px;}",
+    ".sp-flabel{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:var(--ember);margin:0;}",
+    ".sp-in{font-family:'IBM Plex Mono',monospace;font-size:15px;min-height:48px;padding:8px 12px;background:var(--ink);border:1px solid var(--line);color:var(--paper);width:190px;}",
+    ".sp-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.1em;min-height:48px;padding:10px 18px;background:var(--panel-2);border:1px solid var(--line);color:var(--paper);cursor:pointer;}",
+    ".sp-btn.primary{border-color:var(--ember);color:var(--ember);}",
+    ".sp-btn:disabled{opacity:.35;cursor:default;}",
+    ".sp-btn:focus-visible,.sp-in:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".sp-opt{display:inline-flex;align-items:center;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.4;min-height:48px;padding:8px 12px;border:1px solid var(--line);background:var(--ink);color:var(--paper);cursor:pointer;}",
+    ".sp-opt:focus-within{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".sp-opt.on{border-color:var(--ember);}",
+    ".sp-opt input{width:20px;height:20px;accent-color:#ff5a1f;flex:none;}",
+    ".sp-card{background:var(--panel);border:1px solid var(--line);padding:14px;margin:0 0 14px;}",
+    ".sp-card.passed{border-color:var(--ember);}",
+    ".sp-ctitle{font-family:'Space Grotesk',sans-serif;font-size:17px;letter-spacing:.03em;margin:0 0 4px;color:var(--paper);}",
+    ".sp-cgoal{font-size:13px;line-height:1.6;color:var(--paper);margin:0 0 8px;}",
+    ".sp-board{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:#8a877f;margin:0 0 8px;}",
+    ".sp-ds{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.8;background:var(--ink);border:1px solid var(--line);padding:10px 12px;margin:0 0 10px;}",
+    ".sp-ds .k{color:#8a877f;}",
+    ".sp-ds .v{color:var(--ember);}",
+    ".sp-thint{font-size:13px;line-height:1.6;color:var(--paper);margin:10px 0 0;}",
+    ".sp-wave{font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.9;background:var(--ink);border:1px solid var(--line);padding:10px 12px;margin:8px 0 0;overflow-x:auto;white-space:pre;}",
+    ".sp-wave .mk{color:var(--ember);}",
+    ".sp-bytes{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.8;background:var(--ink);border:1px solid var(--line);padding:10px 12px;margin:8px 0 0;}",
+    ".sp-bytes .k{color:#8a877f;}",
+    ".sp-bytes .v{color:var(--ember);}",
+    ".sp-bytes .bad{color:#ff3b30;}",
+    ".sp-verdict{font-family:'IBM Plex Mono',monospace;font-size:13px;line-height:1.7;margin:8px 0 0;min-height:20px;}",
+    ".sp-verdict.pass{color:var(--ember);}",
+    ".sp-verdict.miss{color:#ff3b30;}",
+    ".sp-fig{font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.9;background:var(--ink);border:1px dashed var(--ember);padding:10px 12px;margin:0 0 10px;overflow-x:auto;white-space:pre;}",
+    ".sp-figcap{font-size:12px;line-height:1.6;color:var(--paper);margin:0 0 10px;}",
+    ".sp-log{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;background:var(--ink);border:1px solid var(--line);padding:10px 12px;max-height:180px;overflow-y:auto;}",
+    ".sp-log .ok{color:var(--ember);}",
+    ".sp-banner{font-family:'Space Grotesk',sans-serif;font-size:16px;letter-spacing:.06em;color:var(--ember);border:1px solid var(--ember);padding:12px 14px;margin:14px 0 0;display:none;}",
+    ".sp-foot{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0 0;}",
+    ".sp-pop{animation:spPop .2s ease-out;}",
+    "@keyframes spPop{0%{transform:scale(.985);}100%{transform:scale(1);}}",
+    "@media (prefers-reduced-motion: reduce){.sp-pop{animation:none;}}"
+  ].join("\n");
+
+  /* ---------------- DOM helpers ---------------- */
+
+  function spEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  function spEsc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  var spEls = {};
+  var spState = { trials: [] };
+  var SP_REDUCED = (typeof window !== "undefined" && window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+  function spNewTrialState() {
+    return { predOk: false, cleanClk: null, committed: false, attempts: 0 };
+  }
+
+  function spLog(html, cls) {
+    var box = spEls.log;
+    if (!box) return;
+    var line = spEl("div", null, null);
+    line.innerHTML = "<span class='lt'>&gt; </span><span class='" + (cls || "") + "'>" + html + "</span>";
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function spPop(card) {
+    if (SP_REDUCED || !card) return;
+    card.classList.remove("sp-pop"); void card.offsetWidth; card.classList.add("sp-pop");
+  }
+
+  function spCfg(ti) {
+    function sel(name) {
+      var s = document.querySelector("input[name='sp" + name + ti + "']:checked");
+      return s ? s.value : null;
+    }
+    return { cpol: parseInt(sel("Cpol"), 10) || 0,
+             cpha: parseInt(sel("Cpha"), 10) || 0,
+             clk: parseInt(sel("Clk"), 10) || 25 };
+  }
+
+  /* ---------------- waveform + figure ---------------- */
+
+  function spWaveHTML(chip, cpolM, cphaM, clkMHz, res) {
+    var rows = [], h, line;
+    line = "SCK  ";
+    for (h = 0; h < 48; h++) line += spSckAt(cpolM, h);
+    rows.push(spEsc(line));
+    line = "MISO ";
+    for (h = 0; h < 48; h++) line += spMisoAt(chip.jedec, chip, cpolM, cphaM, clkMHz, h);
+    rows.push(spEsc(line));
+    line = "     ";
+    for (h = 0; h < 48; h++) {
+      var isSample = (cphaM === 0) ? (h % 2 === 0) : (h % 2 === 1);
+      var isShift;
+      if (res.idleFault) isShift = false;
+      else if (res.overclock) isShift = (h % 4 === 0);
+      else isShift = (chip.cpha === 0) ? (h % 2 === 1) : (h % 2 === 0);
+      if (isSample && isShift) line += "X";
+      else if (isSample) line += "^";
+      else if (isShift) line += "v";
+      else line += " ";
+    }
+    rows.push("<span class='mk'>" + spEsc(line) + "</span>");
+    var legend = "     <span class='mk'>^</span> your sample edge   " +
+      "<span class='mk'>v</span> chip shift edge   " +
+      "<span class='mk'>X</span> sample meets shift: RACE";
+    return rows.join("\n") + "\n" + legend +
+      "\n     read phase: cells 8..31, one marker column per half clock cycle";
+  }
+
+  /* Figure 3A for trial 3: the chip's own timing, first answer byte. */
+  function spFigureHTML(chip) {
+    var rows = [], h, line;
+    line = "SCK  ";
+    for (h = 0; h < 16; h++) line += spSckAt(chip.cpol, h);
+    rows.push(spEsc(line));
+    line = "MISO ";
+    for (h = 0; h < 16; h++) line += spMisoAt(chip.jedec, chip, chip.cpol, chip.cpha, 10, h);
+    rows.push(spEsc(line));
+    return rows.join("\n");
+  }
+
+  /* ---------------- trial run / predict / certify ---------------- */
+
+  function spByteRow(label, exp, got, flag) {
+    var st, cls;
+    if (flag === "RACE") { st = "RACE"; cls = "bad"; }
+    else if (flag === "IDLE") { st = "IDLE FAULT"; cls = "bad"; }
+    else if (flag === "HALF") { st = "HALF-RATE"; cls = "bad"; }
+    else if (exp === got) { st = "MATCH"; cls = "v"; }
+    else { st = "MISMATCH"; cls = "bad"; }
+    return "<span class='k'>" + label + " EXPECTED </span><span class='v'>" + spHex(exp, 2) +
+      "</span><span class='k'> RECEIVED </span><span class='" + cls + "'>" + spHex(got, 2) +
+      "</span><span class='k'> </span><span class='" + cls + "'>" + st + "</span><br>";
+  }
+
+  function spRunTrial(ti) {
+    var t = SP_TRIALS[ti], chip = SP_CHIPS[t.chip];
+    var st = spState.trials[ti], C = spEls.cards[ti];
+    if (st.committed) return false;
+    st.attempts++;
+    var cfg = spCfg(ti);
+    var res = spTransfer(chip.jedec, chip, cfg.cpol, cfg.cpha, cfg.clk);
+    var predRaw = C.pred.value.replace(/[^0-9a-fA-F]/g, "").toUpperCase();
+    var gotHex = spHex6(res.bytes), expHex = spHex6(chip.jedec);
+    var clean = !res.race && !res.idleFault && !res.overclock &&
+      gotHex === expHex;
+
+    /* prediction check: typed before the run, verified against the bus */
+    var predMsg;
+    if (!predRaw) {
+      predMsg = "No prediction recorded: type the six hex digits you expect, " +
+        "then RUN again. The bus returned " + gotHex + " this time.";
+    } else if (predRaw === gotHex) {
+      st.predOk = true;
+      predMsg = "PREDICTION VERIFIED: you called " + predRaw +
+        " and the bus returned exactly that.";
+      spLog("Trial " + t.n + " prediction verified: " + predRaw + ".", "ok");
+    } else {
+      predMsg = "PREDICTION MISSED: you called " + predRaw + ", the bus " +
+        "returned " + gotHex + ". Read the waveform, adjust, predict again.";
+      spLog("Trial " + t.n + " prediction " + predRaw + " missed (bus " +
+        gotHex + ").", "");
+    }
+
+    var flag = res.race ? "RACE" : (res.idleFault ? "IDLE" : (res.overclock ? "HALF" : null));
+    var verdict, cls = "";
+    if (res.race) {
+      verdict = "RACE: your sample edge coincides with the chip's shift edge " +
+        "(every X in the waveform). The bytes " + gotHex + " are the pre-edge " +
+        "values, every bit one sample late. Real silicon goes metastable " +
+        "here. Match the chip's CPHA.";
+      cls = "miss";
+      spLog("Trial " + t.n + " RACE (CPHA " + cfg.cpha + " vs chip " +
+        chip.cpha + ").", "");
+    } else if (res.idleFault) {
+      verdict = "IDLE FAULT: 000000. This chip is idle-strict and your SCK " +
+        "rests at " + cfg.cpol + ", but the datasheet demands " + chip.cpol +
+        ". The edge detector never armed. Set CPOL to " + chip.cpol + ".";
+      cls = "miss";
+      spLog("Trial " + t.n + " IDLE FAULT (CPOL " + cfg.cpol + ").", "");
+    } else if (res.overclock) {
+      verdict = "OVERCLOCK: at " + cfg.clk + " MHz, past the " + chip.max +
+        " MHz ceiling, the chip shifts at half rate and every bit appears " +
+        "twice: " + gotHex + ". Slow the clock to the rated ceiling.";
+      cls = "miss";
+      spLog("Trial " + t.n + " OVERCLOCK at " + cfg.clk + " MHz.", "");
+    } else if (!clean) {
+      verdict = "MISMATCH: the bus returned " + gotHex + ", the datasheet " +
+        "says " + expHex + ". This should not happen on agreed settings; " +
+        "RESET the trial and run again.";
+      cls = "miss";
+      spLog("Trial " + t.n + " MISMATCH " + gotHex + " vs " + expHex + ".", "");
+    } else {
+      st.cleanClk = cfg.clk;
+      var idleNote = res.idleNote ?
+        " Note: your CPOL disagrees with the datasheet idle level, and this " +
+        "chip tolerates it. The sampling edge is what moved the data." : "";
+      if (t.needSpeed && cfg.clk !== t.needSpeed) {
+        verdict = "PASS at " + cfg.clk + " MHz: " + gotHex + " matches the " +
+          "datasheet." + idleNote + " But this trial certifies only at the " +
+          "rated ceiling: run it at " + t.needSpeed + " MHz to certify.";
+        spLog("Trial " + t.n + " clean at " + cfg.clk + " MHz, needs " +
+          t.needSpeed + " MHz to certify.", "ok");
+      } else {
+        verdict = "PASS: " + gotHex + " matches the datasheet " + expHex +
+          ", sampled on the agreed edge at " + cfg.clk + " MHz." + idleNote;
+        cls = "pass";
+        spLog("Trial " + t.n + " PASS at " + cfg.clk + " MHz.", "ok");
+      }
+    }
+
+    C.bytes.innerHTML =
+      spByteRow("BYTE 0", chip.jedec[0], res.bytes[0], flag) +
+      spByteRow("BYTE 1", chip.jedec[1], res.bytes[1], flag) +
+      spByteRow("BYTE 2", chip.jedec[2], res.bytes[2], flag) +
+      "<span class='k'>MODE </span><span class='v'>CPOL " + cfg.cpol +
+      " / CPHA " + cfg.cpha + "</span><span class='k'> CLOCK </span><span class='v'>" +
+      cfg.clk + " MHz</span><span class='k'> (CEILING </span><span class='v'>" +
+      chip.max + " MHz</span><span class='k'>)</span>";
+    C.wave.innerHTML = spWaveHTML(chip, cfg.cpol, cfg.cpha, cfg.clk, res);
+    C.verdict.innerHTML = spEsc(predMsg) + "<br>" + spEsc(verdict);
+    C.verdict.className = "sp-verdict" + (cls ? " " + cls : "");
+    spRefreshCert(ti);
+    spPop(C.card);
+    return clean;
+  }
+
+  function spRefreshCert(ti) {
+    var t = SP_TRIALS[ti], st = spState.trials[ti], C = spEls.cards[ti];
+    var speedOk = !t.needSpeed || st.cleanClk === t.needSpeed;
+    C.cert.disabled = !(st.predOk && st.cleanClk !== null && speedOk && !st.committed);
+  }
+
+  function spCommit(ti) {
+    var t = SP_TRIALS[ti], chip = SP_CHIPS[t.chip];
+    var st = spState.trials[ti];
+    var speedOk = !t.needSpeed || st.cleanClk === t.needSpeed;
+    if (!(st.predOk && st.cleanClk !== null && speedOk) || st.committed) return false;
+    st.committed = true;
+    spRefreshCert(ti);
+    C_addDownload(ti);
+    spLog("Trial " + t.n + " CERTIFIED: " + t.title + ".", "ok");
+    spPop(spEls.cards[ti].card);
+    var all = true;
+    for (var i = 0; i < SP_TRIALS.length; i++)
+      if (!spState.trials[i].committed) { all = false; break; }
+    if (all) {
+      spEls.banner.style.display = "block";
+      spEls.certAll.style.display = "";
+      spLog("SIGNALWRIGHT: all three chips named. The sampling edge is the handshake.", "ok");
+    }
+    return true;
+  }
+
+  function C_addDownload(ti) {
+    var t = SP_TRIALS[ti], st = spState.trials[ti], C = spEls.cards[ti];
+    var dl = spEl("button", "sp-btn", "DOWNLOAD TRIAL " + t.n + " CERTIFICATE");
+    dl.addEventListener("click", function () { spDownloadCert(t, st); });
+    C.tres.appendChild(dl);
+  }
+
+  function spResetTrial(ti) {
+    spState.trials[ti] = spNewTrialState();
+    var C = spEls.cards[ti];
+    C.tres.innerHTML = "";
+    C.pred.value = "";
+    C.verdict.textContent = "No run yet.";
+    C.verdict.className = "sp-verdict";
+    C.bytes.innerHTML = "<span class='k'>No transfer yet. Set the knobs, " +
+      "predict the six hex digits, press RUN TRANSFER.</span>";
+    C.wave.textContent = "The waveform renders after the first run.";
+    spRefreshCert(ti);
+    spLog("Trial " + SP_TRIALS[ti].n + " reset.", "");
+    spPop(C.card);
+  }
+
+  function spCertText(t, st) {
+    var chip = SP_CHIPS[t.chip];
+    var lines = ["THE SPI ROOM, TRIAL " + t.n + " CERTIFICATE",
+      "Chip " + chip.name + " // " + t.title,
+      "Datasheet: modes " + chip.modes + ", " + chip.idleLine +
+        ", ceiling " + chip.max + " MHz",
+      "JEDEC ID " + spHex6(chip.jedec) + " read clean at " + st.cleanClk + " MHz.",
+      "Prediction verified before the passing run. Attempts: " + st.attempts,
+      "", "SIGNALWRIGHT // THE PROVING GROUND"];
+    return lines.join("\n") + "\n";
+  }
+
+  function spDownloadCert(t, st) {
+    var blob = new Blob([spCertText(t, st)], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "spi-room-trial" + t.n + "-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    spLog("Certificate downloaded: " + a.download, "ok");
+  }
+
+  function spCertAll() {
+    var lines = ["THE SPI ROOM, BENCH CERTIFICATE", "All three trials certified:", ""];
+    for (var i = 0; i < SP_TRIALS.length; i++) {
+      var t = SP_TRIALS[i], st = spState.trials[i];
+      lines.push("Trial " + t.n + " " + SP_CHIPS[t.chip].name + ": CERTIFIED (" +
+        st.attempts + " attempts, " + st.cleanClk + " MHz)");
+    }
+    lines.push("", "The sampling edge is the handshake: CPHA agreement moves",
+      "the data, CPOL rests the clock, the ceiling is a promise.",
+      "", "SIGNALWRIGHT // THE PROVING GROUND");
+    var blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "spi-room-bench-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    spLog("Bench certificate downloaded.", "ok");
+  }
+
+  /* ---------------- trial cards ---------------- */
+
+  function spRadioGroup(ti, name, label, opts, defVal) {
+    var group = spEl("div", "sp-row");
+    group.setAttribute("role", "radiogroup");
+    group.setAttribute("aria-label", label);
+    group.appendChild(spEl("span", "sp-flabel", label));
+    for (var o = 0; o < opts.length; o++) {
+      (function (opt) {
+        var isDef = String(opt[0]) === String(defVal);
+        var lab = spEl("label", "sp-opt" + (isDef ? " on" : ""), null);
+        var inp = document.createElement("input");
+        inp.type = "radio"; inp.name = "sp" + name + ti; inp.value = opt[0];
+        if (isDef) inp.checked = true;
+        inp.setAttribute("aria-label", opt[2] || opt[1]);
+        inp.addEventListener("change", function () {
+          var all = group.querySelectorAll(".sp-opt");
+          for (var q = 0; q < all.length; q++) all[q].classList.remove("on");
+          lab.classList.add("on");
+        });
+        lab.appendChild(inp);
+        lab.appendChild(document.createTextNode(opt[1]));
+        group.appendChild(lab);
+      })(opts[o]);
+    }
+    return group;
+  }
+
+  function spBuildTrialCard(t, ti) {
+    var chip = SP_CHIPS[t.chip];
+    var card = spEl("div", "sp-card");
+    card.id = "spTrial" + ti;
+    card.appendChild(spEl("p", "sp-board", "CHIP " + chip.name + " // TRIAL " + t.n + " OF 3"));
+    card.appendChild(spEl("h4", "sp-ctitle", t.title));
+    card.appendChild(spEl("p", "sp-cgoal", t.goal));
+    var ds = spEl("div", "sp-ds", null);
+    ds.innerHTML =
+      "<span class='k'>DATASHEET " + spEsc(chip.name) + " // SUPPORTED MODES </span>" +
+      "<span class='v'>" + spEsc(chip.modes) + "</span>" +
+      "<span class='k'> // LATCHES ON THE </span><span class='v'>" +
+      (chip.cpha === 0 ? "RISING" : "FALLING") + "</span>" +
+      "<span class='k'> EDGE // IDLE </span><span class='v'>" +
+      spEsc(chip.idleLine.toUpperCase()) + "</span><br>" +
+      "<span class='k'>RATED CEILING </span><span class='v'>" + chip.max +
+      " MHz</span><span class='k'> // JEDEC ID </span><span class='v'>" +
+      spHex6(chip.jedec) + "</span>";
+    card.appendChild(ds);
+    if (ti === 2) {
+      var fig = spEl("div", "sp-fig", null);
+      fig.textContent = "FIGURE 3A: FIRST ANSWER BYTE, READ PHASE\n" + spFigureHTML(chip);
+      fig.setAttribute("role", "img");
+      fig.setAttribute("aria-label",
+        "Timing diagram: SCK rests at 0 between pulses, MISO steps on SCK falling edges");
+      card.appendChild(fig);
+      card.appendChild(spEl("p", "sp-figcap",
+        "Read the figure: SCK rests at 0, so CPOL is 0. MISO steps on the " +
+        "falling edges, so the chip shifts on the trailing edge and you " +
+        "sample on the leading one: CPHA 0."));
+    }
+    card.appendChild(spEl("p", "sp-thint", "HINT: " + t.hint));
+
+    var C = { card: card, tres: spEl("div", null, null),
+              verdict: spEl("p", "sp-verdict", "No run yet."),
+              bytes: spEl("div", "sp-bytes", null),
+              wave: spEl("div", "sp-wave", "The waveform renders after the first run."),
+              cert: spEl("button", "sp-btn primary", "CERTIFY TRIAL " + t.n) };
+    C.bytes.innerHTML = "<span class='k'>No transfer yet. Set the knobs, " +
+      "predict the six hex digits, press RUN TRANSFER.</span>";
+    C.verdict.id = "spT" + ti + "Verdict";
+    C.bytes.id = "spT" + ti + "Bytes";
+    C.wave.id = "spT" + ti + "Wave";
+
+    card.appendChild(spRadioGroup(ti, "Cpol", "CPOL",
+      [[0, "0: IDLE LOW", "CPOL 0, SCK rests low"],
+       [1, "1: IDLE HIGH", "CPOL 1, SCK rests high"]], 0));
+    card.appendChild(spRadioGroup(ti, "Cpha", "CPHA",
+      [[0, "0: SAMPLE ON 1ST EDGE", "CPHA 0, latch on the leading edge"],
+       [1, "1: SAMPLE ON 2ND EDGE", "CPHA 1, latch on the trailing edge"]],
+      t.chip === 1 ? 1 : 0));
+    var spdOpts = [];
+    for (var s = 0; s < SP_SPEEDS.length; s++)
+      spdOpts.push([SP_SPEEDS[s], SP_SPEEDS[s] + " MHz", "Clock " + SP_SPEEDS[s] + " megahertz"]);
+    card.appendChild(spRadioGroup(ti, "Clk", "CLOCK", spdOpts, 25));
+
+    var prow = spEl("div", "sp-row");
+    var pred = spEl("input", "sp-in");
+    pred.id = "spT" + ti + "Pred";
+    pred.setAttribute("placeholder", "Predict: 6 hex digits");
+    pred.setAttribute("maxlength", "8");
+    pred.setAttribute("spellcheck", "false");
+    pred.setAttribute("aria-label",
+      "Your prediction: the six hex digits the bus will return");
+    pred.setAttribute("inputmode", "text");
+    prow.appendChild(pred);
+    var run = spEl("button", "sp-btn primary", "RUN TRANSFER");
+    run.id = "spT" + ti + "Run";
+    run.addEventListener("click", function () { spRunTrial(ti); });
+    prow.appendChild(run);
+    card.appendChild(prow);
+    C.pred = pred;
+
+    card.appendChild(C.bytes);
+    card.appendChild(C.wave);
+
+    var brow = spEl("div", "sp-row");
+    C.cert.id = "spT" + ti + "Cert";
+    C.cert.disabled = true;
+    C.cert.addEventListener("click", function () { spCommit(ti); });
+    brow.appendChild(C.cert);
+    var rst = spEl("button", "sp-btn", "RESET TRIAL");
+    rst.id = "spT" + ti + "Reset";
+    rst.addEventListener("click", function () { spResetTrial(ti); });
+    brow.appendChild(rst);
+    card.appendChild(brow);
+    card.appendChild(C.verdict);
+    card.appendChild(C.tres);
+    spEls.cards[ti] = C;
+    return card;
+  }
+
+  /* ---------------- build ---------------- */
+
+  function spBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("spBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = SP_CSS;
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "spBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The SPI Room";
+    b.addEventListener("click", spOpen);
+    box.appendChild(b);
+
+    var ov = spEl("div", "sp-overlay");
+    ov.id = "spOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The SPI Room");
+    var x = spEl("button", "sp-btn", "CLOSE");
+    x.id = "spXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The SPI Room");
+    x.addEventListener("click", spClose);
+    ov.appendChild(x);
+    var panel = spEl("div", "sp-panel");
+    var wrap = spEl("div", "sp-wrap");
+
+    var head = spEl("div", "sp-head");
+    head.appendChild(spEl("h3", null, "The SPI Room"));
+    head.appendChild(spEl("p", "sp-spec", "TAPEOUT // SPI BRING-UP // 3 CHIPS"));
+    var intro = spEl("div", null, null);
+    intro.innerHTML = spIntroHTML();
+    head.appendChild(intro);
+    head.appendChild(spEl("p", "sp-how",
+      "HOW: read each chip's datasheet, set CPOL, CPHA, and the clock, type " +
+      "the six hex digits you expect, RUN the transfer, certify all three."));
+    wrap.appendChild(head);
+
+    wrap.appendChild(spEl("p", "sp-sec", "THE TRIALS"));
+    spEls.cards = [];
+    for (var ti = 0; ti < SP_TRIALS.length; ti++) {
+      spState.trials[ti] = spNewTrialState();
+      wrap.appendChild(spBuildTrialCard(SP_TRIALS[ti], ti));
+    }
+
+    wrap.appendChild(spEl("p", "sp-sec", "BENCH LOG"));
+    var log = spEl("div", "sp-log");
+    log.id = "spLog";
+    wrap.appendChild(log);
+    spEls.log = log;
+
+    var banner = spEl("div", "sp-banner",
+      "SIGNALWRIGHT: ALL THREE CHIPS NAMED. THE SAMPLING EDGE IS THE HANDSHAKE.");
+    banner.id = "spBanner";
+    banner.style.display = "none";
+    wrap.appendChild(banner);
+    spEls.banner = banner;
+
+    var foot = spEl("div", "sp-foot");
+    var certAll = spEl("button", "sp-btn", "DOWNLOAD BENCH CERTIFICATE");
+    certAll.id = "spCertAllBtn";
+    certAll.style.display = "none";
+    certAll.addEventListener("click", spCertAll);
+    foot.appendChild(certAll);
+    spEls.certAll = certAll;
+    var close = spEl("button", "sp-btn", "CLOSE");
+    close.id = "spCloseBtn";
+    close.addEventListener("click", spClose);
+    foot.appendChild(close);
+    wrap.appendChild(foot);
+
+    panel.appendChild(wrap);
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    spEls.overlay = ov;
+
+    ov.addEventListener("click", function (e) { if (e.target === ov) spClose(); });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && spEls.overlay &&
+          spEls.overlay.classList.contains("open")) spClose();
+    });
+  }
+
+  /* ---------------- open / close / boot ---------------- */
+
+  function spOpen() {
+    if (!spEls.overlay) spBuild();
+    spEls.overlay.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+  function spClose() {
+    if (spEls.overlay) spEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", spBuild);
+    } else {
+      spBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      SP: {
+        CHIPS: SP_CHIPS, TRIALS: SP_TRIALS, SPEEDS: SP_SPEEDS,
+        transfer: spTransfer, misoAt: spMisoAt, sckAt: spSckAt,
+        hex6: spHex6, introHTML: spIntroHTML, certText: spCertText,
+        figureHTML: spFigureHTML,
+        ui: {
+          open: spOpen, close: spClose,
+          run: spRunTrial, commit: spCommit, resetTrial: spResetTrial,
+          certAll: spCertAll,
+          state: function () { return spState; },
+          els: function () { return spEls; }
         }
       }
     });
