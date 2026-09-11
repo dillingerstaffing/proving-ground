@@ -27422,3 +27422,828 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+/* Bench 40 staging: The Float Room module (appended to features.js at ship time). */
+/* ============================================================
+   THE FLOAT ROOM
+   Silicon bench 40. IEEE-754 binary32 as the one atomic mechanism:
+   a float is a sign bit, an 8-bit biased exponent, and a 23-bit
+   mantissa with an implied leading 1. A live 32-bit word editor
+   (the do-before-explain primer) decodes every toggle with exact
+   BigInt decimal math, so the visitor sees the number move before
+   any trial asks anything. Three trials: decode a mystery word
+   (0x40490FDB, pi), find the closest float to 0.1 by typing its hex,
+   and classify the edge cases (subnormal, +inf, NaN, -0) plus a
+   predict-then-verify of the 1e10f + 1f absorption. Failure modes
+   named and enforced: your decimal may not exist, small addends
+   vanish, overflow becomes infinity, NaN never equals anything.
+   Certificates per trial plus a bench certificate when all three
+   are certified. Self-contained, appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- pure logic: IEEE-754 binary32 ---------------- */
+
+  var FT_DV = (typeof DataView !== "undefined") ? new DataView(new ArrayBuffer(4)) : null;
+
+  function ftGetF32(u) { FT_DV.setUint32(0, u >>> 0); return FT_DV.getFloat32(0); }
+  function ftBitsOf(x) { FT_DV.setFloat32(0, x); return FT_DV.getUint32(0); }
+  function ftAdd32(ua, ub) { return ftBitsOf(ftGetF32(ua) + ftGetF32(ub)); }
+
+  /* Exact decimal expansion of the float32 word, via BigInt.
+     value = m * 2^k with integer m; fraction = rem * 5^n / 10^n. */
+  function ftExact(u) {
+    u = u >>> 0;
+    var s = (u >>> 31) & 1, e = (u >>> 23) & 0xff, f = u & 0x7fffff;
+    if (e === 255) return f ? "NaN" : (s ? "-inf" : "+inf");
+    var m, k;
+    if (e === 0) { m = f; k = -149; } else { m = f | 0x800000; k = e - 150; }
+    var M = BigInt(m), str;
+    if (k >= 0) { str = (M << BigInt(k)).toString(); }
+    else {
+      var n = -k, den = 1n << BigInt(n), ip = M / den, rem = M % den;
+      var frac = (rem * (5n ** BigInt(n))).toString().padStart(n, "0").replace(/0+$/, "");
+      str = ip.toString() + (frac ? "." + frac : "");
+    }
+    return (s ? "-" : "") + str;
+  }
+
+  function ftHex(u) { return "0x" + ("00000000" + (u >>> 0).toString(16).toUpperCase()).slice(-8); }
+
+  function ftKindName(kind) {
+    return { normal: "normal", subnormal: "subnormal", zero: "+0",
+             negzero: "-0", inf: "+inf", nan: "NaN" }[kind] || kind;
+  }
+
+  function ftDecode(u) {
+    u = u >>> 0;
+    var s = (u >>> 31) & 1, e = (u >>> 23) & 0xff, f = u & 0x7fffff, kind;
+    if (e === 255) kind = f ? "nan" : "inf";
+    else if (e === 0) kind = (f === 0) ? (s ? "negzero" : "zero") : "subnormal";
+    else kind = "normal";
+    var exp = (kind === "normal") ? e - 127 : (kind === "subnormal" ? -126 : null);
+    var ulp = (kind === "normal") ? Math.pow(2, e - 127 - 23) :
+              (kind === "subnormal" ? Math.pow(2, -149) : null);
+    return { s: s, eBits: e, f: f, kind: kind, exp: exp,
+             value: ftGetF32(u), exact: ftExact(u), ulp: ulp };
+  }
+
+  /* ---------------- trial data (all numbers verified in node) ---------------- */
+
+  var FT_TRIALS = [
+    { n: 1, id: "decode-01", board: "FLOAT-01",
+      title: "TRIAL 1: READ THE WORD",
+      mystery: 0x40490FDB,
+      goal: "The bench shows one 32-bit word. Type your prediction of its value, then CHECK. " +
+            "You pass inside half a ULP of the exact value.",
+      hint: "Sign bit 0: positive. Exponent bits 10000000 = 128, minus the 127 bias, so the " +
+            "power is 2^1. The mantissa carries its implied leading 1. Multiply out by hand." },
+    { n: 2, id: "quantize-02", board: "FLOAT-02",
+      title: "TRIAL 2: THE CLOSEST FLOAT",
+      target: "0.1", targetBits: 0x3DCCCCCD,
+      loBits: 0x3DCCCCCC, hiBits: 0x3DCCCCCD,
+      goal: "Type the 8 hex digits of the float closest to 0.1. The bench decodes your " +
+            "candidate live, exact value and error in ULPs, before you commit.",
+      hint: "0.1 in binary is 0.0001100110011 repeating, forever. The format must cut it " +
+            "somewhere. The cut falls between two neighbors; name the nearer one." },
+    { n: 3, id: "edge-03", board: "FLOAT-03",
+      title: "TRIAL 3: THE EDGE CASES",
+      goal: "Part A: classify four mystery words. Part B: predict 10000000000 + 1 in " +
+            "float32, then RUN the bench adder to verify. Certify needs both parts.",
+      classify: [
+        { word: 0x00000001, answer: "subnormal", label: "WORD A: 0x00000001" },
+        { word: 0x7F800000, answer: "posinf", label: "WORD B: 0x7F800000" },
+        { word: 0xFFC00000, answer: "nan", label: "WORD C: 0xFFC00000" },
+        { word: 0x80000000, answer: "negzero", label: "WORD D: 0x80000000" }
+      ],
+      addA: 0x501502F9, addB: 0x3F800000,
+      hint: "Exponent all 1s is the special shelf: mantissa zero means infinity, mantissa " +
+            "nonzero means NaN. Exponent all 0s with a nonzero mantissa is subnormal: no " +
+            "implied leading 1, fixed tiny exponent, the format's last resort before zero." }
+  ];
+
+  var FT_CLASS_OPTS = [
+    ["normal", "normal"], ["subnormal", "subnormal"], ["zero", "+0"],
+    ["negzero", "-0"], ["posinf", "+infinity"], ["neginf", "-infinity"], ["nan", "NaN"]
+  ];
+
+  /* ---------------- intro copy (why-first, BFP compliant) ---------------- */
+
+  function ftIntroHTML() {
+    return (
+      "<p class='ft-why'><b>WHY IT MATTERS.</b> Your RISC-V F extension, the shader cores on " +
+      "TAPEOUT boards, the sensor code on every OLD IRON bench: they all store fractional " +
+      "numbers in the same 32 bits. One sign bit, eight exponent bits, twenty-three mantissa " +
+      "bits. The format decides which numbers exist at all. Add 0.1 and 0.2 in single " +
+      "precision and you get 0.300000011920928955078125, never 0.3, because 0.1 and 0.2 " +
+      "themselves do not exist in this format. Three trials: read a word, find the closest " +
+      "float to a decimal, and meet the edge cases where the format stops pretending.</p>" +
+      "<p class='ft-worked'><b>WORKED EXAMPLE, by hand, before you touch the bench.</b> The " +
+      "word 0x3DCCCCCD. Bit 31, the sign, is 0: positive. The next eight bits are 01111011, " +
+      "which is 123. The exponent is biased by 127 (more below), so the true power is " +
+      "123 - 127 = -4: multiply by 2^-4, which is 1/16. The last 23 bits are " +
+      "10011001100110011001101, which is 5033165. The mantissa carries an implied leading 1, " +
+      "so the real multiplier is 1 + 5033165/8388608 = 1.600000023841858. Divide by 16: " +
+      "0.100000001490116119384765625, exact, no computer needed. That is the nearest float " +
+      "to 0.1. The decimal 0.1 itself is not in the format: its binary expansion " +
+      "0.0001100110011... repeats forever, so every decimal you type is rounded to the " +
+      "nearest resident. That rounding is trial 2.</p>" +
+      "<p class='ft-terms'><b>TERMS, earned in order.</b> Sign bit: bit 31, 0 for positive, " +
+      "1 for negative (which is why -0 exists as a real, distinct word). Biased exponent: " +
+      "bits 23 to 30 store the power plus 127, so the ordering of bit patterns matches the " +
+      "ordering of magnitudes and hardware can compare floats almost like integers. " +
+      "Implied leading 1: every normalized mantissa is 1.something in binary, so the 1 is " +
+      "never stored and 23 bits carry 24 bits of precision. ULP: unit in the last place, the " +
+      "gap between neighboring floats at the current magnitude; every error in this room " +
+      "is measured in ULPs, never in vibes.</p>" +
+      "<p class='ft-failmodes'><b>FAILURE MODES, stated up front.</b> Your decimal may not " +
+      "exist: 0.1 rounds to 0x3DCCCCCD and the rounding is silent. A small addend can vanish " +
+      "entirely: 10000000000 + 1 in float32 is still 10000000000, because the gap between " +
+      "neighbors there is 1024 (that is trial 3, part B). Overflow never errors: it becomes " +
+      "infinity. NaN is never equal to anything, not even itself, so x == x can be false; " +
+      "the bench treats a NaN verdict as a verdict, not a number.</p>" +
+      "<p class='ft-scale'><b>ONE NUMBER TO CARRY.</b> Near 1.0, neighboring floats sit 2^-23 " +
+      "apart: about 1.2e-7, roughly one ten-millionth. Near 1e10 the gap is 1024 whole " +
+      "integers. Same 32 bits, wildly different resolution. That tradeoff is the entire " +
+      "bargain of the format, and every trial below is a tour of it.</p>"
+    );
+  }
+
+  /* ---------------- styles ---------------- */
+
+  var FT_CSS = [
+    ".ft-overlay{position:fixed;inset:0;z-index:90;display:none;background:rgba(8,8,10,.86);padding:0;}",
+    ".ft-overlay.open{display:block;}",
+    ".ft-panel{position:absolute;inset:0;overflow-y:auto;background:var(--ink);color:var(--paper);padding:20px 16px 120px;}",
+    ".ft-wrap{max-width:860px;margin:0 auto;}",
+    ".ft-head h3{font-family:'Space Grotesk',sans-serif;font-size:26px;letter-spacing:.04em;margin:0 0 4px;color:var(--paper);}",
+    ".ft-spec{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);margin:0 0 12px;}",
+    ".ft-why,.ft-worked,.ft-terms,.ft-failmodes,.ft-scale{font-size:14px;line-height:1.65;margin:0 0 12px;color:var(--paper);}",
+    ".ft-why b,.ft-worked b,.ft-terms b,.ft-failmodes b,.ft-scale b{color:var(--ember);font-weight:600;}",
+    ".ft-worked{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--ember);padding:12px 14px;}",
+    ".ft-terms,.ft-failmodes,.ft-scale{background:var(--panel);border:1px solid var(--line);padding:12px 14px;}",
+    ".ft-how{font-size:14px;margin:18px 0 10px;color:var(--paper);}",
+    ".ft-how b{color:var(--ember);}",
+    ".ft-sec{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);margin:22px 0 8px;}",
+    ".ft-primer{background:var(--panel);border:1px solid var(--line);padding:14px;margin:0 0 6px;}",
+    ".ft-field{margin:0 0 12px;}",
+    ".ft-flabel{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:var(--ember);margin:0 0 6px;}",
+    ".ft-bits{display:grid;grid-template-columns:repeat(8,1fr);gap:6px;margin:0 0 4px;}",
+    ".ft-bits.one{grid-template-columns:repeat(8,1fr);}",
+    ".ft-bit{font-family:'IBM Plex Mono',monospace;font-size:15px;font-weight:600;min-height:48px;border:1px solid var(--line);background:var(--ink);color:var(--paper);cursor:pointer;padding:0;}",
+    ".ft-bit.on{border-color:var(--ember);color:var(--ember);background:#1a0f08;}",
+    ".ft-bit:focus-visible,.ft-btn:focus-visible,.ft-in:focus-visible,.ft-sel:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".ft-decode{font-family:'IBM Plex Mono',monospace;font-size:13px;line-height:1.8;background:var(--ink);border:1px solid var(--line);padding:10px 12px;margin:10px 0 0;word-break:break-all;}",
+    ".ft-decode .k{color:#8a877f;}",
+    ".ft-decode .v{color:var(--ember);}",
+    ".ft-thint{font-size:13px;line-height:1.6;color:var(--paper);margin:10px 0 0;}",
+    ".ft-card{background:var(--panel);border:1px solid var(--line);padding:14px;margin:0 0 14px;}",
+    ".ft-card.passed{border-color:var(--ember);}",
+    ".ft-ctitle{font-family:'Space Grotesk',sans-serif;font-size:17px;letter-spacing:.03em;margin:0 0 4px;color:var(--paper);}",
+    ".ft-cgoal{font-size:13px;line-height:1.6;color:var(--paper);margin:0 0 10px;}",
+    ".ft-board{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:#8a877f;margin:0 0 8px;}",
+    ".ft-myst{font-family:'IBM Plex Mono',monospace;font-size:24px;font-weight:600;color:var(--ember);letter-spacing:.06em;margin:6px 0 10px;}",
+    ".ft-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:0 0 8px;}",
+    ".ft-in{font-family:'IBM Plex Mono',monospace;font-size:15px;min-height:48px;padding:8px 12px;background:var(--ink);border:1px solid var(--line);color:var(--paper);flex:1 1 220px;}",
+    ".ft-sel{font-family:'IBM Plex Mono',monospace;font-size:14px;min-height:48px;padding:8px 10px;background:var(--ink);border:1px solid var(--line);color:var(--paper);flex:1 1 200px;}",
+    ".ft-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.1em;min-height:48px;padding:10px 18px;background:var(--panel-2);border:1px solid var(--line);color:var(--paper);cursor:pointer;}",
+    ".ft-btn.primary{border-color:var(--ember);color:var(--ember);}",
+    ".ft-btn:disabled{opacity:.35;cursor:default;}",
+    ".ft-verdict{font-family:'IBM Plex Mono',monospace;font-size:13px;line-height:1.7;margin:8px 0 0;min-height:20px;}",
+    ".ft-verdict.pass{color:var(--ember);}",
+    ".ft-live{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.8;color:var(--paper);background:var(--ink);border:1px solid var(--line);padding:8px 12px;margin:8px 0 0;word-break:break-all;}",
+    ".ft-live .k{color:#8a877f;}",
+    ".ft-live .v{color:var(--ember);}",
+    ".ft-strikes{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.1em;color:#8a877f;margin:8px 0 0;}",
+    ".ft-classrow{display:flex;gap:10px;align-items:center;margin:0 0 8px;flex-wrap:wrap;}",
+    ".ft-classrow .ft-clab{font-family:'IBM Plex Mono',monospace;font-size:13px;min-width:170px;color:var(--paper);}",
+    ".ft-classrow .ft-cmark{font-family:'IBM Plex Mono',monospace;font-size:13px;min-width:90px;}",
+    ".ft-classrow .ft-cmark.good{color:var(--ember);}",
+    ".ft-classrow .ft-cmark.bad{color:#ff3b30;}",
+    ".ft-log{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;background:var(--ink);border:1px solid var(--line);padding:10px 12px;max-height:180px;overflow-y:auto;}",
+    ".ft-log .ok{color:var(--ember);}",
+    ".ft-banner{font-family:'Space Grotesk',sans-serif;font-size:16px;letter-spacing:.06em;color:var(--ember);border:1px solid var(--ember);padding:12px 14px;margin:14px 0 0;display:none;}",
+    ".ft-foot{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0 0;}",
+    ".ft-pop{animation:ftPop .2s ease-out;}",
+    "@keyframes ftPop{0%{transform:scale(.985);}100%{transform:scale(1);}}",
+    "@media (prefers-reduced-motion: reduce){.ft-pop{animation:none;}}"
+  ].join("\n");
+
+  /* ---------------- DOM helpers ---------------- */
+
+  function ftEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  function ftEsc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  var ftEls = {};
+  var ftState = { primer: 0x3F800000, trials: [] };
+  var FT_REDUCED = (typeof window !== "undefined" && window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+  function ftNewTrialState() {
+    return { passed: false, committed: false, strikes: 0,
+             classOk: false, addOk: false, addRan: false };
+  }
+
+  function ftLog(html, cls) {
+    var box = ftEls.log;
+    if (!box) return;
+    var line = ftEl("div", null, null);
+    line.innerHTML = "<span class='lt'>&gt; </span><span class='" + (cls || "") + "'>" + html + "</span>";
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function ftPop(card) {
+    if (FT_REDUCED || !card) return;
+    card.classList.remove("ft-pop"); void card.offsetWidth; card.classList.add("ft-pop");
+  }
+
+  /* ---------------- primer: the live 32-bit word ---------------- */
+
+  function ftBitIndex(bit) { return 31 - bit; } /* bit 0 in the row = MSB */
+
+  function ftPrimerBits() {
+    var w = ftState.primer >>> 0, arr = [];
+    for (var b = 31; b >= 0; b--) arr.push((w >>> b) & 1);
+    return arr;
+  }
+
+  function ftRenderPrimer() {
+    if (!ftEls.bitBtns) return;
+    var bits = ftPrimerBits();
+    for (var i = 0; i < 32; i++) {
+      var btn = ftEls.bitBtns[i];
+      btn.textContent = String(bits[i]);
+      btn.classList.toggle("on", bits[i] === 1);
+      btn.setAttribute("aria-pressed", bits[i] ? "true" : "false");
+      btn.setAttribute("aria-label", "Bit " + (31 - i) + ", currently " + bits[i]);
+    }
+    var d = ftDecode(ftState.primer);
+    var expTxt = (d.exp === null) ? "n/a (" + ftKindName(d.kind) + ")" :
+      ("bits " + d.eBits + " -> 2^" + d.exp);
+    var ulpTxt = (d.ulp === null) ? "n/a" : d.ulp.toExponential(3);
+    ftEls.decode.innerHTML =
+      "<span class='k'>WORD </span><span class='v'>" + ftHex(ftState.primer) + "</span><br>" +
+      "<span class='k'>KIND </span><span class='v'>" + ftKindName(d.kind) + "</span><br>" +
+      "<span class='k'>EXPONENT </span>" + ftEsc(expTxt) + "<br>" +
+      "<span class='k'>EXACT VALUE </span><span class='v'>" + ftEsc(d.exact) + "</span><br>" +
+      "<span class='k'>ULP HERE </span>" + ftEsc(ulpTxt);
+  }
+
+  function ftToggleBit(i) {
+    ftState.primer = (ftState.primer ^ (1 << (31 - i))) >>> 0;
+    ftRenderPrimer();
+  }
+
+  /* ---------------- trial checks ---------------- */
+
+  function ftStrike(ti, why) {
+    var st = ftState.trials[ti];
+    st.strikes++;
+    ftEls.cards[ti].strikes.textContent = "STRIKES: " + st.strikes + " (no lockout: keep working)";
+    ftLog("Trial " + FT_TRIALS[ti].n + " strike " + st.strikes + ": " + why, "");
+  }
+
+  function ftMarkPass(ti, msg) {
+    var st = ftState.trials[ti];
+    st.passed = true;
+    var C = ftEls.cards[ti];
+    C.verdict.textContent = msg;
+    C.verdict.classList.add("pass");
+    C.card.classList.add("passed");
+    C.cert.style.display = "";
+    ftLog("Trial " + FT_TRIALS[ti].n + " SOLVED: " + msg, "ok");
+    ftPop(C.card);
+  }
+
+  /* Trial 1: decode the mystery word. */
+  function ftLiveT1() {
+    var t = FT_TRIALS[0], C = ftEls.cards[0], st = ftState.trials[0];
+    if (st.passed) return;
+    var raw = C.guess.value.trim();
+    if (!raw) { C.live.textContent = "Type a decimal guess to see your live error in ULPs."; return; }
+    var g = parseFloat(raw);
+    if (!isFinite(g)) { C.live.textContent = "That is not a finite number."; return; }
+    var d = ftDecode(t.mystery);
+    var errUlp = Math.abs(g - d.value) / d.ulp;
+    C.live.innerHTML = "<span class='k'>EXACT </span><span class='v'>" + ftEsc(d.exact) +
+      "</span><br><span class='k'>YOUR ERROR </span><span class='v'>" + errUlp.toFixed(3) +
+      " ULP</span><span class='k'> (pass inside 0.5)</span>";
+  }
+
+  function ftCheckT1() {
+    var t = FT_TRIALS[0], C = ftEls.cards[0], st = ftState.trials[0];
+    if (st.passed || st.committed) return false;
+    var g = parseFloat(C.guess.value.trim());
+    if (!isFinite(g)) { ftStrike(0, "guess is not a finite number"); return false; }
+    var d = ftDecode(t.mystery);
+    var errUlp = Math.abs(g - d.value) / d.ulp;
+    if (errUlp <= 0.5) {
+      ftMarkPass(0, "CORRECT: " + ftHex(t.mystery) + " = " + d.exact +
+        " (your error " + errUlp.toFixed(3) + " ULP). CERTIFY TRIAL to sign it.");
+      return true;
+    }
+    ftStrike(0, "guess off by " + errUlp.toFixed(2) + " ULP; the exact value is " +
+      "shown live above, work the mantissa again");
+    C.verdict.textContent = "Off by " + errUlp.toFixed(2) + " ULP. The exact value is on screen: " +
+      "re-check your exponent and mantissa math.";
+    C.verdict.classList.remove("pass");
+    ftPop(C.card);
+    return false;
+  }
+
+  /* Trial 2: type the hex of the closest float to the target. */
+  function ftLiveT2() {
+    var t = FT_TRIALS[1], C = ftEls.cards[1], st = ftState.trials[1];
+    if (st.passed) return;
+    var raw = C.hexin.value.trim().replace(/^0x/i, "");
+    if (!/^[0-9a-fA-F]{1,8}$/.test(raw)) {
+      C.live.textContent = "Type 1 to 8 hex digits to see your candidate decoded live.";
+      return;
+    }
+    var u = parseInt(raw, 16) >>> 0;
+    var d = ftDecode(u);
+    var target = parseFloat(t.target);
+    var errUlp = (d.ulp === null) ? null : Math.abs(d.value - target) / d.ulp;
+    C.live.innerHTML = "<span class='k'>CANDIDATE </span><span class='v'>" + ftHex(u) + "</span> " +
+      ftEsc(ftKindName(d.kind)) + "<br><span class='k'>EXACT </span><span class='v'>" +
+      ftEsc(d.exact) + "</span><br><span class='k'>ERROR VS " + ftEsc(t.target) + " </span>" +
+      (errUlp === null ? "<span class='v'>n/a (not finite)</span>"
+                       : "<span class='v'>" + errUlp.toFixed(3) + " ULP</span>");
+    C.candBits = u;
+  }
+
+  function ftCheckT2() {
+    var t = FT_TRIALS[1], C = ftEls.cards[1], st = ftState.trials[1];
+    if (st.passed || st.committed) return false;
+    var u = C.candBits;
+    if (u === undefined || u === null) {
+      ftStrike(1, "no valid hex candidate typed");
+      C.verdict.textContent = "Type a hex candidate first.";
+      return false;
+    }
+    if (u === t.targetBits) {
+      var d = ftDecode(u);
+      ftMarkPass(1, "CORRECT: the closest float to 0.1 is " + ftHex(u) + " = " + d.exact +
+        ". 0.1 itself is not in the format. CERTIFY TRIAL to sign it.");
+      return true;
+    }
+    var want = ftDecode(t.targetBits), got = ftDecode(u);
+    ftStrike(1, "candidate " + ftHex(u) + " is not the nearest float");
+    C.verdict.textContent = "Not the nearest. Your candidate is exactly " + got.exact +
+      "; the true nearest is " + want.exact + ". The gap between the two neighbors is " +
+      "1 ULP: pick the side your target falls on.";
+    C.verdict.classList.remove("pass");
+    ftPop(C.card);
+    return false;
+  }
+
+  /* Trial 3: classify edge cases, then predict-then-verify the big add. */
+  function ftCheckT3Classify() {
+    var t = FT_TRIALS[2], C = ftEls.cards[2], st = ftState.trials[2];
+    if (st.passed || st.committed) return false;
+    var wrong = [];
+    for (var i = 0; i < t.classify.length; i++) {
+      var sel = C.classSels[i], mark = C.classMarks[i];
+      if (sel.value === t.classify[i].answer) {
+        mark.textContent = "RIGHT"; mark.className = "ft-cmark good";
+      } else {
+        mark.textContent = "WRONG"; mark.className = "ft-cmark bad";
+        wrong.push(t.classify[i].label.split(":")[0]);
+      }
+    }
+    if (wrong.length === 0) {
+      st.classOk = true;
+      ftLog("Trial 3 part A: all four words classified.", "ok");
+      ftMaybePassT3();
+      return true;
+    }
+    ftStrike(2, "misclassified " + wrong.join(", ") + "; the hint names the exponent patterns");
+    return false;
+  }
+
+  function ftLiveT3Add() {
+    var t = FT_TRIALS[2], C = ftEls.cards[2], st = ftState.trials[2];
+    if (!st.addRan) {
+      C.addlive.textContent = "Press RUN ADDER to compute 10000000000 + 1 in float32.";
+      return;
+    }
+    var res = ftAdd32(t.addA, t.addB);
+    var d = ftDecode(res);
+    C.addlive.innerHTML = "<span class='k'>RESULT </span><span class='v'>" + ftHex(res) +
+      " = " + ftEsc(d.exact) + "</span><br><span class='k'>INPUTS </span>" +
+      ftHex(t.addA) + " + " + ftHex(t.addB);
+  }
+
+  function ftRunT3Add() {
+    var t = FT_TRIALS[2], C = ftEls.cards[2], st = ftState.trials[2];
+    if (st.passed || st.committed) return false;
+    st.addRan = true;
+    ftLiveT3Add();
+    var res = ftAdd32(t.addA, t.addB);
+    var g = parseFloat(C.addguess.value.trim());
+    if (!isFinite(g)) {
+      ftStrike(2, "part B prediction is not a finite number");
+      C.verdict.textContent = "Type a numeric prediction first, then RUN ADDER again.";
+      return false;
+    }
+    var d = ftDecode(res);
+    var errUlp = (d.ulp === null) ? Infinity : Math.abs(g - d.value) / d.ulp;
+    if (errUlp <= 0.5) {
+      st.addOk = true;
+      ftLog("Trial 3 part B: predicted " + g + ", adder says " + d.exact +
+        " (error " + errUlp.toFixed(3) + " ULP).", "ok");
+      ftMaybePassT3();
+      return true;
+    }
+    ftStrike(2, "part B prediction off by " +
+      (errUlp === Infinity ? "a non-finite gap" : errUlp.toFixed(1) + " ULP") +
+      "; the adder result is on screen");
+    C.verdict.textContent = "The adder disagrees: it says " + d.exact +
+      ". Your prediction was " + (errUlp === Infinity ? "not finite" : errUlp.toFixed(1) + " ULP away") +
+      ". Think about the ULP at 1e10 before predicting again.";
+    C.verdict.classList.remove("pass");
+    ftPop(C.card);
+    return false;
+  }
+
+  function ftMaybePassT3() {
+    var st = ftState.trials[2];
+    if (st.passed || !(st.classOk && st.addOk)) return false;
+    ftMarkPass(2, "CORRECT: all four edge words classified, and the adder proves " +
+      "10000000000 + 1 = 10000000000 in float32 (the 1 drowns in a 1024-wide ULP). " +
+      "CERTIFY TRIAL to sign it.");
+    return true;
+  }
+
+  function ftCommit(ti) {
+    var t = FT_TRIALS[ti], st = ftState.trials[ti];
+    if (!(st.passed && !st.committed)) return false;
+    st.committed = true;
+    ftLog("Trial " + t.n + " CERTIFIED: " + t.title + ". Certificate ready below.", "ok");
+    var dl = ftEl("button", "ft-btn", "DOWNLOAD TRIAL " + t.n + " CERTIFICATE");
+    dl.addEventListener("click", function () { ftDownloadCert(t, st); });
+    ftEls.cards[ti].tres.appendChild(dl);
+    ftPop(ftEls.cards[ti].card);
+    var all = true;
+    for (var i = 0; i < FT_TRIALS.length; i++)
+      if (!ftState.trials[i].committed) { all = false; break; }
+    if (all) {
+      ftEls.banner.style.display = "block";
+      ftEls.certAll.style.display = "";
+      ftLog("FLOATWRIGHT: all three trials certified. You read the format.", "ok");
+    }
+    return true;
+  }
+
+  function ftResetTrial(ti) {
+    ftState.trials[ti] = ftNewTrialState();
+    var C = ftEls.cards[ti];
+    C.tres.innerHTML = "";
+    C.verdict.textContent = "No check yet.";
+    C.verdict.classList.remove("pass");
+    C.card.classList.remove("passed");
+    C.cert.style.display = "none";
+    C.strikes.textContent = "STRIKES: 0 (no lockout: keep working)";
+    if (C.guess) C.guess.value = "";
+    if (C.hexin) { C.hexin.value = ""; C.candBits = null; }
+    if (C.addguess) C.addguess.value = "";
+    ftLog("Trial " + FT_TRIALS[ti].n + " reset.", "");
+    ftPop(C.card);
+  }
+
+  function ftCertText(t, st) {
+    var lines = ["THE FLOAT ROOM, TRIAL " + t.n + " CERTIFICATE",
+      "Board " + t.board + " // " + t.title,
+      "Strikes taken: " + st.strikes, ""];
+    if (t.n === 1) {
+      var d = ftDecode(t.mystery);
+      lines.push("Mystery word " + ftHex(t.mystery) + " decoded to exactly " + d.exact + ".");
+    } else if (t.n === 2) {
+      lines.push("Closest float to " + t.target + ": " + ftHex(t.targetBits) + " = " +
+        ftDecode(t.targetBits).exact + ".");
+      lines.push("The decimal " + t.target + " itself does not exist in binary32.");
+    } else {
+      for (var i = 0; i < t.classify.length; i++)
+        lines.push(t.classify[i].label + " -> " + t.classify[i].answer + ".");
+      lines.push("10000000000 + 1 in float32 = " +
+        ftDecode(ftAdd32(t.addA, t.addB)).exact + " (absorption: the 1 drowns).");
+    }
+    lines.push("", "FLOATWRIGHT // THE PROVING GROUND");
+    return lines.join("\n") + "\n";
+  }
+
+  function ftDownloadCert(t, st) {
+    var blob = new Blob([ftCertText(t, st)], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "float-room-trial" + t.n + "-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    ftLog("Certificate downloaded: " + a.download, "ok");
+  }
+
+  function ftCertAll() {
+    var lines = ["THE FLOAT ROOM, BENCH CERTIFICATE", "All three trials certified:", ""];
+    for (var i = 0; i < FT_TRIALS.length; i++) {
+      var t = FT_TRIALS[i], st = ftState.trials[i];
+      lines.push("Trial " + t.n + " " + t.title + ": CERTIFIED (" + st.strikes + " strikes)");
+    }
+    lines.push("", "A float is a sign bit, a biased exponent, and a mantissa with an",
+      "implied leading 1. You read the format. FLOATWRIGHT // THE PROVING GROUND");
+    var blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "float-room-bench-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    ftLog("Bench certificate downloaded.", "ok");
+  }
+
+  /* ---------------- trial cards ---------------- */
+
+  function ftBuildTrialCard(t, ti) {
+    var card = ftEl("div", "ft-card");
+    card.id = "ftTrial" + ti;
+    card.appendChild(ftEl("p", "ft-board", "BOARD " + t.board + " // TRIAL " + t.n + " OF 3"));
+    card.appendChild(ftEl("h4", "ft-ctitle", t.title));
+    card.appendChild(ftEl("p", "ft-cgoal", t.goal));
+    card.appendChild(ftEl("p", "ft-cgoal", "HINT: " + t.hint));
+    var C = { card: card, tres: ftEl("div", null, null),
+              verdict: ftEl("p", "ft-verdict", "No check yet."),
+              strikes: ftEl("p", "ft-strikes", "STRIKES: 0 (no lockout: keep working)"),
+              cert: ftEl("button", "ft-btn primary", "CERTIFY TRIAL " + t.n) };
+
+    if (t.n === 1) {
+      card.appendChild(ftEl("p", "ft-myst", ftHex(t.mystery)));
+      var row = ftEl("div", "ft-row");
+      var guess = ftEl("input", "ft-in");
+      guess.id = "ftT1Guess";
+      guess.setAttribute("placeholder", "Your prediction, e.g. 3.14");
+      guess.setAttribute("inputmode", "decimal");
+      guess.setAttribute("aria-label", "Your predicted value of the mystery word");
+      row.appendChild(guess);
+      var chk = ftEl("button", "ft-btn primary", "CHECK");
+      chk.id = "ftT1Check";
+      row.appendChild(chk);
+      card.appendChild(row);
+      var live = ftEl("p", "ft-live", "Type a decimal guess to see your live error in ULPs.");
+      live.id = "ftT1Live";
+      card.appendChild(live);
+      C.guess = guess; C.live = live;
+      guess.addEventListener("input", ftLiveT1);
+      chk.addEventListener("click", ftCheckT1);
+    }
+
+    if (t.n === 2) {
+      var t2 = FT_TRIALS[1];
+      var nb = ftEl("p", "ft-cgoal",
+        "The cut falls between " + ftHex(t2.loBits) + " (" + ftDecode(t2.loBits).exact +
+        ") and " + ftHex(t2.hiBits) + " (" + ftDecode(t2.hiBits).exact + "). One ULP apart.");
+      card.appendChild(nb);
+      var row2 = ftEl("div", "ft-row");
+      var hexin = ftEl("input", "ft-in");
+      hexin.id = "ftT2Hex";
+      hexin.setAttribute("placeholder", "8 hex digits, e.g. 3DCCCCCD");
+      hexin.setAttribute("inputmode", "text");
+      hexin.setAttribute("aria-label", "Your candidate float as 8 hex digits");
+      hexin.setAttribute("maxlength", "10");
+      row2.appendChild(hexin);
+      var chk2 = ftEl("button", "ft-btn primary", "CHECK");
+      chk2.id = "ftT2Check";
+      row2.appendChild(chk2);
+      card.appendChild(row2);
+      var live2 = ftEl("p", "ft-live", "Type 1 to 8 hex digits to see your candidate decoded live.");
+      live2.id = "ftT2Live";
+      card.appendChild(live2);
+      C.hexin = hexin; C.live = live2; C.candBits = null;
+      hexin.addEventListener("input", ftLiveT2);
+      chk2.addEventListener("click", ftCheckT2);
+    }
+
+    if (t.n === 3) {
+      card.appendChild(ftEl("p", "ft-flabel", "PART A: CLASSIFY"));
+      C.classSels = []; C.classMarks = [];
+      for (var i = 0; i < t.classify.length; i++) {
+        (function (idx) {
+          var cr = ftEl("div", "ft-classrow");
+          cr.appendChild(ftEl("span", "ft-clab", t.classify[idx].label));
+          var sel = ftEl("select", "ft-sel");
+          sel.id = "ftT3Sel" + idx;
+          sel.setAttribute("aria-label", "Classification of " + t.classify[idx].label);
+          sel.appendChild(ftEl("option", null, null));
+          sel.options[0].value = "";
+          sel.options[0].textContent = "pick one...";
+          for (var o = 0; o < FT_CLASS_OPTS.length; o++) {
+            var op = ftEl("option", null, FT_CLASS_OPTS[o][1]);
+            op.value = FT_CLASS_OPTS[o][0];
+            sel.appendChild(op);
+          }
+          cr.appendChild(sel);
+          var mark = ftEl("span", "ft-cmark", "UNJUDGED");
+          mark.id = "ftT3Mark" + idx;
+          cr.appendChild(mark);
+          card.appendChild(cr);
+          C.classSels.push(sel); C.classMarks.push(mark);
+        })(i);
+      }
+      var chkA = ftEl("button", "ft-btn primary", "CHECK CLASSIFY");
+      chkA.id = "ftT3CheckA";
+      chkA.addEventListener("click", ftCheckT3Classify);
+      card.appendChild(chkA);
+      card.appendChild(ftEl("p", "ft-flabel", "PART B: PREDICT, THEN RUN"));
+      var prow = ftEl("div", "ft-row");
+      var ag = ftEl("input", "ft-in");
+      ag.id = "ftT3AddGuess";
+      ag.setAttribute("placeholder", "Predict 10000000000 + 1 in float32");
+      ag.setAttribute("inputmode", "decimal");
+      ag.setAttribute("aria-label", "Your prediction of 10000000000 plus 1 in float32");
+      prow.appendChild(ag);
+      var run = ftEl("button", "ft-btn primary", "RUN ADDER");
+      run.id = "ftT3Run";
+      prow.appendChild(run);
+      card.appendChild(prow);
+      var addlive = ftEl("p", "ft-live", "Press RUN ADDER to compute 10000000000 + 1 in float32.");
+      addlive.id = "ftT3AddLive";
+      card.appendChild(addlive);
+      C.addguess = ag; C.addlive = addlive;
+      run.addEventListener("click", ftRunT3Add);
+    }
+
+    var brow = ftEl("div", "ft-row");
+    C.cert.id = "ftT" + ti + "Cert";
+    C.cert.style.display = "none";
+    C.cert.addEventListener("click", function () { ftCommit(ti); });
+    brow.appendChild(C.cert);
+    var rst = ftEl("button", "ft-btn", "RESET TRIAL");
+    rst.id = "ftT" + ti + "Reset";
+    rst.addEventListener("click", function () { ftResetTrial(ti); });
+    brow.appendChild(rst);
+    card.appendChild(brow);
+    card.appendChild(C.verdict);
+    card.appendChild(C.strikes);
+    card.appendChild(C.tres);
+    ftEls.cards[ti] = C;
+    return card;
+  }
+
+  /* ---------------- build ---------------- */
+
+  function ftBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("ftBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = FT_CSS;
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "ftBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Float Room";
+    b.addEventListener("click", ftOpen);
+    box.appendChild(b);
+
+    var ov = ftEl("div", "ft-overlay");
+    ov.id = "ftOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Float Room");
+    var panel = ftEl("div", "ft-panel");
+    var wrap = ftEl("div", "ft-wrap");
+
+    var head = ftEl("div", "ft-head");
+    head.appendChild(ftEl("h3", null, "The Float Room"));
+    head.appendChild(ftEl("p", "ft-spec", "SILICON // IEEE-754 BINARY32 // 3 TRIALS"));
+    var intro = ftEl("div", null, null);
+    intro.innerHTML = ftIntroHTML();
+    head.appendChild(intro);
+    head.appendChild(ftEl("p", "ft-how",
+      "HOW: flip bits in the live decoder, predict the mystery word's value, type the hex " +
+      "of the float closest to 0.1, classify the edge cases, and predict the big addition " +
+      "before you run it."));
+    wrap.appendChild(head);
+
+    /* the live word: do-before-explain primer */
+    wrap.appendChild(ftEl("p", "ft-sec", "THE LIVE WORD"));
+    var primer = ftEl("div", "ft-primer");
+    var groups = [
+      { label: "SIGN (BIT 31)", from: 0, to: 0 },
+      { label: "EXPONENT (BITS 30-23)", from: 1, to: 8 },
+      { label: "MANTISSA (BITS 22-0)", from: 9, to: 31 }
+    ];
+    ftEls.bitBtns = [];
+    for (var g = 0; g < groups.length; g++) {
+      primer.appendChild(ftEl("p", "ft-flabel", groups[g].label));
+      var grid = ftEl("div", "ft-bits");
+      for (var i = groups[g].from; i <= groups[g].to; i++) {
+        (function (idx) {
+          var bb = ftEl("button", "ft-bit", "0");
+          bb.addEventListener("click", function () { ftToggleBit(idx); });
+          grid.appendChild(bb);
+          ftEls.bitBtns[idx] = bb;
+        })(i);
+      }
+      primer.appendChild(grid);
+    }
+    var dec = ftEl("p", "ft-decode", "");
+    dec.id = "ftDecode";
+    primer.appendChild(dec);
+    ftEls.decode = dec;
+    primer.appendChild(ftEl("p", "ft-thint",
+      "Press bits. This is the whole format: nothing is hidden. Start from 1.0, flip the " +
+      "top bit and watch the sign change, then find which single bit doubles the value."));
+    wrap.appendChild(primer);
+
+    /* trial cards */
+    wrap.appendChild(ftEl("p", "ft-sec", "THE TRIALS"));
+    ftEls.cards = [];
+    for (var ti = 0; ti < FT_TRIALS.length; ti++) {
+      ftState.trials[ti] = ftNewTrialState();
+      wrap.appendChild(ftBuildTrialCard(FT_TRIALS[ti], ti));
+    }
+
+    wrap.appendChild(ftEl("p", "ft-sec", "BENCH LOG"));
+    var log = ftEl("div", "ft-log");
+    log.id = "ftLog";
+    wrap.appendChild(log);
+    ftEls.log = log;
+
+    var banner = ftEl("div", "ft-banner",
+      "FLOATWRIGHT: ALL THREE TRIALS CERTIFIED. YOU READ THE FORMAT.");
+    banner.id = "ftBanner";
+    banner.style.display = "none";
+    wrap.appendChild(banner);
+    ftEls.banner = banner;
+
+    var foot = ftEl("div", "ft-foot");
+    var certAll = ftEl("button", "ft-btn", "DOWNLOAD BENCH CERTIFICATE");
+    certAll.id = "ftCertAllBtn";
+    certAll.style.display = "none";
+    certAll.addEventListener("click", ftCertAll);
+    foot.appendChild(certAll);
+    ftEls.certAll = certAll;
+    var close = ftEl("button", "ft-btn", "CLOSE");
+    close.id = "ftCloseBtn";
+    close.addEventListener("click", ftClose);
+    foot.appendChild(close);
+    wrap.appendChild(foot);
+
+    panel.appendChild(wrap);
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    ftEls.overlay = ov;
+    ftRenderPrimer();
+  }
+
+  /* ---------------- open / close / boot ---------------- */
+
+  function ftOpen() {
+    if (!ftEls.overlay) ftBuild();
+    ftEls.overlay.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+  function ftClose() {
+    if (ftEls.overlay) ftEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", ftBuild);
+    } else {
+      ftBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      FT: {
+        TRIALS: FT_TRIALS, CLASS_OPTS: FT_CLASS_OPTS,
+        decode: ftDecode, exact: ftExact, hex: ftHex,
+        bitsOf: ftBitsOf, getF32: ftGetF32, add32: ftAdd32,
+        introHTML: ftIntroHTML, certText: ftCertText,
+        ui: {
+          open: ftOpen, close: ftClose,
+          toggleBit: ftToggleBit,
+          liveT1: ftLiveT1, checkT1: ftCheckT1,
+          liveT2: ftLiveT2, checkT2: ftCheckT2,
+          checkT3Classify: ftCheckT3Classify, runT3Add: ftRunT3Add,
+          commit: ftCommit, resetTrial: ftResetTrial, certAll: ftCertAll,
+          state: function () { return ftState; },
+          els: function () { return ftEls; }
+        }
+      }
+    });
+  }
+})();
