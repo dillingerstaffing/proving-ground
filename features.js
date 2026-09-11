@@ -6521,11 +6521,14 @@ if (typeof module !== "undefined" && module.exports) {
 
     var body = tgEl("div", "tg-body");
     var sub = tgEl("p", "tg-sub", "");
-    sub.innerHTML = "<b>HOW IT WORKS</b> When a trap fires, the hardware must decide who handles it: " +
-      "machine firmware or the supervisor OS. That routing decision is delegation, and getting it " +
-      "wrong means the wrong handler runs. Each trap arrives as an mcause value: top bit set means " +
-      "interrupt, low bits name the cause. One delegation bit per cause sends interrupts (mideleg) " +
-      "or sync exceptions (medeleg) to S-mode; mtvec then chooses DIRECT or VECTORED dispatch. " +
+    sub.innerHTML = "<b>WHY IT MATTERS</b> A trap fires and someone must handle it: " +
+      "machine firmware (M-mode) or the supervisor OS (S-mode). Route it wrong and the wrong handler runs: " +
+      "a machine fault landing in OS hands can hang the box, while a timer tick kept in firmware " +
+      "means the OS never learns time passed. Take the supervisor timer interrupt. It arrives with " +
+      "mcause 0x80000005: top bit set means interrupt, low bits name cause 5. One delegation bit per cause " +
+      "picks the handler, and mideleg bit 5 set to 1 sends this one to S-mode. Then mtvec, the " +
+      "handler-address register, picks DIRECT (one shared entry, software decodes the cause in 3 cycles) " +
+      "or VECTORED (interrupts jump to BASE + 4 x cause, so the timer lands at 0x1014 in 1 cycle). " +
       "Trial 2 makes it concrete: the OS claims its timer interrupt and its ecalls, everything else " +
       "stays with firmware. Route every wave exactly where the policy demands. " +
       "Built for the <a href=\"https://dillingerstaffing.github.io/portfolio/\" target=\"_blank\" rel=\"noopener\">RISC-V portfolio work</a>.";
