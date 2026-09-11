@@ -16774,7 +16774,8 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(flEl("p", "fl-spec", "RVWMO · 3 LITMUS TRIALS"));
 
     var sub = flEl("p", "fl-sub", null);
-    sub.innerHTML = "Two harts share memory, and the silicon may complete their accesses out of order: " +
+    sub.innerHTML = "Two <b>harts</b> (hardware threads, each running its own program) share memory, " +
+      "and the silicon may complete their accesses out of order: " +
       "not wrong, just reordered, so code read top to bottom can observe outcomes the program never wrote. " +
       "That is the heart of <b>RVWMO</b>, the RISC-V weak memory model. A <b>FENCE</b> is the tool that forbids " +
       "reordering across it, and placing one is the difference between a race and a guarantee. " +
