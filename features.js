@@ -32651,3 +32651,833 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+/* Bench 46 staging: The Paste Room module (appended to features.js at ship time). */
+/* ============================================================
+   THE PASTE ROOM
+   Old Iron bench 46. The one atomic mechanism: thermal paste has
+   exactly one job, evict the air trapped between the die and the
+   heatsink. Air conducts heat about 300 times worse than paste, so
+   the pattern, the amount, and the mount pressure decide how much
+   air stays behind, and the leftover air decides the chip's
+   temperature. A real per-cell thermal model: each cell of the die
+   gets paste or air from the pattern's coverage, its interface
+   resistance from the series stack of paste over air, and its own
+   share of the die's hotspot-weighted power.
+   One sentence takeaway: paste replaces air, air insulates, and the
+   thinnest complete layer wins, so coverage where the heat is beats
+   everything else.
+   Do-first: a bare burn with no paste (consequence-free, dramatic),
+   then a free explorer (pattern, amount, pressure) with a live
+   temperature map. Then a STEP walkthrough of the worked example:
+   the 0.8 K/W center cell. Three trials, each with three candidate
+   mounts: pick the survivor, call its peak within 6 C, run the burn,
+   commit. Strikes on wrong calls, reset path, per-trial and bench
+   certificates as downloadable text.
+   Self-contained IIFE, appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- pure logic: the interface model ---------------- */
+
+  var PS_K_PASTE = 8.0;      /* W/mK, a decent ceramic paste */
+  var PS_K_AIR = 0.026;      /* W/mK, still air in a thin gap */
+  var PS_T_AMB = 25;         /* C */
+  var PS_A_CELL = 6.25e-6;   /* m^2, one 2.5 mm cell */
+  var PS_GAP = { LOOSE: 80e-6, SPEC: 40e-6, OVER: 25e-6 }; /* m */
+  var PS_VUM = { LIGHT: 25, RIGHT: 70, HEAVY: 140 }; /* microns of paste over the full grid */
+  var PS_LIMIT = 85;         /* C, certify ceiling */
+  var PS_TOL = 6;            /* C, prediction tolerance */
+
+  var PS_PATTERNS = ["NONE", "PEA", "X", "SPREAD"];
+  var PS_AMOUNTS = ["LIGHT", "RIGHT", "HEAVY"];
+  var PS_PRESSURES = ["LOOSE", "SPEC", "OVER"];
+
+  var PS_PATTERN_LABEL = {
+    NONE: "no paste", PEA: "pea dot", X: "X pattern", SPREAD: "card spread"
+  };
+  var PS_AMOUNT_LABEL = { LIGHT: "light", RIGHT: "pea-sized", HEAVY: "thick blob" };
+  var PS_PRESSURE_LABEL = { LOOSE: "loose screws", SPEC: "spec torque", OVER: "cranked screws" };
+
+  /* Fixed bubble cells for a hasty card spread: trapped air pockets.
+     Deterministic, so every burn is reproducible. */
+  function psBubbles(grid) {
+    if (grid === 10) return [[5, 4], [3, 6], [6, 6]];
+    return [[4, 3], [2, 5], [5, 5]];
+  }
+  function psIsBubble(grid, r, c) {
+    var b = psBubbles(grid);
+    for (var i = 0; i < b.length; i++) if (b[i][0] === r && b[i][1] === c) return true;
+    return false;
+  }
+
+  /* Coverage: the blob is a volume; under pressure it fills the gap
+     outward until the volume runs out. frac = covered area / grid area. */
+  function psCovered(pattern, grid, r, c, frac) {
+    var ctr = (grid - 1) / 2;
+    var dr = r - ctr, dc = c - ctr;
+    if (pattern === "NONE") return false;
+    if (pattern === "SPREAD") {
+      if (psIsBubble(grid, r, c)) return false;
+      var rad = Math.sqrt(dr * dr + dc * dc);
+      return Math.PI * rad * rad <= frac * grid * grid;
+    }
+    if (pattern === "PEA") {
+      var rad2 = Math.sqrt(dr * dr + dc * dc);
+      return Math.PI * rad2 * rad2 <= frac * grid * grid;
+    }
+    if (pattern === "X") {
+      /* two diagonal bands; band half-width grows with paste volume */
+      var wline = frac * grid / 5.657;
+      var d1 = Math.abs(dr - dc) / Math.SQRT2;
+      var d2 = Math.abs(dr + dc) / Math.SQRT2;
+      return d1 <= wline || d2 <= wline;
+    }
+    return false;
+  }
+
+  /* The thermal model. Bare die: no lateral spreading, each column
+     stands on its own interface. Lidded die: the heat spreader smears
+     heat sideways, so the whole interface works in parallel. */
+  function psSim(grid, power, sigma, rhs, lidded, pattern, amount, pressure) {
+    var gap = PS_GAP[pressure];
+    var fracRaw = (PS_VUM[amount] * 1e-6) / gap;
+    /* enough paste floods the whole interface; the excess oozes off
+       the die edge instead of piling up */
+    var flooded = fracRaw >= 1;
+    var frac = Math.min(1, fracRaw);
+    var ctr = (grid - 1) / 2, half = ctr;
+    var cells = [], sumW = 0, i, r, c;
+    for (r = 0; r < grid; r++) for (c = 0; c < grid; c++) {
+      var dr = r - ctr, dc = c - ctr;
+      var rad = Math.sqrt(dr * dr + dc * dc);
+      var w = Math.exp(-(rad * rad) / (2 * sigma * sigma));
+      sumW += w;
+      var cov = flooded ? true : psCovered(pattern, grid, r, c, frac);
+      if (pattern === "SPREAD" && psIsBubble(grid, r, c)) cov = false;
+      if (pattern === "NONE") cov = false;
+      var dp = cov ? gap : 0;
+      /* squeeze-out: a thick blob under cranked screws squirts out
+         from under the rim and leaves the edge in air */
+      if (amount === "HEAVY" && pressure === "OVER" &&
+          Math.max(Math.abs(dr), Math.abs(dc)) > 0.72 * half) dp = 0;
+      var da = gap - dp;
+      var Rcell = (dp / PS_K_PASTE + da / PS_K_AIR) / PS_A_CELL;
+      cells.push({ r: r, c: c, w: w, R: Rcell, covered: cov });
+    }
+    var Tsink = PS_T_AMB + power * rhs;
+    var peak = -1e9, peakAt = [0, 0], sumG = 0;
+    for (i = 0; i < cells.length; i++) sumG += 1 / cells[i].R;
+    var Rint = 1 / sumG;
+    for (i = 0; i < cells.length; i++) {
+      var cell = cells[i];
+      cell.p = power * cell.w / sumW;
+      cell.T = lidded
+        ? PS_T_AMB + power * (rhs + Rint)
+        : Tsink + cell.p * cell.R;
+      if (cell.T > peak) { peak = cell.T; peakAt = [cell.r, cell.c]; }
+    }
+    return { peak: peak, peakAt: peakAt, Tsink: Tsink, Rint: Rint,
+             cells: cells, grid: grid, lidded: lidded };
+  }
+
+  function psPeakRounded(res) { return Math.round(res.peak * 10) / 10; }
+  function psVerdict(res) {
+    return res.peak <= PS_LIMIT ? "PASS" : "FAIL";
+  }
+  function psMountName(m) {
+    return PS_PATTERN_LABEL[m.pattern] + ", " + PS_AMOUNT_LABEL[m.amount] +
+      ", " + PS_PRESSURE_LABEL[m.pressure];
+  }
+
+  /* ---------------- trial data ---------------- */
+
+  /* The explorer and trials share the die definitions. */
+  var PS_DIES = {
+    bare8:  { grid: 8,  power: 65, sigma: 1.8, rhs: 0.35, lidded: false,
+              name: "small bare die, 20 mm, 65 W, no heat spreader" },
+    lid10:  { grid: 10, power: 95, sigma: 2.6, rhs: 0.28, lidded: true,
+              name: "big lidded die, 25 mm, 95 W, heat spreader fitted" }
+  };
+
+  var PS_TRIALS = [
+    { key: "bare8", title: "TRIAL 1: THE BARE DIE",
+      brief: "Small die, 20 mm, 65 W, bare like a laptop CPU: no heat spreader, so every column of silicon stands on its own patch of interface. Three mounts on the bench. One keeps the peak under 85 C. Pick it, call the peak within 6 C, run the burn.",
+      cands: [
+        { pattern: "NONE",   amount: "RIGHT", pressure: "SPEC", tag: "A" },
+        { pattern: "PEA",    amount: "RIGHT", pressure: "SPEC", tag: "B" },
+        { pattern: "SPREAD", amount: "RIGHT", pressure: "SPEC", tag: "C" }
+      ] },
+    { key: "lid10", title: "TRIAL 2: THE BIG LID",
+      brief: "Bigger die, 25 mm, 95 W, with a heat spreader lid that smears the heat sideways before the paste ever sees it. Same three ideas, new question: does the pattern still matter? Pick a mount, call the peak within 6 C, run the burn.",
+      cds: null,
+      cands: [
+        { pattern: "PEA",  amount: "RIGHT", pressure: "SPEC", tag: "A" },
+        { pattern: "X",    amount: "RIGHT", pressure: "SPEC", tag: "B" },
+        { pattern: "NONE", amount: "RIGHT", pressure: "SPEC", tag: "C" }
+      ] },
+    { key: "bare8", title: "TRIAL 3: THE CRANKED SCREWS",
+      brief: "Same small bare die. The last tech laid the paste on thick and cranked every screw past spec. Mount A is his work. Find the mount that survives it, call the peak within 6 C, run the burn.",
+      cands: [
+        { pattern: "PEA", amount: "HEAVY", pressure: "OVER", tag: "A" },
+        { pattern: "PEA", amount: "RIGHT", pressure: "SPEC", tag: "B" },
+        { pattern: "PEA", amount: "RIGHT", pressure: "OVER", tag: "C" }
+      ] }
+  ];
+  var PS_TITLES = [PS_TRIALS[0].title, PS_TRIALS[1].title, PS_TRIALS[2].title];
+
+  function psTrialPeak(ti, ci) {
+    var t = PS_TRIALS[ti], d = PS_DIES[t.key], m = t.cands[ci];
+    return psSim(d.grid, d.power, d.sigma, d.rhs, d.lidded,
+                 m.pattern, m.amount, m.pressure);
+  }
+
+  /* ---------------- tiny DOM helpers (module-local) ---------------- */
+
+  function psEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  var PS_CSS = [
+    ".ps-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".ps-overlay.open{display:block}",
+    ".ps-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".ps-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".ps-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".ps-sub{font-size:13px;color:#b9b2a4;margin:0 0 22px;max-width:62ch;line-height:1.6}",
+    ".ps-card{border:1px solid var(--line,#2b2b30);background:var(--panel,#141416);border-radius:10px;padding:18px;margin:0 0 16px}",
+    ".ps-card h3{font-family:'Space Grotesk',sans-serif;font-size:17px;margin:0 0 6px;color:var(--paper,#f2ede4);letter-spacing:.02em}",
+    ".ps-card .why{font-size:13px;line-height:1.65;color:#d8d2c4;margin:0 0 10px;max-width:68ch}",
+    ".ps-card .why b{color:var(--ember,#ff5a1f);font-weight:600}",
+    ".ps-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:8px 0}",
+    ".ps-lab{font-size:11px;letter-spacing:.14em;color:#8f8a7d}",
+    ".ps-sel{background:#0c0c0e;border:1px solid var(--line,#2b2b30);color:var(--paper,#f2ede4);border-radius:6px;padding:12px 10px;font-family:inherit;font-size:14px;min-height:48px;max-width:100%}",
+    ".ps-sel:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".ps-in{background:#0c0c0e;border:1px solid var(--line,#2b2b30);color:var(--paper,#f2ede4);border-radius:6px;padding:12px 10px;font-family:inherit;font-size:15px;width:110px;min-height:48px}",
+    ".ps-in:focus{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".ps-btn{background:transparent;border:1px solid var(--ember,#ff5a1f);color:var(--ember,#ff5a1f);border-radius:8px;padding:12px 18px;font-family:inherit;font-size:13px;letter-spacing:.08em;cursor:pointer;min-height:48px;min-width:48px}",
+    ".ps-btn:hover{background:rgba(255,90,31,.12)}",
+    ".ps-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".ps-btn.solid{background:var(--ember,#ff5a1f);color:#101012;font-weight:600}",
+    ".ps-btn:disabled{opacity:.35;cursor:default}",
+    ".ps-btn[aria-pressed=true]{background:var(--ember,#ff5a1f);color:#101012}",
+    ".ps-verdict{font-size:14px;font-weight:600;letter-spacing:.06em;margin:10px 0 0;min-height:22px}",
+    ".ps-verdict.pass{color:#7fd67f}.ps-verdict.miss{color:var(--ember,#ff5a1f)}",
+    ".ps-note{font-size:12px;color:#8f8a7d;line-height:1.6;margin:8px 0 0;max-width:68ch}",
+    ".ps-log{border:1px solid var(--line,#2b2b30);border-radius:8px;background:#0c0c0e;padding:10px 14px;font-size:12px;line-height:1.7;max-height:150px;overflow-y:auto;margin:0 0 16px;color:#b9b2a4}",
+    ".ps-log .ok{color:#7fd67f}.ps-log .bad{color:var(--ember,#ff5a1f)}",
+    ".ps-map{display:grid;gap:3px;margin:10px 0;max-width:420px}",
+    ".ps-cell{aspect-ratio:1/1;display:flex;align-items:center;justify-content:center;font-size:10px;border-radius:4px;border:1px solid var(--line,#2b2b30);background:#0c0c0e;color:#b9b2a4;min-width:0}",
+    ".ps-cell.warm{background:rgba(255,90,31,.28);color:var(--paper,#f2ede4)}",
+    ".ps-cell.hot{background:rgba(255,90,31,.62);color:#101012;font-weight:700}",
+    ".ps-cell.peak{outline:2px solid var(--ember,#ff5a1f);outline-offset:1px}",
+    ".ps-legend{font-size:11px;color:#8f8a7d;line-height:1.7;margin:6px 0}",
+    ".ps-legend b{color:var(--paper,#f2ede4)}",
+    ".ps-steps{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}",
+    ".ps-lanes{font-size:13px;line-height:1.9;background:#0c0c0e;border:1px solid var(--line,#2b2b30);border-radius:8px;padding:12px 14px;margin:10px 0;min-height:80px}",
+    ".ps-lanes .k{color:#8f8a7d}.ps-lanes .v{color:var(--paper,#f2ede4)}.ps-lanes .hit{color:var(--ember,#ff5a1f);font-weight:600}",
+    ".ps-cand{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}",
+    ".ps-banner{display:none;border:1px solid var(--ember,#ff5a1f);border-radius:10px;padding:16px;margin:0 0 16px;background:rgba(255,90,31,.07)}",
+    ".ps-banner h3{font-family:'Space Grotesk',sans-serif;color:var(--ember,#ff5a1f);margin:0 0 6px;font-size:18px}",
+    ".ps-banner p{font-size:13px;color:#d8d2c4;margin:0 0 10px;line-height:1.6}",
+    ".ps-strikes{font-size:12px;color:#8f8a7d;margin:8px 0 0}",
+    ".ps-strikes .bad{color:var(--ember,#ff5a1f);font-weight:700}",
+    "@media (prefers-reduced-motion:no-preference){.ps-pop{animation:pspop .2s ease-out}}",
+    "@keyframes pspop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    "@media (max-width:560px){.ps-panel{padding:56px 14px 110px}.ps-cell{font-size:8px}}"
+  ].join("\n");
+
+  /* Intro copy. WHY first, then the hand-checkable worked example,
+     then the failure modes. Terms earned in order: die, heatsink,
+     interface, thermal resistance (K/W), hotspot. */
+  var PS_INTRO_A =
+    "<div class='ps-card'><h3>WHY IT MATTERS</h3>" +
+    "<p class='why'>Heat kills chips slowly, and the cheapest life insurance a chip has is the gray smear between the <b>die</b> (the silicon that does the work) " +
+    "and the <b>heatsink</b> (the metal that carries the heat away). Two flat-looking surfaces never truly touch: at the microscopic scale they meet only on the high spots, " +
+    "and every valley between them is trapped air. Air conducts heat about <b>300 times worse</b> than thermal paste. " +
+    "Paste has exactly one job: <b>evict the air</b>. The pattern you lay down, how much you use, and how hard you tighten the mount decide how much air stays behind, " +
+    "and the leftover air decides the chip's temperature. In the model below, the same die idles near 50 C on a good mount and redlines past 800 C on a bad one. " +
+    "A bad paste job can cook a chip that was fine yesterday.</p></div>";
+
+  var PS_INTRO_B =
+    "<div class='ps-card'><h3>WORKED EXAMPLE, CHECK IT BY HAND</h3>" +
+    "<p class='why'>The bench die is 20 mm across, 65 W, bare like a laptop CPU. Take the <b>center cell</b> with a pea of paste at spec torque. " +
+    "The blob floods the interface, so the cell sits on 40 microns of paste. <b>Thermal resistance</b> is thickness divided by (conductivity times area): " +
+    "0.00004 / (8 x 0.00000625) = <b>0.8 K/W</b>, meaning each watt through that cell adds 0.8 C. The cell carries about 3.1 W of the die's heat, " +
+    "so it runs about <b>2.5 C</b> above the heatsink, 50.2 C against the heatsink's 47.8 C. Now the same cell with no paste: 40 microns of air gives 246 K/W, <b>308 times worse</b>, " +
+    "and that cell alone would add about 766 C. Press STEP and watch the arithmetic.</p>";
+
+  var PS_INTRO_C =
+    "<p class='why'><b>THE FOUR WAYS PASTE JOBS DIE.</b> <b>Bare:</b> no paste at all, the whole interface is air, the model redlines past 800 C and a real chip throttles or dies. " +
+    "<b>Starved:</b> too little paste, the blob never reaches the rim, and the edge of the die cooks in air. " +
+    "<b>Bubbles:</b> a hasty card spread traps air pockets under the blade; one bubble under the hot center is an 800 C hot spot on an otherwise cool die. " +
+    "<b>Squeeze-out:</b> a thick blob plus cranked screws squirts the paste out from under the rim and leaves the edge standing in air. " +
+    "Trial 3 is squeeze-out, on purpose. This room lets you commit every one of these before you certify, so you learn them here and not on a customer's board.</p></div>";
+
+  var PS_INTRO_HTML = PS_INTRO_A + PS_INTRO_B + PS_INTRO_C;
+
+  var PS_STEPS = [
+    "<span class='k'>Center cell, pea of paste, spec torque. There is enough paste to flood the interface, so the cell sits on </span><span class='v'>40 microns of paste, 0 microns of air</span><span class='k'>.</span>",
+    "<span class='k'>Thermal resistance = thickness / (conductivity x area) = 0.00004 / (8 x 0.00000625) = </span><span class='hit'>0.8 K/W</span><span class='k'>. Each watt through this cell adds 0.8 C.</span>",
+    "<span class='k'>The die's heat is heaviest at the center. This cell carries about </span><span class='v'>3.1 W</span><span class='k'>, so it runs </span><span class='hit'>2.5 C</span><span class='k'> above the heatsink. Heatsink sits at 47.8 C, the cell at about </span><span class='hit'>50.2 C</span><span class='k'>, and it is the hottest cell on the die.</span>",
+    "<span class='k'>Same cell, no paste: 40 microns of air. 0.00004 / (0.026 x 0.00000625) = </span><span class='hit'>246 K/W</span><span class='k'>, 308 times worse.</span>",
+    "<span class='k'>3.1 W x 246 K/W = </span><span class='hit'>766 C</span><span class='k'> above the heatsink. That is the whole bench in one cell: paste evicts air, air insulates, the numbers are not close.</span>",
+    "<span class='k'>The trials ask you to call the peak before you run the burn. The explorer below is consequence-free: change the pattern, the amount, the pressure, and watch the map.</span>"
+  ];
+
+  /* ---------------- state ---------------- */
+
+  function psNewTrialState() {
+    return { attempts: 0, strikes: 0, passed: false, committed: false,
+             cand: 0, pred: null, last: null, failed: false };
+  }
+  var psState = {
+    trials: [psNewTrialState(), psNewTrialState(), psNewTrialState()],
+    step: 0,
+    exp: { pattern: "PEA", amount: "RIGHT", pressure: "SPEC" }
+  };
+  var psEls = null;
+
+  /* ---------------- log + pop ---------------- */
+
+  function psLog(msg, cls) {
+    if (!psEls || !psEls.log) return;
+    var d = psEl("div", cls || "", msg);
+    psEls.log.appendChild(d);
+    psEls.log.scrollTop = psEls.log.scrollHeight;
+  }
+  function psPop(card) {
+    if (!card) return;
+    card.classList.remove("ps-pop");
+    void card.offsetWidth;
+    card.classList.add("ps-pop");
+  }
+
+  /* ---------------- shared controls ---------------- */
+
+  function psSelect(id, ariaLabel, options, labels) {
+    var s = psEl("select", "ps-sel");
+    s.id = id;
+    s.setAttribute("aria-label", ariaLabel);
+    for (var i = 0; i < options.length; i++) {
+      var o = document.createElement("option");
+      o.value = options[i];
+      o.textContent = labels[i];
+      s.appendChild(o);
+    }
+    return s;
+  }
+  function psNumInput(id, ariaLabel) {
+    var inp = psEl("input", "ps-in");
+    inp.type = "text"; inp.maxLength = 4; inp.inputMode = "numeric";
+    inp.id = id;
+    inp.setAttribute("aria-label", ariaLabel);
+    inp.setAttribute("placeholder", "C");
+    inp.setAttribute("spellcheck", "false");
+    inp.setAttribute("autocomplete", "off");
+    return inp;
+  }
+  function psParseTemp(str) {
+    var s = String(str).trim();
+    if (!/^[0-9]{1,4}$/.test(s)) return null;
+    return parseInt(s, 10);
+  }
+
+  /* Temperature map: every cell shows its integer temperature, colored
+     by band. Text always accompanies color, never color alone. */
+  function psRenderMap(host, res) {
+    host.innerHTML = "";
+    host.style.gridTemplateColumns = "repeat(" + res.grid + ", 1fr)";
+    host.setAttribute("role", "img");
+    host.setAttribute("aria-label", "Die temperature map. Peak " +
+      Math.round(res.peak) + " C at row " + (res.peakAt[0] + 1) +
+      ", column " + (res.peakAt[1] + 1) + ".");
+    for (var i = 0; i < res.cells.length; i++) {
+      (function (cell) {
+        var t = Math.round(cell.T);
+        var d = psEl("div", "ps-cell", t > 999 ? "999+" : String(t));
+        d.title = "row " + (cell.r + 1) + ", col " + (cell.c + 1) + ": " +
+          Math.round(cell.T) + " C, " + (cell.covered ? "paste" : "air");
+        if (cell.r === res.peakAt[0] && cell.c === res.peakAt[1]) d.classList.add("peak");
+        if (t >= PS_LIMIT) d.classList.add("hot");
+        else if (t >= 60) d.classList.add("warm");
+        host.appendChild(d);
+      })(res.cells[i]);
+    }
+  }
+  function psVerdictLine(res) {
+    var p = Math.round(res.peak);
+    if (res.peak <= PS_LIMIT)
+      return { cls: "pass", text: "PEAK " + p + " C, UNDER THE 85 C LIMIT" };
+    return { cls: "miss", text: "PEAK " + p + " C, OVER THE 85 C LIMIT" };
+  }
+
+  /* ---------------- burn + commit ---------------- */
+
+  function psRunBurn(dieKey, mount) {
+    var d = PS_DIES[dieKey];
+    return psSim(d.grid, d.power, d.sigma, d.rhs, d.lidded,
+                 mount.pattern, mount.amount, mount.pressure);
+  }
+
+  function psCheckCommit(ti, predC, res) {
+    var actual = Math.round(res.peak);
+    var okPred = predC !== null && Math.abs(predC - actual) <= PS_TOL;
+    var survive = res.peak <= PS_LIMIT;
+    return { okPred: okPred, survive: survive, actual: actual };
+  }
+
+  function psCertText(ti) {
+    var t = PS_TRIALS[ti], st = psState.trials[ti];
+    var d = PS_DIES[t.key], m = t.cands[st.cand];
+    var res = psRunBurn(t.key, m);
+    var L = [];
+    L.push("THE PROVING GROUND, TRIAL CERTIFICATE");
+    L.push("Bench 46: The Paste Room, " + t.title);
+    L.push("Die: " + d.name);
+    L.push("Mount: " + psMountName(m));
+    L.push("Predicted peak: " + st.pred + " C, measured peak: " +
+      Math.round(res.peak) + " C (within " + PS_TOL + " C)");
+    L.push("Verdict: " + (res.peak <= PS_LIMIT ? "SURVIVES" : "OVERHEATS"));
+    L.push("Strikes taken: " + st.strikes);
+    L.push("Paste evicts air. Air insulates. The thinnest complete layer wins.");
+    return L.join("\n");
+  }
+  function psBenchCertText() {
+    var L = [];
+    L.push("THE PROVING GROUND, BENCH CERTIFICATE");
+    L.push("Bench 46: The Paste Room, OLD IRON");
+    L.push("All three trials certified: the bare die, the big lid, the cranked screws.");
+    L.push("Takeaway: paste has one job, evict the air; coverage where the heat is beats everything else.");
+    return L.join("\n");
+  }
+  function psDownload(name, text) {
+    try {
+      var blob = new Blob([text], { type: "text/plain" });
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () {
+        try { URL.revokeObjectURL(a.href); a.remove(); } catch (e) {}
+      }, 500);
+    } catch (e) { psLog("Download blocked in this browser.", "bad"); }
+  }
+
+  /* ---------------- trial cards ---------------- */
+
+  function psRebuildCard(ti) {
+    var t = PS_TRIALS[ti], st = psState.trials[ti];
+    var host = psEls.cardHosts[ti];
+    host.innerHTML = "";
+    var card = psEl("div", "ps-card");
+    card.appendChild(psEl("h3", null, t.title));
+    card.appendChild(psEl("p", "why", t.brief));
+
+    var candRow = psEl("div", "ps-cand");
+    var candBtns = [];
+    t.cands.forEach(function (m, ci) {
+      var b = psEl("button", "ps-btn", "MOUNT " + m.tag + ": " + psMountName(m));
+      b.type = "button";
+      b.id = "psCand" + ti + m.tag;
+      b.setAttribute("aria-pressed", ci === st.cand ? "true" : "false");
+      b.setAttribute("aria-label", "Trial " + (ti + 1) + " mount " + m.tag + ": " + psMountName(m));
+      b.addEventListener("click", function () {
+        if (st.committed || st.failed) return;
+        st.cand = ci;
+        for (var k = 0; k < candBtns.length; k++)
+          candBtns[k].setAttribute("aria-pressed", k === ci ? "true" : "false");
+        st.last = null;
+        psDrawTrial(ti);
+      });
+      candBtns.push(b);
+      candRow.appendChild(b);
+    });
+    card.appendChild(candRow);
+
+    var row = psEl("div", "ps-row");
+    row.appendChild(psEl("span", "ps-lab", "PREDICTED PEAK"));
+    var predIn = psNumInput("psPred" + ti, "Trial " + (ti + 1) + " predicted peak die temperature in Celsius");
+    if (st.pred !== null) predIn.value = String(st.pred);
+    row.appendChild(predIn);
+    row.appendChild(psEl("span", "ps-lab", "C, WITHIN " + PS_TOL + " C TO CERTIFY"));
+    card.appendChild(row);
+
+    var row2 = psEl("div", "ps-row");
+    var burnBtn = psEl("button", "ps-btn solid", "RUN BURN");
+    burnBtn.type = "button"; burnBtn.id = "psBurn" + ti;
+    burnBtn.setAttribute("aria-label", "Trial " + (ti + 1) + ": run the burn on the selected mount");
+    var commitBtn = psEl("button", "ps-btn", "COMMIT PREDICTION");
+    commitBtn.type = "button"; commitBtn.id = "psCommit" + ti;
+    var resetBtn = psEl("button", "ps-btn", "RESET TRIAL");
+    resetBtn.type = "button"; resetBtn.id = "psReset" + ti;
+    row2.appendChild(burnBtn); row2.appendChild(commitBtn); row2.appendChild(resetBtn);
+    card.appendChild(row2);
+
+    var mapHost = psEl("div", "ps-map");
+    mapHost.id = "psMap" + ti;
+    card.appendChild(mapHost);
+    var legend = psEl("div", "ps-legend",
+      "Every cell shows its temperature in C. Pale cells are cool, ember cells are hot, the outlined cell is the peak. " +
+      "Hover or focus a cell for its row, column, and whether it sits on paste or air.");
+    card.appendChild(legend);
+
+    var verdict = psEl("p", "ps-verdict", "");
+    verdict.id = "psVerdict" + ti;
+    verdict.setAttribute("aria-live", "polite");
+    card.appendChild(verdict);
+
+    var strikes = psEl("p", "ps-strikes", "");
+    strikes.id = "psStrikes" + ti;
+    card.appendChild(strikes);
+
+    var certBtn = psEl("button", "ps-btn", "DOWNLOAD TRIAL CERTIFICATE");
+    certBtn.type = "button"; certBtn.id = "psCert" + ti;
+    certBtn.style.display = "none";
+    certBtn.addEventListener("click", function () { psDownload("paste-room-trial-" + (ti + 1) + ".txt", psCertText(ti)); });
+    card.appendChild(certBtn);
+
+    host.appendChild(card);
+
+    function draw() { psDrawTrial(ti); }
+    burnBtn.addEventListener("click", function () {
+      if (st.failed) return;
+      var m = t.cands[st.cand];
+      var res = psRunBurn(t.key, m);
+      st.last = res;
+      draw();
+      var v = psVerdictLine(res);
+      psLog("Trial " + (ti + 1) + " burn, mount " + m.tag + " (" + psMountName(m) + "): peak " +
+        Math.round(res.peak) + " C, " + v.text + ".", res.peak <= PS_LIMIT ? "ok" : "bad");
+      if (m.amount === "HEAVY" && !(m.pressure === "OVER"))
+        psLog("Note: the thick blob oozed past the die edge. Thermally fine this time, but the board wears it.", "");
+      psPop(card);
+    });
+    commitBtn.addEventListener("click", function () {
+      if (st.committed || st.failed) return;
+      var p = psParseTemp(predIn.value);
+      if (p === null) {
+        verdict.className = "ps-verdict miss";
+        verdict.textContent = "Enter a predicted peak in C first, for example 50.";
+        return;
+      }
+      if (!st.last) {
+        verdict.className = "ps-verdict miss";
+        verdict.textContent = "Run the burn first, then commit your prediction.";
+        return;
+      }
+      st.pred = p; st.attempts++;
+      var chk = psCheckCommit(ti, p, st.last);
+      if (chk.okPred) {
+        st.passed = true; st.committed = true;
+        verdict.className = "ps-verdict pass";
+        verdict.textContent = "CERTIFIED: called " + p + " C, measured " + chk.actual +
+          " C. " + (chk.survive ? "The mount survives." : "The mount overheats, and you called it.");
+        psLog("Trial " + (ti + 1) + " CERTIFIED at " + p + " C.", "ok");
+        for (var k = 0; k < candBtns.length; k++) candBtns[k].disabled = true;
+        burnBtn.disabled = true; commitBtn.disabled = true; predIn.disabled = true;
+        certBtn.style.display = "";
+        psPop(card);
+        psMaybeBenchDone();
+      } else {
+        st.strikes++;
+        var missMsg = "MISS: called " + p + " C, measured " + chk.actual +
+          " C. Strike " + st.strikes + " of 3.";
+        var failMsg = null;
+        if (st.strikes >= 3) {
+          st.failed = true;
+          failMsg = "TRIAL FAILED: three missed calls. Reset the trial to run it back.";
+          for (var k2 = 0; k2 < candBtns.length; k2++) candBtns[k2].disabled = true;
+          burnBtn.disabled = true; commitBtn.disabled = true; predIn.disabled = true;
+          psLog("Trial " + (ti + 1) + " FAILED after 3 strikes. Reset to try again.", "bad");
+        }
+        draw();
+        verdict.className = "ps-verdict miss";
+        verdict.textContent = failMsg || missMsg;
+        psLog("Trial " + (ti + 1) + " miss: called " + p + ", measured " + chk.actual +
+          " (strike " + st.strikes + "/3).", "bad");
+        psPop(card);
+      }
+      if (st.committed || st.failed) draw();
+    });
+    resetBtn.addEventListener("click", function () {
+      psState.trials[ti] = psNewTrialState();
+      psRebuildCard(ti);
+      psLog("Trial " + (ti + 1) + " reset.", "");
+      psMaybeBenchDone();
+    });
+    draw();
+  }
+
+  function psDrawTrial(ti) {
+    var st = psState.trials[ti];
+    var mapHost = document.getElementById("psMap" + ti);
+    var verdict = document.getElementById("psVerdict" + ti);
+    var strikes = document.getElementById("psStrikes" + ti);
+    if (!mapHost) return;
+    if (st.last) {
+      psRenderMap(mapHost, st.last);
+      if (!st.committed && !st.failed) {
+        var v = psVerdictLine(st.last);
+        verdict.className = "ps-verdict " + v.cls;
+        verdict.textContent = v.text + ". Now commit a prediction within " + PS_TOL + " C.";
+      }
+    } else {
+      mapHost.innerHTML = "<span class='ps-lab'>No burn yet. Pick a mount and press RUN BURN.</span>";
+      mapHost.style.gridTemplateColumns = "";
+    }
+    if (strikes) {
+      strikes.innerHTML = st.strikes > 0
+        ? "Strikes: <span class='bad'>" + st.strikes + " / 3</span>"
+        : "Strikes: 0 / 3";
+    }
+  }
+
+  function psMaybeBenchDone() {
+    var all = psState.trials.every(function (s) { return s.committed; });
+    if (psEls && psEls.banner) {
+      psEls.banner.style.display = all ? "block" : "none";
+      psEls.certAll.style.display = all ? "" : "none";
+    }
+  }
+
+  /* ---------------- overlay ---------------- */
+
+  function psOpen() {
+    if (psEls) psEls.overlay.classList.add("open");
+  }
+  function psClose() {
+    if (psEls) psEls.overlay.classList.remove("open");
+  }
+
+  function psBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("psBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = PS_CSS;
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "psBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Paste Room";
+    b.addEventListener("click", psOpen);
+    box.appendChild(b);
+
+    var ov = psEl("div", "ps-overlay");
+    ov.id = "psOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Paste Room");
+    var x = psEl("button", "ps-btn", "CLOSE");
+    x.id = "psXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Paste Room");
+    x.addEventListener("click", psClose);
+    ov.appendChild(x);
+
+    var panel = psEl("div", "ps-panel");
+    panel.appendChild(psEl("div", "ps-kicker", "OLD IRON BENCH 46"));
+    panel.appendChild(psEl("h2", "ps-title", "The Paste Room"));
+    panel.appendChild(psEl("p", "ps-sub",
+      "Thermal paste has one job: evict the air between the die and the heatsink. Lay down a pattern, choose the amount, set the mount pressure, and watch what the leftover air does to the chip."));
+
+    /* do-first: the bare burn */
+    var doCard = psEl("div", "ps-card");
+    doCard.appendChild(psEl("h3", null, "DO FIRST: BURN IT BARE"));
+    doCard.appendChild(psEl("p", "why",
+      "No paste, spec mount. Consequence-free: one tap, and you watch what 40 microns of trapped air does to 65 W. Everything after this is measured against it."));
+    var doRow = psEl("div", "ps-row");
+    var bareBtn = psEl("button", "ps-btn solid", "RUN THE BARE BURN");
+    bareBtn.type = "button"; bareBtn.id = "psBareBtn";
+    doRow.appendChild(bareBtn);
+    doCard.appendChild(doRow);
+    var bareMap = psEl("div", "ps-map");
+    bareMap.id = "psBareMap";
+    doCard.appendChild(bareMap);
+    var bareVerdict = psEl("p", "ps-verdict", "");
+    bareVerdict.id = "psBareVerdict";
+    bareVerdict.setAttribute("aria-live", "polite");
+    doCard.appendChild(bareVerdict);
+    panel.appendChild(doCard);
+
+    /* explorer */
+    var expCard = psEl("div", "ps-card");
+    expCard.appendChild(psEl("h3", null, "THE EXPLORER: LAY IT DOWN YOUR WAY"));
+    expCard.appendChild(psEl("p", "why",
+      "Pick a pattern, an amount, and a mount pressure, then RUN BURN. Nothing is scored here; the trials ask for predictions later. Try the thick blob with cranked screws and look at the rim."));
+    var expRow = psEl("div", "ps-row");
+    expRow.appendChild(psEl("span", "ps-lab", "PATTERN"));
+    var patSel = psSelect("psPatSel", "Paste pattern",
+      PS_PATTERNS, ["No paste", "Pea dot", "X pattern", "Card spread"]);
+    patSel.value = "PEA";
+    expRow.appendChild(patSel);
+    expRow.appendChild(psEl("span", "ps-lab", "AMOUNT"));
+    var amtSel = psSelect("psAmtSel", "Paste amount",
+      PS_AMOUNTS, ["Light", "Pea-sized", "Thick blob"]);
+    amtSel.value = "RIGHT";
+    expRow.appendChild(amtSel);
+    expRow.appendChild(psEl("span", "ps-lab", "PRESSURE"));
+    var prSel = psSelect("psPrSel", "Mount pressure",
+      PS_PRESSURES, ["Loose screws", "Spec torque", "Cranked screws"]);
+    prSel.value = "SPEC";
+    expRow.appendChild(prSel);
+    expCard.appendChild(expRow);
+    var expRow2 = psEl("div", "ps-row");
+    var expBurn = psEl("button", "ps-btn solid", "RUN BURN");
+    expBurn.type = "button"; expBurn.id = "psExpBurn";
+    expRow2.appendChild(expBurn);
+    expCard.appendChild(expRow2);
+    var expMap = psEl("div", "ps-map");
+    expMap.id = "psExpMap";
+    expCard.appendChild(expMap);
+    var expVerdict = psEl("p", "ps-verdict", "");
+    expVerdict.id = "psExpVerdict";
+    expVerdict.setAttribute("aria-live", "polite");
+    expCard.appendChild(expVerdict);
+    expCard.appendChild(psEl("p", "ps-note",
+      "The model: each die cell gets paste or air from the pattern's coverage, its interface resistance from the paste-over-air stack, " +
+      "and its own share of the die's hotspot-weighted power. The small die is bare, so every column stands alone; the big lidded die's heat spreader works the whole interface in parallel."));
+    panel.appendChild(expCard);
+
+    var introA = psEl("div", null, "");
+    introA.innerHTML = PS_INTRO_A;
+    panel.appendChild(introA);
+
+    /* stepper card: copy B, then programmatic STEP controls, then copy C */
+    var stepCard = psEl("div", null, "");
+    stepCard.innerHTML = PS_INTRO_B;
+    panel.appendChild(stepCard);
+    var stepsRow = psEl("div", "ps-steps");
+    var stepBtn = psEl("button", "ps-btn", "STEP");
+    stepBtn.type = "button"; stepBtn.id = "psStepBtn";
+    var stepReset = psEl("button", "ps-btn", "RESET STEPPER");
+    stepReset.type = "button"; stepReset.id = "psStepReset";
+    stepsRow.appendChild(stepBtn); stepsRow.appendChild(stepReset);
+    stepCard.appendChild(stepsRow);
+    var stepper = psEl("div", "ps-lanes");
+    stepper.id = "psStepper";
+    stepper.setAttribute("aria-live", "polite");
+    stepper.innerHTML = "<span class='k'>Press STEP to walk the worked example, one lane at a time.</span>";
+    stepCard.appendChild(stepper);
+    var introC = psEl("div", null, "");
+    introC.innerHTML = PS_INTRO_C;
+    stepCard.appendChild(introC);
+
+    var banner = psEl("div", "ps-banner");
+    banner.appendChild(psEl("h3", null, "BENCH CERTIFIED"));
+    banner.appendChild(psEl("p", null,
+      "All three trials certified. Paste evicts air, air insulates, and the thinnest complete layer wins: coverage where the heat is beats everything else."));
+    var certAll = psEl("button", "ps-btn solid", "DOWNLOAD BENCH CERTIFICATE");
+    certAll.type = "button";
+    certAll.id = "psCertAllBtn";
+    certAll.addEventListener("click", function () {
+      psDownload("paste-room-bench.txt", psBenchCertText());
+    });
+    certAll.style.display = "none";
+    banner.appendChild(certAll);
+    panel.appendChild(banner);
+
+    var trials = psEl("div", null, "");
+    trials.id = "psTrials";
+    var cardHosts = [];
+    for (var i = 0; i < 3; i++) {
+      var host = psEl("div", null, "");
+      trials.appendChild(host);
+      cardHosts.push(host);
+    }
+    panel.appendChild(trials);
+
+    var log = psEl("div", "ps-log");
+    log.id = "psLog";
+    log.setAttribute("aria-live", "polite");
+    panel.appendChild(log);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    psEls = { overlay: ov, log: log, banner: banner, certAll: certAll, cardHosts: cardHosts,
+              bareMap: bareMap, bareVerdict: bareVerdict,
+              expMap: expMap, expVerdict: expVerdict,
+              patSel: patSel, amtSel: amtSel, prSel: prSel };
+    for (var j = 0; j < 3; j++) psRebuildCard(j);
+
+    /* do-first wiring */
+    bareBtn.addEventListener("click", function () {
+      var res = psRunBurn("bare8", { pattern: "NONE", amount: "RIGHT", pressure: "SPEC" });
+      psRenderMap(bareMap, res);
+      var v = psVerdictLine(res);
+      bareVerdict.className = "ps-verdict " + v.cls;
+      bareVerdict.textContent = v.text + ". That is 40 microns of air under every cell.";
+      psLog("Bare burn: peak " + Math.round(res.peak) + " C. No paste, the whole interface is air.", "bad");
+      psPop(doCard);
+    });
+    function psExplorerGo() {
+      var mount = { pattern: patSel.value, amount: amtSel.value, pressure: prSel.value };
+      var res = psRunBurn("bare8", mount);
+      psRenderMap(expMap, res);
+      var v = psVerdictLine(res);
+      expVerdict.className = "ps-verdict " + v.cls;
+      expVerdict.textContent = v.text + ".";
+      psLog("Explorer burn (" + psMountName(mount) + "): peak " +
+        Math.round(res.peak) + " C.", res.peak <= PS_LIMIT ? "ok" : "bad");
+      if (mount.amount === "HEAVY" && mount.pressure === "OVER")
+        psLog("Squeeze-out: the thick blob squirted out from under the rim; the edge stands in air.", "bad");
+      if (mount.amount === "HEAVY" && mount.pressure !== "OVER")
+        psLog("Note: the thick blob oozed past the die edge. Thermally fine this time, but the board wears it.", "");
+      psPop(expCard);
+    }
+    expBurn.addEventListener("click", psExplorerGo);
+
+    /* stepper wiring (do-before-explain) */
+    stepBtn.addEventListener("click", function () {
+      if (psState.step >= PS_STEPS.length) return;
+      if (psState.step === 0) stepper.innerHTML = "";
+      var d = psEl("div", null, "");
+      d.innerHTML = "<span class='k'>STEP " + (psState.step + 1) + ": </span>" + PS_STEPS[psState.step];
+      stepper.appendChild(d);
+      psState.step++;
+      if (psState.step >= PS_STEPS.length) stepBtn.disabled = true;
+      psPop(stepper);
+    });
+    stepReset.addEventListener("click", function () {
+      psState.step = 0;
+      stepper.innerHTML = "<span class='k'>Press STEP to walk the worked example, one lane at a time.</span>";
+      stepBtn.disabled = false;
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && ov.classList.contains("open")) psClose();
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", psBuild);
+  } else {
+    psBuild();
+  }
+
+  /* test hooks */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      PS: {
+        TRIALS: PS_TRIALS, TITLES: PS_TITLES, DIES: PS_DIES,
+        sim: psSim, trialPeak: psTrialPeak, mountName: psMountName,
+        checkCommit: psCheckCommit, verdict: psVerdict,
+        LIMIT: PS_LIMIT, TOL: PS_TOL, K_PASTE: PS_K_PASTE, K_AIR: PS_K_AIR,
+        bubbles: psBubbles, covered: psCovered,
+        introHTML: PS_INTRO_HTML, steps: PS_STEPS,
+        certText: psCertText, benchCertText: psBenchCertText,
+        newTrialState: psNewTrialState,
+        ui: {
+          open: psOpen, close: psClose,
+          state: function () { return psState; },
+          els: function () { return psEls; }
+        }
+      }
+    });
+  }
+})();

@@ -678,7 +678,11 @@ var PG_BENCHES = [
   { section: "silicon", n: "45", name: "The Shift Room", btn: "shBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "The cheapest multiply in the machine: slide bits left to multiply by powers of two, slide right to divide, and meet the two honest contracts of the right shift, logical zeros and arithmetic sign fill.",
     how: "Drive the bit lane, call every shifted byte and its fallen bits, split logical from arithmetic on negative values, then build a multiply out of shifts and adds.",
-    spec: "SHIFT ALU \u00B7 3 TRIALS" }
+    spec: "SHIFT ALU \u00B7 3 TRIALS" },
+  { section: "oldiron", n: "46", name: "The Paste Room", btn: "psBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "Thermal paste has one job: evict the air between the die and the heatsink. Lay down a pattern, choose the amount, set the mount pressure, and call each burn's peak die temperature before you run it.",
+    how: "Burn it bare first, then pick a mount on each trial, predict the peak within 6 C, run the burn, and certify all three trials.",
+    spec: "THERMAL INTERFACE \u00B7 3 TRIALS" }
 ];
 
 var pgFilter = "all";
@@ -1090,9 +1094,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=13b4154b6f" defer></script>
-<script src="rvdata.js?v=13b4154b6f" defer></script>
-<script src="riscv-lab.js?v=13b4154b6f" defer></script>
-<script src="features.js?v=13b4154b6f" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=87a406e204" defer></script>
+<script src="rvdata.js?v=87a406e204" defer></script>
+<script src="riscv-lab.js?v=87a406e204" defer></script>
+<script src="features.js?v=87a406e204" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
