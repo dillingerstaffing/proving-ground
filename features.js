@@ -24195,3 +24195,684 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+/* Bench 36 staging: The Division Deck module (appended to features.js at ship time). */
+/* ============================================================
+   THE DIVISION DECK
+   Silicon bench 36. A real shift-subtract division engine on the
+   bench, the algorithm real dividers fall back on when the divisor
+   is a live value no compiler trick can touch. One quotient bit per
+   cycle: shift the remainder left, bring in the next dividend bit,
+   subtract the divisor when the remainder is at least the divisor,
+   set the quotient bit. The visitor calls every shift, then does
+   the signed wrapper's job on trial 3: quotient negative when the
+   signs differ, remainder takes the dividend's sign, plus the two
+   RISC-V rules no loop can produce (divide by zero, overflow).
+   Teaches one atomic mechanism: restoring division, one bit per
+   cycle, and why the silicon bothers when compilers avoid div.
+   Self-contained, appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- pure logic: the shift-subtract engine ---------------- */
+
+  /* 8-bit unsigned restoring division. One step per bit, MSB first.
+     Each step: R = (R << 1) | bit; if R >= divisor, R -= divisor and the
+     quotient bit is 1, else the quotient bit is 0. The shifted value can
+     reach 9 bits, so the comparison is done on the full value. */
+  function dvDivU(a, b) {
+    var R = 0, q = 0, steps = [];
+    for (var i = 7; i >= 0; i--) {
+      var bit = (a >>> i) & 1;
+      var shifted = (R << 1) | bit;
+      var sub = shifted >= b;
+      R = sub ? shifted - b : shifted;
+      q = (q << 1) | (sub ? 1 : 0);
+      steps.push({ i: i, bit: bit, shifted: shifted, sub: sub, qbit: sub ? 1 : 0, rAfter: R });
+    }
+    return { q: q, r: R, steps: steps };
+  }
+
+  /* 8-bit signed RISC-V div semantics, the thin wrapper around the
+     unsigned engine: absolute values through the loop, sign fixes after.
+     Divide by zero: q = -1, r = dividend (the spec, not a trap).
+     Overflow (-128 / -1): q = -128, r = 0 (128 will not fit). */
+  function dvDivS(a, b) {
+    if (b === 0) return { q: -1, r: a, special: "div-zero" };
+    if (a === -128 && b === -1) return { q: -128, r: 0, special: "overflow" };
+    var q = Math.trunc(a / b);
+    return { q: q, r: a - q * b, special: null };
+  }
+
+  function dvBin8(x) {
+    var s = (x >>> 0).toString(2);
+    while (s.length < 8) s = "0" + s;
+    return s;
+  }
+
+  function dvSDec(x) { return x > 127 ? x - 256 : x; } /* unsigned byte to signed */
+
+  var DV_TRIALS = [
+    { n: 1, id: "plain", name: "TRIAL 1: THE PLAIN DIVISION",
+      a: 100, b: 7, signed: false,
+      story: "The straightforward one: 100 / 7. Call the quotient and the remainder first, " +
+             "then run the engine and call every shift. Eight steps, one per bit, and the " +
+             "worked example from the intro is the whole rulebook: shift the remainder left, " +
+             "bring in the next bit, subtract only when the remainder is at least the divisor." },
+    { n: 2, id: "small", name: "TRIAL 2: THE DIVISOR WINS",
+      a: 7, b: 100, signed: false,
+      story: "The case that looks broken: 7 / 100. The divisor is bigger than the dividend, " +
+             "so every shifted remainder comes up short and every step is a plain shift. " +
+             "Predict the answer before you run it. This is not a degenerate input, it is the " +
+             "rule doing exactly what it should: quotient zero, remainder the dividend back." },
+    { n: 3, id: "signed", name: "TRIAL 3: THE SIGNED WRAPPER",
+      a: 47, b: 6, signed: true, sa: -47, sb: 6,
+      story: "Now the wrapper's job: -47 / 6. The engine only speaks unsigned, so it divides " +
+             "the magnitudes 47 and 6, and you apply the two sign rules after: the quotient is " +
+             "negative when the signs differ, the remainder takes the dividend's sign. Then the " +
+             "two inputs no loop can produce: what RISC-V div hands you for divide by zero and " +
+             "for the overflow case. Both rules are stated in the failure modes above; call them " +
+             "from the rules, not from memory." }
+  ];
+
+  /* signed truth per trial, what the prediction is checked against */
+  function dvTruth(ti) {
+    var T = DV_TRIALS[ti];
+    if (!T.signed) return { q: dvDivU(T.a, T.b).q, r: dvDivU(T.a, T.b).r };
+    return { q: dvDivS(T.sa, T.sb).q, r: dvDivS(T.sa, T.sb).r };
+  }
+
+  /* ---------------- state ---------------- */
+
+  function dvNewTrialState() {
+    return {
+      predQ: null, predR: null, predLocked: false,
+      running: false, step: 0, R: 0, qbits: [], strikes: 0,
+      failed: false, complete: false, engineQ: null, engineR: null,
+      nastyQ1: null, nastyR1: null, nastyQ2: null, nastyR2: null, nastyOk: false,
+      certified: false
+    };
+  }
+  function dvNewState() {
+    return { cur: 0, trials: [dvNewTrialState(), dvNewTrialState(), dvNewTrialState()] };
+  }
+  var dvS = dvNewState();
+  var dvEls = {};
+
+  var DV_CSS = [
+    ".dv-overlay{position:fixed;inset:0;z-index:60;display:none;align-items:flex-start;justify-content:center;background:rgba(8,8,10,.82);padding:18px 12px;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".dv-overlay.open{display:flex}",
+    ".dv-panel{width:min(880px,100%);background:var(--panel,#141416);border:1px solid var(--line,#2a2a2e);border-radius:10px;color:var(--paper,#f2efe9);font-family:'Space Grotesk',system-ui,sans-serif;margin:2vh auto;max-height:96vh;display:flex;flex-direction:column}",
+    ".dv-head{padding:16px 18px 10px;border-bottom:1px solid var(--line,#2a2a2e)}",
+    ".dv-head h3{margin:0 0 4px;font-size:20px;letter-spacing:.02em}",
+    ".dv-spec{margin:0 0 8px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ember,#ff5a1f);letter-spacing:.12em}",
+    ".dv-why{margin:0 0 8px;font-size:13.5px;line-height:1.55;color:#d8d4cc}",
+    ".dv-why a{color:var(--ember,#ff5a1f)}",
+    ".dv-worked{margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#2a2a2e);border-left:3px solid var(--ember,#ff5a1f);border-radius:0 6px 6px 0;background:rgba(255,90,31,.05);font-size:13px;line-height:1.6}",
+    ".dv-worked b{color:#fff}",
+    ".dv-failmodes{margin:0 0 4px;font-size:12.5px;line-height:1.5;color:#a9a49a}",
+    ".dv-body{padding:12px 18px;overflow-y:auto}",
+    ".dv-tabs{display:flex;gap:8px;margin:2px 0 12px;flex-wrap:wrap}",
+    ".dv-tab{flex:1;min-width:150px;min-height:48px;border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;padding:8px 6px;text-align:center}",
+    ".dv-tab .dv-tname{display:block;font-size:13px;font-weight:600}",
+    ".dv-tab .dv-tprof{display:block;font-size:11px;color:#a9a49a;margin-top:2px}",
+    ".dv-tab[aria-selected='true']{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.1)}",
+    ".dv-tab.done{border-color:#3fa34d}",
+    ".dv-tab.done .dv-tname::after{content:' \\2713';color:#3fa34d}",
+    ".dv-trialwhy{margin:0 0 10px;font-size:12.5px;line-height:1.55;color:#a9a49a}",
+    ".dv-card{border:1px solid var(--line,#2a2a2e);border-radius:8px;padding:12px;margin:0 0 12px;background:rgba(255,255,255,.015)}",
+    ".dv-card h4{margin:0 0 8px;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:#a9a49a}",
+    ".dv-pred{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}",
+    ".dv-field label{display:block;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.1em;color:#a9a49a;margin:0 0 6px}",
+    ".dv-field input{width:120px;min-height:48px;background:#0e0e10;color:var(--paper,#f2efe9);border:1px solid var(--line,#2a2a2e);border-radius:6px;font-family:'IBM Plex Mono',monospace;font-size:16px;padding:0 10px}",
+    ".dv-btn{min-height:48px;min-width:48px;border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.06em;cursor:pointer;padding:12px 18px}",
+    ".dv-btn.primary{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12);font-weight:700}",
+    ".dv-btn:disabled{opacity:.38;cursor:not-allowed}",
+    ".dv-btn:focus-visible,.dv-tab:focus-visible,.dv-field input:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".dv-callrow{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 0}",
+    ".dv-call{flex:1;min-width:180px;min-height:56px;font-size:15px;font-weight:700}",
+    ".dv-call[aria-pressed='true']{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.14)}",
+    ".dv-work{font-family:'IBM Plex Mono',monospace;font-size:13px;line-height:1.9;color:#d8d4cc;margin:0 0 4px;white-space:pre-wrap}",
+    ".dv-work .hot{color:var(--ember,#ff5a1f);font-weight:700}",
+    ".dv-work .done-bit{color:#3fa34d;font-weight:700}",
+    ".dv-pop{display:inline-block;animation:dvpop 200ms ease-out}",
+    "@keyframes dvpop{0%{transform:scale(.6)}100%{transform:scale(1)}}",
+    ".dv-stepinfo{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#a9a49a;margin:0 0 6px}",
+    ".dv-readout{font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.7;color:#d8d4cc;margin:0;white-space:pre-wrap}",
+    ".dv-readout .good{color:#3fa34d;font-weight:700}",
+    ".dv-readout .bad{color:#e5484d;font-weight:700}",
+    ".dv-strikes{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.08em;color:#e5484d;margin:0 0 6px}",
+    ".dv-nasty{display:grid;grid-template-columns:1fr 1fr;gap:10px}",
+    "@media(max-width:560px){.dv-nasty{grid-template-columns:1fr}}",
+    ".dv-nasty .dv-field input{width:100px}",
+    ".dv-log{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.65;color:#c9c4b9;border-top:1px solid var(--line,#2a2a2e);padding-top:10px;max-height:220px;overflow-y:auto}",
+    ".dv-log p{margin:0 0 6px}",
+    ".dv-log .good{color:#3fa34d}.dv-log .bad{color:#e5484d}.dv-log .dim{color:#8a857a}",
+    ".dv-foot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 18px;border-top:1px solid var(--line,#2a2a2e)}",
+    ".dv-progress{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.1em;color:#a9a49a;margin-right:auto}",
+    "@media(prefers-reduced-motion:reduce){.dv-pop{animation:none}}"
+  ];
+
+  /* ---------------- small DOM helpers ---------------- */
+
+  function dvEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  function dvLog(html) {
+    var p = document.createElement("p");
+    p.innerHTML = html;
+    dvEls.log.appendChild(p);
+    dvEls.log.scrollTop = dvEls.log.scrollHeight;
+  }
+
+  /* ---------------- engine interaction ---------------- */
+
+  function dvTrialMag(ti) {
+    var T = DV_TRIALS[ti];
+    return T.signed ? { a: T.a, b: T.b } : { a: T.a, b: T.b };
+  }
+
+  function dvOnRunEngine() {
+    var ti = dvS.cur, st = dvS.trials[ti], T = DV_TRIALS[ti];
+    var qi = dvEls.predQ, ri = dvEls.predR;
+    var qv = qi.value.trim(), rv = ri.value.trim();
+    if (qv === "" || rv === "") {
+      toast("Call the quotient and the remainder first: fill both prediction boxes.");
+      dvLog("<span class='dim'>The engine waits: predict the quotient and the remainder before the first step.</span>");
+      return;
+    }
+    st.predQ = parseInt(qv, 10); st.predR = parseInt(rv, 10);
+    if (isNaN(st.predQ) || isNaN(st.predR)) {
+      toast("Predictions must be whole numbers.");
+      return;
+    }
+    st.predLocked = true;
+    st.running = true; st.step = 0; st.R = 0; st.qbits = [];
+    dvLog("Prediction locked: q = <b>" + st.predQ + "</b>, r = <b>" + st.predR + "</b>. " +
+          "Run the eight steps and watch the engine check you.");
+    dvRenderAll();
+  }
+
+  function dvCall(sub) {
+    var ti = dvS.cur, st = dvS.trials[ti], T = DV_TRIALS[ti];
+    if (!st.running || st.failed || st.complete) return;
+    var m = dvTrialMag(ti);
+    var eng = dvDivU(m.a, m.b);
+    var s = eng.steps[st.step];
+    var right = (sub === s.sub);
+    var action = sub ? "SHIFT-SUBTRACT" : "SHIFT";
+    if (!right) {
+      st.strikes++;
+      toast("Wrong call: strike " + st.strikes + " of 3.");
+      dvLog("<span class='bad'>Strike " + st.strikes + "/3:</span> you called " + action + ", but the " +
+            "shifted remainder " + dvBin8(s.shifted) + " (" + s.shifted + ") is " +
+            (s.sub ? "at least the divisor " + m.b + ", so the move is SHIFT-SUBTRACT." :
+                     "below the divisor " + m.b + ", so the move is a plain SHIFT.") +
+            " The engine takes the correct step; your strikes stay with you.");
+      if (st.strikes >= 3) {
+        st.failed = true;
+        dvLog("<span class='bad'>TRIAL FAILED:</span> three wrong calls. The engine kept the " +
+              "correct state the whole way, so nothing is corrupted: press RESET TRIAL and call it again.");
+        dvRenderAll();
+        return;
+      }
+    } else {
+      dvLog("<span class='good'>Right:</span> shifted remainder " + dvBin8(s.shifted) + " (" + s.shifted +
+            ") " + (s.sub ? ">= " : "< ") + m.b + ", so " + action + ", quotient bit " + s.qbit + ".");
+    }
+    /* the engine always takes the correct step, a wrong call never corrupts state */
+    st.R = s.rAfter;
+    st.qbits.push(s.qbit);
+    st.step++;
+    if (st.step >= 8) {
+      st.complete = true; st.running = false;
+      st.engineQ = eng.q; st.engineR = eng.r;
+      var truth = dvTruth(ti);
+      dvLog("Engine done: unsigned result q = <b>" + eng.q + "</b>, r = <b>" + eng.r + "</b>." +
+            (T.signed ? " Sign rules: the signs differ (" + T.sa + " and " + T.sb + "), so the quotient " +
+                        "is negative; the remainder takes the dividend's sign, also negative. Signed truth: " +
+                        "q = <b>" + truth.q + "</b>, r = <b>" + truth.r + "</b>." : "") +
+            " You predicted q = " + st.predQ + ", r = " + st.predR + ".");
+    }
+    dvRenderAll();
+  }
+
+  function dvCheckNasty() {
+    var ti = dvS.cur, st = dvS.trials[ti];
+    var q1 = dvEls.nq1.value.trim(), r1 = dvEls.nr1.value.trim();
+    var q2 = dvEls.nq2.value.trim(), r2 = dvEls.nr2.value.trim();
+    if (q1 === "" || r1 === "" || q2 === "" || r2 === "") {
+      toast("Answer all four boxes: both nasty cases need a quotient and a remainder.");
+      return;
+    }
+    var ok1 = (parseInt(q1, 10) === -1 && parseInt(r1, 10) === 25);
+    var ok2 = (parseInt(q2, 10) === -128 && parseInt(r2, 10) === 0);
+    st.nastyQ1 = q1; st.nastyR1 = r1; st.nastyQ2 = q2; st.nastyR2 = r2;
+    if (ok1 && ok2) {
+      st.nastyOk = true;
+      dvLog("<span class='good'>Both nasty cases called right.</span> 25 / 0 hands you q = -1, " +
+            "r = 25 (the rule, not a trap); -128 / -1 hands you q = -128, r = 0 (the true " +
+            "quotient 128 will not fit, so the spec saturates).");
+    } else {
+      st.nastyOk = false;
+      st.strikes++;
+      toast("Not quite: strike " + st.strikes + " of 3.");
+      dvLog("<span class='bad'>Strike " + st.strikes + "/3:</span> at least one nasty case is wrong. " +
+            "The rules are stated in the failure modes above: divide by zero hands you q = -1 " +
+            "and r = dividend; the overflow case hands you the most-negative value back with r = 0. " +
+            "Call them from the rules.");
+      if (st.strikes >= 3) {
+        st.failed = true;
+        dvLog("<span class='bad'>TRIAL FAILED:</span> three strikes. Press RESET TRIAL and run it again.");
+      }
+    }
+    dvRenderAll();
+  }
+
+  function dvCertOk(ti) {
+    var st = dvS.trials[ti], T = DV_TRIALS[ti];
+    if (st.certified || st.failed || !st.complete) return false;
+    var truth = dvTruth(ti);
+    if (st.predQ !== truth.q || st.predR !== truth.r) return false;
+    if (st.strikes >= 3) return false;
+    if (T.signed && !st.nastyOk) return false;
+    return true;
+  }
+
+  function dvCertWhy(ti) {
+    var st = dvS.trials[ti], T = DV_TRIALS[ti], truth = dvTruth(ti);
+    var parts = [];
+    parts.push("prediction " + (st.predQ === null ? "(none)" :
+      st.predQ + "/" + st.predR + (st.predQ === truth.q && st.predR === truth.r ? ", correct" : ", wrong")));
+    parts.push("engine " + (st.complete ? "complete" : "not finished"));
+    parts.push("strikes " + st.strikes + "/3");
+    if (T.signed) parts.push("nasty cases " + (st.nastyOk ? "correct" : "open"));
+    return "Checks: " + parts.join(", ") + ".";
+  }
+
+  function dvOnCertify() {
+    var ti = dvS.cur, st = dvS.trials[ti];
+    if (!dvCertOk(ti)) return;
+    st.certified = true;
+    var truth = dvTruth(ti);
+    dvLog("<span class='good'>Trial " + DV_TRIALS[ti].n + " certified:</span> " +
+          (DV_TRIALS[ti].signed ? DV_TRIALS[ti].sa + " / " + DV_TRIALS[ti].sb :
+                                 DV_TRIALS[ti].a + " / " + DV_TRIALS[ti].b) +
+          " = " + truth.q + " remainder " + truth.r + ", called shift by shift.");
+    toast("Trial " + DV_TRIALS[ti].n + " certified");
+    dvRenderAll();
+  }
+
+  /* ---------------- trial rendering ---------------- */
+
+  function dvRenderEngine(host) {
+    var ti = dvS.cur, st = dvS.trials[ti], T = DV_TRIALS[ti];
+    var m = dvTrialMag(ti);
+    var card = dvEl("div", "dv-card");
+    card.appendChild(dvEl("h4", null, "THE ENGINE: " +
+      (T.signed ? "MAGNITUDES " + m.a + " / " + m.b + " (SIGNS AFTER)" : m.a + " / " + m.b)));
+    var aBits = dvBin8(m.a), bBits = dvBin8(m.b);
+    var work = dvEl("p", "dv-work");
+    if (!st.predLocked) {
+      work.textContent = "Predict the quotient and the remainder, then press RUN THE ENGINE.\n" +
+        "DIVIDEND  " + aBits + " (" + m.a + ")\nDIVISOR   " + bBits + " (" + m.b + ")";
+      card.appendChild(work);
+      return card;
+    }
+    /* work area: dividend with the incoming bit highlighted, R, quotient so far */
+    var qSoFar = "";
+    for (var k = 0; k < 8; k++) qSoFar += (k < st.qbits.length) ? String(st.qbits[k]) : "_";
+    var divHtml = "DIVIDEND  ";
+    for (var j = 0; j < 8; j++) {
+      var bitIdx = 7 - j;
+      var cls = (st.running && bitIdx === 7 - st.step) ? "hot" : "";
+      divHtml += cls ? "<span class='hot'>" + aBits[j] + "</span>" : aBits[j];
+    }
+    divHtml += " (" + m.a + ")\nDIVISOR   " + bBits + " (" + m.b + ")\n" +
+      "REMAINDER <span class='dv-pop'>" + dvBin8(st.R) + "</span> (" + st.R + ")\n" +
+      "QUOTIENT  ";
+    for (var q2 = 0; q2 < 8; q2++) {
+      divHtml += (q2 < st.qbits.length) ? "<span class='done-bit'>" + st.qbits[q2] + "</span>" : "_";
+    }
+    if (st.complete) divHtml += "  = " + st.engineQ + "  (unsigned)";
+    work.innerHTML = divHtml;
+    card.appendChild(work);
+    if (st.strikes > 0 || st.failed) {
+      card.appendChild(dvEl("p", "dv-strikes",
+        st.failed ? "TRIAL FAILED: 3 STRIKES. RESET THE TRIAL." : "STRIKES " + st.strikes + "/3"));
+    }
+    if (st.running && !st.failed && !st.complete) {
+      var eng = dvDivU(m.a, m.b);
+      var s = eng.steps[st.step];
+      card.appendChild(dvEl("p", "dv-stepinfo",
+        "STEP " + (st.step + 1) + "/8: incoming bit = " + s.bit +
+        " (bit " + s.i + " of the dividend). Call it."));
+      var row = dvEl("div", "dv-callrow");
+      var bShift = dvEl("button", "dv-btn dv-call", "SHIFT");
+      bShift.setAttribute("aria-label", "Call a plain shift: the shifted remainder is below the divisor");
+      bShift.addEventListener("click", function () { dvCall(false); });
+      var bSub = dvEl("button", "dv-btn dv-call", "SHIFT-SUBTRACT");
+      bSub.setAttribute("aria-label", "Call shift-subtract: the shifted remainder is at least the divisor");
+      bSub.addEventListener("click", function () { dvCall(true); });
+      row.appendChild(bShift); row.appendChild(bSub);
+      card.appendChild(row);
+    } else if (st.failed) {
+      card.appendChild(dvEl("p", "dv-stepinfo",
+        "The call buttons are parked until you reset: three strikes ends the run."));
+    } else if (st.complete) {
+      var truth = dvTruth(ti);
+      var ok = (st.predQ === truth.q && st.predR === truth.r);
+      var ro = dvEl("p", "dv-readout",
+        (ok ? "CALLED IT: " : "NOT QUITE: ") + "you predicted q = " + st.predQ + ", r = " + st.predR +
+        "; the " + (T.signed ? "signed truth" : "engine") + " says q = " + truth.q + ", r = " + truth.r + ".");
+      ro.innerHTML = ((ok ? "<span class='good'>CALLED IT:</span> " : "<span class='bad'>NOT QUITE:</span> ") +
+        "you predicted q = " + st.predQ + ", r = " + st.predR + "; the " +
+        (T.signed ? "signed truth" : "engine") + " says q = " + truth.q + ", r = " + truth.r + ".");
+      card.appendChild(ro);
+    }
+    return card;
+  }
+
+  function dvRenderTrial() {
+    var ti = dvS.cur, st = dvS.trials[ti], T = DV_TRIALS[ti];
+    var host = dvEls.trialHost;
+    host.innerHTML = "";
+    dvEls.trialWhy.textContent = T.story;
+
+    /* predict card */
+    var pc = dvEl("div", "dv-card");
+    pc.appendChild(dvEl("h4", null, "PREDICT, THEN VERIFY"));
+    var pwrap = dvEl("div", "dv-pred");
+    function field(id, label, min, max) {
+      var f = dvEl("div", "dv-field");
+      var lb = document.createElement("label");
+      lb.setAttribute("for", id); lb.textContent = label;
+      f.appendChild(lb);
+      var inp = document.createElement("input");
+      inp.type = "number"; inp.id = id;
+      inp.min = String(min); inp.max = String(max);
+      inp.setAttribute("aria-label", label);
+      inp.disabled = st.predLocked;
+      if (id === "dvPredQ" && st.predQ !== null) inp.value = String(st.predQ);
+      if (id === "dvPredR" && st.predR !== null) inp.value = String(st.predR);
+      f.appendChild(inp);
+      return { wrap: f, inp: inp };
+    }
+    var lo = T.signed ? -128 : 0, hi = T.signed ? 127 : 255;
+    var fq = field("dvPredQ", T.signed ? "PREDICTED QUOTIENT (SIGNED)" : "PREDICTED QUOTIENT", lo, hi);
+    var fr = field("dvPredR", T.signed ? "PREDICTED REMAINDER (SIGNED)" : "PREDICTED REMAINDER", lo, hi);
+    dvEls.predQ = fq.inp; dvEls.predR = fr.inp;
+    pwrap.appendChild(fq.wrap); pwrap.appendChild(fr.wrap);
+    var run = dvEl("button", "dv-btn primary", "RUN THE ENGINE");
+    run.disabled = st.predLocked || st.failed;
+    run.addEventListener("click", dvOnRunEngine);
+    pwrap.appendChild(run);
+    pc.appendChild(pwrap);
+    var pline = dvEl("p", "dv-stepinfo", T.signed
+      ? "Predict the SIGNED answer: " + T.sa + " / " + T.sb + ". The engine divides the magnitudes; you apply the sign rules."
+      : "The division on the bench: " + T.a + " / " + T.b + ".");
+    pc.appendChild(pline);
+    host.appendChild(pc);
+
+    /* engine card */
+    host.appendChild(dvRenderEngine(host));
+
+    /* nasty cases, trial 3 only */
+    if (T.signed) {
+      var nc = dvEl("div", "dv-card");
+      nc.appendChild(dvEl("h4", null, "THE TWO NASTY CASES (RISC-V RULES)"));
+      var grid = dvEl("div", "dv-nasty");
+      function nastyField(id, label) {
+        var f = dvEl("div", "dv-field");
+        var lb = document.createElement("label");
+        lb.setAttribute("for", id); lb.textContent = label;
+        f.appendChild(lb);
+        var inp = document.createElement("input");
+        inp.type = "number"; inp.id = id;
+        inp.setAttribute("aria-label", label);
+        f.appendChild(inp);
+        return { wrap: f, inp: inp };
+      }
+      var n1 = dvEl("div", null);
+      n1.appendChild(dvEl("p", "dv-stepinfo", "25 / 0: no trap, the spec hands you an answer. Call it."));
+      var nq1 = nastyField("dvNq1", "QUOTIENT"); var nr1 = nastyField("dvNr1", "REMAINDER");
+      dvEls.nq1 = nq1.inp; dvEls.nr1 = nr1.inp;
+      var prow1 = dvEl("div", "dv-pred"); prow1.appendChild(nq1.wrap); prow1.appendChild(nr1.wrap);
+      n1.appendChild(prow1); grid.appendChild(n1);
+      var n2 = dvEl("div", null);
+      n2.appendChild(dvEl("p", "dv-stepinfo", "-128 / -1: the true quotient 128 will not fit in 8-bit signed. Call the spec's answer."));
+      var nq2 = nastyField("dvNq2", "QUOTIENT"); var nr2 = nastyField("dvNr2", "REMAINDER");
+      dvEls.nq2 = nq2.inp; dvEls.nr2 = nr2.inp;
+      var prow2 = dvEl("div", "dv-pred"); prow2.appendChild(nq2.wrap); prow2.appendChild(nr2.wrap);
+      n2.appendChild(prow2); grid.appendChild(n2);
+      nc.appendChild(grid);
+      var chk = dvEl("button", "dv-btn", "CHECK THE NASTY CASES");
+      chk.disabled = st.failed;
+      chk.addEventListener("click", dvCheckNasty);
+      nc.appendChild(chk);
+      if (st.nastyOk) nc.appendChild(dvEl("p", "dv-stepinfo", "Both nasty cases called right."));
+      host.appendChild(nc);
+    }
+
+    /* certify card */
+    var cc = dvEl("div", "dv-card");
+    cc.appendChild(dvEl("h4", null, "CERTIFY CHECKS"));
+    dvEls.checks = dvEl("p", "dv-readout", "");
+    cc.appendChild(dvEls.checks);
+    dvEls.certBtn = dvEl("button", "dv-btn primary", "CERTIFY TRIAL");
+    dvEls.certBtn.addEventListener("click", dvOnCertify);
+    cc.appendChild(dvEls.certBtn);
+    host.appendChild(cc);
+    dvRenderChecks();
+  }
+
+  /* ---------------- tabs, progress, certificate ---------------- */
+
+  function dvRenderTabs() {
+    dvEls.tabs.innerHTML = "";
+    DV_TRIALS.forEach(function (T, i) {
+      var st = dvS.trials[i];
+      var t = dvEl("button", "dv-tab" + (st.certified ? " done" : ""), null);
+      t.setAttribute("role", "tab");
+      t.setAttribute("aria-selected", i === dvS.cur ? "true" : "false");
+      t.appendChild(dvEl("span", "dv-tname", T.name));
+      t.appendChild(dvEl("span", "dv-tprof",
+        T.signed ? T.sa + " / " + T.sb + " SIGNED" : T.a + " / " + T.b));
+      t.addEventListener("click", function () { dvS.cur = i; dvRenderAll(); });
+      dvEls.tabs.appendChild(t);
+    });
+    dvEls.tabs.onkeydown = function (e) {
+      if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+      var d = e.key === "ArrowRight" ? 1 : -1;
+      dvS.cur = (dvS.cur + d + DV_TRIALS.length) % DV_TRIALS.length;
+      dvRenderAll();
+      var tabs = dvEls.tabs.querySelectorAll(".dv-tab");
+      if (tabs[dvS.cur]) tabs[dvS.cur].focus();
+      e.preventDefault();
+    };
+  }
+
+  function dvRenderChecks() {
+    var ti = dvS.cur, st = dvS.trials[ti];
+    var ok = dvCertOk(ti);
+    dvEls.checks.textContent = dvCertWhy(ti);
+    dvEls.certBtn.disabled = !ok || st.certified;
+    dvEls.certBtn.textContent = st.certified ? "TRIAL CERTIFIED" : "CERTIFY TRIAL";
+  }
+
+  function dvRenderAll() {
+    dvRenderTabs();
+    dvRenderTrial();
+    var n = dvS.trials.filter(function (s) { return s.certified; }).length;
+    dvEls.progress.textContent = "CERTIFIED: " + n + "/3";
+    dvEls.dlBtn.disabled = n < 3;
+  }
+
+  function dvDownloadCert() {
+    var lines = ["THE DIVISION DECK // SHIFT-SUBTRACT DIVISION LAB", "Certificate of qualification", ""];
+    DV_TRIALS.forEach(function (T, i) {
+      var st = dvS.trials[i], truth = dvTruth(i);
+      var expr = T.signed ? (T.sa + " / " + T.sb) : (T.a + " / " + T.b);
+      lines.push("TRIAL " + T.n + " " + expr + " = " + truth.q + " remainder " + truth.r +
+        " (predicted " + st.predQ + "/" + st.predR + ", " + st.strikes + " strikes).");
+    });
+    lines.push("", "One mechanism: shift the remainder left, bring in the next bit, subtract",
+      "the divisor when the remainder is at least the divisor, one quotient bit per cycle.",
+      "Signed div is the same engine on magnitudes with the sign rules after, and the two",
+      "nasty inputs get the spec's answers: divide by zero hands you q = -1, r = dividend;",
+      "the overflow case hands you the most-negative value back with r = 0.");
+    var blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "division-deck-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  /* ---------------- DOM build ---------------- */
+
+  function dvBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("dvBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = DV_CSS.join("\n");
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "dvBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Division Deck";
+    b.addEventListener("click", dvOpen);
+    box.appendChild(b);
+
+    var ov = dvEl("div", "dv-overlay");
+    ov.id = "dvOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Division Deck");
+    var panel = dvEl("div", "dv-panel");
+
+    var head = dvEl("div", "dv-head");
+    head.appendChild(dvEl("h3", null, "The Division Deck"));
+    head.appendChild(dvEl("p", "dv-spec", "SILICON // SHIFT-SUBTRACT DIVISION"));
+    head.appendChild(dvEl("p", "dv-why",
+      "Division is everywhere in silicon: address math, buffer sizing, work split across cores. " +
+      "But a divider circuit is expensive, and most of the time the silicon never builds one: when a " +
+      "compiler sees division by a known constant it never emits a divide at all. It multiplies by a " +
+      "fixed-point reciprocal instead, and the portfolio's division posts prove the rounding error never " +
+      "reaches the bits you keep. The catch is that the divisor has to be known at compile time. When it " +
+      "is a live value sitting in a register, there is no constant to bake in, and the hardware falls " +
+      "back on the oldest division algorithm there is: shift the remainder left, bring in the next " +
+      "dividend bit, subtract the divisor when the remainder is at least the divisor, one quotient bit " +
+      "per cycle. This bench puts you inside that engine. You call every shift, run three real divisions, " +
+      "and meet the two inputs where RISC-V division refuses to trap."));
+    var plink = dvEl("p", "dv-why", null);
+    plink.innerHTML = "The multiply-and-shift trick this bench deliberately avoids is written up, with the " +
+      "error proofs, on the portfolio: <a href=\"https://dillingerstaffing.github.io/portfolio/#blog\" " +
+      "target=\"_blank\" rel=\"noopener\">the division posts</a>.";
+    head.appendChild(plink);
+    var worked = dvEl("p", "dv-worked");
+    worked.innerHTML =
+      "<b>Worked example, the guided practice run, check it by hand:</b> 13 / 5, dividend 00001101, " +
+      "divisor 00000101. Bits 7 to 4 bring in zeros, so the remainder sits at 0 and the first four " +
+      "quotient bits are 0. Bit 3 brings 1: remainder 1, below 5, SHIFT, quotient bit 0. Bit 2 brings 1: " +
+      "remainder 3, below 5, SHIFT, quotient bit 0. Bit 1 brings 0: remainder 6, at least 5, SUBTRACT, " +
+      "remainder 1, quotient bit 1. Bit 0 brings 1: remainder 3, below 5, SHIFT, quotient bit 0. " +
+      "Quotient <b>00000010 = 2</b>, remainder <b>00000011 = 3</b>. Eight steps, one per bit, and every " +
+      "step is the same question: is the shifted remainder at least the divisor? That question is the " +
+      "whole bench.";
+    head.appendChild(worked);
+    head.appendChild(dvEl("p", "dv-failmodes",
+      "Failure modes, stated plainly. A wrong call costs a strike, and three strikes fail the trial; " +
+      "the engine always takes the correct step anyway, so a mistake never corrupts the state, and RESET " +
+      "TRIAL is the way back. The classic error is calling SHIFT when the remainder is at least the " +
+      "divisor: you leave a remainder bigger than the divisor, which is not a remainder at all. Divide by " +
+      "zero does not trap on RISC-V: the spec hands you quotient -1 and remainder = dividend (run the loop " +
+      "with a zero divisor in your head and watch why: every shifted remainder compares true, nothing is " +
+      "ever subtracted, and the quotient comes out all ones). The overflow case, most-negative divided by " +
+      "-1, hands you the most-negative value back with remainder zero, because the true quotient will not " +
+      "fit. Certification needs the finished engine run, a correct prediction, both nasty cases called " +
+      "right on trial 3, and fewer than three strikes."));
+    panel.appendChild(head);
+
+    var body = dvEl("div", "dv-body");
+    dvEls.tabs = dvEl("div", "dv-tabs");
+    dvEls.tabs.setAttribute("role", "tablist");
+    body.appendChild(dvEls.tabs);
+    dvEls.trialWhy = dvEl("p", "dv-trialwhy");
+    body.appendChild(dvEls.trialWhy);
+    dvEls.trialHost = dvEl("div", null);
+    body.appendChild(dvEls.trialHost);
+    dvEls.log = dvEl("div", "dv-log");
+    dvEls.log.setAttribute("aria-live", "polite");
+    body.appendChild(dvEls.log);
+    panel.appendChild(body);
+
+    var foot = dvEl("div", "dv-foot");
+    dvEls.progress = dvEl("span", "dv-progress", "CERTIFIED: 0/3");
+    foot.appendChild(dvEls.progress);
+    var resetTrial = dvEl("button", "dv-btn", "RESET TRIAL");
+    resetTrial.addEventListener("click", function () {
+      var keep = dvS.trials[dvS.cur];
+      dvS.trials[dvS.cur] = dvNewTrialState();
+      dvS.trials[dvS.cur].predQ = keep.predQ;
+      dvS.trials[dvS.cur].predR = keep.predR;
+      dvRenderAll();
+      dvLog("<span class='dim'>Trial " + DV_TRIALS[dvS.cur].n + " reset. Prediction kept, engine cleared.</span>");
+    });
+    foot.appendChild(resetTrial);
+    var resetBench = dvEl("button", "dv-btn", "RESET BENCH");
+    resetBench.addEventListener("click", function () {
+      dvS = dvNewState();
+      dvRenderAll();
+      dvLog("<span class='dim'>Bench reset. Three divisions to call.</span>");
+    });
+    foot.appendChild(resetBench);
+    dvEls.dlBtn = dvEl("button", "dv-btn primary", "DOWNLOAD CERTIFICATE");
+    dvEls.dlBtn.disabled = true;
+    dvEls.dlBtn.addEventListener("click", dvDownloadCert);
+    foot.appendChild(dvEls.dlBtn);
+    var closeBtn = dvEl("button", "dv-btn", "CLOSE");
+    closeBtn.addEventListener("click", dvClose);
+    foot.appendChild(closeBtn);
+    panel.appendChild(foot);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    dvEls.overlay = ov;
+    dvRenderAll();
+  }
+
+  function dvOpen() {
+    if (!dvEls.overlay) dvBuild();
+    dvEls.overlay.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+  function dvClose() {
+    if (dvEls.overlay) dvEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", dvBuild);
+    } else {
+      dvBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      DV: {
+        TRIALS: DV_TRIALS, dvDivU: dvDivU, dvDivS: dvDivS, dvBin8: dvBin8, dvTruth: dvTruth,
+        newTrialState: dvNewTrialState, newState: dvNewState
+      }
+    });
+  }
+})();

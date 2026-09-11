@@ -638,7 +638,11 @@ var PG_BENCHES = [
   { section: "tapeout", n: "35", name: "The Buck Room", btn: "bkBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "GPU VRM qualification: a real discrete-time synchronous buck converter on the bench. Set the duty, tame the ripple, dodge inductor saturation, survive the load step, and hold three rails.",
     how: "Call the duty, set frequency, inductor, and capacitor, run the sim, hold each rail inside its ripple budget.",
-    spec: "BUCK VRM \u00B7 3 RAILS" }
+    spec: "BUCK VRM \u00B7 3 RAILS" },
+  { section: "silicon", n: "36", name: "The Division Deck", btn: "dvBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "The algorithm real dividers fall back on: a real shift-subtract engine, one quotient bit per cycle. Call every shift across three divisions, do the signed wrapper's job, and meet the two inputs where RISC-V division refuses to trap.",
+    how: "Predict each quotient and remainder, call SHIFT or SHIFT-SUBTRACT for every bit, certify all three trials.",
+    spec: "DIV HARDWARE \u00B7 3 TRIALS" }
 ];
 
 var pgFilter = "all";
