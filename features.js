@@ -13273,7 +13273,8 @@ if (typeof module !== "undefined" && module.exports) {
    Old Iron bench networking: hand-crimp Cat5e 8P8C plugs to the
    T568 standard. Three cables: a straight-through patch lead, a
    crossover, and a returned lead with a split-pair fault to find
-   and fix. A real cable-tester model under the hood: a continuity
+   and fix (one swapped conductor pair, reported on both pairs it
+   touches). A real cable-tester model under the hood: a continuity
    wire map plus twisted-pair integrity per pair. Certify all three
    at 1000BASE-T to print the certification record. Self-contained,
    appended at the end of features.js.
