@@ -24302,7 +24302,7 @@ if (typeof module !== "undefined" && module.exports) {
   var DV_CSS = [
     ".dv-overlay{position:fixed;inset:0;z-index:60;display:none;align-items:flex-start;justify-content:center;background:rgba(8,8,10,.82);padding:18px 12px;overflow-y:auto;-webkit-overflow-scrolling:touch}",
     ".dv-overlay.open{display:flex}",
-    ".dv-panel{width:min(880px,100%);background:var(--panel,#141416);border:1px solid var(--line,#2a2a2e);border-radius:10px;color:var(--paper,#f2efe9);font-family:'Space Grotesk',system-ui,sans-serif;margin:2vh auto;max-height:96vh;display:flex;flex-direction:column}",
+    ".dv-panel{width:min(880px,100%);background:var(--panel,#141416);border:1px solid var(--line,#2a2a2e);border-radius:10px;color:var(--paper,#f2efe9);font-family:'Space Grotesk',system-ui,sans-serif;margin:2vh auto}",
     ".dv-head{padding:16px 18px 10px;border-bottom:1px solid var(--line,#2a2a2e)}",
     ".dv-head h3{margin:0 0 4px;font-size:20px;letter-spacing:.02em}",
     ".dv-spec{margin:0 0 8px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ember,#ff5a1f);letter-spacing:.12em}",
@@ -24311,7 +24311,8 @@ if (typeof module !== "undefined" && module.exports) {
     ".dv-worked{margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#2a2a2e);border-left:3px solid var(--ember,#ff5a1f);border-radius:0 6px 6px 0;background:rgba(255,90,31,.05);font-size:13px;line-height:1.6}",
     ".dv-worked b{color:#fff}",
     ".dv-failmodes{margin:0 0 4px;font-size:12.5px;line-height:1.5;color:#a9a49a}",
-    ".dv-body{padding:12px 18px;overflow-y:auto}",
+    ".dv-body{padding:12px 18px}",
+    "@media(min-width:561px){.dv-panel{max-height:96vh;display:flex;flex-direction:column}.dv-body{flex:1;min-height:0;overflow-y:auto}}",
     ".dv-tabs{display:flex;gap:8px;margin:2px 0 12px;flex-wrap:wrap}",
     ".dv-tab{flex:1;min-width:150px;min-height:48px;border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;padding:8px 6px;text-align:center}",
     ".dv-tab .dv-tname{display:block;font-size:13px;font-weight:600}",
