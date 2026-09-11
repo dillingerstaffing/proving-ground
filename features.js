@@ -24877,3 +24877,617 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+/* Bench 37 staging: The Ripple Room module (appended to features.js at ship time). */
+/* ============================================================
+   THE RIPPLE ROOM
+   Old Iron bench 37. A real reservoir-capacitor bench for power
+   supply work: a discrete-time full-wave bridge + reservoir cap +
+   load model, stepped at 20 microseconds, with a scope you can
+   watch. The visitor sizes the reservoir cap from a stock shelf:
+   too small and the rail sags below the regulator floor on every
+   mains gap (brownout), too big and the cold-start inrush pops the
+   slow-blow fuse (I2t budget), underrated and the cap vents on the
+   first cycle (125% of transformer peak house rule). Trial 3 adds
+   a load step so ESR decides between two same-value caps.
+   Teaches one atomic mechanism: the capacitor is a bucket, the
+   load is a leak, the mains refills it 120 times a second, and the
+   bucket must cover the leak between refills without being so big
+   that the refill blows the fuse.
+   Self-contained, appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- pure logic: the reservoir sim ---------------- */
+
+  /* Discrete-time full-wave bridge into a reservoir capacitor.
+     C: farads, esr: ohms. P: {vpeak, f, rs, vd, iload(t), tEnd}.
+     Charges through the source resistance when the rectified sine
+     (minus diode drops) exceeds the cap voltage; otherwise the cap
+     alone feeds the load. I2t is integrated over the cold start for
+     the slow-blow fuse; ripple and minimum rail are measured over
+     the last 120 ms (steady state, after any load step). */
+  function rlSim(C, esr, P) {
+    var dt = 2e-5, n = Math.floor(P.tEnd / dt);
+    var vc = 0, i2t = 0, ipeak = 0;
+    var vminLate = 1e9, vmaxLate = -1e9;
+    var tLate = P.tEnd - 0.12;
+    var trace = [];
+    for (var k = 0; k < n; k++) {
+      var t = k * dt;
+      var il = P.iload(t);
+      var vrect = Math.abs(P.vpeak * Math.sin(2 * Math.PI * P.f * t));
+      var i = 0;
+      if (vrect - P.vd > vc) {
+        i = (vrect - P.vd - vc) / P.rs;
+        vc += i * dt / C;
+      } else {
+        vc -= il * dt / C;
+        if (vc < 0) vc = 0;
+      }
+      var vrail = vc - il * esr;
+      if (t < 0.05) i2t += i * i * dt;
+      if (i > ipeak) ipeak = i;
+      if (t >= tLate) {
+        if (vrail < vminLate) vminLate = vrail;
+        if (vrail > vmaxLate) vmaxLate = vrail;
+        if (k % 12 === 0) trace.push(vrail);
+      }
+    }
+    return { ripple: vmaxLate - vminLate, vmin: vminLate, vmax: vmaxLate,
+             i2t: i2t, ipeak: ipeak, trace: trace };
+  }
+
+  /* A stock capacitor: label, farads, voltage rating, ESR. */
+  function rlCap(label, uf, volts, esrMilliohms, tag) {
+    return { label: label, C: uf * 1e-6, volts: volts, esr: esrMilliohms / 1000, tag: tag || "" };
+  }
+
+  var RL_TRIALS = [
+    { n: 1, id: "rail12", name: "TRIAL 1: THE 12V RAIL",
+      vpeak: 15, f: 60, rs: 0.4, vd: 1.4, tEnd: 0.35, floor: 11.0, fuseI2t: 0.50,
+      iload: function () { return 0.5; },
+      story: "The classic 12V rail: 15V transformer peak, half an amp of steady load, " +
+             "11V floor, a 0.50 A\u00B2s slow-blow fuse. Five caps on the shelf, one of them " +
+             "right. The 16V parts cannot legally touch this rail, and the instinct to grab " +
+             "the biggest 25V part ends at the fuse.",
+      stock: [
+        rlCap("470\u00B5F", 470, 16, 120), rlCap("1000\u00B5F", 1000, 16, 90),
+        rlCap("2200\u00B5F", 2200, 25, 60), rlCap("4700\u00B5F", 4700, 25, 45),
+        rlCap("10000\u00B5F", 10000, 25, 30)
+      ] },
+    { n: 2, id: "rail5", name: "TRIAL 2: THE 5V RAIL",
+      vpeak: 7.5, f: 60, rs: 0.4, vd: 1.4, tEnd: 0.35, floor: 4.4, fuseI2t: 0.80,
+      iload: function () { return 1.2; },
+      story: "A 5V rail feeding 1.2 amps of logic: 7.5V peak, 4.4V floor, a 0.80 A\u00B2s fuse. " +
+             "Every rating on the shelf is legal this time, so the rating trap is gone and the " +
+             "ripple math has to carry you. One cap holds the floor. The next size down misses " +
+             "it by about a tenth of a volt, and the scope will show you exactly where.",
+      stock: [
+        rlCap("1000\u00B5F", 1000, 10, 90), rlCap("2200\u00B5F", 2200, 10, 70),
+        rlCap("3300\u00B5F", 3300, 10, 60), rlCap("6800\u00B5F", 6800, 16, 40),
+        rlCap("10000\u00B5F", 10000, 16, 30)
+      ] },
+    { n: 3, id: "step", name: "TRIAL 3: THE LOAD STEP",
+      vpeak: 15, f: 60, rs: 0.4, vd: 1.4, tEnd: 0.35, floor: 10.5, fuseI2t: 1.00,
+      iload: function (t) { return t < 0.15 ? 0.4 : 1.6; },
+      story: "The same 12V rail, but the load steps from 0.4A to 1.6A mid-run, like a disk " +
+             "spinning up. Ripple is no longer the whole story: the step yanks current through " +
+             "the capacitor's ESR, and the rail dips by the step times the ESR. Two caps on the " +
+             "shelf carry the same 4700\u00B5F and the same 25V rating. Only the low-ESR one " +
+             "survives the step.",
+      stock: [
+        rlCap("2200\u00B5F", 2200, 25, 60),
+        rlCap("4700\u00B5F STD", 4700, 25, 80),
+        rlCap("4700\u00B5F LO-ESR", 4700, 25, 25, "lo-esr"),
+        rlCap("6800\u00B5F STD", 6800, 25, 60),
+        rlCap("6800\u00B5F LO-ESR", 6800, 25, 20, "lo-esr")
+      ] }
+  ];
+
+  /* House rule: the rating must clear 125% of the transformer peak. */
+  function rlRatingNeed(trial) { return 1.25 * trial.vpeak; }
+
+  /* Judge a run. Returns {pass, fails:[strings], vented, meas}. */
+  function rlCheck(ti, cap) {
+    var T = RL_TRIALS[ti];
+    var fails = [];
+    if (cap.volts < rlRatingNeed(T)) {
+      fails.push("VENT: " + cap.volts + "V rating is under the " +
+                 rlRatingNeed(T).toFixed(2) + "V house rule (125% of the " +
+                 T.vpeak + "V peak). The cap vents on the first cycle.");
+      return { pass: false, fails: fails, vented: true, meas: null };
+    }
+    var meas = rlSim(cap.C, cap.esr, T);
+    if (meas.vmin < T.floor) {
+      fails.push("BROWNOUT: rail sags to " + meas.vmin.toFixed(2) + "V, below the " +
+                 T.floor.toFixed(1) + "V floor. The board resets on every dip.");
+    }
+    if (meas.i2t > T.fuseI2t) {
+      fails.push("FUSE: cold-start inrush asks " + meas.i2t.toFixed(2) + " A\u00B2s, over the " +
+                 T.fuseI2t.toFixed(2) + " A\u00B2s slow-blow budget. The fuse opens and the rail never rises.");
+    }
+    return { pass: fails.length === 0, fails: fails, vented: false, meas: meas };
+  }
+
+  /* Prediction is good inside 25% of measured ripple. */
+  function rlPredOk(pred, meas) {
+    if (!(pred > 0) || !meas || !(meas.ripple > 0)) return false;
+    return Math.abs(pred - meas.ripple) / meas.ripple <= 0.25;
+  }
+
+  /* ---------------- state ---------------- */
+
+  function rlNewTrialState() {
+    return { sel: -1, pred: "", runs: 0, strikes: 0, freebie: true,
+             failed: false, lastPass: false, lastFails: [], lastMeas: null,
+             certified: false };
+  }
+  function rlNewState() {
+    return { cur: 0, trials: [rlNewTrialState(), rlNewTrialState(), rlNewTrialState()] };
+  }
+  var rlS = rlNewState();
+  var rlEls = {};
+
+
+  /* ---------------- scope drawing ---------------- */
+
+  function rlDrawScope(canvas, T, meas) {
+    var ctx = canvas.getContext("2d");
+    var W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#0e0e10";
+    ctx.fillRect(0, 0, W, H);
+    ctx.font = "10px 'IBM Plex Mono', monospace";
+    if (!meas) {
+      ctx.fillStyle = "#8a857a";
+      ctx.fillText("SCOPE ARMED: pick a cap, call the ripple, press POWER ON.", 12, H / 2);
+      return;
+    }
+    var tr = meas.trace, n = tr.length;
+    var lo = T.floor - 1.2, hi = meas.vmax + 0.6;
+    function X(i) { return 8 + (i / Math.max(1, n - 1)) * (W - 16); }
+    function Y(v) { return H - 14 - ((v - lo) / (hi - lo)) * (H - 34); }
+    ctx.strokeStyle = "#232326";
+    ctx.lineWidth = 1;
+    for (var g = 0; g <= 4; g++) {
+      var gy = 8 + g * (H - 34) / 4;
+      ctx.beginPath(); ctx.moveTo(8, gy); ctx.lineTo(W - 8, gy); ctx.stroke();
+    }
+    /* floor line */
+    var fy = Y(T.floor);
+    ctx.strokeStyle = "#a9a49a";
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath(); ctx.moveTo(8, fy); ctx.lineTo(W - 8, fy); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#a9a49a";
+    ctx.fillText("FLOOR " + T.floor.toFixed(1) + "V", 12, fy - 5);
+    /* trace: ember above the floor, red where it dips under */
+    function stroke(color, under) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      var started = false;
+      for (var i = 0; i < n; i++) {
+        var isUnder = tr[i] < T.floor;
+        if (isUnder !== under) { started = false; continue; }
+        var x = X(i), y = Y(tr[i]);
+        if (!started) { ctx.moveTo(x, y); started = true; } else { ctx.lineTo(x, y); }
+      }
+      ctx.stroke();
+    }
+    stroke("#ff5a1f", false);
+    stroke("#e5484d", true);
+    ctx.fillStyle = "#d8d4cc";
+    ctx.fillText("LAST 120ms, RAIL V", 12, 16);
+    ctx.fillText("MIN " + meas.vmin.toFixed(2) + "V", W - 92, 16);
+  }
+
+  /* ---------------- small DOM helpers ---------------- */
+
+  function rlEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  function rlLog(html) {
+    var p = document.createElement("p");
+    p.innerHTML = html;
+    rlEls.log.appendChild(p);
+    rlEls.log.scrollTop = rlEls.log.scrollHeight;
+  }
+
+  var RL_CSS = [
+    ".rl-overlay{position:fixed;inset:0;z-index:60;display:none;align-items:flex-start;justify-content:center;background:rgba(8,8,10,.82);padding:18px 12px;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".rl-overlay.open{display:flex}",
+    ".rl-panel{width:min(880px,100%);background:var(--panel,#141416);border:1px solid var(--line,#2a2a2e);border-radius:10px;color:var(--paper,#f2efe9);font-family:'Space Grotesk',system-ui,sans-serif;margin:2vh auto}",
+    ".rl-head{padding:16px 18px 10px;border-bottom:1px solid var(--line,#2a2a2e)}",
+    ".rl-head h3{margin:0 0 4px;font-size:20px;letter-spacing:.02em}",
+    ".rl-spec{margin:0 0 8px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ember,#ff5a1f);letter-spacing:.12em}",
+    ".rl-why{margin:0 0 8px;font-size:13.5px;line-height:1.55;color:#d8d4cc}",
+    ".rl-worked{margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#2a2a2e);border-left:3px solid var(--ember,#ff5a1f);border-radius:0 6px 6px 0;background:rgba(255,90,31,.05);font-size:13px;line-height:1.6}",
+    ".rl-worked b{color:#fff}",
+    ".rl-failmodes{margin:0 0 4px;font-size:12.5px;line-height:1.5;color:#a9a49a}",
+    ".rl-body{padding:12px 18px}",
+    "@media(min-width:561px){.rl-panel{max-height:96vh;display:flex;flex-direction:column}.rl-body{flex:1;min-height:0;overflow-y:auto}}",
+    ".rl-tabs{display:flex;gap:8px;margin:2px 0 12px;flex-wrap:wrap}",
+    ".rl-tab{flex:1;min-width:150px;min-height:48px;border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;padding:8px 6px;text-align:center}",
+    ".rl-tab[aria-selected='true']{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.1)}",
+    ".rl-tab.done{border-color:#3fa34d}",
+    ".rl-tab.done .rl-tname::after{content:' \\2713';color:#3fa34d}",
+    ".rl-story{margin:0 0 12px;font-size:12.5px;line-height:1.55;color:#a9a49a}",
+    ".rl-card{border:1px solid var(--line,#2a2a2e);border-radius:8px;padding:12px;margin:0 0 12px;background:rgba(255,255,255,.015)}",
+    ".rl-card h4{margin:0 0 8px;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:#a9a49a}",
+    ".rl-stock{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:0 0 12px}",
+    "@media(max-width:700px){.rl-stock{grid-template-columns:repeat(2,1fr)}}",
+    ".rl-chip{min-height:64px;border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;padding:8px 6px;line-height:1.5}",
+    ".rl-chip .rl-cv{display:block;font-size:15px;font-weight:700}",
+    ".rl-chip .rl-cr{display:block;font-size:11px;color:#a9a49a}",
+    ".rl-chip[aria-pressed='true']{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.14)}",
+    ".rl-chip[aria-pressed='true'] .rl-cv{color:var(--ember,#ff5a1f)}",
+    ".rl-row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin:0 0 12px}",
+    ".rl-field label{display:block;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.1em;color:#a9a49a;margin:0 0 6px}",
+    ".rl-field input{width:130px;min-height:48px;background:#0e0e10;color:var(--paper,#f2efe9);border:1px solid var(--line,#2a2a2e);border-radius:6px;font-family:'IBM Plex Mono',monospace;font-size:16px;padding:0 10px}",
+    ".rl-btn{min-height:48px;min-width:48px;border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.06em;cursor:pointer;padding:12px 18px}",
+    ".rl-btn.primary{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12);font-weight:700}",
+    ".rl-btn:disabled{opacity:.38;cursor:not-allowed}",
+    ".rl-btn:focus-visible,.rl-tab:focus-visible,.rl-chip:focus-visible,.rl-field input:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".rl-scope{width:100%;height:180px;border:1px solid var(--line,#2a2a2e);border-radius:8px;background:#0e0e10;margin:0 0 10px;display:block}",
+    ".rl-readout{font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.7;color:#d8d4cc;margin:0 0 8px;white-space:pre-wrap}",
+    ".rl-readout .good{color:#3fa34d;font-weight:700}",
+    ".rl-readout .bad{color:#e5484d;font-weight:700}",
+    ".rl-strikes{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.08em;color:#e5484d;margin:0 0 6px;min-height:18px}",
+    ".rl-pop{display:inline-block;animation:rlpop 200ms ease-out}",
+    "@keyframes rlpop{0%{transform:scale(.6)}100%{transform:scale(1)}}",
+    ".rl-log{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.65;color:#c9c4b9;border-top:1px solid var(--line,#2a2a2e);padding-top:10px;max-height:200px;overflow-y:auto}",
+    ".rl-log p{margin:0 0 6px}",
+    ".rl-log .good{color:#3fa34d}.rl-log .bad{color:#e5484d}.rl-log .dim{color:#8a857a}",
+    ".rl-foot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 18px;border-top:1px solid var(--line,#2a2a2e)}",
+    ".rl-progress{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.1em;color:#a9a49a;margin-right:auto}",
+    "@media(prefers-reduced-motion:reduce){.rl-pop{animation:none}}"
+  ];
+
+  /* ---------------- trial UI logic ---------------- */
+
+  function rlFmt(n) { return (Math.round(n * 100) / 100).toFixed(2); }
+
+  function rlRenderTabs() {
+    rlEls.tabs.innerHTML = "";
+    RL_TRIALS.forEach(function (T, i) {
+      var t = rlEl("button", "rl-tab" + (rlS.trials[i].certified ? " done" : ""),
+        T.name.replace("TRIAL ", "T"));
+      t.setAttribute("role", "tab");
+      t.setAttribute("aria-selected", i === rlS.cur ? "true" : "false");
+      var nm = rlEl("span", "rl-tname", T.name);
+      t.textContent = "";
+      t.appendChild(nm);
+      t.addEventListener("click", function () { rlS.cur = i; rlRenderAll(); });
+      rlEls.tabs.appendChild(t);
+    });
+  }
+
+  function rlRenderTrial() {
+    var ti = rlS.cur, T = RL_TRIALS[ti], st = rlS.trials[ti];
+    var host = rlEls.trialHost;
+    host.innerHTML = "";
+    host.appendChild(rlEl("p", "rl-story", T.story));
+
+    /* stock shelf */
+    var card = rlEl("div", "rl-card");
+    card.appendChild(rlEl("h4", null, "THE STOCK SHELF: PICK ONE CAPACITOR"));
+    var grid = rlEl("div", "rl-stock");
+    T.stock.forEach(function (cap, ci) {
+      var chip = rlEl("button", "rl-chip");
+      chip.setAttribute("aria-pressed", st.sel === ci ? "true" : "false");
+      chip.setAttribute("aria-label", "Select " + cap.label + ", " + cap.volts + " volts, ESR " +
+        Math.round(cap.esr * 1000) + " milliohms");
+      var cv = rlEl("span", "rl-cv", cap.label);
+      var cr = rlEl("span", "rl-cr", cap.volts + "V / " + Math.round(cap.esr * 1000) + "mR");
+      chip.appendChild(cv); chip.appendChild(cr);
+      chip.addEventListener("click", function () {
+        st.sel = ci; st.lastPass = false;
+        rlRenderAll();
+        rlLog("<span class='dim'>" + cap.label + " " + cap.volts + "V selected. Call the ripple, then power the rail.</span>");
+      });
+      grid.appendChild(chip);
+    });
+    card.appendChild(grid);
+
+    /* prediction + power */
+    var row = rlEl("div", "rl-row");
+    var fld = rlEl("div", "rl-field");
+    fld.appendChild(rlEl("label", null, "PREDICTED RIPPLE (V peak-to-peak)"));
+    var inp = document.createElement("input");
+    inp.id = "rlPred";
+    inp.setAttribute("inputmode", "decimal");
+    inp.setAttribute("aria-label", "Predicted ripple in volts peak-to-peak");
+    inp.value = st.pred;
+    inp.addEventListener("input", function () { st.pred = inp.value; });
+    fld.appendChild(inp);
+    row.appendChild(fld);
+    var power = rlEl("button", "rl-btn primary", "POWER ON");
+    power.id = "rlPower";
+    power.disabled = st.sel < 0 || st.failed;
+    power.addEventListener("click", rlPowerOn);
+    row.appendChild(power);
+    card.appendChild(row);
+
+    /* scope */
+    var scope = document.createElement("canvas");
+    scope.className = "rl-scope";
+    scope.id = "rlScope";
+    scope.width = 640; scope.height = 180;
+    scope.setAttribute("role", "img");
+    scope.setAttribute("aria-label", "Oscilloscope trace of the rail voltage over the last 120 milliseconds");
+    card.appendChild(scope);
+
+    /* readout */
+    var ro = rlEl("p", "rl-readout");
+    ro.id = "rlReadout";
+    card.appendChild(ro);
+    var strikes = rlEl("p", "rl-strikes");
+    strikes.id = "rlStrikes";
+    card.appendChild(strikes);
+    var cert = rlEl("button", "rl-btn", st.certified ? "RAIL CERTIFIED" : "CERTIFY RAIL");
+    cert.id = "rlCert";
+    cert.disabled = true;
+    cert.addEventListener("click", function () {
+      st.certified = true;
+      rlLog("<span class='good rl-pop'>" + T.name + " certified. " +
+        st.trials_note + "</span>");
+      rlRenderAll();
+    });
+    card.appendChild(cert);
+    host.appendChild(card);
+    rlUpdateReadout();
+    rlDrawScope(scope, T, st.lastMeas);
+  }
+
+  function rlUpdateReadout() {
+    var ti = rlS.cur, T = RL_TRIALS[ti], st = rlS.trials[ti];
+    var ro = document.getElementById("rlReadout");
+    var sel = st.sel >= 0 ? T.stock[st.sel] : null;
+    var lines = [];
+    lines.push("RAIL: " + T.vpeak + "V peak / " + T.floor.toFixed(1) + "V floor / fuse " +
+      T.fuseI2t.toFixed(2) + " A\u00B2s / rating rule \u2265 " + rlRatingNeed(T).toFixed(2) + "V");
+    lines.push("CAP: " + (sel ? sel.label + " " + sel.volts + "V, ESR " +
+      Math.round(sel.esr * 1000) + "m\u03A9" : "(none selected)"));
+    if (st.lastMeas) {
+      var m = st.lastMeas;
+      lines.push("MEASURED: ripple " + rlFmt(m.ripple) + "Vpp, rail min " + rlFmt(m.vmin) +
+        "V, cold-start I\u00B2t " + rlFmt(m.i2t) + " A\u00B2s, peak charge " + rlFmt(m.ipeak) + "A");
+      var pred = parseFloat(st.pred);
+      if (st.pred.trim() !== "" && !isNaN(pred)) {
+        lines.push("PREDICTION " + rlFmt(pred) + "V: " +
+          (rlPredOk(pred, m) ? "CALLED IT (inside 25%)" : "off by more than 25%, measured " + rlFmt(m.ripple) + "V"));
+      }
+      if (st.lastFails.length) {
+        lines.push("VERDICT: FAILED");
+        st.lastFails.forEach(function (f) { lines.push("  " + f); });
+      } else {
+        lines.push("VERDICT: RAIL HOLDS");
+      }
+    } else if (st.lastFails.length) {
+      lines.push("VERDICT: FAILED");
+      st.lastFails.forEach(function (f) { lines.push("  " + f); });
+    } else {
+      lines.push("STATUS: scope armed, no run yet");
+    }
+    ro.innerHTML = "";
+    lines.forEach(function (ln, i) {
+      var sp = rlEl("span", null, ln);
+      if (/VERDICT: RAIL HOLDS/.test(ln)) sp.className = "good";
+      if (/VERDICT: FAILED/.test(ln)) sp.className = "bad";
+      if (/CALLED IT/.test(ln)) sp.className = "good";
+      ro.appendChild(sp);
+      if (i < lines.length - 1) ro.appendChild(document.createElement("br"));
+    });
+    var sk = document.getElementById("rlStrikes");
+    sk.textContent = st.failed ? "TRIAL FAILED: three strikes. RESET TRIAL to try again." :
+      (st.strikes > 0 ? "STRIKES: " + st.strikes + "/3" : "");
+    var cert = document.getElementById("rlCert");
+    var pred = parseFloat(st.pred);
+    var predOk = st.pred.trim() !== "" && !isNaN(pred) && st.lastMeas && rlPredOk(pred, st.lastMeas);
+    cert.disabled = !(st.lastPass && predOk && !st.failed) || st.certified;
+  }
+
+  function rlPowerOn() {
+    var ti = rlS.cur, T = RL_TRIALS[ti], st = rlS.trials[ti];
+    if (st.sel < 0 || st.failed) return;
+    var cap = T.stock[st.sel];
+    var chk = rlCheck(ti, cap);
+    st.runs++;
+    st.lastPass = chk.pass;
+    st.lastFails = chk.fails;
+    st.lastMeas = chk.meas;
+    st.trials_note = "";
+    if (!chk.pass) {
+      if (st.freebie) {
+        st.freebie = false;
+        rlLog("<span class='dim'>Free look spent: " + chk.fails[0] +
+          " No strike this time. Pick another cap and power on again.</span>");
+      } else {
+        st.strikes++;
+        if (st.strikes >= 3) {
+          st.failed = true;
+          rlLog("<span class='bad rl-pop'>Strike 3/3: " + chk.fails[0] + " TRIAL FAILED.</span>");
+        } else {
+          rlLog("<span class='bad'>Strike " + st.strikes + "/3: " + chk.fails[0] + "</span>");
+        }
+      }
+    } else {
+      st.freebie = false;
+      var m = chk.meas;
+      rlLog("<span class='good rl-pop'>Rail holds: ripple " + rlFmt(m.ripple) + "Vpp, min " +
+        rlFmt(m.vmin) + "V, I\u00B2t " + rlFmt(m.i2t) + " A\u00B2s of the " +
+        T.fuseI2t.toFixed(2) + " budget.</span>");
+    }
+    rlRenderAll();
+  }
+
+  function rlRenderAll() {
+    rlRenderTabs();
+    rlRenderTrial();
+    var n = rlS.trials.filter(function (s) { return s.certified; }).length;
+    rlEls.progress.textContent = "CERTIFIED: " + n + "/3";
+    rlEls.dlBtn.disabled = n < 3;
+  }
+
+  function rlDownloadCert() {
+    var lines = ["THE RIPPLE ROOM // RESERVOIR CAPACITOR SIZING", "Certificate of qualification", ""];
+    RL_TRIALS.forEach(function (T, i) {
+      var st = rlS.trials[i], cap = st.sel >= 0 ? T.stock[st.sel] : null;
+      var m = st.lastMeas;
+      lines.push("TRIAL " + T.n + " " + T.id.toUpperCase() + ": " +
+        (cap ? cap.label + " " + cap.volts + "V" : "no cap") +
+        (m ? ", ripple " + rlFmt(m.ripple) + "Vpp, min rail " + rlFmt(m.vmin) + "V, I2t " +
+          rlFmt(m.i2t) + " A2s" : "") + " (" + st.strikes + " strikes).");
+    });
+    lines.push("", "One mechanism: the capacitor is a bucket, the load is a leak, the mains",
+      "refills it 120 times a second, and the bucket must cover the leak between refills",
+      "without being so big that the refill blows the fuse. The rating must clear 125%",
+      "of the transformer peak, the rail must stay above the floor, and the cold-start",
+      "I2t must stay inside the slow-blow budget. On the load step, ESR decides.");
+    var blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "ripple-room-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  /* ---------------- DOM build ---------------- */
+
+  function rlBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("rlBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = RL_CSS.join("\n");
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "rlBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Ripple Room";
+    b.addEventListener("click", rlOpen);
+    box.appendChild(b);
+
+    var ov = rlEl("div", "rl-overlay");
+    ov.id = "rlOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Ripple Room");
+    var panel = rlEl("div", "rl-panel");
+
+    var head = rlEl("div", "rl-head");
+    head.appendChild(rlEl("h3", null, "The Ripple Room"));
+    head.appendChild(rlEl("p", "rl-spec", "OLD IRON // RESERVOIR CAPACITOR SIZING"));
+    head.appendChild(rlEl("p", "rl-why",
+      "Every board on the OLD IRON bench lives or dies by its power rail, and every rail " +
+      "that starts at a transformer carries ripple. The transformer gives you a sine wave, " +
+      "the bridge folds it into 120 pulses a second, and the reservoir capacitor is the only " +
+      "thing standing between those pulses and the load: it drinks on each peak and feeds the " +
+      "board in the gaps. Size it too small and the rail sags below the regulator floor on every " +
+      "gap, so the board resets 120 times a second and you get to explain that to the customer. " +
+      "Size it too big and the cold-start inrush pops the slow-blow fuse before the board ever " +
+      "boots. This bench puts a real bridge, a real capacitor, and a real fuse on the table, " +
+      "simulated step by step at 20-microsecond resolution, and makes you do the tech's job: " +
+      "pick the cap from stock, call the ripple, power the rail, and sign it off."));
+    var worked = rlEl("p", "rl-worked");
+    worked.innerHTML =
+      "<b>Worked example, numbers straight from trial 1's own sim, check the arithmetic:</b> the " +
+      "transformer peaks at 15V. The house rule demands a rating of 15 \u00D7 1.25 = <b>18.75V</b>, " +
+      "so both 16V caps on the shelf are disqualified before the power switch moves. Of the 25V " +
+      "survivors the sim measures <b>1.45V</b> of ripple on the 2200\u00B5F (rail holds at 11.69V, " +
+      "above the 11V floor, and the cold start asks 0.24 A\u00B2s of the fuse's 0.50 budget), " +
+      "<b>0.68V</b> on the 4700\u00B5F (rail even higher at 12.21V, but the cold start asks 0.69 A\u00B2s " +
+      "and pops the fuse), and <b>0.32V</b> on the 10000\u00B5F (asks 1.73 A\u00B2s, pops it harder). " +
+      "Double the capacitance, roughly halve the ripple, but the inrush grows with it. That " +
+      "tradeoff is the whole bench.";
+    head.appendChild(worked);
+    head.appendChild(rlEl("p", "rl-failmodes",
+      "Failure modes, stated plainly. BROWNOUT: the rail dips below the floor and the board " +
+      "resets; the scope paints the dip red so there is no argument about it. FUSE: the cold-start " +
+      "charge asks more I\u00B2t than the slow-blow fuse carries, it opens, and the rail never rises " +
+      "at all. VENT: the rating clears less than 125 percent of the transformer peak, the cap vents " +
+      "on the first cycle, and the bench refuses the run rather than faking it. A failed run costs " +
+      "one strike and three strikes fail the trial, but the first power-on of every trial is a free " +
+      "look with no strike, so you can watch a failure before you start spending. RESET TRIAL is the " +
+      "way back. Certification needs a passing run, a ripple prediction inside 25 percent of measured, " +
+      "and fewer than three strikes."));
+    panel.appendChild(head);
+
+    var body = rlEl("div", "rl-body");
+    rlEls.tabs = rlEl("div", "rl-tabs");
+    rlEls.tabs.setAttribute("role", "tablist");
+    body.appendChild(rlEls.tabs);
+    rlEls.trialHost = rlEl("div", null);
+    body.appendChild(rlEls.trialHost);
+    rlEls.log = rlEl("div", "rl-log");
+    rlEls.log.setAttribute("aria-live", "polite");
+    body.appendChild(rlEls.log);
+    panel.appendChild(body);
+
+    var foot = rlEl("div", "rl-foot");
+    rlEls.progress = rlEl("span", "rl-progress", "CERTIFIED: 0/3");
+    foot.appendChild(rlEls.progress);
+    var resetTrial = rlEl("button", "rl-btn", "RESET TRIAL");
+    resetTrial.addEventListener("click", function () {
+      rlS.trials[rlS.cur] = rlNewTrialState();
+      rlRenderAll();
+      rlLog("<span class='dim'>Trial " + RL_TRIALS[rlS.cur].n + " reset. Shelf restocked, strikes cleared.</span>");
+    });
+    foot.appendChild(resetTrial);
+    var resetBench = rlEl("button", "rl-btn", "RESET BENCH");
+    resetBench.addEventListener("click", function () {
+      rlS = rlNewState();
+      rlRenderAll();
+      rlLog("<span class='dim'>Bench reset. Three rails to size.</span>");
+    });
+    foot.appendChild(resetBench);
+    rlEls.dlBtn = rlEl("button", "rl-btn primary", "DOWNLOAD CERTIFICATE");
+    rlEls.dlBtn.disabled = true;
+    rlEls.dlBtn.addEventListener("click", rlDownloadCert);
+    foot.appendChild(rlEls.dlBtn);
+    var closeBtn = rlEl("button", "rl-btn", "CLOSE");
+    closeBtn.addEventListener("click", rlClose);
+    foot.appendChild(closeBtn);
+    panel.appendChild(foot);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    rlEls.overlay = ov;
+    rlRenderAll();
+  }
+
+  function rlOpen() {
+    if (!rlEls.overlay) rlBuild();
+    rlEls.overlay.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+  function rlClose() {
+    if (rlEls.overlay) rlEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", rlBuild);
+    } else {
+      rlBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      RL: {
+        TRIALS: RL_TRIALS, rlSim: rlSim, rlCheck: rlCheck, rlPredOk: rlPredOk,
+        rlRatingNeed: rlRatingNeed, newTrialState: rlNewTrialState, newState: rlNewState
+      }
+    });
+  }
+})();

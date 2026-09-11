@@ -642,7 +642,11 @@ var PG_BENCHES = [
   { section: "silicon", n: "36", name: "The Division Deck", btn: "dvBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "The algorithm real dividers fall back on: a real shift-subtract engine, one quotient bit per cycle. Call every shift across three divisions, do the signed wrapper's job, and meet the two inputs where RISC-V division refuses to trap.",
     how: "Predict each quotient and remainder, call SHIFT or SHIFT-SUBTRACT for every bit, certify all three trials.",
-    spec: "DIV HARDWARE \u00B7 3 TRIALS" }
+    spec: "DIV HARDWARE \u00B7 3 TRIALS" },
+  { section: "oldiron", n: "37", name: "The Ripple Room", btn: "rlBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "A real reservoir-capacitor bench for OLD IRON power work: a discrete-time rectifier sim with a scope you can watch. Size the cap from stock, hold the rail above the floor, survive the cold-start inrush, respect the voltage rating, and mind the ESR when the load steps.",
+    how: "Pick a capacitor from stock, predict the ripple, power the rail, read the scope, and certify all three rails.",
+    spec: "RC RIPPLE \u00B7 3 RAILS" }
 ];
 
 var pgFilter = "all";
@@ -1054,9 +1058,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=5c027516de" defer></script>
-<script src="rvdata.js?v=5c027516de" defer></script>
-<script src="riscv-lab.js?v=5c027516de" defer></script>
-<script src="features.js?v=5c027516de" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=8d27435d73" defer></script>
+<script src="rvdata.js?v=8d27435d73" defer></script>
+<script src="riscv-lab.js?v=8d27435d73" defer></script>
+<script src="features.js?v=8d27435d73" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
