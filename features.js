@@ -34337,3 +34337,647 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+/* ============================================================
+   THE DIVIDER ROOM
+   Old Iron bench 48. The one atomic mechanism: two resistors split
+   a voltage, and the tap holds its value only while the load sips
+   far less current than the divider itself burns.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------- the bench's own model, stated in the copy ---------- */
+  var VD_T1 = { vin: 5, r1: 10000, r2: 20000, rl: null };   // unloaded tap
+  var VD_T2 = { vin: 5, r1: 10000, r2: 20000, rl: 10000 };  // the collapsed tap
+  var VD_T3 = { vin: 12, r1: 1000, rl: 10000 };            // size R2 yourself
+  var VD_TOL = 0.06;         // trial 1/2 prediction tolerance, volts
+  var VD_T3_LO = 3.0, VD_T3_HI = 3.6;  // trial 3 honest band, volts
+  var VD_RATIO_MIN = 10;     // the 10x rule: divider current >= 10x load current
+
+  /* ---------- pure sims (no DOM) ---------- */
+  function vdTapUnloaded(vin, r1, r2) { return vin * r2 / (r1 + r2); }
+  function vdPar(a, b) { return a * b / (a + b); }
+  function vdTapLoaded(vin, r1, r2, rl) {
+    var r2p = rl == null ? r2 : vdPar(r2, rl);
+    return vin * r2p / (r1 + r2p);
+  }
+  function vdDivCurrent(vin, r1, r2) { return vin / (r1 + r2); }        // amps
+  function vdLoadCurrent(vin, r1, r2, rl) {                            // amps, at unloaded tap
+    if (rl == null) return 0;
+    return vdTapUnloaded(vin, r1, r2) / rl;
+  }
+  function vdRatio(vin, r1, r2, rl) {                                  // honesty ratio
+    var il = vdLoadCurrent(vin, r1, r2, rl);
+    if (il <= 0) return Infinity;
+    return vdDivCurrent(vin, r1, r2) / il;
+  }
+  function vdCheckT12(pred, vin, r1, r2, rl) {
+    var p = Number(pred);
+    if (!isFinite(p)) return { ok: false, why: "not a number" };
+    var v = vdTapLoaded(vin, r1, r2, rl);
+    var err = Math.abs(p - v);
+    return { ok: err <= VD_TOL, v: v, err: err };
+  }
+  function vdCheckT3(r2) {
+    var r2n = Number(r2);
+    if (!isFinite(r2n) || r2n <= 0) return { ok: false, why: "not a resistor value" };
+    var v = vdTapLoaded(VD_T3.vin, VD_T3.r1, r2n, VD_T3.rl);
+    var ratio = vdRatio(VD_T3.vin, VD_T3.r1, r2n, VD_T3.rl);
+    var vOk = v >= VD_T3_LO - 1e-9 && v <= VD_T3_HI + 1e-9;
+    var rOk = ratio >= VD_RATIO_MIN - 1e-9;
+    return { ok: vOk && rOk, v: v, ratio: ratio, vOk: vOk, rOk: rOk };
+  }
+  function vdFmtV(x) { return (Math.round(x * 100) / 100).toFixed(2); }
+  function vdFmtR(r) {
+    if (r >= 1e6) return (Math.round(r / 1e4) / 100).toFixed(2) + " M";
+    if (r >= 1e3) return (Math.round(r / 10) / 100).toFixed(2) + " k";
+    return Math.round(r) + " ";
+  }
+  function vdFmtA(a) { // amps to uA/mA
+    if (a <= 0) return "0";
+    if (a < 0.001) return (Math.round(a * 1e6 * 10) / 10) + " uA";
+    return (Math.round(a * 1e3 * 10) / 10) + " mA";
+  }
+  function vdFmtW(vin, r1, r2) {
+    var w = vin * vin / (r1 + r2);
+    if (w < 0.001) return (Math.round(w * 1e6)) + " uW";
+    if (w < 1) return (Math.round(w * 1e3 * 10) / 10) + " mW";
+    return (Math.round(w * 100) / 100) + " W";
+  }
+  function vdHonesty(ratio) {
+    if (ratio === Infinity) return { t: "HONEST", c: "ok" };
+    if (ratio >= 10) return { t: "HONEST", c: "ok" };
+    if (ratio >= 3) return { t: "SAGGING", c: "warn" };
+    return { t: "COLLAPSED", c: "bad" };
+  }
+
+  /* ---------- css ---------- */
+  var VD_CSS = [
+    ".vd-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".vd-overlay.open{display:block}",
+    ".vd-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".vd-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".vd-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".vd-sub{font-size:13px;color:#b9b2a4;margin:0 0 22px;max-width:62ch;line-height:1.6}",
+    ".vd-card{border:1px solid var(--line,#2b2b30);background:var(--panel,#141416);border-radius:10px;padding:18px;margin:0 0 16px}",
+    ".vd-card h3{font-family:'Space Grotesk',sans-serif;font-size:17px;margin:0 0 6px;color:var(--paper,#f2ede4);letter-spacing:.02em}",
+    ".vd-card .why{font-size:13px;line-height:1.65;color:#d8d2c4;margin:0 0 10px;max-width:68ch}",
+    ".vd-card .why b{color:var(--ember,#ff5a1f);font-weight:600}",
+    ".vd-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:8px 0}",
+    ".vd-lab{font-size:11px;letter-spacing:.14em;color:#8f8a7d}",
+    ".vd-in{background:#0c0c0e;border:1px solid var(--line,#2b2b30);color:var(--paper,#f2ede4);border-radius:6px;padding:12px 10px;font-family:inherit;font-size:15px;width:110px;min-height:48px}",
+    ".vd-in:focus{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".vd-btn{font-family:inherit;font-size:13px;letter-spacing:.1em;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,#2b2b30);border-radius:6px;padding:14px 18px;min-height:48px;cursor:pointer}",
+    ".vd-btn:focus{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".vd-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#0c0c0e;font-weight:700}",
+    ".vd-btn:disabled{opacity:.35;cursor:default}",
+    ".vd-btn[aria-pressed='true']{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#0c0c0e;font-weight:700}",
+    ".vd-log{border:1px solid var(--line,#2b2b30);border-radius:8px;background:#0c0c0e;padding:12px;height:150px;overflow-y:auto;font-size:12px;line-height:1.7}",
+    ".vd-log .ok{color:#7fd08a}.vd-log .bad{color:#ff7a5c}.vd-log .warn{color:#ffbf5c}.vd-log .dim{color:#8f8a7d}",
+    ".vd-pop{animation:vdpop .2s ease-out}",
+    "@keyframes vdpop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    ".vd-meter{border:1px solid var(--line,#2b2b30);border-radius:8px;background:#0c0c0e;padding:14px;margin:10px 0}",
+    ".vd-mbar{height:22px;border:1px solid var(--line,#2b2b30);border-radius:4px;position:relative;overflow:hidden;background:#131316}",
+    ".vd-mfill{position:absolute;left:0;top:0;bottom:0;background:var(--ember,#ff5a1f);width:0%}",
+    ".vd-mnum{font-size:26px;color:var(--paper,#f2ede4);margin:8px 0 0}",
+    ".vd-mnum small{font-size:12px;color:#8f8a7d}",
+    ".vd-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:10px 0}",
+    ".vd-stat{border:1px solid var(--line,#2b2b30);border-radius:6px;padding:10px;background:#0c0c0e}",
+    ".vd-stat .k{font-size:10px;letter-spacing:.14em;color:#8f8a7d}",
+    ".vd-stat .v{font-size:16px;color:var(--paper,#f2ede4);margin-top:4px}",
+    ".vd-stat .v.hot{color:var(--ember,#ff5a1f)}",
+    ".vd-seg{display:flex;flex-wrap:wrap;gap:8px}",
+    ".vd-seg .vd-btn{padding:12px 14px}",
+    ".vd-banner{border:1px solid var(--ember,#ff5a1f);border-radius:8px;padding:14px;margin:16px 0;display:none;background:rgba(255,90,31,.06)}",
+    ".vd-banner h3{font-family:'Space Grotesk',sans-serif;margin:0 0 6px;color:var(--ember,#ff5a1f);font-size:16px;letter-spacing:.04em}",
+    ".vd-banner p{font-size:13px;color:#d8d2c4;margin:0;line-height:1.6}",
+    "input[type=range].vd-r{width:100%;min-height:48px;accent-color:#ff5a1f}",
+    "@media(prefers-reduced-motion:reduce){.vd-pop{animation:none}}"
+  ].join("\n");
+
+  /* ---------- local helpers ---------- */
+  function vdEl(tag, cls, text) {
+    var d = document.createElement(tag);
+    if (cls) d.className = cls;
+    if (text != null) d.textContent = text;
+    return d;
+  }
+  var vdState = {
+    step: 0,
+    trials: [{ committed: false, pred: null }, { committed: false, pred: null }, { committed: false, r2: null }],
+    ex: { vin: 5, r1: 10000, r2: 20000, rl: null },
+    certified: false
+  };
+  var vdEls = null;
+  function vdLog(msg, cls) {
+    if (!vdEls || !vdEls.log) return;
+    var d = vdEl("div", cls || "", msg);
+    vdEls.log.appendChild(d);
+    vdEls.log.scrollTop = vdEls.log.scrollHeight;
+  }
+  function vdPop(card) {
+    if (!card) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    card.classList.remove("vd-pop");
+    void card.offsetWidth;
+    card.classList.add("vd-pop");
+  }
+
+  /* ---------- copy: why first, worked example, failure modes ---------- */
+  var VD_INTRO_A =
+    "<div class='vd-card'><h3>WHY IT MATTERS</h3>" +
+    "<p class='why'>Every sensor on the refurb pile has to tell a 3.3 V <b>ear</b>, a logic input that only understands low voltages, " +
+    "about a 5 V or 12 V world. The cheapest translator in the drawer is two <b>resistors</b>: R1 up to the rail, R2 down to ground, " +
+    "and the <b>tap</b>, the wire between them, carrying the middle voltage to the ear.</p>" +
+    "<p class='why'>Get the arithmetic wrong and your meter reads 2.00 V where you expected 3.33 V, and you will replace every chip in the room " +
+    "before you blame two resistors. This room makes you predict the tap before you trust it. One sentence carries the whole bench: " +
+    "<b>the tap holds its value only while the load sips far less current than the divider itself burns.</b></p></div>";
+
+  var VD_INTRO_B =
+    "<div class='vd-card'><h3>WORKED EXAMPLE, CHECK IT BY HAND</h3>" +
+    "<p class='why'>A 5 V rail. R1 is 10 k, R2 is 20 k. With nothing connected, one current flows through both resistors, " +
+    "so the tap splits the rail by resistance: 5 * 20,000 / (10,000 + 20,000) = <b>3.33 V</b>. The ear would hear a clean logic high. " +
+    "That is the whole unloaded trick: the tap is the rail times the bottom resistor over the sum.</p>" +
+    "<p class='why'>Now the breakage. A 10 k ear connects to the tap and starts drinking. The 10 k sits across R2, " +
+    "so the bottom leg is now 20 k in parallel with 10 k: 6,667 ohms. Recompute: 5 * 6,667 / (10,000 + 6,667) = <b>2.00 V</b>. " +
+    "Same resistors, same rail, a third of the voice gone. The divider did not change. The load did. " +
+    "Press STEP and watch the arithmetic, then call both numbers yourself in trials 1 and 2.</p></div>";
+
+  var VD_INTRO_C =
+    "<div class='vd-card'><h3>THE FOUR WAYS THE TAP LIES</h3>" +
+    "<p class='why'><b>Collapsed:</b> a thirsty ear drags the tap down, 3.33 V becomes 2.00 V, and the ear mishears every bit. " +
+    "Trial 2 makes you predict the fall before you connect the ear. " +
+    "<b>Starved:</b> giant resistors starve the tap: the ear's own input leakage, a microamp or two, wins the fight. " +
+    "A 1 M divider feeding 1 uA of leakage lies by a volt. " +
+    "<b>Hot:</b> tiny resistors keep the tap honest but burn power all day and night; a divider never sleeps, " +
+    "so honest taps on battery gear cost you standby life. " +
+    "<b>Deadly:</b> never divide the mains. If the top resistor opens, the tap floats toward the live side; " +
+    "if the bottom opens, the full line lands on the ear. Dividers are for low-voltage rails only. " +
+    "The explorer below is consequence-free, so all four failure modes are yours to meet here.</p></div>";
+
+  var VD_INTRO_HTML = VD_INTRO_A + VD_INTRO_B + VD_INTRO_C;
+
+  var VD_STEPS = [
+    "<span class='k'>Unloaded first: with nothing drinking, one current flows through both resistors, so the tap is the rail " +
+    "times the bottom resistor over the sum: 5 * 20,000 / 30,000 = </span><span class='v'>3.33 V</span><span class='k'>.</span>",
+    "<span class='k'>Divider current: 5 V across 30 k is </span><span class='v'>167 uA</span>" +
+    "<span class='k'>. This is what the divider itself burns, load or no load.</span>",
+    "<span class='k'>The ear drinks: at 3.33 V across 10 k it would sip </span><span class='v'>333 uA</span>" +
+    "<span class='k'>, twice the divider current. The tap never stood a chance.</span>",
+    "<span class='k'>Loaded, the bottom leg is 20 k || 10 k = </span><span class='v'>6,667 ohms</span>" +
+    "<span class='k'>. The tap recomputes: 5 * 6,667 / 16,667 = </span><span class='hit'>2.00 V</span><span class='k'>.</span>",
+    "<span class='k'>The 10x rule, earned: the tap holds only when the divider burns at least </span><span class='v'>ten times</span>" +
+    "<span class='k'> what the load sips. Here the ratio is 167 / 333 = </span><span class='hit'>0.5x</span>" +
+    "<span class='k'>, so the tap collapses. Trial 3 makes you build a divider that passes the rule.</span>"
+  ];
+
+  /* ---------- meter widget: a tap voltmeter ---------- */
+  function vdMeter(id) {
+    var root = vdEl("div", "vd-meter");
+    var bar = vdEl("div", "vd-mbar");
+    var fill = vdEl("div", "vd-mfill");
+    bar.appendChild(fill);
+    var num = vdEl("div", "vd-mnum");
+    root.appendChild(vdEl("div", "vd-lab", "TAP VOLTMETER"));
+    root.appendChild(bar);
+    root.appendChild(num);
+    function show(v, vin) {
+      var frac = vin > 0 ? Math.max(0, Math.min(1, v / vin)) : 0;
+      fill.style.width = (frac * 100).toFixed(1) + "%";
+      num.innerHTML = "";
+      num.appendChild(document.createTextNode(vdFmtV(v) + " V "));
+      var sm = vdEl("small", "", "of " + vdFmtV(vin) + " V rail");
+      num.appendChild(sm);
+    }
+    return { root: root, show: show };
+  }
+
+  /* ---------- stat grid ---------- */
+  function vdStatGrid() {
+    var g = vdEl("div", "vd-grid");
+    var cells = {};
+    [["Current through divider", "i"], ["Power burned, always on", "p"],
+     ["Tap, nothing drinking", "u"], ["Tap, ear connected", "l"],
+     ["Honesty ratio (want 10x)", "r"], ["Ear sips", "e"]
+    ].forEach(function (pair) {
+      var c = vdEl("div", "vd-stat");
+      c.appendChild(vdEl("div", "k", pair[0].toUpperCase()));
+      var v = vdEl("div", "v", "-");
+      c.appendChild(v);
+      cells[pair[1]] = v;
+      g.appendChild(c);
+    });
+    return { grid: g, cells: cells };
+  }
+  function vdRefreshEx() {
+    var s = vdState.ex, c = vdEls.exCells;
+    var u = vdTapUnloaded(s.vin, s.r1, s.r2);
+    var l = vdTapLoaded(s.vin, s.r1, s.r2, s.rl);
+    var i = vdDivCurrent(s.vin, s.r1, s.r2);
+    var e = vdLoadCurrent(s.vin, s.r1, s.r2, s.rl);
+    var ratio = vdRatio(s.vin, s.r1, s.r2, s.rl);
+    var h = vdHonesty(ratio);
+    c.i.textContent = vdFmtA(i);
+    c.p.textContent = vdFmtW(s.vin, s.r1, s.r2);
+    c.u.textContent = vdFmtV(u) + " V";
+    c.l.textContent = vdFmtV(l) + " V";
+    c.l.className = "v" + (l < u - 0.005 ? " hot" : "");
+    c.r.textContent = (ratio === Infinity ? "no load" : (Math.round(ratio * 10) / 10) + "x : " + h.t);
+    c.r.className = "v" + (h.c === "ok" ? "" : " hot");
+    c.e.textContent = s.rl == null ? "none" : vdFmtA(e);
+    vdEls.exMeter.show(l, s.vin);
+    vdEls.exLab.textContent = "VIN " + vdFmtV(s.vin) + " V : R1 " + vdFmtR(s.r1) + " : R2 " + vdFmtR(s.r2) +
+      " : EAR " + (s.rl == null ? "DISCONNECTED" : vdFmtR(s.rl).trim() + " CONNECTED");
+  }
+
+  /* ---------- trial flow helpers ---------- */
+  function vdMaybeCertify() {
+    var all = vdState.trials.every(function (t) { return t.committed; });
+    if (vdEls && vdEls.banner) {
+      vdEls.banner.style.display = all ? "block" : "none";
+    }
+    return all;
+  }
+  function vdCertLine() {
+    var t = vdState.trials;
+    return "THE DIVIDER ROOM, CERTIFIED. Unloaded tap called at " + vdFmtV(t[0].pred) +
+      " V, collapsed tap called at " + vdFmtV(t[1].pred) +
+      " V, and an honest divider sized at R2 = " + vdFmtR(t[2].r2).trim() +
+      " for the 12 V rail: tap in the 3.0 to 3.6 V band, divider current 10x the ear.";
+  }
+
+  /* ---------- overlay open/close ---------- */
+  function vdOpen() { if (vdEls) vdEls.overlay.classList.add("open"); }
+  function vdClose() { if (vdEls) vdEls.overlay.classList.remove("open"); }
+
+  function vdBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("vdBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = VD_CSS;
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "vdBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Divider Room";
+    b.addEventListener("click", vdOpen);
+    box.appendChild(b);
+
+    var ov = vdEl("div", "vd-overlay");
+    ov.id = "vdOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Divider Room");
+    var x = vdEl("button", "vd-btn", "CLOSE");
+    x.id = "vdXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Divider Room");
+    x.addEventListener("click", vdClose);
+    ov.appendChild(x);
+
+    var panel = vdEl("div", "vd-panel");
+    panel.appendChild(vdEl("div", "vd-kicker", "OLD IRON BENCH 48"));
+    panel.appendChild(vdEl("h2", "vd-title", "The Divider Room"));
+    panel.appendChild(vdEl("p", "vd-sub",
+      "Two resistors, one tap, and the arithmetic everyone gets wrong exactly once. " +
+      "Predict the tap, load the tap, then size an honest one."));
+
+    var introWrap = vdEl("div", "");
+    introWrap.innerHTML = VD_INTRO_HTML;
+    panel.appendChild(introWrap);
+
+    /* arithmetic stepper */
+    var stepCard = vdEl("div", "vd-card");
+    stepCard.appendChild(vdEl("h3", null, "THE ARITHMETIC, STEP BY STEP"));
+    stepCard.appendChild(vdEl("p", "why", "The worked example above, one line at a time. Consequence-free."));
+    var lanes = vdEl("div", "vd-lanes", "");
+    lanes.id = "vdLanes";
+    stepCard.appendChild(lanes);
+    var stepRow = vdEl("div", "vd-row");
+    var stepBtn = vdEl("button", "vd-btn", "STEP");
+    stepBtn.type = "button"; stepBtn.id = "vdStepBtn";
+    stepBtn.setAttribute("aria-label", "Step through the divider arithmetic");
+    stepRow.appendChild(stepBtn);
+    stepCard.appendChild(stepRow);
+    panel.appendChild(stepCard);
+    stepBtn.addEventListener("click", function () {
+      if (vdState.step < VD_STEPS.length) {
+        lanes.innerHTML += (vdState.step > 0 ? "<br>" : "") + VD_STEPS[vdState.step];
+        vdState.step++;
+        vdPop(stepCard);
+        if (vdState.step >= VD_STEPS.length) stepBtn.disabled = true;
+      }
+    });
+
+    /* do-first: let the ear drink */
+    var doCard = vdEl("div", "vd-card");
+    doCard.appendChild(vdEl("h3", null, "DO FIRST: LET THE EAR DRINK"));
+    doCard.appendChild(vdEl("p", "why",
+      "One tap. The 10 k ear connects to the tap of the 5 V / 10 k / 20 k divider and the meter tells you " +
+      "what the arithmetic already said. Everything in this room starts from this moment: the same resistors, a different tap."));
+    var doMeter = vdMeter("vdDo");
+    doCard.appendChild(doMeter.root);
+    var doRow = vdEl("div", "vd-row");
+    var drinkBtn = vdEl("button", "vd-btn solid", "LET THE EAR DRINK");
+    drinkBtn.type = "button"; drinkBtn.id = "vdDrinkBtn";
+    drinkBtn.setAttribute("aria-pressed", "false");
+    var earOn = false;
+    doRow.appendChild(drinkBtn);
+    doCard.appendChild(doRow);
+    panel.appendChild(doCard);
+    function vdDoShow() {
+      var v = earOn
+        ? vdTapLoaded(VD_T1.vin, VD_T1.r1, VD_T1.r2, VD_T2.rl)
+        : vdTapUnloaded(VD_T1.vin, VD_T1.r1, VD_T1.r2);
+      doMeter.show(v, VD_T1.vin);
+      vdPop(doCard);
+    }
+    vdDoShow();
+    drinkBtn.addEventListener("click", function () {
+      earOn = !earOn;
+      drinkBtn.textContent = earOn ? "DISCONNECT THE EAR" : "LET THE EAR DRINK";
+      drinkBtn.setAttribute("aria-pressed", earOn ? "true" : "false");
+      vdDoShow();
+      if (earOn) vdLog("do-first: ear connected, tap fell 3.33 V to 2.00 V. Same resistors, the load changed.", "warn");
+      else vdLog("do-first: ear disconnected, tap back to 3.33 V.", "dim");
+    });
+
+    /* explorer */
+    var exCard = vdEl("div", "vd-card");
+    exCard.appendChild(vdEl("h3", null, "THE TAP EXPLORER"));
+    exCard.appendChild(vdEl("p", "why",
+      "Your bench, consequence-free. Change the rail, the resistors, the ear, and watch the honesty ratio move. " +
+      "A sagging tap turns ember; a collapsed one is a promise the divider cannot keep."));
+    var vinRow = vdEl("div", "vd-row");
+    vinRow.appendChild(vdEl("span", "vd-lab", "RAIL"));
+    var vinSeg = vdEl("div", "vd-seg");
+    [3.3, 5, 12].forEach(function (v) {
+      var vb = vdEl("button", "vd-btn" + (v === 5 ? "" : ""), v + " V");
+      vb.type = "button";
+      vb.setAttribute("aria-pressed", v === 5 ? "true" : "false");
+      if (v === 5) vb.classList.add("solid");
+      vb.addEventListener("click", function () {
+        vdState.ex.vin = v;
+        Array.prototype.forEach.call(vinSeg.children, function (c) {
+          c.classList.remove("solid"); c.setAttribute("aria-pressed", "false");
+        });
+        vb.classList.add("solid"); vb.setAttribute("aria-pressed", "true");
+        vdRefreshEx();
+      });
+      vinSeg.appendChild(vb);
+    });
+    vinRow.appendChild(vinSeg);
+    exCard.appendChild(vinRow);
+
+    function vdSliderRow(label, rKey) {
+      var row = vdEl("div", "vd-row");
+      row.appendChild(vdEl("span", "vd-lab", label));
+      var rng = document.createElement("input");
+      rng.type = "range"; rng.className = "vd-r"; rng.min = "0"; rng.max = "1000";
+      rng.setAttribute("aria-label", label + " in ohms, logarithmic");
+      row.appendChild(rng);
+      var val = vdEl("span", "vd-lab", "");
+      row.appendChild(val);
+      function sync() {
+        var r = 100 * Math.pow(10, (Number(rng.value) / 1000) * 4); // 100 .. 1M
+        vdState.ex[rKey] = r;
+        val.textContent = vdFmtR(r).trim();
+        vdRefreshEx();
+      }
+      rng.addEventListener("input", sync);
+      rng.addEventListener("change", sync);
+      // seed slider from state
+      var r0 = vdState.ex[rKey];
+      rng.value = String(Math.round(Math.log10(r0 / 100) / 4 * 1000));
+      val.textContent = vdFmtR(r0).trim();
+      exCard.appendChild(row);
+    }
+    vdSliderRow("R1", "r1");
+    vdSliderRow("R2", "r2");
+
+    var rlRow = vdEl("div", "vd-row");
+    rlRow.appendChild(vdEl("span", "vd-lab", "EAR"));
+    var rlSeg = vdEl("div", "vd-seg");
+    [[null, "NONE"], [100000, "100 k"], [10000, "10 k"], [1000, "1 k"]].forEach(function (pair) {
+      var rb = vdEl("button", "vd-btn", pair[1]);
+      rb.type = "button";
+      rb.setAttribute("aria-pressed", pair[0] === null ? "true" : "false");
+      if (pair[0] === null) rb.classList.add("solid");
+      rb.setAttribute("aria-label", pair[0] === null ? "Disconnect the ear" : "Connect a " + pair[1] + " ear");
+      rb.addEventListener("click", function () {
+        vdState.ex.rl = pair[0];
+        Array.prototype.forEach.call(rlSeg.children, function (c) {
+          c.classList.remove("solid"); c.setAttribute("aria-pressed", "false");
+        });
+        rb.classList.add("solid"); rb.setAttribute("aria-pressed", "true");
+        vdLog("explorer: ear " + (pair[0] == null ? "disconnected" : pair[1] + " connected") + ".", "dim");
+        vdRefreshEx();
+      });
+      rlSeg.appendChild(rb);
+    });
+    rlRow.appendChild(rlSeg);
+    exCard.appendChild(rlRow);
+
+    var exLab = vdEl("div", "vd-lab", "");
+    exCard.appendChild(exLab);
+    var exMeter = vdMeter("vdEx");
+    exCard.appendChild(exMeter.root);
+    var exg = vdStatGrid();
+    exCard.appendChild(exg.grid);
+    panel.appendChild(exCard);
+
+    vdEls = {
+      overlay: ov, log: null, banner: null,
+      exCells: exg.cells, exMeter: exMeter, exLab: exLab
+    };
+    vdRefreshEx();
+
+    /* ---------- TRIAL 1: call the unloaded tap ---------- */
+    var t1 = vdState.trials[0];
+    var c1 = vdEl("div", "vd-card");
+    c1.appendChild(vdEl("h3", null, "TRIAL 1: CALL THE QUIET TAP"));
+    c1.appendChild(vdEl("p", "why",
+      "5 V rail, R1 10 k, R2 20 k, nothing drinking. Write down the tap voltage in volts, commit it, " +
+      "then reveal the meter. Within 0.06 V counts."));
+    var m1 = vdMeter("vdM1"); c1.appendChild(m1.root);
+    var r1 = vdEl("div", "vd-row");
+    r1.appendChild(vdEl("span", "vd-lab", "YOUR CALL (V)"));
+    var in1 = vdEl("input", "vd-in"); in1.type = "text"; in1.inputMode = "decimal";
+    in1.id = "vdIn1"; in1.setAttribute("aria-label", "Your predicted unloaded tap voltage in volts");
+    r1.appendChild(in1);
+    var commit1 = vdEl("button", "vd-btn solid", "COMMIT PREDICTION");
+    commit1.type = "button"; commit1.id = "vdCommit1";
+    var reveal1 = vdEl("button", "vd-btn", "REVEAL THE TAP");
+    reveal1.type = "button"; reveal1.id = "vdReveal1"; reveal1.disabled = true;
+    r1.appendChild(commit1); r1.appendChild(reveal1);
+    c1.appendChild(r1);
+    panel.appendChild(c1);
+    commit1.addEventListener("click", function () {
+      var chk = vdCheckT12(in1.value, VD_T1.vin, VD_T1.r1, VD_T1.r2, VD_T1.rl);
+      if (chk.why) { vdLog("trial 1: enter a number in volts first.", "bad"); return; }
+      reveal1.disabled = false;
+      vdLog("trial 1: prediction " + vdFmtV(Number(in1.value)) + " V committed. Reveal the tap.", "dim");
+      vdPop(c1);
+    });
+    reveal1.addEventListener("click", function () {
+      var chk = vdCheckT12(in1.value, VD_T1.vin, VD_T1.r1, VD_T1.r2, VD_T1.rl);
+      m1.show(chk.v, VD_T1.vin);
+      if (chk.ok) {
+        t1.committed = true; t1.pred = Number(in1.value);
+        vdLog("trial 1: " + vdFmtV(t1.pred) + " V vs " + vdFmtV(chk.v) +
+          " V on the meter. The quiet tap holds. Trial 1 committed.", "ok");
+        reveal1.disabled = true; in1.disabled = true; commit1.disabled = true;
+        vdMaybeCertify();
+      } else {
+        vdLog("trial 1: " + vdFmtV(Number(in1.value)) + " V vs " + vdFmtV(chk.v) +
+          " V, off by " + vdFmtV(chk.err) + " V. Try the arithmetic again, then commit.", "bad");
+      }
+      vdPop(c1);
+    });
+
+    /* ---------- TRIAL 2: call the collapsed tap ---------- */
+    var t2 = vdState.trials[1];
+    var c2 = vdEl("div", "vd-card");
+    c2.appendChild(vdEl("h3", null, "TRIAL 2: CALL THE FALL"));
+    c2.appendChild(vdEl("p", "why",
+      "Same divider, but the 10 k ear connects and drinks. Call the loaded tap in volts BEFORE you connect it, " +
+      "commit, then connect and read the meter. Within 0.06 V counts."));
+    var m2 = vdMeter("vdM2"); c2.appendChild(m2.root);
+    var r2 = vdEl("div", "vd-row");
+    r2.appendChild(vdEl("span", "vd-lab", "YOUR CALL (V)"));
+    var in2 = vdEl("input", "vd-in"); in2.type = "text"; in2.inputMode = "decimal";
+    in2.id = "vdIn2"; in2.setAttribute("aria-label", "Your predicted loaded tap voltage in volts");
+    r2.appendChild(in2);
+    var commit2 = vdEl("button", "vd-btn solid", "COMMIT PREDICTION");
+    commit2.type = "button"; commit2.id = "vdCommit2";
+    var connect2 = vdEl("button", "vd-btn", "CONNECT THE EAR");
+    connect2.type = "button"; connect2.id = "vdConnect2"; connect2.disabled = true;
+    r2.appendChild(commit2); r2.appendChild(connect2);
+    c2.appendChild(r2);
+    panel.appendChild(c2);
+    commit2.addEventListener("click", function () {
+      var chk = vdCheckT12(in2.value, VD_T2.vin, VD_T2.r1, VD_T2.r2, VD_T2.rl);
+      if (chk.why) { vdLog("trial 2: enter a number in volts first.", "bad"); return; }
+      connect2.disabled = false;
+      vdLog("trial 2: prediction " + vdFmtV(Number(in2.value)) + " V committed. Connect the ear.", "dim");
+      vdPop(c2);
+    });
+    connect2.addEventListener("click", function () {
+      var chk = vdCheckT12(in2.value, VD_T2.vin, VD_T2.r1, VD_T2.r2, VD_T2.rl);
+      m2.show(chk.v, VD_T2.vin);
+      if (chk.ok) {
+        t2.committed = true; t2.pred = Number(in2.value);
+        vdLog("trial 2: " + vdFmtV(t2.pred) + " V vs " + vdFmtV(chk.v) +
+          " V on the meter. You called the fall. Trial 2 committed.", "ok");
+        connect2.disabled = true; in2.disabled = true; commit2.disabled = true;
+        vdMaybeCertify();
+      } else {
+        vdLog("trial 2: " + vdFmtV(Number(in2.value)) + " V vs " + vdFmtV(chk.v) +
+          " V, off by " + vdFmtV(chk.err) + " V. The bottom leg is 20 k || 10 k: recompute and commit again.", "bad");
+      }
+      vdPop(c2);
+    });
+
+    /* ---------- TRIAL 3: size the honest tap ---------- */
+    var t3 = vdState.trials[2];
+    var c3 = vdEl("div", "vd-card");
+    c3.appendChild(vdEl("h3", null, "TRIAL 3: SIZE THE HONEST TAP"));
+    c3.appendChild(vdEl("p", "why",
+      "A 12 V brick, R1 bolted at 1 k, a 10 k ear. Dial R2 so the LOADED tap lands between 3.0 V and 3.6 V " +
+      "AND the divider burns at least ten times what the ear sips. Then certify the size."));
+    var m3 = vdMeter("vdM3"); c3.appendChild(m3.root);
+    var r3 = vdEl("div", "vd-row");
+    r3.appendChild(vdEl("span", "vd-lab", "R2"));
+    var rng3 = document.createElement("input");
+    rng3.type = "range"; rng3.className = "vd-r"; rng3.min = "100"; rng3.max = "2000"; rng3.step = "1";
+    rng3.value = "1000";
+    rng3.setAttribute("aria-label", "R2 in ohms, 100 to 2000");
+    r3.appendChild(rng3);
+    var r3val = vdEl("span", "vd-lab", "1000 ");
+    r3.appendChild(r3val);
+    c3.appendChild(r3);
+    var s3 = vdEl("div", "vd-grid");
+    var s3v = vdEl("div", "v", "-"), s3r = vdEl("div", "v", "-");
+    [["LOADED TAP", s3v], ["HONESTY RATIO", s3r]].forEach(function (pair) {
+      var cell = vdEl("div", "vd-stat");
+      cell.appendChild(vdEl("div", "k", pair[0]));
+      cell.appendChild(pair[1]);
+      s3.appendChild(cell);
+    });
+    c3.appendChild(s3);
+    var cert3 = vdEl("button", "vd-btn solid", "CERTIFY THE SIZE");
+    cert3.type = "button"; cert3.id = "vdCert3";
+    var row3 = vdEl("div", "vd-row"); row3.appendChild(cert3); c3.appendChild(row3);
+    panel.appendChild(c3);
+    function vdT3Show() {
+      var r2n = Number(rng3.value);
+      r3val.textContent = r2n + " ";
+      var chk = vdCheckT3(r2n);
+      m3.show(chk.v, VD_T3.vin);
+      s3v.textContent = vdFmtV(chk.v) + " V" + (chk.vOk ? "" : " (outside 3.0-3.6)");
+      s3v.className = "v" + (chk.vOk ? "" : " hot");
+      s3r.textContent = (Math.round(chk.ratio * 10) / 10) + "x" + (chk.rOk ? "" : " (want 10x)");
+      s3r.className = "v" + (chk.rOk ? "" : " hot");
+    }
+    rng3.addEventListener("input", vdT3Show);
+    rng3.addEventListener("change", vdT3Show);
+    vdT3Show();
+    cert3.addEventListener("click", function () {
+      var r2n = Number(rng3.value);
+      var chk = vdCheckT3(r2n);
+      if (chk.ok) {
+        t3.committed = true; t3.r2 = r2n;
+        vdLog("trial 3: R2 = " + r2n + " ohms. Loaded tap " + vdFmtV(chk.v) + " V in the 3.0-3.6 band, " +
+          "honesty ratio " + (Math.round(chk.ratio * 10) / 10) + "x. An honest tap, sized by you. Trial 3 committed.", "ok");
+        cert3.disabled = true; rng3.disabled = true;
+        vdMaybeCertify();
+      } else {
+        var why = [];
+        if (!chk.vOk) why.push("tap " + vdFmtV(chk.v) + " V outside 3.0-3.6");
+        if (!chk.rOk) why.push("ratio " + (Math.round(chk.ratio * 10) / 10) + "x below 10x");
+        vdLog("trial 3: R2 = " + r2n + " ohms rejected: " + why.join("; ") + ". Keep dialing.", "bad");
+      }
+      vdPop(c3);
+    });
+
+    /* cert banner + log */
+    var banner = vdEl("div", "vd-banner");
+    banner.id = "vdBanner";
+    banner.appendChild(vdEl("h3", null, "ROOM CERTIFIED"));
+    banner.appendChild(vdEl("p", null,
+      "Three trials committed: the quiet tap, the fall, and an honest divider you sized yourself. " +
+      "The tap holds only while the load sips far less than the divider burns. Take that sentence to the refurb pile."));
+    var certAll = vdEl("button", "vd-btn solid", "LOG THE CERTIFICATION");
+    certAll.type = "button"; certAll.id = "vdCertAll";
+    banner.appendChild(certAll);
+    panel.appendChild(banner);
+    vdEls.banner = banner;
+
+    var logWrap = vdEl("div", "vd-card");
+    logWrap.appendChild(vdEl("h3", null, "BENCH LOG"));
+    var log = vdEl("div", "vd-log");
+    log.id = "vdLog";
+    logWrap.appendChild(log);
+    panel.appendChild(logWrap);
+    vdEls.log = log;
+
+    certAll.addEventListener("click", function () {
+      if (vdState.certified) return;
+      vdState.certified = true;
+      vdLog(vdCertLine(), "ok");
+      certAll.disabled = true;
+      vdLog("certification logged. The room remembers your arithmetic.", "dim");
+    });
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    vdLog("bench open. The divider is 5 V / 10 k / 20 k and the tap is quiet. Step through the arithmetic, then let the ear drink.", "dim");
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", vdBuild);
+  } else {
+    vdBuild();
+  }
+})();
