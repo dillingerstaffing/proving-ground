@@ -15490,9 +15490,9 @@ if (typeof module !== "undefined" && module.exports) {
     var sub = swEl("p", "sw-sub");
     sub.innerHTML = "The <b>OLD IRON</b> refurb shop is wiring three network zones and the switch will not forgive a bad address: " +
       "two zones carved wrong and the subnets overlap, and half the shop loses its network. " +
-      "Every IPv4 address is 32 bits: the prefix length says how many belong to the network, the rest name the hosts. " +
+      "Every IPv4 address is 32 bits: the prefix length (the /N in CIDR notation) says how many belong to the network, the rest name the hosts. " +
       "SHOP FLOOR makes it concrete: twelve desktops from 10.14.0.0/24. Twelve hosts need four host bits (2 to the 4th is 16 addresses, minus network and broadcast leaves 14 usable), " +
-      "so the answer is a /28 carved from the base block, gateway at its first usable address. " +
+      "so one correct answer is the 10.14.0.0/28 subnet carved from the base block, with the gateway at 10.14.0.1, its first usable address. " +
       "For each zone, <b>read the address</b> (network, broadcast, usable hosts, first and last usable), then <b>carve the subnet</b> " +
       "from the base block and place the gateway. Certify all three zones with zero addressing errors.";
     panel.appendChild(sub);
