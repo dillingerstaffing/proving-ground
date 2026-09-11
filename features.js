@@ -120,7 +120,7 @@ function rvBuild() {
   ov.innerHTML =
     '<div class="rv-panel" role="dialog" aria-label="The Silicon Anvil RISC-V test rig">' +
     "<h3>The Silicon Anvil</h3>" +
-    '<p class="rv-sub">A real RV32I core bolted to the bench. Every program you write is a list of machine instructions the silicon fetches, decodes, and executes one by one: this bench lets you watch that happen. Trial 1 is the whole loop in miniature: put 42 in register a0, then halt the core with ecall. Type it, assemble it, single-step it, and watch the register change. Three trials on the anvil, certificates earned.</p>' +
+    '<p class="rv-sub">A real RV32I core bolted to the bench. Every program you write is a list of machine instructions the silicon fetches, decodes, and executes one by one: this bench lets you watch that happen. Trial 1 is the whole loop in miniature: put 42 in register a0, then halt the core with ecall. Type it, assemble it, single-step it, and watch the register change. Write something the silicon cannot run and the bench says so plainly: bad lines fail at assemble time with the line number, illegal instructions halt the core as a named TRAP, and a program that never halts yields to the Stop button. Three trials on the anvil, certificates earned.</p>' +
     '<div class="rv-trials">' + trialsHtml + "</div>" +
     '<textarea class="rv-ed" id="rvEd" spellcheck="false"></textarea>' +
     '<div class="rv-btns">' +
