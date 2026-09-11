@@ -25722,7 +25722,7 @@ if (typeof module !== "undefined" && module.exports) {
   function jsNewTrialState(t) {
     var c = [];
     for (var i = 0; i < JS_CELLS; i++) c.push(0);
-    return { trial: t, ir: "extest", cells: c, custom: 0,
+    return { trial: t, ir: "extest", cells: c, custom: 0, setId: "full",
       lastShot: null, sweepCount: 0, tags: null,
       strikes: 0, passed: false, failed: false, log: [] };
   }
@@ -25984,9 +25984,12 @@ if (typeof module !== "undefined" && module.exports) {
       row.appendChild(jsEl("td", bad ? "js-tagwarn" : "js-tagok", (bad ? "MISMATCH, " : "") + tag));
       tb.appendChild(row);
     }
+    var em = 0, ek;
+    for (ek = 0; ek < 8; ek++) if (jsBit(v.echo, ek) === jsBit(v.drive, ek)) em++;
     jsEls.echo.textContent = (v.driving ?
-      "Showing " + (v.shownName || "pattern") + ". Shift echo: U1 readback " + jsWord8(v.echo) + " == drive " + jsWord8(v.drive) +
-      " (16/16 bits, the shift is honest)." :
+      "Showing " + (v.shownName || "pattern") + ". Shift echo: U1 readback " + jsWord8(v.echo) +
+      (em === 8 ? " == drive " + jsWord8(v.drive) + " (8/8 bits, the shift is honest)." :
+        " != drive " + jsWord8(v.drive) + " (" + em + "/8 bits match, the shift is misaligned).") :
       "SAMPLE mode: U1 not driven, echo not applicable.");
     if (v.tags) {
       if (st.setId !== "full") {
@@ -26115,8 +26118,9 @@ if (typeof module !== "undefined" && module.exports) {
     }
     var lv = jsDriveNets(shown.drive, fault, driving);
     var r2 = jsCapture(jsShiftDrive(st.cells, shown.drive).cells, lv);
+    var r3 = jsShiftOut(r2.cells.slice()); /* real shift-out readback; the display keeps the latched state */
     st.cells = r2.cells;
-    st.view = { drive: shown.drive, cap: r2.cap, echo: shown.drive, driving: driving,
+    st.view = { drive: shown.drive, cap: r3.cap, echo: r3.echo, driving: driving,
       tags: driving ? jsClassifySweep(sw) : null, setName: setLabel, sw: sw,
       shownName: shown.name };
     st.sweepCount++;
@@ -26129,7 +26133,7 @@ if (typeof module !== "undefined" && module.exports) {
     jsLog("SWEEP " + setLabel + ": " + sw.length + " patterns" +
       (driving ? ", " + mismPat + " with a mismatch. Showing " + shown.name +
         ", nets off: " + (bad.length ? bad.join(", ") : "none") + "." : " (SAMPLE: pins not driven).") +
-      " Shift echo: MATCH.", mismPat ? "" : "ok");
+      " Shift echo: " + (r3.echo === shown.drive ? "MATCH" : "MISMATCH") + ".", mismPat ? "" : "ok");
     return st.view;
   }
 
@@ -26167,16 +26171,18 @@ if (typeof module !== "undefined" && module.exports) {
     var fault = jsTrueFault(), driving = (st.ir === "extest"), d = st.custom;
     var lv = jsDriveNets(d, fault, driving);
     var r2 = jsCapture(jsShiftDrive(st.cells, d).cells, lv);
+    var r3 = jsShiftOut(r2.cells.slice()); /* real shift-out readback; the display keeps the latched state */
     st.cells = r2.cells;
-    st.view = { drive: d, cap: r2.cap, echo: d, driving: driving, tags: null,
-      setName: "SINGLE", sw: [{ name: "SINGLE", drive: d, cap: r2.cap }] };
+    st.view = { drive: d, cap: r3.cap, echo: r3.echo, driving: driving, tags: null,
+      setName: "SINGLE", sw: [{ name: "SINGLE", drive: d, cap: r3.cap }] };
     st.sweepCount++;
     jsRenderChain(-1); jsRenderTable(); jsRenderTrials();
     var bad = [], k;
     if (driving) for (k = 0; k < 8; k++) if (jsBit(d, k) !== jsBit(r2.cap, k)) bad.push(k);
-    jsLog("SHOT drive " + jsWord8(d) + " -&gt; cap " + jsWord8(r2.cap) +
+    jsLog("SHOT drive " + jsWord8(d) + " -&gt; cap " + jsWord8(r3.cap) +
       (driving ? (bad.length ? ": MISMATCH on nets " + bad.join(", ") : ": clean, every net follows") :
-        " (SAMPLE: pins not driven)") + ". Shift echo: MATCH.", bad.length ? "" : "ok");
+        " (SAMPLE: pins not driven)") + ". Shift echo: " + (r3.echo === d ? "MATCH" : "MISMATCH") + ".",
+      bad.length ? "" : "ok");
   }
 
   function jsResetChain() {
@@ -27121,7 +27127,7 @@ if (typeof module !== "undefined" && module.exports) {
       return;
     }
     st.gates.push({ i1: "?", i2: "?" });
-    st.passed = false;
+    gtInvalidateRun(ti);
     gtLog("Trial " + t.n + ": G" + st.gates.length + " placed (" +
       st.gates.length + "/" + t.budget + ").", "");
     gtRefresh(ti);
@@ -27138,7 +27144,7 @@ if (typeof module !== "undefined" && module.exports) {
       if (st.gates[g].i2 === "G" + gone) st.gates[g].i2 = "?";
     }
     for (var on in st.outs) if (st.outs[on] === "G" + gone) st.outs[on] = "?";
-    st.passed = false;
+    gtInvalidateRun(ti);
     gtLog("Trial " + GT_TRIALS[ti].n + ": G" + gone + " removed; dangling wires reset to unwired.", "");
     gtRefresh(ti);
   }
@@ -27148,6 +27154,20 @@ if (typeof module !== "undefined" && module.exports) {
     if (!st.pred) st.pred = {};
     st.pred[name] = v;
     gtRefresh(ti);
+  }
+
+  /* A wiring change voids the last run: the stored truth table no longer
+     describes the circuit, so CERTIFY must not accept it. */
+  function gtInvalidateRun(ti) {
+    var st = gtState.trials[ti], C = gtEls.cards[ti];
+    if (!st.lastRun) return;
+    st.lastRun = null;
+    st.passed = false;
+    if (C && !st.committed) {
+      C.verdict.textContent = "Wiring changed since the last run. RUN again before certifying.";
+      C.verdict.classList.remove("pass");
+      gtLog("Trial " + GT_TRIALS[ti].n + ": wiring changed, last run voided. RUN again.", "warn");
+    }
   }
 
   /* Re-render the dynamic parts of a trial card from state. */
