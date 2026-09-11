@@ -13210,7 +13210,11 @@ if (typeof module !== "undefined" && module.exports) {
       "<h3>The Triage Desk</h3>" +
       "<p class=\"td-sub\">Dead machines arrive at the OLD IRON dock daily, and the difference between a profitable refurb line and a parts bonfire is method: three dead machines, five disciplined steps each. " +
       "<b>Identify</b> the symptom from real inspections, <b>theorize</b> the cause, <b>test</b> to prove it, " +
-      "<b>resolve</b> with the right fix, and <b>document</b> the work. The steps run in order, guessing costs points, " +
+      "<b>resolve</b> with the right fix, and <b>document</b> the work. The steps run in order. " +
+      "For example, the OptiPlex arrives dead after a storm with a burnt-plastic smell at the PSU exhaust: " +
+      "you theorize the surge killed the PSU, prove it by swapping in the known-good bench PSU, " +
+      "and resolve it with a 290 W replacement. " +
+      "Scoring: each machine starts at 100 points, wrong tests cost 5, a wrong fix costs 15, " +
       "and the rack only ships with an average score of 70 or better.</p>";
     ov.appendChild(panel);
 
