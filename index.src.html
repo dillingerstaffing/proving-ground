@@ -702,7 +702,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "51", name: "The Stripe Room", btn: "stripeBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "Resistor color codes on the bench: read 4-band and 5-band stripes, survive gold multipliers and the wrong-end trap, verify every part against the bench meter.",
     how: "Read each part's stripes, enter the value in ohms, commit the reading, then the meter verifies.",
-    spec: "4+5 BAND \u00B7 8 PARTS" }
+    spec: "4+5 BAND \u00B7 8 PARTS" },
+  { section: "oldiron", n: "52", name: "The Diode Room", btn: "diBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "The diode conducts one way and charges a fixed forward-voltage toll. Size the resistor for three LEDs, diagnose two dark ones, and call the no-resistor current before it dies.",
+    how: "Flip the do-first LED, pick each resistor and commit, probe the dark LEDs in diode mode, then predict the no-resistor current.",
+    spec: "1-WAY \u00B7 3 SIZINGS \u00B7 2 FAULTS" }
 ];
 
 var pgFilter = "all";

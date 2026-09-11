@@ -36642,3 +36642,675 @@ if (typeof module !== "undefined" && module.exports) {
     stripeBuild();
   }
 })();
+/* ============================================================
+   BENCH 52: THE DIODE ROOM (oldiron)
+   One atomic mechanism: a diode conducts in one direction only,
+   and while it conducts it drops a fixed forward voltage (the
+   toll, Vf). Everything else is arithmetic on the remainder: the
+   resistor eats what the toll leaves, reverse bias blocks it all,
+   and a missing resistor lets the current run away until the LED
+   dies.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------- the one mechanism, stated as data ---------- */
+  var DR_VF = { red: 2.0, green: 2.2, white: 3.2 };
+  var DR_HEX = { red: "#ff4b3e", green: "#3ddc68", white: "#eef1ff" };
+
+  /* trial 1: size the resistor. target 20 mA, pass window 12 to 25 mA. */
+  var DR_T1 = [
+    { id: "d1a", vs: 5, color: "red",   choices: [68, 100, 150, 220, 330, 470] },
+    { id: "d1b", vs: 9, color: "green", choices: [220, 330, 470, 680, 1000] },
+    { id: "d1c", vs: 5, color: "white", choices: [47, 68, 100, 150, 220, 330] }
+  ];
+  /* trial 2: diagnose the dark LED. readings are diode-test mode. */
+  var DR_T2 = [
+    { id: "d2a", fault: "reversed", color: "red",   vs: 5,
+      fwd: "2.01 V", rev: "OL",
+      tell: "The + rail meets the short lead. The part reads healthy; the wiring is backwards." },
+    { id: "d2b", fault: "dead",     color: "green", vs: 5,
+      fwd: "OL", rev: "OL",
+      tell: "Open both ways. Somebody fed it 9 V with no resistor last week." }
+  ];
+  /* trial 3: the no-resistor lesson. white LED, 9 V, R = 0. */
+  var DR_T3 = { vs: 9, color: "white", fixChoices: [180, 270, 390, 1000] };
+
+  /* ---------- pure sims (no DOM) ---------- */
+  function drCurrent(vs, vf, r) { return (vs - vf) / r; } /* amps */
+  function drMa(a) { return (a * 1000).toFixed(1) + " mA"; }
+  function drVerdictT1(vs, vf, r) {
+    var ma = drCurrent(vs, vf, r) * 1000;
+    if (ma > 25) {
+      return { ok: false, ma: ma,
+        why: "TOO HOT at " + ma.toFixed(1) + " mA: over the 25 mA line, this LED cooks. " +
+             "Recheck the subtraction: (" + vs + " - " + vf.toFixed(1) + ") / " + r + " is too much current, so the resistor is too small." };
+    }
+    if (ma < 12) {
+      return { ok: false, ma: ma,
+        why: "TOO DIM at " + ma.toFixed(1) + " mA: under the 12 mA line, the resistor eats nearly everything and the LED starves. " +
+             "Recheck the subtraction: (" + vs + " - " + vf.toFixed(1) + ") / " + r + " is too little current, so the resistor is too big." };
+    }
+    return { ok: true, ma: ma,
+      why: "IN THE WINDOW at " + ma.toFixed(1) + " mA: between 12 and 25 mA, full bright and long lived. " +
+           "The math: (" + vs + " - " + vf.toFixed(1) + ") / " + r + " = " + ma.toFixed(1) + " mA." };
+  }
+  function drT3Predict(ix) {
+    /* 0: about 20 mA, 1: near zero, 2: runaway */
+    if (ix === 2) return { ok: true, why: "Called it. Nothing sets the current, so nothing holds it at 20 mA." };
+    if (ix === 0) return { ok: false,
+      why: "Not 20 mA: a resistor is what holds current at a target, and there is no resistor here. " +
+           "The LED is forward biased and the diode equation is exponential: a little extra voltage, a lot more current." };
+    return { ok: false,
+      why: "Not zero: the LED is forward biased, so it conducts. The question is how much, " +
+           "and with nothing to absorb the remainder, the answer is far too much." };
+  }
+
+  /* node/jsdom test hooks: assigned before any DOM is touched, so a
+     hostile docStub still gets the exports. */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.DR = {
+      VF: DR_VF, T1: DR_T1, T2: DR_T2, T3: DR_T3,
+      current: drCurrent, verdictT1: drVerdictT1, predict: drT3Predict,
+      introHTML: null /* filled after the copy const below */
+    };
+  }
+
+  /* ---------- intro copy: why first, worked example, failure modes ---------- */
+  var DR_INTRO_HTML = [
+    "<div class=\"dr-card\"><h3>WHY THIS ROOM EXISTS</h3>",
+    "<p class=\"why\">Every status light on every board you will ever service is a light-emitting diode: ",
+    "power indicators, fault lights, link activity. They all obey one law. A diode conducts in one direction only, ",
+    "and while it conducts it keeps a fixed slice of the voltage for itself, its forward voltage, written Vf. ",
+    "Red keeps 2.0 V, green keeps 2.2 V, white keeps 3.2 V. Miss the toll and the LED is dark, dim, or dead. ",
+    "This room is the whole skill: read the toll, do the resistor math on the remainder, ",
+    "and tell a backwards LED from a burned one by measurement.</p>",
+    "<p class=\"why\">The worked example, by hand. A 5 V supply, a red LED with Vf 2.0 V, target current 20 mA. ",
+    "The resistor must absorb 5 minus 2, which is 3 V. Ohm's law: R = 3 V / 0.020 A = 150 ohms. ",
+    "Choose 150 ohms in Trial 1 and the bench shows 20.0 mA and a full-bright LED. ",
+    "That one subtraction is the only math in the room.</p></div>",
+    "<div class=\"dr-card dr-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3>",
+    "<ul><li><b>REVERSED:</b> dark, harmless at these voltages. In diode-test mode it reads the toll one way ",
+    "and OL the other, so the part is healthy; the circuit has it backwards. Fix it by flipping it.</li>",
+    "<li><b>NO RESISTOR:</b> with nothing to absorb the remainder, the current is set by wire resistance and the ",
+    "LED's own heat, so it climbs into the hundreds of milliamps until the bond wires melt. Dead in under a second. ",
+    "The fix is the resistor math, never hope.</li>",
+    "<li><b>BURNED LED:</b> reads OL (open) or 0.00 V (shorted) both ways in diode-test mode. Nothing to fix. Bin it.</li>",
+    "<li><b>WRONG TOLL:</b> size a white LED (3.2 V) with a red LED's toll (2.0 V) and the current misses by a mile. ",
+    "Read the color, use that color's toll.</li></ul></div>"
+  ].join("");
+  var DR_DIOMEMODE_HTML = [
+    "<p class=\"why\">DIODE MODE, IN ONE LINE: the bench meter in diode-test mode pushes a small current through the part ",
+    "and shows the forward drop in volts. <b>OL</b> means open, no conduction. <b>0.00 V</b> means shorted. ",
+    "A healthy LED shows its toll one way and OL the other.</p>"
+  ].join("");
+
+  if (typeof module !== "undefined" && module.exports && module.exports.DR) {
+    module.exports.DR.introHTML = DR_INTRO_HTML;
+  }
+
+  /* ---------- css ---------- */
+  var DR_CSS = [
+    ".dr-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".dr-overlay.open{display:block}",
+    ".dr-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".dr-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".dr-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".dr-sub{font-size:14px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.92;margin:0 0 18px;max-width:68ch}",
+    ".dr-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".dr-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".dr-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".dr-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".dr-card b{color:var(--ember,#ff5a1f)}",
+    ".dr-fail{border:1px solid var(--ember,#ff5a1f)}",
+    ".dr-fail li{font-size:13px;line-height:1.6;margin:0 0 6px;list-style:none}",
+    ".dr-fail ul{padding:0;margin:0}",
+    ".dr-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}",
+    ".dr-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
+    ".dr-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".dr-btn:disabled{opacity:.35;cursor:default}",
+    ".dr-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".dr-btn.sel{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12)}",
+    ".dr-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#101014}",
+    ".dr-verdict{font-size:14px;line-height:1.6;margin:10px 0 0;min-height:24px}",
+    ".dr-verdict.ok{color:#9fe870}",
+    ".dr-verdict.bad{color:#ff5a1f}",
+    ".dr-read{font-size:14px;line-height:1.7;margin:8px 0 0;min-height:22px}",
+    ".dr-log{font-size:12.5px;line-height:1.7;max-height:280px;overflow-y:auto}",
+    ".dr-log div{margin:0 0 6px;padding-bottom:6px;border-bottom:1px dotted var(--line,rgba(242,237,228,.14))}",
+    ".dr-log .ok{color:#9fe870}",
+    ".dr-log .bad{color:#ff5a1f}",
+    ".dr-log .dim{opacity:.6}",
+    ".dr-banner{display:none;border:1px solid var(--ember,#ff5a1f);padding:18px;margin:0 0 14px}",
+    ".dr-banner h3{font-family:'Space Grotesk',sans-serif;letter-spacing:.14em;font-size:16px;color:var(--ember,#ff5a1f);margin:0 0 8px}",
+    ".dr-banner p{font-size:13px;line-height:1.65;margin:0 0 12px}",
+    ".dr-pop{animation:drPop 200ms ease-out}",
+    "@keyframes drPop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    "@media (prefers-reduced-motion:reduce){.dr-pop{animation:none}}",
+    ".dr-ledwrap{display:flex;align-items:center;justify-content:center;margin:14px 0 2px}",
+    ".dr-lead{height:3px;background:#9a9a9a;flex:0 0 auto}",
+    ".dr-body{width:54px;height:54px;border-radius:50%;flex:0 0 auto;border:2px solid rgba(0,0,0,.45)}",
+    ".dr-ledcap{font-size:11px;opacity:.75;text-align:center;margin:4px 0 8px;letter-spacing:.04em}",
+    ".dr-circuit{display:flex;align-items:center;justify-content:center;gap:0;margin:14px 0 2px;flex-wrap:nowrap}",
+    ".dr-rail{font-size:12px;letter-spacing:.1em;border:1px solid var(--line,rgba(242,237,228,.28));padding:10px 12px;white-space:nowrap}",
+    ".dr-wire{height:2px;width:44px;background:#9a9a9a;flex:0 0 auto}",
+    ".dr-rbox{font-size:12px;border:1px dashed var(--line,rgba(242,237,228,.4));padding:10px 12px;white-space:nowrap;min-width:74px;text-align:center}",
+    ".dr-parthead{font-size:12px;letter-spacing:.18em;color:var(--ember,#ff5a1f);margin-bottom:6px}",
+    ".dr-spec{font-size:13px;line-height:1.7;margin:0 0 8px}",
+    ".dr-smoke{font-size:13px;letter-spacing:.2em;color:#ff5a1f;margin:8px 0 0;min-height:20px}"
+  ].join("\n");
+
+  /* ---------- dom helpers ---------- */
+  var drEls = null;
+  function drEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  function drLog(msg, cls) {
+    var d = drEl("div", cls || "", msg);
+    drEls.log.appendChild(d);
+    drEls.log.scrollTop = drEls.log.scrollHeight;
+  }
+  function drPop(card) {
+    card.classList.remove("dr-pop");
+    void card.offsetWidth;
+    card.classList.add("dr-pop");
+  }
+
+  /* ---------- state ---------- */
+  var drState = { t1: {}, t2: {}, t3: { predicted: false, powered: false, fixed: false, dead: false } };
+  DR_T1.forEach(function (p) { drState.t1[p.id] = { passed: false, strikes: 0, sel: null }; });
+  DR_T2.forEach(function (p) { drState.t2[p.id] = { passed: false, strikes: 0, repaired: false }; });
+
+  /* ---------- LED renderer: long lead is the anode ---------- */
+  function drLed(color, rev, litMa, dead) {
+    var wrap = drEl("div", "dr-ledwrap");
+    var anodeLeft = !rev;
+    var l1 = drEl("div", "dr-lead"); l1.style.width = (anodeLeft ? 56 : 34) + "px";
+    var l2 = drEl("div", "dr-lead"); l2.style.width = (anodeLeft ? 34 : 56) + "px";
+    var body = drEl("div", "dr-body");
+    var hex = DR_HEX[color];
+    body.style.background = "radial-gradient(circle at 35% 32%, rgba(255,255,255,.85), " + hex + " 62%)";
+    var glow = (!dead && litMa > 0) ? Math.min(1, litMa / 20) : 0;
+    if (glow > 0.02) {
+      body.style.boxShadow = "0 0 " + Math.round(8 + 34 * glow) + "px " + Math.round(3 + 12 * glow) + "px " + hex;
+    } else {
+      body.style.opacity = dead ? ".35" : ".5";
+    }
+    if (dead) body.style.filter = "grayscale(1)";
+    wrap.appendChild(l1); wrap.appendChild(body); wrap.appendChild(l2);
+    var capText = dead ? "DEAD: open, no light at any current"
+      : (anodeLeft ? "long lead = anode (+) \u00B7 " : "REVERSED: short lead faces + \u00B7 ") +
+        color + " LED, Vf " + DR_VF[color].toFixed(1) + " V";
+    var cap = drEl("div", "dr-ledcap", capText);
+    var frag = document.createDocumentFragment();
+    frag.appendChild(wrap); frag.appendChild(cap);
+    return frag;
+  }
+
+  /* ---------- certification ---------- */
+  function drAllPassed() {
+    var t1 = DR_T1.every(function (p) { return drState.t1[p.id].passed; });
+    var t2 = DR_T2.every(function (p) { return drState.t2[p.id].passed; });
+    return t1 && t2 && drState.t3.fixed;
+  }
+  function drMaybeCertify() {
+    if (drEls && drEls.banner) drEls.banner.style.display = drAllPassed() ? "block" : "none";
+  }
+  function drCertLine() {
+    return "THE DIODE ROOM, CERTIFIED. Three resistors sized from the toll, a reversed and a dead LED " +
+      "told apart by their diode-mode readings, and the no-resistor current called before the smoke. " +
+      "The one-way valve with its fixed toll: that is the whole room in one sentence.";
+  }
+
+  /* ---------- trial 1 card: size the resistor ---------- */
+  function drT1Card(p, num) {
+    var st = drState.t1[p.id];
+    var vf = DR_VF[p.color];
+    var card = drEl("div", "dr-card");
+    card.id = "diT1_" + p.id;
+    card.appendChild(drEl("div", "dr-parthead", "TRIAL 1 \u00B7 PART " + num + " OF 3"));
+    card.appendChild(drEl("p", "dr-spec",
+      "SUPPLY " + p.vs + " V \u00B7 " + p.color.toUpperCase() + " LED, Vf " + vf.toFixed(1) +
+      " V \u00B7 TARGET 20 mA. Remainder: " + p.vs + " - " + vf.toFixed(1) + " = " +
+      (p.vs - vf).toFixed(1) + " V for the resistor."));
+    var ledBox = drEl("div", "");
+    ledBox.id = "diT1_" + p.id + "_led";
+    ledBox.appendChild(drLed(p.color, false, 0));
+    card.appendChild(ledBox);
+    var row = drEl("div", "dr-row");
+    row.id = "diT1_" + p.id + "_row";
+    var btns = [];
+    p.choices.forEach(function (r) {
+      var b = drEl("button", "dr-btn", r + " \u03A9");
+      b.type = "button"; b.id = "diT1_" + p.id + "_r" + r;
+      b.setAttribute("aria-label", "Choose " + r + " ohms");
+      b.addEventListener("click", function () {
+        if (st.passed) return;
+        st.sel = r;
+        btns.forEach(function (x) { x.classList.remove("sel"); });
+        b.classList.add("sel");
+      });
+      btns.push(b); row.appendChild(b);
+    });
+    card.appendChild(row);
+    var commit = drEl("button", "dr-btn solid", "COMMIT SIZING");
+    commit.type = "button"; commit.id = "diT1_" + p.id + "_commit";
+    var verdict = drEl("p", "dr-verdict", "");
+    verdict.id = "diT1_" + p.id + "_verdict";
+    commit.addEventListener("click", function () {
+      if (st.passed) return;
+      if (st.sel === null) {
+        verdict.textContent = "Pick a resistor first: the commit grades a choice.";
+        verdict.className = "dr-verdict bad";
+        return;
+      }
+      var v = drVerdictT1(p.vs, vf, st.sel);
+      ledBox.innerHTML = "";
+      ledBox.appendChild(drLed(p.color, false, v.ok ? v.ma : Math.min(v.ma, 40)));
+      verdict.textContent = (v.ok ? "PASS: " : "MISS: ") + v.why;
+      verdict.className = "dr-verdict " + (v.ok ? "ok" : "bad");
+      drLog("trial 1 part " + num + " (" + p.vs + " V, " + p.color + "): " + st.sel +
+        " ohms -> " + v.ma.toFixed(1) + " mA. " + (v.ok ? "Pass." : "Miss."), v.ok ? "ok" : "bad");
+      if (v.ok) {
+        st.passed = true;
+        btns.forEach(function (x) { x.disabled = true; });
+        commit.disabled = true;
+      } else { st.strikes++; }
+      drMaybeCertify();
+      drPop(card);
+    });
+    card.appendChild(commit);
+    card.appendChild(verdict);
+    return card;
+  }
+
+  /* ---------- trial 2 card: diagnose the dark LED ---------- */
+  function drT2Card(p, num) {
+    var st = drState.t2[p.id];
+    var card = drEl("div", "dr-card");
+    card.id = "diT2_" + p.id;
+    card.appendChild(drEl("div", "dr-parthead", "TRIAL 2 \u00B7 MYSTERY LED " + num + " OF 2"));
+    card.appendChild(drEl("p", "dr-spec",
+      "Symptom: dark on a " + p.vs + " V rail, resistor correctly sized. " + p.tell));
+    var circuit = drEl("div", "dr-circuit");
+    circuit.id = "diT2_" + p.id + "_circuit";
+    function drawCircuit(rev, litMa, dead) {
+      circuit.innerHTML = "";
+      var r1 = drEl("div", "dr-rail", "+ " + p.vs + " V");
+      var w1 = drEl("div", "dr-wire");
+      var ledWrap = drEl("div", "");
+      ledWrap.appendChild(drLed(p.color, rev, litMa, dead));
+      var w2 = drEl("div", "dr-wire");
+      var rbox = drEl("div", "dr-rbox", "R OK");
+      var w3 = drEl("div", "dr-wire");
+      var r2 = drEl("div", "dr-rail", "GND");
+      circuit.appendChild(r1); circuit.appendChild(w1);
+      circuit.appendChild(ledWrap);
+      circuit.appendChild(w2); circuit.appendChild(rbox); circuit.appendChild(w3);
+      circuit.appendChild(r2);
+    }
+    drawCircuit(p.fault === "reversed", 0, false);
+    card.appendChild(circuit);
+
+    var read = drEl("p", "dr-read", "DIODE MODE: no probe placed yet.");
+    read.id = "diT2_" + p.id + "_read";
+    card.appendChild(read);
+    var prow = drEl("div", "dr-row");
+    var pa = drEl("button", "dr-btn", "RED PROBE ON LONG LEAD");
+    pa.type = "button"; pa.id = "diT2_" + p.id + "_probeA";
+    pa.setAttribute("aria-label", "Probe with the red lead on the long lead");
+    var pb = drEl("button", "dr-btn", "RED PROBE ON SHORT LEAD");
+    pb.type = "button"; pb.id = "diT2_" + p.id + "_probeB";
+    pb.setAttribute("aria-label", "Probe with the red lead on the short lead");
+    pa.addEventListener("click", function () {
+      read.textContent = "DIODE MODE, red on long lead: " + p.fwd +
+        (p.fwd === "OL" ? " (open this way)" : " (the toll, the LED is alive this way)");
+      drLog("mystery LED " + num + ": diode mode, red on long lead -> " + p.fwd + ".", "dim");
+    });
+    pb.addEventListener("click", function () {
+      read.textContent = "DIODE MODE, red on short lead: " + p.rev +
+        (p.rev === "OL" ? " (open this way, as it should be)" : " (the toll backwards: suspicious)");
+      drLog("mystery LED " + num + ": diode mode, red on short lead -> " + p.rev + ".", "dim");
+    });
+    prow.appendChild(pa); prow.appendChild(pb);
+    card.appendChild(prow);
+
+    var verdict = drEl("p", "dr-verdict", "");
+    verdict.id = "diT2_" + p.id + "_verdict";
+    var vrow = drEl("div", "dr-row");
+    var vRev = drEl("button", "dr-btn", "VERDICT: REVERSED");
+    vRev.type = "button"; vRev.id = "diT2_" + p.id + "_vRev";
+    var vDead = drEl("button", "dr-btn", "VERDICT: DEAD");
+    vDead.type = "button"; vDead.id = "diT2_" + p.id + "_vDead";
+    function commitVerdict(guess) {
+      if (st.passed) return;
+      var right = (guess === p.fault);
+      if (right) {
+        st.passed = true;
+        verdict.textContent = "PASS: " + (p.fault === "reversed"
+          ? "REVERSED. The toll reads one way and OL the other, so the part is healthy; only the wiring is backwards."
+          : "DEAD. OL both ways is an open LED; nothing to fix.");
+        verdict.className = "dr-verdict ok";
+        drLog("mystery LED " + num + ": verdict " + guess.toUpperCase() + ", correct.", "ok");
+        vRev.disabled = true; vDead.disabled = true;
+        var fix = drEl("button", "dr-btn solid", p.fault === "reversed" ? "FLIP THE LED" : "BIN IT");
+        fix.type = "button"; fix.id = "diT2_" + p.id + "_fix";
+        fix.addEventListener("click", function () {
+          if (st.repaired) return;
+          st.repaired = true;
+          if (p.fault === "reversed") {
+            drawCircuit(false, 20, false);
+            drLog("flipped: the innocent LED lights at 20.0 mA. Same part, correct direction.", "ok");
+          } else {
+            drawCircuit(false, 0, true);
+            drLog("binned: open both ways is not a repair job.", "dim");
+          }
+          fix.disabled = true;
+          drPop(card);
+        });
+        card.appendChild(fix);
+      } else {
+        st.strikes++;
+        verdict.textContent = "MISS: not " + guess + ". " + (p.fault === "reversed"
+          ? "Recheck the readings: the toll shows one way and OL the other, which is exactly what a healthy LED reads. A dead one reads OL both ways."
+          : "Recheck the readings: OL both ways is open, not reversed. A reversed LED still reads its toll one way.");
+        verdict.className = "dr-verdict bad";
+        drLog("mystery LED " + num + ": verdict " + guess.toUpperCase() + ", wrong.", "bad");
+      }
+      drMaybeCertify();
+      drPop(card);
+    }
+    vRev.addEventListener("click", function () { commitVerdict("reversed"); });
+    vDead.addEventListener("click", function () { commitVerdict("dead"); });
+    vrow.appendChild(vRev); vrow.appendChild(vDead);
+    card.appendChild(vrow);
+    card.appendChild(verdict);
+    return card;
+  }
+
+  /* ---------- overlay open/close ---------- */
+  function drOpen() { if (drEls) drEls.overlay.classList.add("open"); }
+  function drClose() { if (drEls) drEls.overlay.classList.remove("open"); }
+
+  function drBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("diBtn")) return;
+    drEls = { overlay: null, log: null, banner: null };
+
+    var sty = document.createElement("style");
+    sty.textContent = DR_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "diBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Diode Room";
+    b.addEventListener("click", drOpen);
+    box.appendChild(b);
+
+    var ov = drEl("div", "dr-overlay");
+    ov.id = "diOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Diode Room");
+    var x = drEl("button", "dr-btn", "CLOSE");
+    x.id = "diXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Diode Room");
+    x.addEventListener("click", drClose);
+    ov.appendChild(x);
+    drEls.overlay = ov;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && ov.classList.contains("open")) drClose();
+    });
+
+    var panel = drEl("div", "dr-panel");
+    panel.appendChild(drEl("div", "dr-kicker", "OLD IRON BENCH 52"));
+    panel.appendChild(drEl("h2", "dr-title", "The Diode Room"));
+    panel.appendChild(drEl("p", "dr-sub",
+      "A diode conducts in one direction only, and charges a fixed forward-voltage toll while it does. " +
+      "Read the toll, size the resistor on the remainder, diagnose two dark LEDs, and watch one die with no resistor."));
+
+    var introWrap = drEl("div", "");
+    introWrap.innerHTML = DR_INTRO_HTML;
+    panel.appendChild(introWrap);
+
+    /* do-first: consequence-free flip */
+    var doCard = drEl("div", "dr-card");
+    doCard.appendChild(drEl("h3", null, "DO FIRST: FLIP IT, FREE"));
+    doCard.appendChild(drEl("p", "why",
+      "The room hands you one red LED on a 5 V rail, resistor already sized at 150 ohms. " +
+      "Press FLIP POLARITY. One way it lights at 20.0 mA; the other way it sits dark at 0.0 mA. " +
+      "Nothing here is graded."));
+    var doLed = drEl("div", "");
+    doLed.id = "diDoFirst_led";
+    doLed.appendChild(drLed("red", false, 20));
+    doCard.appendChild(doLed);
+    var doRead = drEl("p", "dr-read", "CURRENT 20.0 mA \u00B7 LED LIT");
+    doRead.id = "diDoFirst_read";
+    doCard.appendChild(doRead);
+    var doRow = drEl("div", "dr-row");
+    var flip = drEl("button", "dr-btn solid", "FLIP POLARITY");
+    flip.type = "button"; flip.id = "diDoFirst_flip";
+    flip.setAttribute("aria-label", "Flip the LED polarity, ungraded");
+    var flipped = false;
+    flip.addEventListener("click", function () {
+      flipped = !flipped;
+      doLed.innerHTML = "";
+      doLed.appendChild(drLed("red", flipped, flipped ? 0 : 20));
+      doRead.textContent = flipped ? "CURRENT 0.0 mA \u00B7 LED DARK (reverse biased, nothing flows)"
+                                   : "CURRENT 20.0 mA \u00B7 LED LIT";
+      drLog("do-first: flipped " + (flipped ? "backwards: dark at 0.0 mA." : "forwards: lit at 20.0 mA."), "dim");
+      drPop(doCard);
+    });
+    doRow.appendChild(flip);
+    doCard.appendChild(doRow);
+    panel.appendChild(doCard);
+
+    /* trial 1 */
+    var t1Head = drEl("div", "dr-card");
+    t1Head.appendChild(drEl("h3", null, "TRIAL 1: SIZE THE RESISTOR"));
+    t1Head.appendChild(drEl("p", "why",
+      "Three LEDs on three supplies. For each: subtract the toll from the supply, divide by 0.020 A, " +
+      "and pick the nearest standard resistor. Current between 12 and 25 mA passes: bright and long-lived. " +
+      "Over 25 mA cooks it; under 12 mA starves it. Choose, then COMMIT SIZING, and the bench shows " +
+      "the real current and the real brightness."));
+    panel.appendChild(t1Head);
+    DR_T1.forEach(function (p, i) { panel.appendChild(drT1Card(p, i + 1)); });
+
+    /* trial 2 */
+    var t2Head = drEl("div", "dr-card");
+    t2Head.appendChild(drEl("h3", null, "TRIAL 2: DIAGNOSE THE DARK LED"));
+    t2Head.appendChild(drEl("p", "why",
+      "Two dark LEDs, two different diseases. Probe each in diode-test mode, free and ungraded: " +
+      "red probe on the long lead reads the toll, red probe on the short lead should read OL. " +
+      "Then commit a verdict. Toll one way and OL the other means the part is healthy, so it is wired backwards: flip it. " +
+      "OL both ways means it is open: bin it."));
+    var dmWrap = drEl("div", "");
+    dmWrap.innerHTML = DR_DIOMEMODE_HTML;
+    t2Head.appendChild(dmWrap);
+    panel.appendChild(t2Head);
+    DR_T2.forEach(function (p, i) { panel.appendChild(drT2Card(p, i + 1)); });
+
+    /* trial 3: the no-resistor lesson */
+    var t3Head = drEl("div", "dr-card");
+    t3Head.appendChild(drEl("h3", null, "TRIAL 3: THE NO-RESISTOR LESSON"));
+    t3Head.appendChild(drEl("p", "why",
+      "A white LED, Vf 3.2 V, wired straight across a 9 V battery. No resistor. First, call the current, " +
+      "before any power flows. Then APPLY POWER and watch what the math was hiding. " +
+      "Then size the resistor that keeps this exact LED alive."));
+    panel.appendChild(t3Head);
+
+    var t3 = drEl("div", "dr-card");
+    t3.id = "diT3";
+    t3.appendChild(drEl("div", "dr-parthead", "TRIAL 3 \u00B7 PREDICT, THEN POWER"));
+    t3.appendChild(drEl("p", "dr-spec", "WHITE LED, Vf 3.2 V \u00B7 9 V BATTERY \u00B7 R = 0 \u03A9 (a wire)"));
+    var t3Led = drEl("div", "");
+    t3Led.id = "diT3_led";
+    t3Led.appendChild(drLed("white", false, 0));
+    t3.appendChild(t3Led);
+    var t3Read = drEl("p", "dr-read", "CURRENT: no power applied yet.");
+    t3Read.id = "diT3_read";
+    t3.appendChild(t3Read);
+    var smoke = drEl("p", "dr-smoke", "");
+    smoke.id = "diT3_smoke";
+    t3.appendChild(smoke);
+
+    var pRow = drEl("div", "dr-row");
+    pRow.id = "diT3_predRow";
+    ["ABOUT 20 mA, LIKE ALWAYS", "NEAR ZERO, IT STAYS DARK", "RUNAWAY: HUNDREDS OF mA, THEN DEAD"].forEach(function (label, ix) {
+      var pb2 = drEl("button", "dr-btn", label);
+      pb2.type = "button"; pb2.id = "diT3_p" + ix;
+      pb2.setAttribute("aria-label", "Predict: " + label);
+      pb2.addEventListener("click", function () {
+        var st3 = drState.t3;
+        if (st3.predicted || st3.powered) return;
+        var r = drT3Predict(ix);
+        var note = document.getElementById("diT3_predNote");
+        if (r.ok) {
+          st3.predicted = true;
+          note.textContent = "PREDICTION LOGGED: " + r.why + " APPLY POWER is armed.";
+          note.className = "dr-verdict ok";
+          document.getElementById("diT3_power").disabled = false;
+          drLog("trial 3: predicted the runaway, correctly.", "ok");
+        } else {
+          note.textContent = "MISS: " + r.why;
+          note.className = "dr-verdict bad";
+          drLog("trial 3: wrong prediction.", "bad");
+        }
+        drPop(t3);
+      });
+      pRow.appendChild(pb2);
+    });
+    t3.appendChild(pRow);
+    var predNote = drEl("p", "dr-verdict", "");
+    predNote.id = "diT3_predNote";
+    t3.appendChild(predNote);
+
+    var power = drEl("button", "dr-btn solid", "APPLY POWER");
+    power.type = "button"; power.id = "diT3_power";
+    power.disabled = true;
+    power.setAttribute("aria-label", "Apply power to the LED with no resistor");
+    power.addEventListener("click", function () {
+      var st3 = drState.t3;
+      if (st3.powered || !st3.predicted) return;
+      st3.powered = true;
+      power.disabled = true;
+      var steps = [18, 42, 95, 210, 430, 780], i = 0;
+      drLog("trial 3: power applied, no resistor in circuit.", "dim");
+      var tick = setInterval(function () {
+        var ma = steps[i];
+        t3Read.textContent = "CURRENT: " + ma.toFixed(1) + " mA and climbing...";
+        t3Led.innerHTML = "";
+        t3Led.appendChild(drLed("white", false, Math.min(ma, 60)));
+        i++;
+        if (i >= steps.length) {
+          clearInterval(tick);
+          st3.dead = true;
+          t3Led.innerHTML = "";
+          t3Led.appendChild(drLed("white", false, 0, true));
+          t3Read.textContent = "CURRENT: 0.0 mA. Open.";
+          smoke.textContent = "POP. THE LED IS DEAD.";
+          var note2 = document.getElementById("diT3_predNote");
+          note2.textContent = "780 mA through a 20 mA part. The bond wires melted in under a second: " +
+            "that is the no-resistor failure mode. Now do it right: size the resistor that keeps this LED alive.";
+          note2.className = "dr-verdict bad";
+          drLog("trial 3: 780 mA, bond wires melted, LED open. Predicted and witnessed.", "bad");
+          document.getElementById("diT3_fixRow").style.display = "flex";
+          fixCommit.style.display = "";
+          drPop(t3);
+        }
+      }, 90);
+    });
+    t3.appendChild(power);
+
+    var fixWrap = drEl("div", "");
+    fixWrap.id = "diT3_fixWrap";
+    var fixHead = drEl("p", "dr-spec", "DO IT RIGHT: white LED, 9 V, target 20 mA. Remainder: 9 - 3.2 = 5.8 V.");
+    fixWrap.appendChild(fixHead);
+    var fixRow = drEl("div", "dr-row");
+    fixRow.id = "diT3_fixRow";
+    fixRow.style.display = "none";
+    var fixBtns = [], fixSel = null;
+    DR_T3.fixChoices.forEach(function (r) {
+      var fb = drEl("button", "dr-btn", r + " \u03A9");
+      fb.type = "button"; fb.id = "diT3_r" + r;
+      fb.setAttribute("aria-label", "Choose " + r + " ohms for the fix");
+      fb.addEventListener("click", function () {
+        if (drState.t3.fixed) return;
+        fixSel = r;
+        fixBtns.forEach(function (x) { x.classList.remove("sel"); });
+        fb.classList.add("sel");
+      });
+      fixBtns.push(fb); fixRow.appendChild(fb);
+    });
+    fixWrap.appendChild(fixRow);
+    var fixCommit = drEl("button", "dr-btn solid", "COMMIT THE FIX");
+    fixCommit.type = "button"; fixCommit.id = "diT3_commit";
+    fixCommit.style.display = "none";
+    var fixVerdict = drEl("p", "dr-verdict", "");
+    fixVerdict.id = "diT3_fixVerdict";
+    fixCommit.addEventListener("click", function () {
+      var st3 = drState.t3;
+      if (st3.fixed) return;
+      if (fixSel === null) {
+        fixVerdict.textContent = "Pick a resistor first.";
+        fixVerdict.className = "dr-verdict bad";
+        return;
+      }
+      var v = drVerdictT1(DR_T3.vs, DR_VF[DR_T3.color], fixSel);
+      if (v.ok) {
+        st3.fixed = true;
+        t3Led.innerHTML = "";
+        t3Led.appendChild(drLed("white", false, v.ma));
+        t3Read.textContent = "CURRENT: " + v.ma.toFixed(1) + " mA \u00B7 LED LIT, ALIVE";
+        smoke.textContent = "";
+        fixVerdict.textContent = "PASS: " + v.why + " The same LED that died in seconds now runs cool.";
+        fixVerdict.className = "dr-verdict ok";
+        drLog("trial 3: fix committed, " + fixSel + " ohms -> " + v.ma.toFixed(1) + " mA. LED alive.", "ok");
+        fixBtns.forEach(function (x) { x.disabled = true; });
+        fixCommit.disabled = true;
+      } else {
+        fixVerdict.textContent = "MISS: " + v.why;
+        fixVerdict.className = "dr-verdict bad";
+        drLog("trial 3: fix miss at " + fixSel + " ohms.", "bad");
+      }
+      drMaybeCertify();
+      drPop(t3);
+    });
+    fixWrap.appendChild(fixCommit);
+    fixWrap.appendChild(fixVerdict);
+    t3.appendChild(fixWrap);
+    panel.appendChild(t3);
+
+    /* certification banner */
+    var banner = drEl("div", "dr-banner");
+    banner.id = "diBanner";
+    banner.appendChild(drEl("h3", null, "ROOM CERTIFIED"));
+    banner.appendChild(drEl("p", null, drCertLine()));
+    panel.appendChild(banner);
+    drEls.banner = banner;
+
+    /* bench log */
+    var logCard = drEl("div", "dr-card");
+    logCard.appendChild(drEl("h3", null, "BENCH LOG"));
+    var log = drEl("div", "dr-log");
+    log.id = "diLog";
+    log.setAttribute("aria-live", "polite");
+    logCard.appendChild(log);
+    panel.appendChild(logCard);
+    drEls.log = log;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    drLog("bench open. One red LED on the bench, meter in diode mode, resistor drawer unlocked.", "dim");
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", drBuild);
+  } else {
+    drBuild();
+  }
+})();
