@@ -14950,9 +14950,15 @@ if (typeof module !== "undefined" && module.exports) {
     out.prefix = { ok: false, msg: "Pick a prefix from the list" };
     if (a.prefix !== "" && !isNaN(p) && p >= 24 && p <= 30) {
       var u = swUsable(p);
-      out.prefix = u >= need
-        ? { ok: true, msg: "Correct: /" + p + " holds " + u + " usable, the zone needs " + need }
-        : { ok: false, msg: "Too small: /" + p + " holds " + u + " usable, the zone needs " + need };
+      var best = 24, q;
+      for (q = 24; q <= 30; q++) { if (swUsable(q) >= need) best = q; }
+      if (u < need) {
+        out.prefix = { ok: false, msg: "Too small: /" + p + " holds " + u + " usable, the zone needs " + need };
+      } else if (p !== best) {
+        out.prefix = { ok: false, msg: "Wasteful: /" + p + " fits, but /" + best + " is the smallest prefix that holds " + need + " hosts" };
+      } else {
+        out.prefix = { ok: true, msg: "Correct: /" + p + " holds " + u + " usable, the zone needs " + need };
+      }
     }
     var netI = swParseIP(a.subnet);
     out.subnet = { ok: false, msg: "Enter the subnet network address as a dotted quad" };
