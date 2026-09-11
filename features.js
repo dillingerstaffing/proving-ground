@@ -2325,7 +2325,7 @@ if (typeof module !== "undefined" && module.exports) {
     var panel = biEl("div", "bi-panel");
     panel.innerHTML =
       "<h3>The Burn-In Chamber</h3>" +
-      '<p class="bi-sub">This is the qualification rig behind the <a href="https://dillingerstaffing.github.io/tapeout/" target="_blank" rel="noopener">TAPEOUT</a> lab: three compute cards came back from the field and every one needs an honest burn-in before it ships or is sent back for RMA. Pick a card, design the stress profile, run the chamber, read the telemetry, then call <b>SHIP</b> or <b>RMA</b>. Two of these cards are carrying faults you cannot see from the outside. The telemetry will not confess on its own: each fault only surfaces under the workload that stresses it, soaked long enough to matter. Push any card past its thermal limit and it dies in the chamber, which counts as a miss. Scoring: 100 points per correct call, 300 for a clean sweep.</p>';
+      '<p class="bi-sub">This is the qualification rig behind the <a href="https://dillingerstaffing.github.io/tapeout/" target="_blank" rel="noopener">TAPEOUT</a> lab: three compute cards came back from the field, and each one either ships to a customer or goes back to the manufacturer under an RMA (return merchandise authorization). A wrong call costs real money either way, so every card gets an honest burn-in first. Pick a card, design the stress profile, run the chamber, read the telemetry, then call <b>SHIP</b> or <b>RMA</b>. Two of these cards are carrying faults you cannot see from the outside, and the telemetry will not confess on its own: each fault only surfaces under the workload that stresses it, soaked long enough to matter. Watch the numbers, not your gut: a healthy card settles near 83C holding about 99% of its boost clock, while the same card with dried thermal paste sits near 89C wearing the THROTTLING tag at about 85% boost. Push any card past its thermal limit and it dies in the chamber, which counts as a miss. Scoring: 100 points per correct call, 300 for a clean sweep.</p>';
     ov.appendChild(panel);
     document.body.appendChild(ov);
 
@@ -2338,7 +2338,7 @@ if (typeof module !== "undefined" && module.exports) {
 
     /* brief */
     ui.brief = biEl("div", "bi-brief",
-      "<b>How to read a card:</b> a healthy card holds boost near its rated clock, lands in the expected temperature band, and stays nearly silent on ECC. " +
+      "<b>How to read a card:</b> a healthy card holds boost near its rated clock, lands in the expected temperature band, and stays nearly silent on ECC (error-correcting code: the VRAM logs every corrected bit flip, so a healthy card shows almost none). " +
       "A card with dried thermal paste runs hot for the same power and sheds boost (watch the THROTTLING tag). " +
       "A card with marginal VRAM throws correctable ECC bursts, loudest under the memory workload. " +
       "Tip: match the stress to the suspicion. A compute soak will not catch bad VRAM, and a gentle memory pass will not catch bad paste. " +
