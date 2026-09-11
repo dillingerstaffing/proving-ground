@@ -33481,3 +33481,859 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+/* ============================================================
+   THE CELL ROOM
+   Old Iron bench 47. The one atomic mechanism: a 3 V coin cell keeps
+   the clock and the setup memory alive while the wall power is gone,
+   and when the cell dies the machine forgets.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------- the bench's own model, stated in the copy ---------- */
+  var CL_CAP_MAH = 220;     // CR2032 rated capacity
+  var CL_DRAW_UA = 5;        // RTC + CMOS RAM standby draw, microamps
+  var CL_V_FRESH = 3.0;     // fresh cell rail
+  var CL_V_WALL = 3.3;      // rail held by the PSU while the wall is on
+  var CL_V_DEAD = 2.0;      // below this the clock stops, settings fall to defaults
+  var CL_DEAD_CELL_V = 0.7; // the spent cell in trial 2
+  var CL_HOLDER_MM = 3.2;   // the holder wants the 3.2 mm cell
+  var CL_TOL_YR = 0.5;      // trial 1 prediction tolerance, years
+
+  var CL_CELLS = [
+    { tag: "CR2016", mm: 1.6 },
+    { tag: "CR2025", mm: 2.5 },
+    { tag: "CR2032", mm: 3.2 }
+  ];
+
+  /* ---------- pure sims (no DOM) ---------- */
+  function clLifeHours(capMah, drawUa) { return capMah * 1000 / drawUa; }
+  function clLifeYears(capMah, drawUa) { return clLifeHours(capMah, drawUa) / 8760; }
+
+  // Stylized coin-cell discharge: nearly flat near 3 V for most of the
+  // rated life, then a fast knee at the end. frac is 0..1 of rated life.
+  function clDischargeV(frac) {
+    if (frac <= 0) return CL_V_FRESH;
+    if (frac < 0.9) return CL_V_FRESH - 0.05 * (frac / 0.9);
+    if (frac >= 1) return 1.9;
+    return 2.95 - ((frac - 0.9) / 0.1) * 1.05;
+  }
+  // Fraction of rated life where the rail first drops below CL_V_DEAD.
+  function clFreezeFrac() { return 0.9 + (0.95 / 1.05) * 0.1; }
+  function clFreezeYears() { return clLifeYears(CL_CAP_MAH, CL_DRAW_UA) * clFreezeFrac(); }
+
+  // Rail voltage. The wall masks everything: while the supply is on the
+  // rail reads 3.3 V no matter what the cell is doing. Otherwise the cell
+  // feeds the rail only if it is seated, thick enough to touch the clip,
+  // and right-side up.
+  function clRailV(wallOn, cellV, contact, flipped) {
+    if (wallOn) return CL_V_WALL;
+    if (cellV == null || !contact || flipped) return 0;
+    return cellV;
+  }
+  function clContact(cellMm) { return cellMm != null && cellMm >= CL_HOLDER_MM - 0.01; }
+  function clAlive(railV) { return railV >= CL_V_DEAD; }
+  function clCheckT1(pred) {
+    var p = Number(pred);
+    if (!isFinite(p)) return { ok: false, why: "not a number" };
+    var fz = clFreezeYears();
+    var err = Math.abs(p - fz);
+    return { ok: err <= CL_TOL_YR, freeze: fz, err: err };
+  }
+  function clFmt1(x) { return (Math.round(x * 10) / 10).toFixed(1); }
+
+  /* ---------- css ---------- */
+  var CL_CSS = [
+    ".cl-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".cl-overlay.open{display:block}",
+    ".cl-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".cl-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".cl-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".cl-sub{font-size:13px;color:#b9b2a4;margin:0 0 22px;max-width:62ch;line-height:1.6}",
+    ".cl-card{border:1px solid var(--line,#2b2b30);background:var(--panel,#141416);border-radius:10px;padding:18px;margin:0 0 16px}",
+    ".cl-card h3{font-family:'Space Grotesk',sans-serif;font-size:17px;margin:0 0 6px;color:var(--paper,#f2ede4);letter-spacing:.02em}",
+    ".cl-card .why{font-size:13px;line-height:1.65;color:#d8d2c4;margin:0 0 10px;max-width:68ch}",
+    ".cl-card .why b{color:var(--ember,#ff5a1f);font-weight:600}",
+    ".cl-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:8px 0}",
+    ".cl-lab{font-size:11px;letter-spacing:.14em;color:#8f8a7d}",
+    ".cl-in{background:#0c0c0e;border:1px solid var(--line,#2b2b30);color:var(--paper,#f2ede4);border-radius:6px;padding:12px 10px;font-family:inherit;font-size:15px;width:110px;min-height:48px}",
+    ".cl-in:focus{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".cl-btn{background:transparent;border:1px solid var(--ember,#ff5a1f);color:var(--ember,#ff5a1f);border-radius:8px;padding:12px 18px;font-family:inherit;font-size:13px;letter-spacing:.08em;cursor:pointer;min-height:48px;min-width:48px}",
+    ".cl-btn:hover{background:rgba(255,90,31,.12)}",
+    ".cl-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".cl-btn.solid{background:var(--ember,#ff5a1f);color:#101012;font-weight:600}",
+    ".cl-btn:disabled{opacity:.35;cursor:default}",
+    ".cl-btn[aria-pressed=true]{background:var(--ember,#ff5a1f);color:#101012}",
+    ".cl-verdict{font-size:14px;font-weight:600;letter-spacing:.06em;margin:10px 0 0;min-height:22px}",
+    ".cl-verdict.pass{color:#7fd67f}.cl-verdict.miss{color:var(--ember,#ff5a1f)}",
+    ".cl-note{font-size:12px;color:#8f8a7d;line-height:1.6;margin:8px 0 0;max-width:68ch}",
+    ".cl-log{border:1px solid var(--line,#2b2b30);border-radius:8px;background:#0c0c0e;padding:10px 14px;font-size:12px;line-height:1.7;max-height:150px;overflow-y:auto;margin:0 0 16px;color:#b9b2a4}",
+    ".cl-log .ok{color:#7fd67f}.cl-log .bad{color:var(--ember,#ff5a1f)}",
+    ".cl-mach{border:1px solid var(--line,#2b2b30);border-radius:8px;background:#0c0c0e;padding:12px 14px;margin:10px 0}",
+    ".cl-mrow{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;margin:6px 0}",
+    ".cl-meter{font-size:16px;color:var(--paper,#f2ede4);font-weight:600;min-width:64px}",
+    ".cl-holder{font-size:12px;color:#b9b2a4}",
+    ".cl-clock{font-size:18px;color:var(--paper,#f2ede4);font-weight:600;letter-spacing:.04em}",
+    ".cl-cksum{font-size:12px;color:var(--ember,#ff5a1f);font-weight:700;letter-spacing:.06em}",
+    ".cl-setup{font-size:12px;color:#b9b2a4;line-height:1.7;margin-top:6px}",
+    ".cl-setup .dead{color:var(--ember,#ff5a1f)}",
+    ".cl-vbar{height:10px;background:#0c0c0e;border:1px solid var(--line,#2b2b30);border-radius:5px;overflow:hidden;margin:8px 0;max-width:420px}",
+    ".cl-vfill{height:100%;background:var(--ember,#ff5a1f);width:100%;transition:width .2s ease-out}",
+    ".cl-steps{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}",
+    ".cl-lanes{font-size:13px;line-height:1.9;background:#0c0c0e;border:1px solid var(--line,#2b2b30);border-radius:8px;padding:12px 14px;margin:10px 0;min-height:80px}",
+    ".cl-lanes .k{color:#8f8a7d}.cl-lanes .v{color:var(--paper,#f2ede4)}.cl-lanes .hit{color:var(--ember,#ff5a1f);font-weight:600}",
+    ".cl-banner{display:none;border:1px solid var(--ember,#ff5a1f);border-radius:10px;padding:16px;margin:0 0 16px;background:rgba(255,90,31,.07)}",
+    ".cl-banner h3{font-family:'Space Grotesk',sans-serif;color:var(--ember,#ff5a1f);margin:0 0 6px;font-size:18px}",
+    ".cl-banner p{font-size:13px;color:#d8d2c4;margin:0 0 10px;line-height:1.6}",
+    "@media (prefers-reduced-motion:no-preference){.cl-pop{animation:clpop .2s ease-out}}",
+    "@keyframes clpop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    "@media (max-width:560px){.cl-panel{padding:56px 14px 110px}}"
+  ].join("\n");
+
+  /* ---------- intro copy: WHY first, worked example, failure modes ---------- */
+  var CL_INTRO_A =
+    "<div class='cl-card'><h3>WHY IT MATTERS</h3>" +
+    "<p class='why'>Every old machine that forgets the date, loses its boot order, and begs you to press F1 at every cold start is telling you one thing: " +
+    "the little cell that keeps its memory alive while the wall power is gone has died. A coin cell that costs less than a dollar is the difference " +
+    "between a working refurb and a trip to the recycling pile.</p>" +
+    "<p class='why'>Two things must never lose power. The <b>RTC</b>, the real-time clock chip that keeps the time, and the <b>CMOS RAM</b>, " +
+    "the few bytes of setup memory that remember the boot order and your settings. While the machine is plugged in, the power supply feeds them. " +
+    "The moment the wall goes dark, a 3 V coin cell takes over. When that cell dies, the machine forgets. That is the whole bench.</p></div>";
+
+  var CL_INTRO_B =
+    "<div class='cl-card'><h3>WORKED EXAMPLE, CHECK IT BY HAND</h3>" +
+    "<p class='why'>The cell in this room is a <b>CR2032</b>, rated <b>220 mAh</b>: it can deliver 220 milliamps for one hour, or one milliamp for 220 hours. " +
+    "The clock and the setup memory sip about <b>5 microamps</b> between them, all day, every day.</p>" +
+    "<p class='why'>Life is capacity divided by draw. 220 mAh is 220,000 microamp-hours. 220,000 / 5 = <b>44,000 hours</b>. " +
+    "Divide by 24, then by 365: <b>5.0 years</b>. Five years of remembering, from a coin you could lose in a couch, " +
+    "longer than most people keep a laptop. Press STEP and watch the arithmetic, then call it yourself in trial 1.</p></div>";
+
+  var CL_INTRO_C =
+    "<div class='cl-card'><h3>THE FOUR WAYS THE CELL BENCH DIES</h3>" +
+    "<p class='why'><b>Drained:</b> below 2 V the clock stops and the settings fall to defaults. Every cold boot starts at 01/01/2009 and asks for F1. " +
+    "<b>Masked:</b> with the wall on, the power supply holds the rail at 3.3 V and a dead cell hides. Unplug the machine and the amnesia shows. " +
+    "<b>Thin cell:</b> a CR2025 is 0.7 mm too thin for a 3.2 mm holder and never touches the clip: 0 V, same as dead. " +
+    "<b>Backwards:</b> the faces touch the wrong contacts: 0 V, and in a tight holder the flipped cell shorts itself. " +
+    "Trial 2 hides a dead cell behind the wall switch. Trial 3 makes you commit the last two mistakes on purpose, " +
+    "so you learn them here and not on a customer's board.</p></div>";
+
+  var CL_INTRO_HTML = CL_INTRO_A + CL_INTRO_B + CL_INTRO_C;
+
+  var CL_STEPS = [
+    "<span class='k'>Capacity first: 220 mAh is </span><span class='v'>220,000 microamp-hours</span><span class='k'>. Milli to micro is a factor of a thousand.</span>",
+    "<span class='k'>Draw: the clock and the setup memory sip about </span><span class='v'>5 microamps</span><span class='k'> together. Millionths of an amp: that is why the cell lasts years, not hours.</span>",
+    "<span class='k'>Hours: 220,000 / 5 = </span><span class='hit'>44,000 hours</span><span class='k'> of standby. That is the whole trick: one division.</span>",
+    "<span class='k'>Years: 44,000 / 24 / 365 = </span><span class='hit'>5.0 years</span><span class='k'>. Check it by hand. The bench's drain ends within a hair of this number.</span>",
+    "<span class='k'>The rail holds near 3 V for almost the whole life, then knees down fast at the end. The curve is stylized, the arithmetic is exact. " +
+    "Below </span><span class='v'>2 V</span><span class='k'> the clock stops: that is when the machine forgets.</span>",
+    "<span class='k'>The wall switch, the meter, and the cell tray are consequence-free. Trial 1 wants your number before you run the drain: " +
+    "within half a year of the freeze counts.</span>"
+  ];
+
+  /* ---------- state ---------- */
+  function clNewTrialState() {
+    return { attempts: 0, passed: false, committed: false };
+  }
+  var clState = {
+    trials: [clNewTrialState(), clNewTrialState(), clNewTrialState()],
+    step: 0
+  };
+  var clEls = null;
+  var clMachines = [];
+
+  /* ---------- dom helpers ---------- */
+  function clEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function clLog(msg, cls) {
+    if (!clEls || !clEls.log) return;
+    var d = clEl("div", cls || "", msg);
+    clEls.log.appendChild(d);
+    clEls.log.scrollTop = clEls.log.scrollHeight;
+  }
+  function clPop(card) {
+    if (!card) return;
+    card.classList.remove("cl-pop");
+    void card.offsetWidth;
+    card.classList.add("cl-pop");
+  }
+  function clFmtClock(sec) {
+    sec = Math.floor(sec) % 86400;
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    function p(x) { return (x < 10 ? "0" : "") + x; }
+    return p(h) + ":" + p(m) + ":" + p(s);
+  }
+
+  /* ---------- the machine strip ---------- */
+  function clMachineRail(m) {
+    return clRailV(m.wall, m.cellV, clContact(m.cellMm), m.flipped);
+  }
+  function clMachine(idp, cfg) {
+    var m = {
+      idp: idp,
+      wall: cfg.wall !== false,
+      cellV: cfg.cellV != null ? cfg.cellV : null,
+      cellMm: cfg.cellMm != null ? cfg.cellMm : null,
+      cellTag: cfg.cellTag || null,
+      flipped: false,
+      flippedRefused: false,
+      amnesiac: !!cfg.amnesiac,
+      clockSec: cfg.clockSec || (9 * 3600 + 42 * 60 + 17),
+      wasAlive: true,
+      wallHook: null,
+      els: {}
+    };
+
+    var root = clEl("div", "cl-mach");
+    root.id = idp + "Mach";
+
+    var r1 = clEl("div", "cl-mrow");
+    r1.appendChild(clEl("span", "cl-lab", "WALL"));
+    var wallBtn = clEl("button", "cl-btn", "");
+    wallBtn.type = "button"; wallBtn.id = idp + "Wall";
+    wallBtn.setAttribute("aria-pressed", m.wall ? "true" : "false");
+    wallBtn.setAttribute("aria-label", "Toggle wall power");
+    wallBtn.addEventListener("click", function () {
+      m.wall = !m.wall;
+      clLog("wall " + (m.wall ? "ON" : "OFF") + ": " +
+        (m.wall ? "the supply holds the rail at 3.3 V, the cell is masked."
+                : "the supply lets go. Now the rail is the cell, and nothing else."));
+      if (m.wallHook) m.wallHook(m.wall);
+      clMachineRender(m);
+    });
+    r1.appendChild(wallBtn);
+    r1.appendChild(clEl("span", "cl-lab", "RAIL"));
+    var meter = clEl("span", "cl-meter", "");
+    meter.id = idp + "Meter";
+    r1.appendChild(meter);
+    r1.appendChild(clEl("span", "cl-lab", "CELL"));
+    var holder = clEl("span", "cl-holder", "");
+    holder.id = idp + "Holder";
+    r1.appendChild(holder);
+    root.appendChild(r1);
+
+    var vbar = clEl("div", "cl-vbar");
+    var vfill = clEl("div", "cl-vfill");
+    vfill.id = idp + "VFill";
+    vbar.appendChild(vfill);
+    vbar.setAttribute("role", "img");
+    vbar.setAttribute("aria-label", "Rail voltage bar");
+    root.appendChild(vbar);
+
+    var r2 = clEl("div", "cl-mrow");
+    r2.appendChild(clEl("span", "cl-lab", "CLOCK"));
+    var clock = clEl("span", "cl-clock", "");
+    clock.id = idp + "Clock";
+    r2.appendChild(clock);
+    var cksum = clEl("span", "cl-cksum", "CMOS CHECKSUM ERROR, PRESS F1");
+    cksum.id = idp + "CkSum";
+    cksum.style.display = "none";
+    r2.appendChild(cksum);
+    root.appendChild(r2);
+
+    var setup = clEl("div", "cl-setup", "");
+    setup.id = idp + "Setup";
+    root.appendChild(setup);
+
+    m.els = { root: root, wallBtn: wallBtn, meter: meter, holder: holder,
+              vfill: vfill, clock: clock, cksum: cksum, setup: setup };
+    m.wasAlive = clAlive(clMachineRail(m));
+    clMachineRender(m);
+    clMachines.push(m);
+    return m;
+  }
+  function clMachineRender(m) {
+    var rail = clMachineRail(m);
+    var alive = clAlive(rail);
+    m.els.wallBtn.textContent = m.wall ? "WALL: ON" : "WALL: OFF";
+    m.els.wallBtn.setAttribute("aria-pressed", m.wall ? "true" : "false");
+    m.els.meter.textContent = clFmt1(rail) + " V";
+    m.els.vfill.style.width = Math.max(0, Math.min(100, rail / 3.3 * 100)).toFixed(0) + "%";
+    if (m.cellV == null) m.els.holder.textContent = "HOLDER EMPTY";
+    else if (m.flipped) m.els.holder.textContent = m.cellTag + " SEATED, FLIPPED";
+    else m.els.holder.textContent = m.cellTag + " SEATED, + UP";
+    m.els.clock.textContent = alive ? clFmtClock(m.clockSec) : "FROZEN " + clFmtClock(m.clockSec);
+    m.els.cksum.style.display = (m.amnesiac || !alive) ? "" : "none";
+    if (m.amnesiac) {
+      m.els.setup.innerHTML = "DATE <span class='dead'>2009-01-01 00:00</span> &middot; " +
+        "BOOT ORDER <span class='dead'>FORGOTTEN</span> &middot; SETUP <span class='dead'>DEFAULTS</span>";
+    } else {
+      m.els.setup.textContent = "DATE 2026-09-11 " + clFmtClock(m.clockSec) +
+        " \u00B7 BOOT SSD FIRST \u00B7 XMP ON";
+    }
+  }
+  function clTickAll() {
+    for (var i = 0; i < clMachines.length; i++) {
+      var m = clMachines[i];
+      var rail = clMachineRail(m);
+      var alive = clAlive(rail);
+      if (m.wasAlive && !alive) m.amnesiac = true;
+      if (alive) m.clockSec++;
+      m.wasAlive = alive;
+      clMachineRender(m);
+    }
+  }
+
+  /* ---------- cert text ---------- */
+  function clCertText(i) {
+    if (i === 0) return "CELL ROOM TRIAL 1: called the CR2032 life at " +
+      clFmt1(clState.trials[0].pred) + " yr against a freeze at " +
+      clFmt1(clFreezeYears()) + " yr (220 mAh / 5 uA = 44,000 h).";
+    if (i === 1) return "CELL ROOM TRIAL 2: unmasked a dead 0.7 V cell behind the 3.3 V wall rail, " +
+      "seated a CR2032 (3.2 mm, + up), and the machine remembered across the power cycle.";
+    return "CELL ROOM TRIAL 3: committed all three classic mistakes on purpose: thin cell 0 V, " +
+      "backwards cell refused, correct cell 3.0 V holding the clock.";
+  }
+  function clBenchCertText() {
+    return "THE CELL ROOM, CERTIFIED. A 3 V coin cell holds the RTC and the setup memory while the wall " +
+      "is dark; below 2 V the machine forgets; the wall masks a dead cell at 3.3 V; only the 3.2 mm cell " +
+      "seats, and only + up. Issued by the bench. Deterministic, reproducible, no shortcuts.";
+  }
+  function clMaybeBenchDone() {
+    var all = clState.trials.every(function (s) { return s.committed; });
+    if (clEls && clEls.banner) {
+      clEls.banner.style.display = all ? "block" : "none";
+      clEls.certAll.style.display = all ? "" : "none";
+    }
+  }
+
+  /* ---------- overlay ---------- */
+  function clOpen() { if (clEls) clEls.overlay.classList.add("open"); }
+  function clClose() { if (clEls) clEls.overlay.classList.remove("open"); }
+
+  function clBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("clBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = CL_CSS;
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "clBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Cell Room";
+    b.addEventListener("click", clOpen);
+    box.appendChild(b);
+
+    var ov = clEl("div", "cl-overlay");
+    ov.id = "clOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Cell Room");
+    var x = clEl("button", "cl-btn", "CLOSE");
+    x.id = "clXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Cell Room");
+    x.addEventListener("click", clClose);
+    ov.appendChild(x);
+
+    var panel = clEl("div", "cl-panel");
+    panel.appendChild(clEl("div", "cl-kicker", "OLD IRON BENCH 47"));
+    panel.appendChild(clEl("h2", "cl-title", "The Cell Room"));
+    panel.appendChild(clEl("p", "cl-sub",
+      "A 3 V coin cell keeps the clock and the setup memory alive while the wall power is gone. " +
+      "Predict its life, hunt a dead one hiding behind the wall switch, and commit the classic cell mistakes on purpose."));
+
+    /* intro: why, worked example, failure modes */
+    var introWrap = clEl("div", "");
+    introWrap.innerHTML = CL_INTRO_HTML;
+    panel.appendChild(introWrap);
+
+    /* worked-example stepper */
+    var stepCard = clEl("div", "cl-card");
+    stepCard.appendChild(clEl("h3", null, "THE ARITHMETIC, STEP BY STEP"));
+    stepCard.appendChild(clEl("p", "why", "The worked example above, one line at a time. Consequence-free."));
+    var lanes = clEl("div", "cl-lanes", "");
+    lanes.id = "clLanes";
+    stepCard.appendChild(lanes);
+    var stepRow = clEl("div", "cl-steps");
+    var stepBtn = clEl("button", "cl-btn", "STEP");
+    stepBtn.type = "button"; stepBtn.id = "clStepBtn";
+    stepBtn.setAttribute("aria-label", "Step through the life arithmetic");
+    stepRow.appendChild(stepBtn);
+    stepCard.appendChild(stepRow);
+    panel.appendChild(stepCard);
+    stepBtn.addEventListener("click", function () {
+      if (clState.step < CL_STEPS.length) {
+        lanes.innerHTML += (clState.step > 0 ? "<br>" : "") + CL_STEPS[clState.step];
+        clState.step++;
+        clPop(stepCard);
+        if (clState.step >= CL_STEPS.length) stepBtn.disabled = true;
+      }
+    });
+
+    /* do-first */
+    var doCard = clEl("div", "cl-card");
+    doCard.appendChild(clEl("h3", null, "DO FIRST: KILL THE WALL"));
+    doCard.appendChild(clEl("p", "why",
+      "One tap. The wall goes dark, the clock keeps ticking, the meter reads the cell. " +
+      "Everything in this room starts from this moment: something tiny is holding the machine's memory up, and it is not the wall."));
+    var m0 = clMachine("clM0", { wall: true, cellV: CL_V_FRESH, cellMm: 3.2, cellTag: "CR2032" });
+    doCard.appendChild(m0.els.root);
+    var doRow = clEl("div", "cl-row");
+    var killBtn = clEl("button", "cl-btn solid", "KILL THE WALL");
+    killBtn.type = "button"; killBtn.id = "clKillBtn";
+    killBtn.setAttribute("aria-pressed", "false");
+    killBtn.addEventListener("click", function () {
+      m0.els.wallBtn.click();
+      killBtn.textContent = m0.wall ? "KILL THE WALL" : "RESTORE THE WALL";
+      killBtn.setAttribute("aria-pressed", m0.wall ? "false" : "true");
+      if (!m0.wall) clLog("do-first: wall off, clock alive on cell power. That is the whole bench in one tap.", "ok");
+    });
+    doRow.appendChild(killBtn);
+    doCard.appendChild(doRow);
+    panel.appendChild(doCard);
+
+    /* ---------- TRIAL 1: call the life ---------- */
+    var t1 = clState.trials[0];
+    t1.pred = null; t1.drained = false; t1.freeze = null; t1.timer = null;
+    var c1 = clEl("div", "cl-card");
+    c1.appendChild(clEl("h3", null, "TRIAL 1: CALL THE LIFE"));
+    c1.appendChild(clEl("p", "why",
+      "Fresh CR2032, 220 mAh, 5 microamps of draw. Write down the life in years, commit it, " +
+      "then run the drain and watch the clock die on schedule. Within 0.5 years of the freeze counts."));
+    var m1 = clMachine("clM1", { wall: true, cellV: CL_V_FRESH, cellMm: 3.2, cellTag: "CR2032" });
+    c1.appendChild(m1.els.root);
+    var drainBar = clEl("div", "cl-vbar");
+    var drainFill = clEl("div", "cl-vfill");
+    drainFill.id = "clDrainFill";
+    drainBar.appendChild(drainFill);
+    drainBar.setAttribute("role", "img");
+    drainBar.setAttribute("aria-label", "Drain progress");
+    c1.appendChild(drainBar);
+    var drainStat = clEl("div", "cl-note", "SIM YEAR 0.0 / " + clFmt1(clLifeYears(CL_CAP_MAH, CL_DRAW_UA)));
+    drainStat.id = "clDrainStat";
+    c1.appendChild(drainStat);
+    var r1 = clEl("div", "cl-row");
+    r1.appendChild(clEl("span", "cl-lab", "YOUR CALL (YEARS)"));
+    var predIn = clEl("input", "cl-in", null);
+    predIn.type = "text"; predIn.id = "clT1Pred"; predIn.inputMode = "decimal";
+    predIn.setAttribute("aria-label", "Your predicted cell life in years");
+    r1.appendChild(predIn);
+    var commitBtn = clEl("button", "cl-btn", "COMMIT PREDICTION");
+    commitBtn.type = "button"; commitBtn.id = "clT1Commit";
+    r1.appendChild(commitBtn);
+    var drainBtn = clEl("button", "cl-btn solid", "RUN THE DRAIN");
+    drainBtn.type = "button"; drainBtn.id = "clT1Drain"; drainBtn.disabled = true;
+    r1.appendChild(drainBtn);
+    c1.appendChild(r1);
+    var v1 = clEl("p", "cl-verdict", "");
+    v1.id = "clT1Verdict";
+    c1.appendChild(v1);
+    var cert1 = clEl("button", "cl-btn solid", "CERTIFY TRIAL 1");
+    cert1.type = "button"; cert1.id = "clT1Cert"; cert1.disabled = true;
+    cert1.style.display = "none";
+    c1.appendChild(cert1);
+    panel.appendChild(c1);
+
+    function clT1FinishDrain() {
+      var fz = clFreezeYears();
+      t1.drained = true; t1.freeze = fz;
+      drainFill.style.width = "100%";
+      drainStat.textContent = "SIM YEAR " + clFmt1(fz) + " / " + clFmt1(clLifeYears(CL_CAP_MAH, CL_DRAW_UA)) +
+        ": rail below 2 V, clock frozen, settings lost.";
+      var chk = clCheckT1(t1.pred);
+      if (chk.ok) {
+        v1.textContent = "You called " + clFmt1(t1.pred) + " yr, the clock died at " +
+          clFmt1(fz) + " yr: within half a year. The division was the whole trial.";
+        v1.className = "cl-verdict pass";
+        t1.passed = true;
+        cert1.style.display = "";
+        cert1.disabled = false;
+        clLog("trial 1: prediction " + clFmt1(t1.pred) + " yr vs freeze " +
+          clFmt1(fz) + " yr. Passed.", "ok");
+      } else {
+        t1.attempts++;
+        v1.textContent = "You called " + clFmt1(t1.pred) + " yr, the clock died at " +
+          clFmt1(fz) + " yr: off by " + clFmt1(chk.err) + " yr. The arithmetic: 220,000 / 5 = 44,000 h = 5.0 yr. Try again.";
+        v1.className = "cl-verdict miss";
+        predIn.disabled = false; commitBtn.disabled = false;
+        clLog("trial 1: prediction off by " + clFmt1(chk.err) + " yr. Attempt " + t1.attempts + ".", "bad");
+      }
+      clPop(c1);
+    }
+    function clT1DrainStep(frac) {
+      var v = clDischargeV(frac);
+      m1.cellV = v;
+      drainFill.style.width = (frac * 100).toFixed(0) + "%";
+      drainStat.textContent = "SIM YEAR " + clFmt1(frac * clLifeYears(CL_CAP_MAH, CL_DRAW_UA)) +
+        " / " + clFmt1(clLifeYears(CL_CAP_MAH, CL_DRAW_UA)) + ": rail " + clFmt1(v) + " V";
+      clMachineRender(m1);
+      if (v < CL_V_DEAD) {
+        if (t1.timer) { clearInterval(t1.timer); t1.timer = null; }
+        clT1FinishDrain();
+      }
+    }
+    commitBtn.addEventListener("click", function () {
+      var chk = clCheckT1(predIn.value);
+      if (chk.why === "not a number") {
+        v1.textContent = "That is not a number. Years, one decimal is plenty.";
+        v1.className = "cl-verdict miss";
+        return;
+      }
+      t1.pred = Number(predIn.value);
+      predIn.disabled = true; commitBtn.disabled = true; drainBtn.disabled = false;
+      v1.textContent = "Committed: " + clFmt1(t1.pred) + " years. Run the drain.";
+      v1.className = "cl-verdict";
+      clLog("trial 1: prediction committed at " + clFmt1(t1.pred) + " yr.");
+    });
+    drainBtn.addEventListener("click", function () {
+      if (t1.timer || t1.drained) return;
+      if (m1.wall) {
+        m1.wall = false;
+        clLog("trial 1: wall off for the drain. The supply would mask the cell at 3.3 V.");
+      }
+      m1.cellV = CL_V_FRESH; m1.amnesiac = false; m1.wasAlive = true;
+      drainBtn.disabled = true;
+      var reduced = (typeof window !== "undefined" && window.matchMedia &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+      if (reduced) { clT1DrainStep(1); return; }
+      var frac = 0;
+      t1.timer = setInterval(function () {
+        frac += 1 / 60;
+        if (frac >= 1) frac = 1;
+        clT1DrainStep(frac);
+      }, 100);
+    });
+    cert1.addEventListener("click", function () {
+      t1.committed = true;
+      clLog(clCertText(0), "ok");
+      clMaybeBenchDone();
+      clPop(c1);
+    });
+
+    /* ---------- TRIAL 2: the forgetful machine ---------- */
+    var t2 = clState.trials[1];
+    t2.step = 0; t2.sawOff = false;
+    var c2 = clEl("div", "cl-card");
+    c2.appendChild(clEl("h3", null, "TRIAL 2: THE FORGETFUL MACHINE"));
+    c2.appendChild(clEl("p", "why",
+      "Symptoms: every cold boot starts at 01/01/2009, the SSD is forgotten, setup begs for F1. " +
+      "Somebody already measured the rail at 3.3 V and called the cell fine. They were wrong, and the wall switch will show you why."));
+    var m2 = clMachine("clM2", { wall: true, cellV: CL_DEAD_CELL_V, cellMm: 3.2, cellTag: "CR2032?", amnesiac: true });
+    c2.appendChild(m2.els.root);
+    var r2 = clEl("div", "cl-row");
+    c2.appendChild(r2);
+    var v2 = clEl("p", "cl-verdict", "");
+    v2.id = "clT2Verdict";
+    c2.appendChild(v2);
+    var cert2 = clEl("button", "cl-btn solid", "CERTIFY TRIAL 2");
+    cert2.type = "button"; cert2.id = "clT2Cert"; cert2.disabled = true;
+    cert2.style.display = "none";
+    c2.appendChild(cert2);
+    panel.appendChild(c2);
+
+    function clT2SetStep(s) {
+      t2.step = s;
+      while (r2.firstChild) r2.removeChild(r2.firstChild);
+      function t2btn(label, id, fn, solid) {
+        var bb = clEl("button", solid ? "cl-btn solid" : "cl-btn", label);
+        bb.type = "button"; bb.id = id;
+        bb.addEventListener("click", fn);
+        r2.appendChild(bb);
+        return bb;
+      }
+      if (s === 0) {
+        r2.appendChild(clEl("span", "cl-lab", "FIRST CHECK"));
+        t2btn("MEASURE THE RAIL, WALL ON", "clT2A", function () {
+          v2.textContent = "3.3 V. Looks fine, and it is lying to you: that is the power supply holding the rail, not the cell.";
+          v2.className = "cl-verdict miss";
+          clLog("trial 2: measured with the wall on: 3.3 V. The dead cell is masked.", "bad");
+        });
+        t2btn("UNPLUG THE WALL, THEN MEASURE", "clT2B", function () {
+          v2.textContent = "Correct. The cell only works when the wall is dark: that is the only time you can see it.";
+          v2.className = "cl-verdict pass";
+          clLog("trial 2: correct first check. Flip the wall switch OFF, then measure.", "ok");
+          clT2SetStep(1);
+        }, true);
+        t2btn("ORDER A NEW CELL NOW", "clT2C", function () {
+          v2.textContent = "Maybe, but you have not proved it. Diagnose before you spend: a guess is not a measurement.";
+          v2.className = "cl-verdict miss";
+          clLog("trial 2: ordered a cell on a guess. The bench does not grade guesses.", "bad");
+        });
+      } else if (s === 1) {
+        t2btn("MEASURE THE RAIL", "clT2Meas", function () {
+          var rail = clMachineRail(m2);
+          if (m2.wall) {
+            v2.textContent = "3.3 V. The wall is still on, so this is the supply, not the cell. Flip the wall switch OFF and measure again.";
+            v2.className = "cl-verdict miss";
+            clLog("trial 2: still masked at 3.3 V. The wall is on.", "bad");
+          } else {
+            v2.textContent = "0.7 V. There it is: the cell is spent, and the wall was hiding it the whole time.";
+            v2.className = "cl-verdict pass";
+            clLog("trial 2: wall off, rail 0.7 V. The mask is off.", "ok");
+            clT2SetStep(2);
+          }
+        }, true);
+      } else if (s === 2) {
+        r2.appendChild(clEl("span", "cl-lab", "THE CELL READS 0.7 V. CALL IT"));
+        t2btn("DEAD", "clT2Dead", function () {
+          v2.textContent = "Dead. Below the 2 V line, the clock was already stopped. Pick the replacement from the tray.";
+          v2.className = "cl-verdict pass";
+          clLog("trial 2: called dead at 0.7 V. Correct.", "ok");
+          clT2SetStep(3);
+        }, true);
+        t2btn("ALIVE", "clT2Alive", function () {
+          v2.textContent = "0.7 V is below the 2 V line: the clock is already dead. Call it what it is.";
+          v2.className = "cl-verdict miss";
+          clLog("trial 2: called a 0.7 V cell alive. It is not.", "bad");
+        });
+      } else if (s === 3) {
+        r2.appendChild(clEl("span", "cl-lab", "PICK THE REPLACEMENT"));
+        CL_CELLS.forEach(function (cc) {
+          t2btn(cc.tag + " \u00B7 " + cc.mm.toFixed(1) + " MM", "clT2Cell" + cc.tag, function () {
+            if (cc.tag === "CR2032") {
+              v2.textContent = "CR2032, 3.2 mm: the holder's size. Seat it + up, then power-cycle the wall.";
+              v2.className = "cl-verdict pass";
+              clLog("trial 2: picked the CR2032. Seating it now.", "ok");
+              clT2SetStep(4);
+            } else {
+              v2.textContent = cc.tag + " is " + cc.mm.toFixed(1) + " mm in a 3.2 mm holder: it rattles and never touches the clip. 0 V, same as dead.";
+              v2.className = "cl-verdict miss";
+              clLog("trial 2: " + cc.tag + " is too thin for the holder.", "bad");
+            }
+          }, cc.tag === "CR2032");
+        });
+      } else if (s === 4) {
+        t2btn("SEAT THE CR2032, + UP", "clT2Seat", function () {
+          m2.cellV = CL_V_FRESH; m2.cellMm = 3.2; m2.cellTag = "CR2032"; m2.flipped = false;
+          clMachineRender(m2);
+          /* the wall may already be dark from the measuring step: that counts */
+          t2.sawOff = !m2.wall;
+          v2.textContent = "Seated. Now power-cycle the wall with the switch above: OFF, then ON. The cell is on its own while the wall is dark.";
+          v2.className = "cl-verdict";
+          clLog("trial 2: fresh CR2032 seated, + up. Waiting on the power cycle.", "ok");
+          t2.seated = true;
+        }, true);
+      }
+      clPop(c2);
+    }
+    m2.wallHook = function (wallOn) {
+      if (t2.step === 4 && t2.seated) {
+        if (!wallOn) {
+          t2.sawOff = true;
+          clLog("trial 2: wall off. The fresh cell holds the rail at 3.0 V and the clock keeps ticking.", "ok");
+        } else if (t2.sawOff) {
+          m2.amnesiac = false;
+          v2.textContent = "Wall cycled, settings re-entered, the clock held: the machine remembers. Certify it.";
+          v2.className = "cl-verdict pass";
+          clLog("trial 2: power cycle complete. The machine remembers.", "ok");
+          t2.passed = true;
+          cert2.style.display = "";
+          cert2.disabled = false;
+          t2.step = 5;
+        }
+      }
+    };
+    clT2SetStep(0);
+    cert2.addEventListener("click", function () {
+      t2.committed = true;
+      clLog(clCertText(1), "ok");
+      clMaybeBenchDone();
+      clPop(c2);
+    });
+
+    /* ---------- TRIAL 3: the wrong cells ---------- */
+    var t3 = clState.trials[2];
+    t3.pred = null; t3.obs = {};
+    var c3 = clEl("div", "cl-card");
+    c3.appendChild(clEl("h3", null, "TRIAL 3: THE WRONG CELLS"));
+    c3.appendChild(clEl("p", "why",
+      "The holder is empty and the tray holds a CR2025 and a CR2032. Predict first: which seating holds the clock across a wall cycle? " +
+      "Then commit each classic mistake on purpose and read the rail. With the wall on, the supply masks everything, so flip it off to read the cell."));
+    var m3 = clMachine("clM3", { wall: true, cellV: null, cellMm: null, cellTag: null });
+    c3.appendChild(m3.els.root);
+    var r3 = clEl("div", "cl-row");
+    r3.id = "clT3PredRow";
+    c3.appendChild(r3);
+    var r3b = clEl("div", "cl-row");
+    c3.appendChild(r3b);
+    var obsBox = clEl("div", "cl-log", "");
+    obsBox.id = "clT3Obs";
+    c3.appendChild(obsBox);
+    var v3 = clEl("p", "cl-verdict", "");
+    v3.id = "clT3Verdict";
+    c3.appendChild(v3);
+    var cert3 = clEl("button", "cl-btn solid", "CERTIFY TRIAL 3");
+    cert3.type = "button"; cert3.id = "clT3Cert"; cert3.disabled = true;
+    cert3.style.display = "none";
+    c3.appendChild(cert3);
+    panel.appendChild(c3);
+
+    function clT3Note(msg, cls) {
+      var d = clEl("div", cls || "", msg);
+      obsBox.appendChild(d);
+      obsBox.scrollTop = obsBox.scrollHeight;
+      clLog("trial 3: " + msg, cls);
+    }
+    function clT3Observe() {
+      var rail = clMachineRail(m3);
+      if (!m3.wall) {
+        if (m3.cellTag === "CR2025" && !t3.obs.thin) {
+          t3.obs.thin = true;
+          clT3Note("THIN CELL, 0.0 V: 2.5 mm in a 3.2 mm holder never touches the clip. Same as dead.", "bad");
+        }
+        if (m3.cellTag === "CR2032" && !m3.flipped && m3.cellMm === 3.2 && !t3.obs.good) {
+          t3.obs.good = true;
+          clT3Note("SEATED RIGHT, 3.0 V: + up, full contact, the clock holds across the wall cycle.", "ok");
+        }
+      }
+      if (t3.obs.thin && t3.obs.flip && t3.obs.good && !t3.passed) {
+        t3.passed = true;
+        var tail = "";
+        if (t3.pred && t3.pred !== "CR2032") {
+          tail = " Your prediction said " + t3.pred + "; the rail said CR2032. That gap is the lesson.";
+        }
+        v3.textContent = "All three mistakes committed and read." + tail + " Certify it.";
+        v3.className = "cl-verdict pass";
+        cert3.style.display = "";
+        cert3.disabled = false;
+      }
+      clT3RenderBtns();
+    }
+    function clT3Seat(tag) {
+      var cc = null;
+      for (var i = 0; i < CL_CELLS.length; i++) if (CL_CELLS[i].tag === tag) cc = CL_CELLS[i];
+      m3.cellV = CL_V_FRESH; m3.cellMm = cc.mm; m3.cellTag = tag; m3.flipped = false;
+      clMachineRender(m3);
+      clLog("trial 3: " + tag + " (" + cc.mm.toFixed(1) + " mm) seated, + up." +
+        (m3.wall ? " The wall is on, so the rail still reads 3.3 V: flip the wall off to read the cell." : ""));
+      clT3Observe();
+    }
+    function clT3RenderBtns() {
+      while (r3b.firstChild) r3b.removeChild(r3b.firstChild);
+      var b25 = clEl("button", "cl-btn", "SEAT CR2025");
+      b25.type = "button"; b25.id = "clT3Seat25";
+      b25.addEventListener("click", function () { clT3Seat("CR2025"); });
+      r3b.appendChild(b25);
+      var b32 = clEl("button", "cl-btn", "SEAT CR2032");
+      b32.type = "button"; b32.id = "clT3Seat32";
+      b32.addEventListener("click", function () { clT3Seat("CR2032"); });
+      r3b.appendChild(b32);
+      var bf = clEl("button", "cl-btn", "FLIP THE SEATED CELL");
+      bf.type = "button"; bf.id = "clT3Flip";
+      bf.disabled = !(m3.cellTag === "CR2032" && !m3.wall);
+      bf.setAttribute("aria-label", "Flip the seated CR2032 backwards");
+      bf.addEventListener("click", function () {
+        m3.flippedRefused = true;
+        m3.cellV = null; m3.cellMm = null; m3.cellTag = null; m3.flipped = false;
+        clMachineRender(m3);
+        if (!t3.obs.flip) {
+          t3.obs.flip = true;
+          clT3Note("BACKWARDS, 0.0 V: refused. The faces touch the wrong contacts, and in a tight holder the flipped cell shorts itself. The bench ejects it.", "bad");
+        }
+        clT3Observe();
+      });
+      r3b.appendChild(bf);
+      var br = clEl("button", "cl-btn", "READ THE RAIL");
+      br.type = "button"; br.id = "clT3Read";
+      br.addEventListener("click", function () {
+        var rail = clMachineRail(m3);
+        clT3Note("meter: " + clFmt1(rail) + " V" +
+          (m3.wall ? " (wall on: this is the supply, not the cell)." : " (wall off: this is the cell)."), "");
+        clT3Observe();
+      });
+      r3b.appendChild(br);
+    }
+    [["THE 2025 HOLDS", "CR2025"], ["THE 2032 HOLDS", "CR2032"], ["NONE HOLD", "NONE"]].forEach(function (pr) {
+      var pb = clEl("button", "cl-btn", "PREDICT: " + pr[0]);
+      pb.type = "button";
+      pb.addEventListener("click", function () {
+        t3.pred = pr[1];
+        v3.textContent = "Noted: " + pr[0].toLowerCase() + ". Now prove it: seat, flip the wall off, read the rail.";
+        v3.className = "cl-verdict";
+        clLog("trial 3: prediction recorded: " + pr[0] + ".");
+      });
+      r3.appendChild(pb);
+    });
+    m3.wallHook = function () { clT3Observe(); };
+    clT3RenderBtns();
+    cert3.addEventListener("click", function () {
+      t3.committed = true;
+      clLog(clCertText(2), "ok");
+      clMaybeBenchDone();
+      clPop(c3);
+    });
+
+    /* ---------- completion banner ---------- */
+    var banner = clEl("div", "cl-banner");
+    banner.id = "clBanner";
+    banner.appendChild(clEl("h3", null, "THE CELL ROOM, CERTIFIED"));
+    banner.appendChild(clEl("p", null, clBenchCertText()));
+    var certAll = clEl("button", "cl-btn solid", "CERTIFY THE BENCH");
+    certAll.type = "button"; certAll.id = "clCertAll";
+    certAll.style.display = "none";
+    certAll.addEventListener("click", function () {
+      clLog("BENCH CERTIFIED: " + clBenchCertText(), "ok");
+    });
+    banner.appendChild(certAll);
+    panel.appendChild(banner);
+
+    /* shared log */
+    var log = clEl("div", "cl-log", "");
+    log.id = "clLog";
+    panel.appendChild(log);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    clEls = { overlay: ov, banner: banner, certAll: certAll, log: log };
+    clMaybeBenchDone();
+    setInterval(clTickAll, 1000);
+  }
+
+  /* test hooks */
+  function clFastDrain() {
+    var t1 = clState.trials[0];
+    if (!t1.timer && !t1.drained && t1.pred != null) {
+      if (clEls) {
+        var m1 = clMachines[1];
+        m1.wall = false; m1.cellV = CL_V_FRESH; m1.amnesiac = false; m1.wasAlive = true;
+      }
+      var frac = 1, v = clDischargeV(frac);
+      if (clEls) {
+        var mm = clMachines[1];
+        mm.cellV = v;
+        clMachineRender(mm);
+      }
+      /* completion mirrors clT1FinishDrain without touching DOM verdicts twice */
+      t1.drained = true; t1.freeze = clFreezeYears();
+      var chk = clCheckT1(t1.pred);
+      if (chk.ok) t1.passed = true; else t1.attempts++;
+      return { ok: chk.ok, freeze: t1.freeze, err: chk.err };
+    }
+    return null;
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", clBuild);
+  } else {
+    clBuild();
+  }
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      CL: {
+        CAP_MAH: CL_CAP_MAH, DRAW_UA: CL_DRAW_UA,
+        V_FRESH: CL_V_FRESH, V_WALL: CL_V_WALL, V_DEAD: CL_V_DEAD,
+        DEAD_CELL_V: CL_DEAD_CELL_V, HOLDER_MM: CL_HOLDER_MM, TOL_YR: CL_TOL_YR,
+        CELLS: CL_CELLS,
+        lifeHours: clLifeHours, lifeYears: clLifeYears,
+        dischargeV: clDischargeV, freezeFrac: clFreezeFrac, freezeYears: clFreezeYears,
+        railV: clRailV, contact: clContact, alive: clAlive, checkT1: clCheckT1,
+        introHTML: CL_INTRO_HTML, steps: CL_STEPS,
+        certText: clCertText, benchCertText: clBenchCertText,
+        newTrialState: clNewTrialState, fastDrain: clFastDrain,
+        ui: {
+          open: clOpen, close: clClose,
+          state: function () { return clState; },
+          els: function () { return clEls; },
+          machines: function () { return clMachines; }
+        }
+      }
+    });
+  }
+})();
