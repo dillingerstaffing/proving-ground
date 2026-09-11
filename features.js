@@ -3090,7 +3090,7 @@ if (typeof module !== "undefined" && module.exports) {
       '<button class="cf-close" id="cfClose">CLOSE [x]</button>' +
       "<h3>The Cache Forge</h3>" +
       '<p class="cf-sub">Main memory is hundreds of cycles away, so the chip keeps a small, fast copy of recently used data next to the core: that copy is the cache, and every load either finds its data there (a hit, 1 cycle) or waits out the full miss penalty. ' +
-      "Trial 1 makes it concrete: a hot loop that should hit 92% of the time on almost any cache you bolt together. " +
+      "Trial 1 makes it concrete: a hot loop that should hit about 92% of the time on almost any cache you bolt together, roughly 11 hits in every 12 loads. " +
       "Trial 2 is the failure mode: a column walk striding 256 bytes between rows, where small blocks fetch neighbors nobody reads. " +
       "Tune size, associativity, and block size, and watch every load land: <b>cyan</b> is a hit, <b>orange</b> is a miss. " +
       "Free-forge in EXPLORE, then qualify in TRIALS: three workloads, three pass marks, one Cache Architect certificate.</p>";
