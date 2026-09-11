@@ -5866,8 +5866,9 @@ if (typeof module !== "undefined" && module.exports) {
 
     var body = pwEl("div", "pw-body");
     var sub = pwEl("p", "pw-sub", "");
-    sub.innerHTML = "<b>HOW IT WORKS</b> The addresses your program uses are not real: " +
-      "two tables translate every virtual address to a physical one, and a missing entry " +
+    sub.innerHTML = "<b>WHY IT MATTERS</b> Every program on the machine believes it owns all of memory, " +
+      "and none of them may touch another's. Two tables per process make that lie safe: " +
+      "they translate every virtual address to a physical one, and a missing or forbidden entry " +
       "is the page fault your OS handles. Trial 1 makes it concrete: address 0x3A7C, a READ. " +
       "Split the address into its two page-number fields, VPN1 and VPN0, step the matching entries " +
       "in both 16-entry tables, check each entry's permission flags, then commit the physical address. " +
