@@ -38002,3 +38002,822 @@ if (typeof module !== "undefined" && module.exports) {
     tnBuild();
   }
 })();
+/* ============================================================
+   BENCH 54: THE FUSE ROOM (oldiron)
+   One atomic mechanism: a fuse is a deliberate weak link that
+   opens before the wire it protects cooks. Sizing it is three
+   constraints, all arithmetic: the rating clears 125 percent of
+   the load current (no nuisance blows), it rides through the
+   inrush energy (slow-blow when the inrush I2t beats a fast
+   fuse's melt I2t), and it never rates above the wire ampacity
+   (the fuse protects the wire, not the load). At a bolted fault
+   the melt energy decides who opens first: fuse or wire.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------- the one mechanism, stated as data ---------- */
+  var FS_FAULT = 60;               /* bolted fault current, A */
+  var FS_AWGS = { "14": 15, "16": 10, "18": 7, "20": 5, "22": 3, "24": 2 }; /* AWG -> ampacity, A */
+  var FS_SPEEDS = {
+    F: { name: "FAST", hold: 1.5, refT: 0.8 },
+    T: { name: "SLOW", hold: 2.0, refT: 10 }
+  };
+  /* melt I2t comes from the 2.75x gate: fast opens in <= 0.8 s, slow in <= 10 s there. */
+  function fsMelt(rating, speedKey) {
+    var m = Math.pow(2.75 * rating, 2);
+    return m * FS_SPEEDS[speedKey].refT;
+  }
+  function fsBlowT(rating, speedKey, amps) {
+    /* seconds to open at amps; null means it holds (beyond the bench horizon). */
+    if (amps <= FS_SPEEDS[speedKey].hold * rating) return null;
+    return fsMelt(rating, speedKey) / (amps * amps);
+  }
+  function fsSmokeT(awg, amps) {
+    /* the room's wire model: at or under ampacity it holds forever; above it,
+       the insulation cooks when I2t passes (1.5 x ampacity)^2 x 60 s. */
+    var amp = FS_AWGS[awg];
+    if (amps <= amp) return null;
+    return Math.pow(1.5 * amp, 2) * 60 / (amps * amps);
+  }
+  function fsInrushI2t(i, t) { return i * i * t; }
+  function fsFmtT(t) {
+    if (t === null) return "holds";
+    if (t < 0.001) return (t * 1e6).toFixed(0) + " us";
+    if (t < 1) return (t * 1000).toFixed(0) + " ms";
+    return t.toFixed(2) + " s";
+  }
+  function fsFmtA(a) { return (Math.round(a * 100) / 100) + " A"; }
+
+  /* trial 1: size the fuse. each part: load A, inrush {i,t} or null, wire AWG. */
+  var FS_T1 = [
+    { id: "f1a", load: "12 V FAN RAIL", amps: 2.4, inrush: { i: 20, t: 0.2 }, awg: "18",
+      choices: [2.5, 3.15, 4, 5, 6.3, 8] },
+    { id: "f1b", load: "5 V LOGIC", amps: 0.8, inrush: null, awg: "22",
+      choices: [1, 1.6, 2, 2.5, 3.15, 4] },
+    { id: "f1c", load: "12 V MOTOR", amps: 4.0, inrush: { i: 25, t: 0.3 }, awg: "16",
+      choices: [4, 5, 6.3, 8, 10, 12.5] }
+  ];
+  /* trial 2: diagnose the dead panel. */
+  var FS_T2 = [
+    { id: "f2a", fault: "nuisance",
+      title: "PANEL A: BLOWS EVERY POWER-UP",
+      symptom: "The rail runs clean all day, but the fuse is dead after every cold start.",
+      fitted: "3.15 A FAST-BLOW",
+      rail: { amps: 2.4, inrush: { i: 20, t: 0.2 }, awg: "18" },
+      fixChoices: [2.5, 3.15, 4, 5] },
+    { id: "f2b", fault: "oversized",
+      title: "PANEL B: SCORCHED WIRE, INTACT FUSE",
+      symptom: "Brown scorch at both crimps. The fuse never blinked.",
+      fitted: "20 A FAST-BLOW",
+      rail: { amps: 2.0, inrush: null, awg: "22" },
+      fixChoices: [1.6, 2, 2.5, 3.15] }
+  ];
+  /* trial 3: the no-fuse lesson. rail data without a fuse. */
+  var FS_T3 = { rail: { amps: 2.4, inrush: { i: 20, t: 0.2 }, awg: "18" },
+    fixChoices: [3.15, 4, 5, 6.3] };
+  var FS_BANDS = ["UNDER 100 MS", "100 MS TO 1 S", "1 TO 5 S", "OVER 5 S"];
+  var FS_T3_BAND = 2; /* 1.84 s: "1 TO 5 S" */
+
+  /* ---------- the verdict: four checks, one pass ---------- */
+  function fsVerdictT1(rail, rating, speedKey) {
+    var amp = FS_AWGS[rail.awg];
+    var minR = rail.amps * 1.25;
+    var melt = fsMelt(rating, speedKey);
+    var speedName = FS_SPEEDS[speedKey].name;
+    if (rating < minR) {
+      return { ok: false, why: "TOO TIGHT: " + fsFmtA(rail.amps) + " on a " + fsFmtA(rating) +
+        " fuse is " + Math.round(rail.amps / rating * 100) + "% of rating. Heat, vibration, and a warm " +
+        "bench will nudge it over. The rule is 125%: " + fsFmtA(minR) + " minimum for this load." };
+    }
+    if (rail.inrush) {
+      var i2t = fsInrushI2t(rail.inrush.i, rail.inrush.t);
+      if (i2t >= melt) {
+        return { ok: false, why: "BLOWS ON EVERY START: the inrush carries " + i2t.toFixed(0) +
+          " A\u00B2s and this " + speedName + " " + fsFmtA(rating) + " fuse melts at " +
+          melt.toFixed(0) + " A\u00B2s. Inrush wins. Refit SLOW (melt " +
+          fsMelt(rating, "T").toFixed(0) + " A\u00B2s) or a larger rating." };
+      }
+    }
+    if (rating > amp) {
+      return { ok: false, why: "THE WIRE IS THE FUSE NOW: a " + fsFmtA(rating) + " fuse on " +
+        rail.awg + " AWG (" + fsFmtA(amp) + " wire). The fuse protects the wire, so the rating " +
+        "stays at or under " + fsFmtA(amp) + "." };
+    }
+    var ft = fsBlowT(rating, speedKey, FS_FAULT);
+    var wt = fsSmokeT(rail.awg, FS_FAULT);
+    if (ft === null || (wt !== null && ft >= wt)) {
+      return { ok: false, why: "THE FUSE LOSES THE RACE: at a " + FS_FAULT + " A bolted fault this " +
+        "fuse opens in " + fsFmtT(ft) + " but the wire smokes in " + fsFmtT(wt) +
+        ". Too slow for this wire." };
+    }
+    var lines = "125% RULE: " + fsFmtA(rail.amps) + " load needs " + fsFmtA(minR) + ", fitted " +
+      fsFmtA(rating) + ". " +
+      (rail.inrush ? "INRUSH: " + fsInrushI2t(rail.inrush.i, rail.inrush.t).toFixed(0) + " A\u00B2s " +
+        "against melt " + melt.toFixed(0) + " A\u00B2s, rides through. " : "NO INRUSH on this rail. ") +
+      "WIRE: " + fsFmtA(rating) + " at or under " + rail.awg + " AWG (" + fsFmtA(amp) + "). " +
+      "FAULT: fuse opens in " + fsFmtT(ft) + ", wire smokes in " + fsFmtT(wt) + ". The weak link wins.";
+    return { ok: true, ft: ft, wt: wt, melt: melt,
+      why: "IN THE WINDOW (" + speedName + " " + fsFmtA(rating) + "): " + lines };
+  }
+  function fsPredictBand(ix) {
+    if (ix === FS_T3_BAND) return { ok: true, why: "Called it. 60 A through 18 AWG (7 A wire): " +
+      "(1.5 x 7)\u00B2 x 60 / 60\u00B2 = 1.84 s. Between one and five seconds, and nothing opens it." };
+    if (ix < FS_T3_BAND) return { ok: false, why: "Slower than that. The wire's insulation has real " +
+      "thermal mass: (1.5 x 7)\u00B2 x 60 / 60\u00B2 = 1.84 s. It smokes, but it does not vaporize." };
+    return { ok: false, why: "Faster than that. 60 A is over eight times the wire's 7 A rating; " +
+      "the math gives 1.84 s. It will not last five seconds." };
+  }
+
+  /* node/jsdom test hooks: assigned before any DOM is touched, so a
+     hostile docStub still gets the exports. */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.FS = {
+      AWGS: FS_AWGS, SPEEDS: FS_SPEEDS, FAULT: FS_FAULT, T1: FS_T1, T2: FS_T2, T3: FS_T3,
+      BANDS: FS_BANDS, T3_BAND: FS_T3_BAND,
+      melt: fsMelt, blowT: fsBlowT, smokeT: fsSmokeT, inrushI2t: fsInrushI2t,
+      verdictT1: fsVerdictT1, predictBand: fsPredictBand, fmtT: fsFmtT,
+      introHTML: null /* filled after the copy const below */
+    };
+  }
+
+  /* ---------- intro copy: why first, worked example, failure modes ---------- */
+  var FS_INTRO_HTML = [
+    "<div class=\"fs-card\"><h3>WHY THIS ROOM EXISTS</h3>",
+    "<p class=\"why\">Every power supply in every refurb you will ever service has a fuse, and the fuse has one job: ",
+    "die so the wire lives. It is a deliberate weak link. Sizing it is three rules of arithmetic, nothing more. ",
+    "One: the rating clears 125 percent of the load current, so a warm day never blows a healthy rail. ",
+    "Two: the fuse rides through the inrush energy, which is why slow-blow exists. ",
+    "Three: the rating never exceeds the wire's ampacity, because the fuse protects the wire, not the load. ",
+    "This room is the whole skill: size three rails, diagnose two panels by measurement, ",
+    "and watch what a bolted fault does to a rail with no fuse.</p>",
+    "<p class=\"why\">The worked example, by hand. A 12 V fan rail drawing 2.4 A, with a 20 A inrush that lasts ",
+    "200 ms, wired in 18 AWG (7 A wire). Rule one: 125 percent of 2.4 is 3.0, so the rating starts at 3.15 A. ",
+    "Rule two: the inrush energy is 20\u00B2 x 0.2 = 80 A\u00B2s. A fast 3.15 A fuse melts at (2.75 x 3.15)\u00B2 x 0.8 = 60 A\u00B2s, ",
+    "so it blows on every cold start. A slow 3.15 A fuse melts at 750 A\u00B2s, so it rides through. ",
+    "Rule three: 3.15 A is under the 7 A wire. Answer: 3.15 A, slow-blow. Trial 1, part 1, is this exact rail.</p></div>",
+    "<div class=\"fs-card fs-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3>",
+    "<ul><li><b>NUISANCE BLOW:</b> a fuse sized under the 125 percent rule, or a fast fuse on a rail with real ",
+    "inrush. It blows every power-up and never on a fault. The fix is the sizing math, never a bigger fuse.</li>",
+    "<li><b>OVERSIZED FUSE:</b> a rating above the wire's ampacity. At a fault the wire smokes while the fuse ",
+    "sits there intact, because the wire became the fuse. Scorch at the crimps, fuse body perfect. ",
+    "The fix is a smaller fuse, not thicker wire.</li>",
+    "<li><b>NO FUSE:</b> a bolted fault with nothing to open it. 60 A through 18 AWG smokes the wire in 1.84 s. ",
+    "Nobody is coming to save the harness. The fix is fitting the weak link before the fault finds the rail.</li>",
+    "<li><b>WRONG SPEED:</b> fast-blow on a motor or a supply with inrush. Survives the day, dies on every start. ",
+    "Speed is about energy (A\u00B2s), not current alone.</li></ul></div>"
+  ].join("");
+  var FS_WIRE_HTML = [
+    "<p class=\"why\">THE ROOM'S WIRE TABLE, FIXED FOR EVERY TRIAL: 14 AWG is 15 A, 16 AWG is 10 A, 18 AWG is 7 A, ",
+    "20 AWG is 5 A, 22 AWG is 3 A, 24 AWG is 2 A. The room's fuse model, stated once: below its hold multiple ",
+    "(fast 1.5x, slow 2x) a fuse holds; above it, blow time is melt energy over current squared. ",
+    "The wire holds at or under its ampacity; above it, the insulation smokes when (1.5 x ampacity)\u00B2 x 60 A\u00B2s ",
+    "of energy has passed.</p>"
+  ].join("");
+
+  if (typeof module !== "undefined" && module.exports && module.exports.FS) {
+    module.exports.FS.introHTML = FS_INTRO_HTML;
+  }
+
+  /* ---------- css ---------- */
+  var FS_CSS = [
+    ".fs-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".fs-overlay.open{display:block}",
+    ".fs-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".fs-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".fs-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".fs-sub{font-size:14px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.92;margin:0 0 18px;max-width:68ch}",
+    ".fs-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".fs-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.1em;margin:0 0 10px;color:var(--paper,#f2ede4)}",
+    ".fs-fail{border-left:3px solid var(--ember,#ff5a1f)}",
+    ".fs-card .why{font-size:13.5px;line-height:1.7;margin:0 0 10px;color:var(--paper,#f2ede4);opacity:.94}",
+    ".fs-card ul{margin:6px 0 4px;padding-left:20px;font-size:13px;line-height:1.65}",
+    ".fs-card li{margin-bottom:8px}",
+    ".fs-row{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0}",
+    ".fs-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
+    ".fs-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".fs-btn:disabled{opacity:.35;cursor:default}",
+    ".fs-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".fs-btn.sel{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12)}",
+    ".fs-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#101014}",
+    ".fs-verdict{font-size:13px;line-height:1.65;margin:10px 0 0;padding:10px 12px;border-left:3px solid var(--line,rgba(242,237,228,.28))}",
+    ".fs-verdict.ok{border-left-color:#9fe870}",
+    ".fs-verdict.bad{border-left-color:#ff5a1f}",
+    ".fs-read{font-size:13px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.85;margin:8px 0;min-height:20px}",
+    ".fs-parthead{font-size:12px;letter-spacing:.18em;color:var(--ember,#ff5a1f);margin-bottom:6px}",
+    ".fs-spec{font-size:13px;line-height:1.7;margin:0 0 8px}",
+    ".fs-fusebox{font-size:12px;letter-spacing:.12em;border:1px solid var(--line,rgba(242,237,228,.28));padding:10px 14px;margin:10px 0;max-width:320px;text-align:center}",
+    ".fs-fusebox.blown{border-color:#ff5a1f;color:#ff5a1f}",
+    ".fs-fusebox.ok{border-color:#9fe870;color:#9fe870}",
+    ".fs-smoke{font-size:13px;letter-spacing:.2em;color:#ff5a1f;margin:8px 0 0;min-height:20px}",
+    ".fs-log{font-size:12.5px;line-height:1.7;max-height:280px;overflow-y:auto}",
+    ".fs-log div{margin:0 0 6px;padding-bottom:6px;border-bottom:1px dotted var(--line,rgba(242,237,228,.14))}",
+    ".fs-log .ok{color:#9fe870}",
+    ".fs-log .bad{color:#ff5a1f}",
+    ".fs-log .dim{opacity:.6}",
+    ".fs-banner{display:none;border:1px solid var(--ember,#ff5a1f);padding:18px;margin:0 0 14px}",
+    ".fs-banner h3{font-family:'Space Grotesk',sans-serif;letter-spacing:.14em;font-size:16px;color:var(--ember,#ff5a1f);margin:0 0 8px}",
+    ".fs-banner p{font-size:13px;line-height:1.65;margin:0 0 12px}",
+    ".fs-pop{animation:fsPop 200ms ease-out}",
+    "@keyframes fsPop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    "@media (prefers-reduced-motion:reduce){.fs-pop{animation:none}}"
+  ].join("\n");
+
+  /* ---------- tiny DOM helpers (page-local, prefixed) ---------- */
+  var fsEls = null;
+  var fsState = null;
+  function fsEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  function fsLog(msg, cls) {
+    if (!fsEls || !fsEls.log) return;
+    var d = fsEl("div", cls || "", msg);
+    fsEls.log.appendChild(d);
+    fsEls.log.scrollTop = fsEls.log.scrollHeight;
+  }
+  function fsPop(card) {
+    card.classList.remove("fs-pop");
+    void card.offsetWidth;
+    card.classList.add("fs-pop");
+  }
+  function fsRateLabel(r) { return r + " A"; }
+  function fsCertLine() {
+    return "Three rails sized to the 125 percent rule, two dead panels diagnosed by measurement, " +
+           "and one fuse-less rail bolted to prove the weak link matters. The room remembers.";
+  }
+  function fsAllPassed() {
+    var s = fsState;
+    return s.t1.every(function (x) { return x.passed; }) &&
+           s.t2.every(function (x) { return x.passed && x.repaired; }) &&
+           s.t3.predicted && s.t3.bolted && s.t3.fixed;
+  }
+  function fsMaybeCertify() {
+    if (fsEls && fsEls.banner) fsEls.banner.style.display = fsAllPassed() ? "block" : "none";
+  }
+
+  /* ---------- do-first card: consequence-free fuse on the bench ---------- */
+  function fsDoFirstCard() {
+    var card = fsEl("div", "fs-card");
+    card.appendChild(fsEl("h3", null, "DO FIRST: BOLT IT, FREE"));
+    card.appendChild(fsEl("p", "why",
+      "The room pre-fits a 4 A slow-blow fuse on a 2.4 A fan rail (18 AWG wire) and hands you the " +
+      "fault button. Run a normal day, survive an inrush, then bolt the bus. Nothing here is graded."));
+    var box = fsEl("div", "fs-fusebox", "4 A SLOW-BLOW FITTED");
+    box.id = "fsDoFirst_box";
+    card.appendChild(box);
+    var read = fsEl("p", "fs-read", "Fuse fitted. The rail is live at 12 V.");
+    read.id = "fsDoFirst_read";
+    card.appendChild(read);
+    var row = fsEl("div", "fs-row");
+    var day = fsEl("button", "fs-btn", "RUN A NORMAL DAY");
+    day.type = "button"; day.id = "fsDoFirst_day";
+    day.setAttribute("aria-label", "Run a normal day at 2.4 amps, ungraded");
+    day.addEventListener("click", function () {
+      read.textContent = "8 h at 2.4 A: the fuse holds (2.4 A is under the 1.5x hold of 4 A fast or 2x slow). Rail fine, fuse warm.";
+      box.className = "fs-fusebox ok";
+      fsLog("do-first: normal day at 2.4 A, fuse holds.", "dim");
+      fsPop(card);
+    });
+    var inr = fsEl("button", "fs-btn", "SURVIVE THE INRUSH");
+    inr.type = "button"; inr.id = "fsDoFirst_inrush";
+    inr.setAttribute("aria-label", "Apply the 20 amp inrush, ungraded");
+    inr.addEventListener("click", function () {
+      read.textContent = "20 A for 200 ms: 80 A\u00B2s of inrush against a 1210 A\u00B2s melt. The slow fuse rides through.";
+      box.className = "fs-fusebox ok";
+      fsLog("do-first: inrush 20 A / 200 ms, slow fuse rides through.", "dim");
+      fsPop(card);
+    });
+    var bolt = fsEl("button", "fs-btn", "BOLT THE BUS");
+    bolt.type = "button"; bolt.id = "fsDoFirst_bolt";
+    bolt.setAttribute("aria-label", "Bolt the bus with a 60 amp fault, ungraded");
+    bolt.addEventListener("click", function () {
+      read.textContent = "60 A fault: the fuse opens in 336 ms. The 18 AWG wire would have smoked in 1.84 s. The weak link did its job.";
+      box.className = "fs-fusebox blown";
+      box.textContent = "4 A SLOW-BLOW: OPENED IN 336 MS";
+      fsLog("do-first: bolted 60 A, fuse opened in 336 ms, wire intact.", "dim");
+      fsPop(card);
+    });
+    row.appendChild(day); row.appendChild(inr); row.appendChild(bolt);
+    card.appendChild(row);
+    return card;
+  }
+
+  /* ---------- trial 1 card: size the fuse ---------- */
+  function fsT1Card(p, num) {
+    var st = fsState.t1[num - 1];
+    var card = fsEl("div", "fs-card");
+    card.id = "fsT1_" + p.id;
+    card.appendChild(fsEl("div", "fs-parthead", "TRIAL 1 \u00B7 PART " + num + " OF 3"));
+    var specBits = p.load + " \u00B7 " + fsFmtA(p.amps) + " CONTINUOUS \u00B7 " + p.awg + " AWG WIRE (" +
+      fsFmtA(FS_AWGS[p.awg]) + ")";
+    specBits += p.inrush ? " \u00B7 INRUSH " + fsFmtA(p.inrush.i) + " FOR " + (p.inrush.t * 1000).toFixed(0) + " MS"
+                         : " \u00B7 NO INRUSH";
+    card.appendChild(fsEl("p", "fs-spec", specBits));
+    card.appendChild(fsEl("p", "why",
+      "Pick a rating and a speed, then COMMIT SIZING. The bench runs the four checks: the 125% rule, " +
+      "the inrush energy against the melt energy, the wire ampacity ceiling, and a 60 A bolted fault " +
+      "race between the fuse and the wire. There is a window of right answers, not one."));
+    var row = fsEl("div", "fs-row");
+    var selR = null, selS = "T", rBtns = [], sBtns = [];
+    p.choices.forEach(function (r) {
+      var b = fsEl("button", "fs-btn", fsRateLabel(r));
+      b.type = "button"; b.id = "fsT1_" + p.id + "_r" + String(r).replace(".", "p");
+      b.setAttribute("aria-label", "Choose " + r + " amps as the fuse rating");
+      b.addEventListener("click", function () {
+        if (st.passed) return;
+        selR = r;
+        rBtns.forEach(function (x) { x.classList.remove("sel"); });
+        b.classList.add("sel");
+      });
+      rBtns.push(b); row.appendChild(b);
+    });
+    card.appendChild(row);
+    var sRow = fsEl("div", "fs-row");
+    ["F", "T"].forEach(function (k) {
+      var b = fsEl("button", "fs-btn" + (k === "T" ? " sel" : ""), FS_SPEEDS[k].name + "-BLOW");
+      b.type = "button"; b.id = "fsT1_" + p.id + "_s" + k;
+      b.setAttribute("aria-label", "Choose " + FS_SPEEDS[k].name + "-blow speed");
+      b.addEventListener("click", function () {
+        if (st.passed) return;
+        selS = k;
+        sBtns.forEach(function (x) { x.classList.remove("sel"); });
+        b.classList.add("sel");
+      });
+      sBtns.push(b); sRow.appendChild(b);
+    });
+    card.appendChild(sRow);
+    var read = fsEl("p", "fs-read", "No fuse fitted yet.");
+    read.id = "fsT1_" + p.id + "_read";
+    card.appendChild(read);
+    var commit = fsEl("button", "fs-btn solid", "COMMIT SIZING");
+    commit.type = "button"; commit.id = "fsT1_" + p.id + "_commit";
+    commit.setAttribute("aria-label", "Commit the fuse sizing");
+    var verdict = fsEl("p", "fs-verdict", "");
+    verdict.id = "fsT1_" + p.id + "_verdict";
+    commit.addEventListener("click", function () {
+      if (st.passed) return;
+      if (selR === null) {
+        verdict.textContent = "Pick a rating first.";
+        verdict.className = "fs-verdict bad";
+        return;
+      }
+      var v = fsVerdictT1({ amps: p.amps, inrush: p.inrush, awg: p.awg }, selR, selS);
+      read.textContent = "Fitted: " + selR + " A " + FS_SPEEDS[selS].name + "-BLOW. " +
+        (v.ok ? ("Melt " + v.melt.toFixed(0) + " A\u00B2s.") : "");
+      if (v.ok) {
+        st.passed = true;
+        verdict.textContent = "PASS: " + v.why;
+        verdict.className = "fs-verdict ok";
+        fsLog("trial 1 part " + num + ": " + selR + " A " + FS_SPEEDS[selS].name + " passes all four checks.", "ok");
+        rBtns.forEach(function (x) { x.disabled = true; });
+        sBtns.forEach(function (x) { x.disabled = true; });
+        commit.disabled = true;
+      } else {
+        st.strikes++;
+        verdict.textContent = "MISS: " + v.why;
+        verdict.className = "fs-verdict bad";
+        fsLog("trial 1 part " + num + ": " + selR + " A " + FS_SPEEDS[selS].name + " misses.", "bad");
+      }
+      fsMaybeCertify();
+      fsPop(card);
+    });
+    card.appendChild(commit);
+    card.appendChild(verdict);
+    return card;
+  }
+
+  /* ---------- trial 2 card: diagnose the dead panel ---------- */
+  function fsT2Probes(p, st, card, read) {
+    var row = fsEl("div", "fs-row");
+    var probes = p.id === "f2a" ? [
+      { id: "fuse", label: "READ THE FUSE", text: "Fuse: " + p.fitted + "." },
+      { id: "inrush", label: "SCOPE THE INRUSH", text: "Cold start: 20 A for 200 ms. That is 20\u00B2 x 0.2 = 80 A\u00B2s of inrush energy." },
+      { id: "melt", label: "MELT ENERGY OF THIS FUSE", text: "Fast 3.15 A: (2.75 x 3.15)\u00B2 x 0.8 = 60 A\u00B2s. The inrush carries 80." }
+    ] : [
+      { id: "fuse", label: "READ THE FUSE", text: "Fuse: " + p.fitted + ". Body perfect, element intact." },
+      { id: "wire", label: "READ THE WIRE", text: "22 AWG. The room's table rates it at 3 A." },
+      { id: "term", label: "INSPECT THE TERMINALS", text: "Brown scorch at both crimps, insulation soft. The fuse never opened." }
+    ];
+    probes.forEach(function (pr) {
+      var b = fsEl("button", "fs-btn", pr.label);
+      b.type = "button"; b.id = "fsT2_" + p.id + "_m" + pr.id;
+      b.setAttribute("aria-label", pr.label + ", ungraded probe");
+      b.addEventListener("click", function () {
+        read.textContent = pr.text;
+        fsLog("trial 2 " + p.id + ": probe " + pr.label.toLowerCase() + ".", "dim");
+        fsPop(card);
+      });
+      row.appendChild(b);
+    });
+    return row;
+  }
+  function fsT2Verdicts(p, st, card, read, repairRow) {
+    var row = fsEl("div", "fs-row");
+    var opts = p.id === "f2a" ? [
+      { id: "vNuisance", label: "NUISANCE BLOW: REFIT 3.15 A SLOW",
+        ok: true, why: "PASS: the inrush carries 80 A\u00B2s and the fast fuse melts at 60. Every cold start " +
+          "is a race the fuse loses. A slow 3.15 A melts at 750 A\u00B2s and rides through. Fit it and run." },
+      { id: "vShort", label: "DEAD SHORT IN THE LOAD",
+        ok: false, why: "MISS: no short. The rail runs clean all day once it is past the start; the scope " +
+          "shows the crime is the 200 ms inrush, not a shorted load." },
+      { id: "vOversize", label: "FUSE UNDERRATED: FIT 8 A FAST",
+        ok: false, why: "MISS: 8 A on 7 A wire. You would trade the nuisance for a fire: the wire becomes " +
+          "the fuse. The rating stays under the wire ampacity." }
+    ] : [
+      { id: "vOversized", label: "OVERSIZED FUSE: REFIT 2.5 A",
+        ok: true, why: "PASS: 20 A on 3 A wire. The wire became the fuse and cooked at the crimps while " +
+          "the fuse sat there intact. A 2 A load needs 2.5 A (125% rule) and the wire allows 3 A. Fit 2.5 A and run." },
+      { id: "vThicker", label: "REFIT THE RUN IN 14 AWG",
+        ok: false, why: "MISS: thicker wire still has a 20 A fuse above a 2 A load. The next fault cooks " +
+          "the load before anything opens. The disease is the fuse, not the copper." },
+      { id: "vFaster", label: "TOO SLOW: FIT 20 A FAST",
+        ok: false, why: "MISS: it is already fast. Speed was never the disease; the rating is. " +
+          "A 20 A fuse on a 2 A load and 3 A wire protects nothing." }
+    ];
+    opts.forEach(function (o) {
+      var b = fsEl("button", "fs-btn", o.label);
+      b.type = "button"; b.id = "fsT2_" + p.id + "_" + o.id;
+      b.setAttribute("aria-label", "Commit verdict: " + o.label);
+      b.addEventListener("click", function () {
+        if (st.passed) return;
+        var v = fsEl("p", "fs-verdict", "");
+        v.id = "fsT2_" + p.id + "_verdict";
+        var prev = document.getElementById("fsT2_" + p.id + "_verdict");
+        if (prev) prev.remove();
+        card.appendChild(v);
+        if (o.ok) {
+          st.passed = true;
+          v.textContent = o.why;
+          v.className = "fs-verdict ok";
+          fsLog("trial 2 " + p.id + ": correct verdict.", "ok");
+          row.querySelectorAll("button").forEach(function (x) { x.disabled = true; });
+          repairRow.style.display = "block";
+        } else {
+          st.strikes++;
+          v.textContent = o.why;
+          v.className = "fs-verdict bad";
+          fsLog("trial 2 " + p.id + ": wrong verdict.", "bad");
+        }
+        fsMaybeCertify();
+        fsPop(card);
+      });
+      row.appendChild(b);
+    });
+    return row;
+  }
+  function fsT2Card(p, num) {
+    var st = fsState.t2[num - 1];
+    var card = fsEl("div", "fs-card");
+    card.id = "fsT2_" + p.id;
+    card.appendChild(fsEl("div", "fs-parthead", "TRIAL 2 \u00B7 PANEL " + num + " OF 2"));
+    card.appendChild(fsEl("h3", null, p.title));
+    card.appendChild(fsEl("p", "fs-spec", p.symptom + " \u00B7 FITTED: " + p.fitted));
+    card.appendChild(fsEl("p", "why",
+      "Probe it first, free and ungraded: the fuse reading, the inrush scope, and the wire reading settle " +
+      "the diagnosis. Then commit a verdict. A right verdict unlocks the repair."));
+    var read = fsEl("p", "fs-read", "No probes taken yet.");
+    read.id = "fsT2_" + p.id + "_read";
+    card.appendChild(fsT2Probes(p, st, card, read));
+    card.appendChild(read);
+
+    var repairRow = fsEl("div", "");
+    repairRow.id = "fsT2_" + p.id + "_repair";
+    repairRow.style.display = "none";
+    repairRow.appendChild(fsEl("p", "fs-parthead", "REFIT AND RUN"));
+    var selR = null, selS = "T", rBtns = [], sBtns = [];
+    var rRow = fsEl("div", "fs-row");
+    p.fixChoices.forEach(function (r) {
+      var b = fsEl("button", "fs-btn", fsRateLabel(r));
+      b.type = "button"; b.id = "fsT2_" + p.id + "_fr" + String(r).replace(".", "p");
+      b.setAttribute("aria-label", "Refit " + r + " amps");
+      b.addEventListener("click", function () {
+        if (st.repaired) return;
+        selR = r;
+        rBtns.forEach(function (x) { x.classList.remove("sel"); });
+        b.classList.add("sel");
+      });
+      rBtns.push(b); rRow.appendChild(b);
+    });
+    repairRow.appendChild(rRow);
+    var sRow = fsEl("div", "fs-row");
+    ["F", "T"].forEach(function (k) {
+      var b = fsEl("button", "fs-btn" + (k === "T" ? " sel" : ""), FS_SPEEDS[k].name + "-BLOW");
+      b.type = "button"; b.id = "fsT2_" + p.id + "_fs" + k;
+      b.setAttribute("aria-label", "Refit " + FS_SPEEDS[k].name + "-blow");
+      b.addEventListener("click", function () {
+        if (st.repaired) return;
+        selS = k;
+        sBtns.forEach(function (x) { x.classList.remove("sel"); });
+        b.classList.add("sel");
+      });
+      sBtns.push(b); sRow.appendChild(b);
+    });
+    repairRow.appendChild(sRow);
+    var fix = fsEl("button", "fs-btn solid", "REFIT AND RUN THE PANEL");
+    fix.type = "button"; fix.id = "fsT2_" + p.id + "_fix";
+    fix.setAttribute("aria-label", "Refit the fuse and run the panel");
+    var fverdict = fsEl("p", "fs-verdict", "");
+    fverdict.id = "fsT2_" + p.id + "_fverdict";
+    fix.addEventListener("click", function () {
+      if (st.repaired) return;
+      if (selR === null) {
+        fverdict.textContent = "Pick a refit rating first.";
+        fverdict.className = "fs-verdict bad";
+        return;
+      }
+      var v = fsVerdictT1(p.rail, selR, selS);
+      if (v.ok) {
+        st.repaired = true;
+        fverdict.textContent = "REPAIRED: " + selR + " A " + FS_SPEEDS[selS].name + " fitted. " +
+          (p.rail.inrush ? "Cold start: inrush rides through. " : "") +
+          "Bolted fault: fuse opens in " + fsFmtT(v.ft) + ", wire smokes in " + fsFmtT(v.wt) + ". Panel runs.";
+        fverdict.className = "fs-verdict ok";
+        fsLog("trial 2 " + p.id + ": refit " + selR + " A " + FS_SPEEDS[selS].name + ", panel runs.", "ok");
+        rBtns.forEach(function (x) { x.disabled = true; });
+        sBtns.forEach(function (x) { x.disabled = true; });
+        fix.disabled = true;
+      } else {
+        fverdict.textContent = "STILL BROKEN: " + v.why;
+        fverdict.className = "fs-verdict bad";
+        fsLog("trial 2 " + p.id + ": refit " + selR + " A " + FS_SPEEDS[selS].name + " still fails.", "bad");
+      }
+      fsMaybeCertify();
+      fsPop(card);
+    });
+    repairRow.appendChild(fix);
+    repairRow.appendChild(fverdict);
+
+    card.appendChild(fsT2Verdicts(p, st, card, read, repairRow));
+    card.appendChild(repairRow);
+    return card;
+  }
+
+  /* ---------- trial 3 card: the no-fuse lesson ---------- */
+  function fsT3Card() {
+    var st = fsState.t3;
+    var card = fsEl("div", "fs-card");
+    card.id = "fsT3";
+    card.appendChild(fsEl("div", "fs-parthead", "TRIAL 3 \u00B7 THE NO-FUSE LESSON"));
+    card.appendChild(fsEl("p", "fs-spec",
+      "12 V RAIL \u00B7 2.4 A LOAD \u00B7 18 AWG WIRE (7 A) \u00B7 60 A BOLTED FAULT \u00B7 NO FUSE FITTED"));
+    card.appendChild(fsEl("p", "why",
+      "First, call what happens, before any current flows. Then BOLT THE BUS and watch the wire do exactly " +
+      "what the math says. Then fit the weak link and watch the fault end differently."));
+    var row = fsEl("div", "fs-row");
+    var note = fsEl("p", "fs-verdict", "");
+    note.id = "fsT3_predNote";
+    var btns = [];
+    FS_BANDS.forEach(function (b, ix) {
+      var btn = fsEl("button", "fs-btn", b);
+      btn.type = "button"; btn.id = "fsT3_p" + ix;
+      btn.setAttribute("aria-label", "Predict the wire smokes in " + b.toLowerCase());
+      btn.addEventListener("click", function () {
+        if (st.predicted) return;
+        var g = fsPredictBand(ix);
+        if (g.ok) {
+          st.predicted = true;
+          note.textContent = "PREDICTION LOGGED: " + g.why;
+          note.className = "fs-verdict ok";
+          power.disabled = false;
+          fsLog("trial 3: predicted the smoke time, correct.", "ok");
+          btns.forEach(function (x) { x.disabled = true; });
+        } else {
+          note.textContent = "MISS: " + g.why;
+          note.className = "fs-verdict bad";
+          fsLog("trial 3: wrong smoke-time prediction.", "bad");
+        }
+        fsMaybeCertify();
+        fsPop(card);
+      });
+      btns.push(btn);
+      row.appendChild(btn);
+    });
+    card.appendChild(row);
+    card.appendChild(note);
+
+    var wire = fsEl("div", "fs-fusebox", "18 AWG: NO FUSE FITTED");
+    wire.id = "fsT3_wire";
+    card.appendChild(wire);
+    var smoke = fsEl("p", "fs-smoke", "");
+    smoke.id = "fsT3_smoke";
+    card.appendChild(smoke);
+    var read = fsEl("p", "fs-read", "The rail is live. The fault is waiting.");
+    read.id = "fsT3_read";
+    card.appendChild(read);
+
+    var power = fsEl("button", "fs-btn solid", "BOLT THE BUS");
+    power.type = "button"; power.id = "fsT3_power";
+    power.disabled = true;
+    power.setAttribute("aria-label", "Bolt the bus with a 60 amp fault");
+    power.addEventListener("click", function () {
+      if (st.bolted) return;
+      power.disabled = true;
+      var steps = [
+        "0.5 s: 60.0 A through 18 AWG. Insulation softening.",
+        "1.0 s: jacket browning at the crimps.",
+        "1.5 s: smoke.",
+        "1.84 s: WIRE SMOKED. Nothing opened: no fuse fitted."
+      ];
+      var i = 0;
+      var tick = function () {
+        if (i < steps.length) {
+          read.textContent = steps[i];
+          wire.className = "fs-fusebox" + (i >= 2 ? " blown" : "");
+          i++;
+          setTimeout(tick, 350);
+        } else {
+          st.bolted = true;
+          smoke.textContent = "1.84 S TO SMOKE. NOTHING OPENED.";
+          wire.textContent = "18 AWG: SMOKED";
+          read.textContent = "The fault had nothing to race against. Now fit the weak link and bolt it again.";
+          fixRow.style.display = "flex";
+          fsLog("trial 3: bolted 60 A with no fuse, wire smoked in 1.84 s.", "bad");
+          fsMaybeCertify();
+        }
+        fsPop(card);
+      };
+      tick();
+    });
+    card.appendChild(power);
+
+    var fixRow = fsEl("div", "fs-row");
+    fixRow.id = "fsT3_fixRow";
+    fixRow.style.display = "none";
+    var selR = null, selS = "T", rBtns = [], sBtns = [];
+    FS_T3.fixChoices.forEach(function (r) {
+      var b = fsEl("button", "fs-btn", fsRateLabel(r));
+      b.type = "button"; b.id = "fsT3_r" + String(r).replace(".", "p");
+      b.setAttribute("aria-label", "Fit " + r + " amps as the weak link");
+      b.addEventListener("click", function () {
+        if (st.fixed) return;
+        selR = r;
+        rBtns.forEach(function (x) { x.classList.remove("sel"); });
+        b.classList.add("sel");
+      });
+      rBtns.push(b); fixRow.appendChild(b);
+    });
+    ["F", "T"].forEach(function (k) {
+      var b = fsEl("button", "fs-btn" + (k === "T" ? " sel" : ""), FS_SPEEDS[k].name + "-BLOW");
+      b.type = "button"; b.id = "fsT3_s" + k;
+      b.setAttribute("aria-label", "Fit " + FS_SPEEDS[k].name + "-blow");
+      b.addEventListener("click", function () {
+        if (st.fixed) return;
+        selS = k;
+        sBtns.forEach(function (x) { x.classList.remove("sel"); });
+        b.classList.add("sel");
+      });
+      sBtns.push(b); fixRow.appendChild(b);
+    });
+    var commit = fsEl("button", "fs-btn solid", "FIT THE WEAK LINK");
+    commit.type = "button"; commit.id = "fsT3_commit";
+    commit.setAttribute("aria-label", "Fit the weak link and re-bolt the bus");
+    var fverdict = fsEl("p", "fs-verdict", "");
+    fverdict.id = "fsT3_fixVerdict";
+    commit.addEventListener("click", function () {
+      if (st.fixed) return;
+      if (selR === null) {
+        fverdict.textContent = "Pick a rating first.";
+        fverdict.className = "fs-verdict bad";
+        return;
+      }
+      var v = fsVerdictT1(FS_T3.rail, selR, selS);
+      if (v.ok) {
+        st.fixed = true;
+        wire.className = "fs-fusebox ok";
+        wire.textContent = selR + " A " + FS_SPEEDS[selS].name + "-BLOW FITTED";
+        smoke.textContent = "";
+        read.textContent = "Re-bolted at 60 A: the fuse opened in " + fsFmtT(v.ft) +
+          ". The wire never reached smoke. The weak link did its job.";
+        fverdict.textContent = "FIXED: " + v.why;
+        fverdict.className = "fs-verdict ok";
+        fsLog("trial 3: weak link fitted, fuse opens in " + fsFmtT(v.ft) + ", wire survives.", "ok");
+        rBtns.forEach(function (x) { x.disabled = true; });
+        sBtns.forEach(function (x) { x.disabled = true; });
+        commit.disabled = true;
+      } else {
+        fverdict.textContent = "STILL BROKEN: " + v.why;
+        fverdict.className = "fs-verdict bad";
+        fsLog("trial 3: refit " + selR + " A " + FS_SPEEDS[selS].name + " still fails.", "bad");
+      }
+      fsMaybeCertify();
+      fsPop(card);
+    });
+    fixRow.appendChild(commit);
+    card.appendChild(fixRow);
+    card.appendChild(fverdict);
+    return card;
+  }
+
+  /* ---------- build + mount ---------- */
+  function fsClose() { if (fsEls) fsEls.overlay.classList.remove("open"); }
+  function fsOpen() { if (fsEls) fsEls.overlay.classList.add("open"); }
+
+  function fsBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("fsBtn")) return;
+    fsState = {
+      t1: [{ passed: false, strikes: 0 }, { passed: false, strikes: 0 }, { passed: false, strikes: 0 }],
+      t2: [{ passed: false, repaired: false, strikes: 0 }, { passed: false, repaired: false, strikes: 0 }],
+      t3: { predicted: false, bolted: false, fixed: false }
+    };
+    fsEls = { overlay: null, log: null, banner: null };
+
+    var sty = document.createElement("style");
+    sty.textContent = FS_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "fsBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Fuse Room";
+    b.addEventListener("click", fsOpen);
+    box.appendChild(b);
+
+    var ov = fsEl("div", "fs-overlay");
+    ov.id = "fsOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Fuse Room");
+    var x = fsEl("button", "fs-btn", "CLOSE");
+    x.id = "fsXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Fuse Room");
+    x.addEventListener("click", fsClose);
+    ov.appendChild(x);
+    fsEls.overlay = ov;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && ov.classList.contains("open")) fsClose();
+    });
+
+    var panel = fsEl("div", "fs-panel");
+    panel.appendChild(fsEl("div", "fs-kicker", "OLD IRON BENCH 54"));
+    panel.appendChild(fsEl("h2", "fs-title", "The Fuse Room"));
+    panel.appendChild(fsEl("p", "fs-sub",
+      "A fuse is a deliberate weak link: it dies so the wire lives. Size the rating to the load, " +
+      "survive the inrush, never rate it above the wire, and bolt one fuse-less rail to learn why the link exists."));
+
+    var introWrap = fsEl("div", "");
+    introWrap.innerHTML = FS_INTRO_HTML;
+    panel.appendChild(introWrap);
+
+    var wireWrap = fsEl("div", "");
+    wireWrap.innerHTML = FS_WIRE_HTML;
+    panel.appendChild(wireWrap);
+
+    panel.appendChild(fsDoFirstCard());
+
+    var t1Head = fsEl("div", "fs-card");
+    t1Head.appendChild(fsEl("h3", null, "TRIAL 1: SIZE THE FUSE"));
+    t1Head.appendChild(fsEl("p", "why",
+      "Three rails, three different diseases waiting. For each: pick a rating and a speed, then COMMIT SIZING. " +
+      "The bench runs the four checks and the 60 A bolted-fault race. Slow-blow is pre-selected; change it if the rail earns it."));
+    panel.appendChild(t1Head);
+    FS_T1.forEach(function (part, i) { panel.appendChild(fsT1Card(part, i + 1)); });
+
+    var t2Head = fsEl("div", "fs-card");
+    t2Head.appendChild(fsEl("h3", null, "TRIAL 2: DIAGNOSE THE DEAD PANEL"));
+    t2Head.appendChild(fsEl("p", "why",
+      "Two dead panels, two different diseases. Probe each, free and ungraded: the fuse reading, the inrush scope, " +
+      "and the wire reading settle it. Then commit a verdict. A right verdict unlocks the refit."));
+    panel.appendChild(t2Head);
+    FS_T2.forEach(function (p, i) { panel.appendChild(fsT2Card(p, i + 1)); });
+
+    var t3Head = fsEl("div", "fs-card");
+    t3Head.appendChild(fsEl("h3", null, "TRIAL 3: THE NO-FUSE LESSON"));
+    t3Head.appendChild(fsEl("p", "why",
+      "A 12 V rail with a 60 A bolted fault and no fuse. First, call the wire's smoke time, before any current flows. " +
+      "Then BOLT THE BUS and watch. Then fit the weak link and bolt it again."));
+    panel.appendChild(t3Head);
+    panel.appendChild(fsT3Card());
+
+    /* certification banner */
+    var banner = fsEl("div", "fs-banner");
+    banner.id = "fsBanner";
+    banner.appendChild(fsEl("h3", null, "ROOM CERTIFIED"));
+    banner.appendChild(fsEl("p", null, fsCertLine()));
+    panel.appendChild(banner);
+    fsEls.banner = banner;
+
+    /* bench log */
+    var logCard = fsEl("div", "fs-card");
+    logCard.appendChild(fsEl("h3", null, "BENCH LOG"));
+    var log = fsEl("div", "fs-log");
+    log.id = "fsLog";
+    log.setAttribute("aria-live", "polite");
+    logCard.appendChild(log);
+    panel.appendChild(logCard);
+    fsEls.log = log;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    fsLog("bench open. One 12 V fan rail on the bench, 4 A slow-blow fitted, fault button armed.", "dim");
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", fsBuild);
+  } else {
+    fsBuild();
+  }
+})();

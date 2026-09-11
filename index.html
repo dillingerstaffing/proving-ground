@@ -710,7 +710,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "53", name: "The Transistor Room", btn: "tnBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "One milliamp into the base switches a hundred milliamps through the load: that is the transistor's whole trick. Size the base resistor for three loads, diagnose two dead benches by measurement, and predict what a base with no resistor does to a GPIO pin.",
     how: "Toggle the do-first base drive, pick each base resistor and commit, measure Vce on the two dead benches and commit a verdict, then predict the no-resistor current.",
-    spec: "BETA 100 \u00B7 3 SIZINGS \u00B7 2 FAULTS" }
+    spec: "BETA 100 \u00B7 3 SIZINGS \u00B7 2 FAULTS" },
+  { section: "oldiron", n: "54", name: "The Fuse Room", btn: "fsBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "A fuse is a deliberate weak link: it dies so the wire lives. Size the rating to the load, survive the inrush, never rate it above the wire, then diagnose two dead panels and bolt one fuse-less rail.",
+    how: "Call each fuse's verdict before you commit: size three rails, diagnose two panels, predict the smoke time.",
+    spec: "FUSE SIZING \u00B7 3 RAILS \u00B7 2 PANELS" }
 ];
 
 var pgFilter = "all";
@@ -1122,9 +1126,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=a37d223f58" defer></script>
-<script src="rvdata.js?v=a37d223f58" defer></script>
-<script src="riscv-lab.js?v=a37d223f58" defer></script>
-<script src="features.js?v=a37d223f58" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=5a4d511ffc" defer></script>
+<script src="rvdata.js?v=5a4d511ffc" defer></script>
+<script src="riscv-lab.js?v=5a4d511ffc" defer></script>
+<script src="features.js?v=5a4d511ffc" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
