@@ -21052,10 +21052,10 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(i2El("h3", null, "The Two-Wire Room"));
     panel.appendChild(i2El("p", "i2-spec", "SILICON // I2C BUS LAB"));
     panel.appendChild(i2El("p", "i2-how",
-      "Two wires run the whole board: every sensor and controller shares SDA and SCL, and the address " +
-      "byte at the start of each conversation decides exactly who answers. Scan the bus, read the " +
-      "16-bit temperature register, set the fan duty and prove it with a readback. Certify all three " +
-      "trials; three strikes fail the bench."));
+      "A dozen sensors and controllers share two wires, SDA carrying data and SCL carrying the " +
+      "clock, and nothing collides, because the address byte at the start of each conversation " +
+      "decides exactly who answers. Scan the bus, read the 16-bit temperature register, set the " +
+      "fan duty and prove it with a readback. Certify all three trials; three strikes fail the bench."));
 
     i2Els.tabs = i2El("div", "i2-tabs");
     panel.appendChild(i2Els.tabs);
