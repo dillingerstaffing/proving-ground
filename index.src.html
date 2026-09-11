@@ -656,6 +656,10 @@ var PG_BENCHES = [
     how: "Wire NAND gates with the dropdowns, predict one probe row, RUN the full truth table, match every row inside the gate budget.",
     spec: "NAND-ONLY \u00B7 4 TRIALS \u00B7 GATE BUDGETS" },
   { section: "silicon", n: "40", name: "The Float Room", btn: "ftBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "silicon", n: "41", name: "The Carry Room", btn: "crBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "Ripple versus lookahead: 32-bit adders, one clock budget, and the carry that has to travel. Pick the architecture, predict the delay, run the sum, sample it before the carry arrives and watch it fail.",
+    how: "Type two hex words, pick the adder architecture, predict the gate delay, then run.",
+    spec: "RIPPLE vs CLA \u00B7 3 TRIALS" },
     desc: "IEEE-754 binary32 as the one atomic mechanism: a live 32-bit word decoder, a decode-the-mystery trial, the hunt for the float closest to 0.1, and the edge cases (subnormal, infinity, NaN, negative zero) plus a predict-then-verify of the 1e10 + 1 absorption.",
     how: "Flip bits in the live decoder, predict the mystery word's value, type the hex of the float closest to 0.1, classify the edge cases, and predict the big addition before you run it.",
     spec: "IEEE-754 BINARY32 \u00B7 3 TRIALS \u00B7 EXACT DECIMAL MATH" }

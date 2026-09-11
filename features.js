@@ -28248,3 +28248,920 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+/* Bench 41 staging: The Carry Room module (appended to features.js at ship time). */
+/* ============================================================
+   THE CARRY ROOM
+   Silicon bench 41. The one atomic mechanism: in an n-bit adder
+   the carry is the slowest signal, and carry-lookahead trades gates
+   for time. One sentence takeaway: the carry has to cross the adder
+   before the clock can tick, and lookahead buys speed with gates.
+   Stated delay model: g/p from a,b costs 1; one AND-OR carry stage
+   (c = g + p AND c_in) costs 2; a sum bit costs 1 after its carry-in.
+   RIPPLE-32: 65 delays, about 160 gates. GROUPED (eight 4-bit CLA
+   blocks chained): 17 delays, about 224 gates. FULL two-level tree:
+   8 delays, about 304 gates. A live 8-bit primer animates the carry
+   wave crawling (ripple) versus settling at t=3 (lookahead) before
+   any trial asks anything. Three trials: predict the ripple's delay,
+   beat a 20-delay clock, and pay the gate bill under a 10-delay
+   clock. Per-trial and bench certificates as downloadable text.
+   Self-contained IIFE, appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- pure logic: the delay model ---------------- */
+
+  function crHex(u, digits) {
+    var s = (u >>> 0).toString(16).toUpperCase();
+    while (s.length < digits) s = "0" + s;
+    return "0x" + s;
+  }
+
+  /* True carries c[0..bits]: c[0] = 0, c[bits] = carry out. */
+  function crCarries(a, b, bits) {
+    a = a >>> 0; b = b >>> 0;
+    var c = [0], ci = 0, ai, bi;
+    for (var i = 0; i < bits; i++) {
+      ai = (a >>> i) & 1; bi = (b >>> i) & 1;
+      ci = (ai & bi) | (ai & ci) | (bi & ci);
+      c.push(ci);
+    }
+    return c;
+  }
+
+  function crAdd32(a, b) {
+    a = a >>> 0; b = b >>> 0;
+    var c = crCarries(a, b, 32);
+    return { sum: (a + b) >>> 0, cout: c[32] };
+  }
+
+  function crAdd8(a, b) {
+    a = a & 0xff; b = b & 0xff;
+    var c = crCarries(a, b, 8);
+    return { sum: (a + b) & 0xff, cout: c[8] };
+  }
+
+  /* Earliest time (gate delays) at which carry c_i has settled. */
+  function crCarryTime(arch, i) {
+    if (i <= 0) return 0;
+    if (arch === "ripple") return 2 * i;
+    if (arch === "grouped") return 2 * Math.ceil(i / 4);
+    if (i <= 3) return 3;
+    if (i % 4 === 0) return 5;
+    return 7;
+  }
+
+  function crCarryTime8(arch, i) {
+    if (i <= 0) return 0;
+    if (arch === "ripple8") return 2 * i;
+    return 3;
+  }
+
+  function crResolved(arch, i, t) { return crCarryTime(arch, i) <= t; }
+  function crResolved8(arch, i, t) { return crCarryTime8(arch, i) <= t; }
+
+  /* Delay = the last carry settles, plus 1 for the sum bit. */
+  function crDelayOf(arch) {
+    var m = 0, ct;
+    for (var i = 1; i <= 32; i++) { ct = crCarryTime(arch, i); if (ct > m) m = ct; }
+    return m + 1;
+  }
+
+  function crDelayOf8(arch) {
+    var m = 0, ct;
+    for (var i = 1; i <= 8; i++) { ct = crCarryTime8(arch, i); if (ct > m) m = ct; }
+    return m + 1;
+  }
+
+  /* Sampled add: a carry that has not arrived reads as 0 (stated assumption). */
+  function crSample(arch, a, b, t) {
+    a = a >>> 0; b = b >>> 0;
+    var c = crCarries(a, b, 32), sum = 0, pending = 0, i, p, settled, ci;
+    for (i = 0; i < 32; i++) {
+      p = ((a >>> i) & 1) ^ ((b >>> i) & 1);
+      settled = crResolved(arch, i, t);
+      if (!settled) pending++;
+      ci = settled ? c[i] : 0;
+      if (p ^ ci) sum |= (1 << i);
+    }
+    return { sum: sum >>> 0, cout: c[32],
+             sampledCout: crResolved(arch, 32, t) ? c[32] : 0, pending: pending };
+  }
+
+  function crSample8(arch, a, b, t) {
+    a = a & 0xff; b = b & 0xff;
+    var c = crCarries(a, b, 8), sum = 0, pending = 0, i, p, settled, ci;
+    for (i = 0; i < 8; i++) {
+      p = ((a >>> i) & 1) ^ ((b >>> i) & 1);
+      settled = crResolved8(arch, i, t);
+      if (!settled) pending++;
+      ci = settled ? c[i] : 0;
+      if (p ^ ci) sum |= (1 << i);
+    }
+    return { sum: sum & 0xff, cout: c[8],
+             sampledCout: crResolved8(arch, 8, t) ? c[8] : 0, pending: pending };
+  }
+
+  /* ---------------- architectures and trials ---------------- */
+
+  var CR_ARCHS = [
+    { id: "ripple", name: "RIPPLE", gates: 160,
+      blurb: "RIPPLE: 32 carry stages chained, carry i settles at t = 2i. Delay 65, about 160 gates." },
+    { id: "grouped", name: "GROUPED", gates: 224,
+      blurb: "GROUPED: eight 4-bit lookahead blocks chained, carry i settles at t = 2*ceil(i/4). Delay 17, about 224 gates." },
+    { id: "full", name: "FULL LOOKAHEAD", gates: 304,
+      blurb: "FULL LOOKAHEAD: two-level tree, group carries at t = 5, block carries at t = 7. Delay 8, about 304 gates." }
+  ];
+  (function () {
+    for (var k = 0; k < CR_ARCHS.length; k++)
+      CR_ARCHS[k].delay = crDelayOf(CR_ARCHS[k].id);
+  })();
+
+  var CR_TRIALS = [
+    { n: 1, id: "predict-01", board: "CARRY-01",
+      title: "TRIAL 1: PREDICT THE RIPPLE",
+      a: 0x0000FFFF, b: 0x00000001, budget: 70,
+      predLo: 63, predHi: 67, predExact: 65,
+      goal: "The clock budget is 70 gate delays. First predict the ripple adder's delay " +
+            "for 32 bits, then RUN the add under any architecture and watch the carry " +
+            "wave settle inside the budget.",
+      hint: "32 bits, each a 2-delay carry stage, chained end to end. The last sum bit " +
+            "waits for every stage, then costs 1 more." },
+    { n: 2, id: "clock-02", board: "CARRY-02",
+      title: "TRIAL 2: BEAT THE CLOCK",
+      a: 0x7FFFFFFF, b: 0x00000001, budget: 20,
+      goal: "The clock budget is 20 gate delays. The ripple cannot make this clock: its " +
+            "sampled sum will lie. Pick an architecture that finishes in time and prove " +
+            "it with a passing run.",
+      hint: "Ripple needs 65, the clock gives 20. Of the other two, grouped needs 17 " +
+            "and full needs 8. One of them fits with room to spare." },
+    { n: 3, id: "gates-03", board: "CARRY-03",
+      title: "TRIAL 3: PAY THE GATES",
+      a: 0xBFFFFFFF, b: 0x40000001, budget: 10,
+      goal: "The clock budget is 10 gate delays. Only one architecture fits. Run it, " +
+            "pass, and name the price: about 304 gates against the ripple's 160, for " +
+            "about 8x the speed.",
+      hint: "Grouped needs 17, over budget. The full tree needs 8. The speedup is " +
+            "bought with gates: that is the whole tradeoff." }
+  ];
+
+  /* ---------------- intro copy (why-first, BFP compliant) ---------------- */
+
+  function crIntroHTML() {
+    return (
+      "<p class='cr-why'><b>WHY IT MATTERS.</b> Every add your RV32I core executes, " +
+      "every address xv6 computes, every timer compare: they all run through an adder, " +
+      "and the clock cannot tick faster than the carry can cross it. A 32-bit ripple " +
+      "adder chains 32 little carry stages, and the top sum bit waits for every one " +
+      "of them. That waiting is the speed limit of the whole machine, and the " +
+      "lookahead tree is the price paid to beat it. Three trials: predict the " +
+      "ripple's delay, beat a 20-delay clock, and pay the gate bill under a 10-delay " +
+      "clock.</p>" +
+      "<p class='cr-model'><b>THE BENCH'S DELAY MODEL (stated, so every number is " +
+      "checkable).</b> Time is measured in gate delays. Computing generate and " +
+      "propagate from a and b costs 1. One carry stage, a single AND-OR computing " +
+      "c = g + p AND c_in, costs 2. A sum bit costs 1 after its carry-in arrives. " +
+      "RIPPLE-32 chains 32 stages: carry i settles at t = 2i, the last sum bit at 65. " +
+      "Delay 65, about 160 gates. GROUPED chains eight 4-bit lookahead blocks: each " +
+      "block settles its four carries from its carry-in in one stage, so carry i " +
+      "settles at t = 2 times ceil(i/4), at most 16, and the sums land at 17. Delay " +
+      "17, about 224 gates. FULL is a two-level tree: bit g/p at t = 1, block " +
+      "generate/propagate at t = 3, the second-level group carries c4, c8, up to c32 " +
+      "at t = 5, the within-block carries from the true group carry-in at t = 7, " +
+      "sums at 8. Delay 8, about 304 gates. One assumption, stated: a carry that " +
+      "has not arrived when the clock samples reads as 0.</p>" +
+      "<p class='cr-worked'><b>WORKED EXAMPLE, by hand, before you touch the bench.</b> " +
+      "Four bits: A = 0111 (7), B = 0001 (1), c0 = 0. Write g = a AND b (generate: " +
+      "this bit makes a carry regardless) and p = a XOR b (propagate: this bit passes " +
+      "an incoming carry through). Bit 0: g0 = 1, p0 = 0, so c1 = g0 + p0 AND c0 = 1. " +
+      "The carry out of bit 0 is known before bit 0's sum is even asked. Bit 1: " +
+      "g1 = 0, p1 = 1, so c2 = g1 + p1 AND g0 = 1. Bit 2: g2 = 0, p2 = 1, so " +
+      "c3 = g2 + p2 AND g1 + p2 AND p1 AND g0 = 1. Bit 3: g3 = 0, p3 = 0, so c4 = 0. " +
+      "Now the sums, s_i = p_i XOR c_i: 0, 0, 0, 1, which is 0b1000 = 8. Correct: " +
+      "7 + 1. Now the punchline: every c_i formula uses only a, b, and c0. No " +
+      "formula waits for a lower bit's carry. That is lookahead: the tree computes " +
+      "the carries from the inputs directly, and the ripple's long walk becomes a " +
+      "short climb.</p>" +
+      "<p class='cr-terms'><b>TERMS, earned in order.</b> Generate (a AND b): this " +
+      "bit manufactures a carry no matter what comes in. Propagate (a XOR b): this " +
+      "bit forwards an incoming carry, unchanged, to the next bit. Carry stage: one " +
+      "AND-OR gate pair computing c = g + p AND c_in, the 2-delay atom of this room. " +
+      "Gate delay: the bench's unit of time; every number in the trials is counted " +
+      "in these. Timing miss: the clock samples the sum while carries are still in " +
+      "flight, so the high bits read the assumed 0 instead of the true carry, and " +
+      "the answer is wrong with no error flag.</p>" +
+      "<p class='cr-failmodes'><b>FAILURE MODES, stated up front.</b> Sample the sum " +
+      "before the carry arrives and the high bits lie: trial 2 shows 0x7FFFFFFF + 1 " +
+      "sampling as 0x7FFFF800, wrong in the top bits, with the clock perfectly on " +
+      "schedule. A faster clock on a ripple adder is not optimism, it is a wrong " +
+      "answer: the circuit is correct and the timing is not. More gates is the price " +
+      "of the lookahead tree: about 304 against about 160, and there is no discount " +
+      "version.</p>" +
+      "<p class='cr-scale'><b>ONE NUMBER TO CARRY.</b> 65 versus 8. The ripple needs " +
+      "65 gate delays to settle 32 bits; the two-level lookahead needs 8. About 8 " +
+      "times faster for about 2 times the gates (160 versus 304). Every trial below " +
+      "is a tour of that trade.</p>"
+    );
+  }
+
+  /* ---------------- styles ---------------- */
+
+  var CR_CSS = [
+    ".cr-overlay{position:fixed;inset:0;z-index:90;display:none;background:rgba(8,8,10,.86);padding:0;}",
+    ".cr-overlay.open{display:block;}",
+    ".cr-panel{position:absolute;inset:0;overflow-y:auto;background:var(--ink);color:var(--paper);padding:20px 16px 120px;}",
+    ".cr-wrap{max-width:860px;margin:0 auto;}",
+    ".cr-head h3{font-family:'Space Grotesk',sans-serif;font-size:26px;letter-spacing:.04em;margin:0 0 4px;color:var(--paper);}",
+    ".cr-spec{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);margin:0 0 12px;}",
+    ".cr-why,.cr-model,.cr-worked,.cr-terms,.cr-failmodes,.cr-scale{font-size:14px;line-height:1.65;margin:0 0 12px;color:var(--paper);}",
+    ".cr-why b,.cr-model b,.cr-worked b,.cr-terms b,.cr-failmodes b,.cr-scale b{color:var(--ember);font-weight:600;}",
+    ".cr-worked{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--ember);padding:12px 14px;}",
+    ".cr-model,.cr-terms,.cr-failmodes,.cr-scale{background:var(--panel);border:1px solid var(--line);padding:12px 14px;}",
+    ".cr-how{font-size:14px;margin:18px 0 10px;color:var(--paper);}",
+    ".cr-how b{color:var(--ember);}",
+    ".cr-sec{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);margin:22px 0 8px;}",
+    ".cr-primer{background:var(--panel);border:1px solid var(--line);padding:14px;margin:0 0 6px;}",
+    ".cr-flabel{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:var(--ember);margin:0 0 6px;}",
+    ".cr-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:0 0 8px;}",
+    ".cr-in{font-family:'IBM Plex Mono',monospace;font-size:15px;min-height:48px;padding:8px 12px;background:var(--ink);border:1px solid var(--line);color:var(--paper);width:110px;}",
+    ".cr-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.1em;min-height:48px;padding:10px 18px;background:var(--panel-2);border:1px solid var(--line);color:var(--paper);cursor:pointer;}",
+    ".cr-btn.primary{border-color:var(--ember);color:var(--ember);}",
+    ".cr-btn:disabled{opacity:.35;cursor:default;}",
+    ".cr-btn:focus-visible,.cr-in:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".cr-arch{display:inline-flex;align-items:center;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.4;min-height:48px;padding:8px 12px;border:1px solid var(--line);background:var(--ink);color:var(--paper);cursor:pointer;}",
+    ".cr-arch:focus-within{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".cr-arch.on{border-color:var(--ember);}",
+    ".cr-arch input{width:20px;height:20px;accent-color:#ff5a1f;flex:none;}",
+    ".cr-cells{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0;}",
+    ".cr-cell{font-family:'IBM Plex Mono',monospace;font-size:10px;line-height:1.5;text-align:center;border:1px solid var(--line);background:var(--ink);color:var(--paper);padding:6px 4px;min-width:64px;flex:1 1 64px;}",
+    ".cr-cell .cr-cidx{display:block;font-size:11px;font-weight:600;}",
+    ".cr-cell .cr-cval{display:block;font-size:13px;}",
+    ".cr-cell .cr-cst{display:block;letter-spacing:.08em;font-size:9px;}",
+    ".cr-cell.settled{border-color:var(--ember);}",
+    ".cr-cell.settled .cr-cst{color:var(--ember);}",
+    ".cr-cell.pending .cr-cst{color:#8a877f;}",
+    ".cr-tick{font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--ember);margin:6px 0;}",
+    ".cr-pres{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:var(--paper);margin:6px 0 0;}",
+    ".cr-thint{font-size:13px;line-height:1.6;color:var(--paper);margin:10px 0 0;}",
+    ".cr-card{background:var(--panel);border:1px solid var(--line);padding:14px;margin:0 0 14px;}",
+    ".cr-card.passed{border-color:var(--ember);}",
+    ".cr-ctitle{font-family:'Space Grotesk',sans-serif;font-size:17px;letter-spacing:.03em;margin:0 0 4px;color:var(--paper);}",
+    ".cr-cgoal{font-size:13px;line-height:1.6;color:var(--paper);margin:0 0 8px;}",
+    ".cr-board{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:#8a877f;margin:0 0 8px;}",
+    ".cr-ops{font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--ember);margin:6px 0 10px;}",
+    ".cr-res{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.8;background:var(--ink);border:1px solid var(--line);padding:10px 12px;margin:8px 0 0;word-break:break-all;}",
+    ".cr-res .k{color:#8a877f;}",
+    ".cr-res .v{color:var(--ember);}",
+    ".cr-verdict{font-family:'IBM Plex Mono',monospace;font-size:13px;line-height:1.7;margin:8px 0 0;min-height:20px;}",
+    ".cr-verdict.pass{color:var(--ember);}",
+    ".cr-verdict.miss{color:#ff3b30;}",
+    ".cr-log{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;background:var(--ink);border:1px solid var(--line);padding:10px 12px;max-height:180px;overflow-y:auto;}",
+    ".cr-log .ok{color:var(--ember);}",
+    ".cr-banner{font-family:'Space Grotesk',sans-serif;font-size:16px;letter-spacing:.06em;color:var(--ember);border:1px solid var(--ember);padding:12px 14px;margin:14px 0 0;display:none;}",
+    ".cr-foot{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0 0;}",
+    ".cr-pop{animation:crPop .2s ease-out;}",
+    "@keyframes crPop{0%{transform:scale(.985);}100%{transform:scale(1);}}",
+    "@media (prefers-reduced-motion: reduce){.cr-pop{animation:none;}}"
+  ].join("\n");
+
+  /* ---------------- DOM helpers ---------------- */
+
+  function crEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  function crEsc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  var crEls = {};
+  var crState = { primer: { a: 0xFF, b: 0x01, arch: "ripple8", timer: null }, trials: [] };
+  var CR_REDUCED = (typeof window !== "undefined" && window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+  function crNewTrialState() {
+    return { predOk: false, runOk: false, committed: false,
+             attempts: 0, runArch: null };
+  }
+
+  function crLog(html, cls) {
+    var box = crEls.log;
+    if (!box) return;
+    var line = crEl("div", null, null);
+    line.innerHTML = "<span class='lt'>&gt; </span><span class='" + (cls || "") + "'>" + html + "</span>";
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function crPop(card) {
+    if (CR_REDUCED || !card) return;
+    card.classList.remove("cr-pop"); void card.offsetWidth; card.classList.add("cr-pop");
+  }
+
+  function crArchById(id) {
+    for (var k = 0; k < CR_ARCHS.length; k++)
+      if (CR_ARCHS[k].id === id) return CR_ARCHS[k];
+    return CR_ARCHS[0];
+  }
+
+  /* ---------------- primer: the live 8-bit adder ---------------- */
+
+  function crPrimerReadInputs() {
+    var P = crState.primer, C = crEls.primer;
+    if (C && C.inA) {
+      var pa = parseInt(C.inA.value.replace(/^0x/i, ""), 16);
+      var pb = parseInt(C.inB.value.replace(/^0x/i, ""), 16);
+      P.a = isNaN(pa) ? 0 : (pa & 0xff);
+      P.b = isNaN(pb) ? 0 : (pb & 0xff);
+      C.inA.value = ("0" + P.a.toString(16).toUpperCase()).slice(-2);
+      C.inB.value = ("0" + P.b.toString(16).toUpperCase()).slice(-2);
+    }
+    var sel = document.querySelector("input[name='crPrmArch']:checked");
+    if (sel) P.arch = sel.value;
+  }
+
+  function crPrimerFrame(t) {
+    var P = crState.primer, C = crEls.primer;
+    if (!C || !C.cells) return;
+    var c = crCarries(P.a, P.b, 8);
+    for (var i = 0; i <= 8; i++) {
+      var settled = crResolved8(P.arch, i, t);
+      var read = settled ? c[i] : 0;
+      var cell = C.cells[i];
+      cell.idx.textContent = "c" + i;
+      cell.val.textContent = String(read);
+      cell.st.textContent = settled ? "SETTLED" : "PENDING";
+      cell.box.classList.toggle("settled", settled);
+      cell.box.classList.toggle("pending", !settled);
+      cell.box.setAttribute("aria-label",
+        "Carry c" + i + ": reads " + read + ", true value " + c[i] + ", " +
+        (settled ? "settled" : "pending"));
+    }
+    C.tick.textContent = "t = " + t + " gate delays";
+    var tru = crAdd8(P.a, P.b);
+    C.res.innerHTML =
+      "<span class='k'>TRUE SUM </span><span class='v'>" + crHex(tru.sum, 2) +
+      "</span><span class='k'> CARRY OUT </span><span class='v'>" + tru.cout + "</span><br>" +
+      "<span class='k'>SETTLES IN </span><span class='v'>" + crDelayOf8("ripple8") +
+      "</span><span class='k'> (RIPPLE-8) vs </span><span class='v'>" + crDelayOf8("cla8") +
+      "</span><span class='k'> (CLA-8)</span>";
+  }
+
+  function crPrimerRun() {
+    var P = crState.primer;
+    crPrimerReadInputs();
+    if (P.timer) { clearTimeout(P.timer); P.timer = null; }
+    var delay = crDelayOf8(P.arch);
+    if (CR_REDUCED) { crPrimerFrame(delay); return; }
+    var t = 0;
+    crEls.primer.run.disabled = true;
+    (function step() {
+      crPrimerFrame(t);
+      if (t < delay) {
+        t++;
+        P.timer = setTimeout(step, 130);
+      } else {
+        P.timer = null;
+        if (crEls.primer) crEls.primer.run.disabled = false;
+      }
+    })();
+  }
+
+  function crBuildPrimer(wrap) {
+    wrap.appendChild(crEl("p", "cr-sec", "THE 8-BIT PRIMER (DO THIS FIRST)"));
+    var primer = crEl("div", "cr-primer");
+    var C = {};
+    var row = crEl("div", "cr-row");
+    row.appendChild(crEl("span", "cr-flabel", "A"));
+    var inA = crEl("input", "cr-in");
+    inA.id = "crPrmA"; inA.value = "FF";
+    inA.setAttribute("maxlength", "4");
+    inA.setAttribute("aria-label", "Primer operand A, two hex digits");
+    inA.setAttribute("spellcheck", "false");
+    row.appendChild(inA);
+    row.appendChild(crEl("span", "cr-flabel", "B"));
+    var inB = crEl("input", "cr-in");
+    inB.id = "crPrmB"; inB.value = "01";
+    inB.setAttribute("maxlength", "4");
+    inB.setAttribute("aria-label", "Primer operand B, two hex digits");
+    inB.setAttribute("spellcheck", "false");
+    row.appendChild(inB);
+    primer.appendChild(row);
+    C.inA = inA; C.inB = inB;
+
+    var agroup = crEl("div", "cr-row");
+    agroup.setAttribute("role", "radiogroup");
+    agroup.setAttribute("aria-label", "Primer architecture");
+    var defs = [["ripple8", "RIPPLE-8", true], ["cla8", "CLA-8", false]];
+    for (var d = 0; d < defs.length; d++) {
+      (function (def) {
+        var lab = crEl("label", "cr-arch" + (def[2] ? " on" : ""), null);
+        var inp = document.createElement("input");
+        inp.type = "radio"; inp.name = "crPrmArch"; inp.value = def[0];
+        if (def[2]) inp.checked = true;
+        inp.setAttribute("aria-label", def[1] + " primer architecture");
+        inp.addEventListener("change", function () {
+          var all = agroup.querySelectorAll(".cr-arch");
+          for (var q = 0; q < all.length; q++) all[q].classList.remove("on");
+          lab.classList.add("on");
+          crState.primer.arch = def[0];
+        });
+        lab.appendChild(inp);
+        lab.appendChild(document.createTextNode(def[1]));
+        agroup.appendChild(lab);
+      })(defs[d]);
+    }
+    primer.appendChild(agroup);
+
+    var run = crEl("button", "cr-btn primary", "RUN PRIMER");
+    run.id = "crPrmRun";
+    run.addEventListener("click", crPrimerRun);
+    primer.appendChild(run);
+    C.run = run;
+
+    var cells = crEl("div", "cr-cells");
+    cells.id = "crPrmCells";
+    cells.setAttribute("role", "img");
+    cells.setAttribute("aria-label", "Carry wave: nine carry cells c0 through c8");
+    C.cells = [];
+    for (var i = 0; i <= 8; i++) {
+      var box = crEl("div", "cr-cell pending");
+      var idx = crEl("span", "cr-cidx", "c" + i);
+      var val = crEl("span", "cr-cval", "0");
+      var st = crEl("span", "cr-cst", "PENDING");
+      box.appendChild(idx); box.appendChild(val); box.appendChild(st);
+      cells.appendChild(box);
+      C.cells.push({ box: box, idx: idx, val: val, st: st });
+    }
+    primer.appendChild(cells);
+    var tick = crEl("p", "cr-tick", "t = 0 gate delays");
+    tick.id = "crPrmTick";
+    primer.appendChild(tick);
+    C.tick = tick;
+    var res = crEl("p", "cr-pres", "");
+    res.id = "crPrmRes";
+    primer.appendChild(res);
+    C.res = res;
+    primer.appendChild(crEl("p", "cr-thint",
+      "Run RIPPLE-8 first and watch the wave crawl across the nine carries, one stage " +
+      "per 2 delays. Then CLA-8: every carry settles at t = 3. A carry that has not " +
+      "arrived reads as 0. That assumption is the entire timing-miss story in trial 2."));
+    wrap.appendChild(primer);
+    crEls.primer = C;
+    crPrimerFrame(0);
+  }
+
+  /* ---------------- trial checks ---------------- */
+
+  function crSelectedArch(ti) {
+    var sel = document.querySelector("input[name='crArch" + ti + "']:checked");
+    return sel ? sel.value : "ripple";
+  }
+
+  function crRenderStrip(ti, arch) {
+    var t = CR_TRIALS[ti], C = crEls.cards[ti];
+    var c = crCarries(t.a, t.b, 32);
+    for (var i = 0; i <= 32; i++) {
+      var settled = crResolved(arch, i, t.budget);
+      var read = settled ? c[i] : 0;
+      var cell = C.cells[i];
+      cell.val.textContent = "reads " + read + " (true " + c[i] + ")";
+      cell.st.textContent = settled ? "SETTLED" : "PENDING";
+      cell.box.classList.toggle("settled", settled);
+      cell.box.classList.toggle("pending", !settled);
+      cell.box.setAttribute("aria-label",
+        "Carry c" + i + ": reads " + read + ", true value " + c[i] + ", " +
+        (settled ? "settled" : "pending"));
+    }
+  }
+
+  function crCheckPred(ti) {
+    var t = CR_TRIALS[ti], st = crState.trials[ti], C = crEls.cards[ti];
+    if (st.committed) return false;
+    var raw = C.pred.value.trim();
+    if (!raw) {
+      C.predV.textContent = "Type a number first.";
+      C.predV.classList.remove("pass");
+      return false;
+    }
+    var g = parseInt(raw, 10);
+    if (isNaN(g)) {
+      C.predV.textContent = "That is not a number. Count gate delays.";
+      C.predV.classList.remove("pass");
+      return false;
+    }
+    st.attempts++;
+    if (g >= t.predLo && g <= t.predHi) {
+      st.predOk = true;
+      C.predV.textContent = "CORRECT: 65 gate delays (32 stages x 2, plus 1 for the " +
+        "final sum). Now RUN the adder and certify.";
+      C.predV.classList.add("pass");
+      crLog("Trial 1 prediction accepted: " + g + " (exact 65).", "ok");
+    } else {
+      C.predV.textContent = "Not quite: each of the 32 bits costs a 2-delay carry " +
+        "stage, plus 1 for the final sum. Try again.";
+      C.predV.classList.remove("pass");
+      crLog("Trial 1 prediction " + g + " rejected.", "");
+    }
+    crRefreshCert(ti);
+    crPop(C.card);
+    return st.predOk;
+  }
+
+  function crRunTrial(ti) {
+    var t = CR_TRIALS[ti], st = crState.trials[ti], C = crEls.cards[ti];
+    if (st.committed) return false;
+    st.attempts++;
+    var arch = crSelectedArch(ti);
+    var A = crArchById(arch);
+    var delay = A.delay, budget = t.budget;
+    var sm = crSample(arch, t.a, t.b, budget);
+    var tru = crAdd32(t.a, t.b);
+    var sumOK = sm.sum === tru.sum;
+    var timeOK = delay <= budget;
+    var margin = budget - delay;
+    crRenderStrip(ti, arch);
+    var verdict, cls = "";
+    if (sumOK && timeOK) {
+      st.runOk = true; st.runArch = arch;
+      verdict = "PASS: " + A.name + " settles in " + delay + " delays, inside the " +
+        budget + "-delay budget, and the sampled sum " + crHex(sm.sum, 8) +
+        " matches the true sum.";
+      cls = "pass";
+      crLog("Trial " + t.n + " PASS with " + A.name + " (delay " + delay +
+        ", margin " + margin + ").", "ok");
+    } else if (!sumOK) {
+      var hiMiss = -1;
+      for (var i = 31; i >= 0; i--) {
+        if ((((sm.sum >>> i) & 1)) !== (((tru.sum >>> i) & 1))) { hiMiss = i; break; }
+      }
+      verdict = "TIMING MISS: the clock sampled bit " + hiMiss + " before its carry " +
+        "arrived; the " + arch + " needs " + delay + " delays, the clock gave " +
+        budget + ". " + sm.pending + " of 33 carries were still in flight and read " +
+        "as 0. Reselect an architecture and RUN again.";
+      cls = "miss";
+      crLog("Trial " + t.n + " TIMING MISS with " + A.name + " (sampled " +
+        crHex(sm.sum, 8) + " vs true " + crHex(tru.sum, 8) + ").", "");
+    } else {
+      verdict = "OVER BUDGET: the sampled sum is right, but " + A.name + " needs " +
+        delay + " delays against a budget of " + budget + ". Pick a faster architecture.";
+      cls = "miss";
+      crLog("Trial " + t.n + " OVER BUDGET with " + A.name + ".", "");
+    }
+    C.res.innerHTML =
+      "<span class='k'>ARCH </span><span class='v'>" + crEsc(A.name) + "</span><br>" +
+      "<span class='k'>MEASURED DELAY </span><span class='v'>" + delay + "</span>" +
+      "<span class='k'> vs BUDGET </span><span class='v'>" + budget + "</span>" +
+      "<span class='k'> (MARGIN </span><span class='v'>" + margin + "</span>" +
+      "<span class='k'>)</span><br>" +
+      "<span class='k'>SAMPLED SUM </span><span class='v'>" + crHex(sm.sum, 8) + "</span>" +
+      "<span class='k'> vs TRUE SUM </span><span class='v'>" + crHex(tru.sum, 8) + "</span><br>" +
+      "<span class='k'>CARRY OUT </span><span class='v'>" + tru.cout + "</span>" +
+      "<span class='k'> (sampled as </span><span class='v'>" + sm.sampledCout +
+      "</span><span class='k'>)</span><br>" +
+      "<span class='k'>GATES </span><span class='v'>about " + A.gates + "</span>";
+    C.verdict.textContent = verdict;
+    C.verdict.className = "cr-verdict" + (cls ? " " + cls : "");
+    crRefreshCert(ti);
+    crPop(C.card);
+    return sumOK && timeOK;
+  }
+
+  function crRefreshCert(ti) {
+    var st = crState.trials[ti], C = crEls.cards[ti];
+    var ok = st.runOk && (ti !== 0 || st.predOk) && !st.committed;
+    C.cert.disabled = !ok;
+  }
+
+  function crCommit(ti) {
+    var t = CR_TRIALS[ti], st = crState.trials[ti];
+    if (!(st.runOk && (ti !== 0 || st.predOk)) || st.committed) return false;
+    st.committed = true;
+    crRefreshCert(ti);
+    crLog("Trial " + t.n + " CERTIFIED: " + t.title + ". Certificate ready below.", "ok");
+    var dl = crEl("button", "cr-btn", "DOWNLOAD TRIAL " + t.n + " CERTIFICATE");
+    dl.addEventListener("click", function () { crDownloadCert(t, st); });
+    crEls.cards[ti].tres.appendChild(dl);
+    crPop(crEls.cards[ti].card);
+    var all = true;
+    for (var i = 0; i < CR_TRIALS.length; i++)
+      if (!crState.trials[i].committed) { all = false; break; }
+    if (all) {
+      crEls.banner.style.display = "block";
+      crEls.certAll.style.display = "";
+      crLog("CARRYWRIGHT: all three trials certified. The carry crossed in 8.", "ok");
+    }
+    return true;
+  }
+
+  function crResetTrial(ti) {
+    crState.trials[ti] = crNewTrialState();
+    var C = crEls.cards[ti];
+    C.tres.innerHTML = "";
+    C.verdict.textContent = "No run yet.";
+    C.verdict.className = "cr-verdict";
+    C.res.textContent = "Press RUN ADDER to sample the carry wave at the clock tick.";
+    for (var i = 0; i <= 32; i++) {
+      var cell = C.cells[i];
+      cell.val.textContent = "?";
+      cell.st.textContent = "NOT SAMPLED";
+      cell.box.classList.remove("settled");
+      cell.box.classList.add("pending");
+    }
+    if (C.pred) {
+      C.pred.value = "";
+      C.predV.textContent = "No prediction checked yet.";
+      C.predV.classList.remove("pass");
+    }
+    crRefreshCert(ti);
+    crLog("Trial " + CR_TRIALS[ti].n + " reset.", "");
+    crPop(C.card);
+  }
+
+  function crCertText(t, st) {
+    var A = crArchById(st.runArch || "ripple");
+    var tru = crAdd32(t.a, t.b);
+    var lines = ["THE CARRY ROOM, TRIAL " + t.n + " CERTIFICATE",
+      "Board " + t.board + " // " + t.title,
+      "A = " + crHex(t.a, 8) + ", B = " + crHex(t.b, 8) +
+        ", clock budget " + t.budget + " gate delays", ""];
+    if (t.n === 1) {
+      lines.push("Predicted ripple delay inside 63 to 67 (exact 65: 32 stages x 2, plus 1).");
+    }
+    lines.push("Passing run: " + A.name + ", measured delay " + A.delay +
+      ", margin " + (t.budget - A.delay) + ", about " + A.gates + " gates.");
+    lines.push("Sampled sum " + crHex(tru.sum, 8) + " equals the true sum, carry out " +
+      tru.cout + ".");
+    lines.push("Attempts: " + st.attempts);
+    lines.push("", "CARRYWRIGHT // THE PROVING GROUND");
+    return lines.join("\n") + "\n";
+  }
+
+  function crDownloadCert(t, st) {
+    var blob = new Blob([crCertText(t, st)], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "carry-room-trial" + t.n + "-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    crLog("Certificate downloaded: " + a.download, "ok");
+  }
+
+  function crCertAll() {
+    var lines = ["THE CARRY ROOM, BENCH CERTIFICATE", "All three trials certified:", ""];
+    for (var i = 0; i < CR_TRIALS.length; i++) {
+      var t = CR_TRIALS[i], st = crState.trials[i];
+      lines.push("Trial " + t.n + " " + t.title + ": CERTIFIED (" + st.attempts + " attempts, " +
+        crArchById(st.runArch || "ripple").name + ")");
+    }
+    lines.push("", "The carry has to cross the adder before the clock can tick: 65 delays",
+      "rippled, 8 with lookahead, about 8x faster for about 2x the gates.",
+      "", "CARRYWRIGHT // THE PROVING GROUND");
+    var blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "carry-room-bench-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    crLog("Bench certificate downloaded.", "ok");
+  }
+
+  /* ---------------- trial cards ---------------- */
+
+  function crBuildTrialCard(t, ti) {
+    var card = crEl("div", "cr-card");
+    card.id = "crTrial" + ti;
+    card.appendChild(crEl("p", "cr-board", "BOARD " + t.board + " // TRIAL " + t.n + " OF 3"));
+    card.appendChild(crEl("h4", "cr-ctitle", t.title));
+    card.appendChild(crEl("p", "cr-cgoal", t.goal));
+    card.appendChild(crEl("p", "cr-ops", "A = " + crHex(t.a, 8) + ", B = " + crHex(t.b, 8) +
+      ", CLOCK BUDGET = " + t.budget + " gate delays"));
+    card.appendChild(crEl("p", "cr-cgoal", "HINT: " + t.hint));
+    var C = { card: card, tres: crEl("div", null, null),
+              verdict: crEl("p", "cr-verdict", "No run yet."),
+              res: crEl("div", "cr-res",
+                "Press RUN ADDER to sample the carry wave at the clock tick."),
+              cert: crEl("button", "cr-btn primary", "CERTIFY TRIAL " + t.n) };
+    C.res.id = "crT" + ti + "Res";
+
+    if (t.n === 1) {
+      var prow = crEl("div", "cr-row");
+      var pred = crEl("input", "cr-in");
+      pred.id = "crT0Pred";
+      pred.style.width = "220px";
+      pred.setAttribute("placeholder", "Your prediction, gate delays");
+      pred.setAttribute("inputmode", "numeric");
+      pred.setAttribute("aria-label", "Your predicted ripple delay in gate delays");
+      prow.appendChild(pred);
+      var chk = crEl("button", "cr-btn", "CHECK PREDICTION");
+      chk.id = "crT0CheckPred";
+      prow.appendChild(chk);
+      card.appendChild(prow);
+      var pv = crEl("p", "cr-verdict", "No prediction checked yet.");
+      pv.id = "crT0PredV";
+      card.appendChild(pv);
+      C.pred = pred; C.predV = pv;
+      chk.addEventListener("click", function () { crCheckPred(0); });
+    }
+
+    var agroup = crEl("div", "cr-row");
+    agroup.setAttribute("role", "radiogroup");
+    agroup.setAttribute("aria-label", "Trial " + t.n + " architecture");
+    for (var a = 0; a < CR_ARCHS.length; a++) {
+      (function (arch, first) {
+        var lab = crEl("label", "cr-arch" + (first ? " on" : ""), null);
+        var inp = document.createElement("input");
+        inp.type = "radio"; inp.name = "crArch" + ti; inp.value = arch.id;
+        if (first) inp.checked = true;
+        inp.setAttribute("aria-label",
+          arch.name + ": " + arch.delay + " delays, about " + arch.gates + " gates");
+        inp.addEventListener("change", function () {
+          var all = agroup.querySelectorAll(".cr-arch");
+          for (var q = 0; q < all.length; q++) all[q].classList.remove("on");
+          lab.classList.add("on");
+        });
+        lab.appendChild(inp);
+        lab.appendChild(document.createTextNode(
+          arch.name + ": " + arch.delay + " delays, ~" + arch.gates + " gates"));
+        agroup.appendChild(lab);
+      })(CR_ARCHS[a], a === 0);
+    }
+    card.appendChild(agroup);
+
+    var rrow = crEl("div", "cr-row");
+    var run = crEl("button", "cr-btn primary", "RUN ADDER");
+    run.id = "crT" + ti + "Run";
+    run.addEventListener("click", function () { crRunTrial(ti); });
+    rrow.appendChild(run);
+    card.appendChild(rrow);
+
+    var cells = crEl("div", "cr-cells");
+    cells.id = "crT" + ti + "Strip";
+    cells.setAttribute("role", "img");
+    cells.setAttribute("aria-label",
+      "Carry wave strip: carries c0 through c32 at the clock tick");
+    C.cells = [];
+    for (var i = 0; i <= 32; i++) {
+      var box = crEl("div", "cr-cell pending");
+      var idx = crEl("span", "cr-cidx", "c" + i);
+      var val = crEl("span", "cr-cval", "?");
+      var st = crEl("span", "cr-cst", "NOT SAMPLED");
+      box.appendChild(idx); box.appendChild(val); box.appendChild(st);
+      cells.appendChild(box);
+      C.cells.push({ box: box, val: val, st: st });
+    }
+    card.appendChild(cells);
+
+    card.appendChild(C.res);
+    var brow = crEl("div", "cr-row");
+    C.cert.id = "crT" + ti + "Cert";
+    C.cert.disabled = true;
+    C.cert.addEventListener("click", function () { crCommit(ti); });
+    brow.appendChild(C.cert);
+    var rst = crEl("button", "cr-btn", "RESET TRIAL");
+    rst.id = "crT" + ti + "Reset";
+    rst.addEventListener("click", function () { crResetTrial(ti); });
+    brow.appendChild(rst);
+    card.appendChild(brow);
+    C.verdict.id = "crT" + ti + "Verdict";
+    card.appendChild(C.verdict);
+    card.appendChild(C.tres);
+    crEls.cards[ti] = C;
+    return card;
+  }
+
+  /* ---------------- build ---------------- */
+
+  function crBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("crBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = CR_CSS;
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "crBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Carry Room";
+    b.addEventListener("click", crOpen);
+    box.appendChild(b);
+
+    var ov = crEl("div", "cr-overlay");
+    ov.id = "crOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Carry Room");
+    var x = crEl("button", "cr-btn", "CLOSE");
+    x.id = "crXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Carry Room");
+    x.addEventListener("click", crClose);
+    ov.appendChild(x);
+    var panel = crEl("div", "cr-panel");
+    var wrap = crEl("div", "cr-wrap");
+
+    var head = crEl("div", "cr-head");
+    head.appendChild(crEl("h3", null, "The Carry Room"));
+    head.appendChild(crEl("p", "cr-spec", "SILICON // RIPPLE VS CARRY-LOOKAHEAD // 3 TRIALS"));
+    var intro = crEl("div", null, null);
+    intro.innerHTML = crIntroHTML();
+    head.appendChild(intro);
+    head.appendChild(crEl("p", "cr-how",
+      "HOW: run the 8-bit primer and watch the carry wave, predict the ripple's " +
+      "32-bit delay, then run each trial's add under its clock budget and certify."));
+    wrap.appendChild(head);
+
+    crBuildPrimer(wrap);
+
+    wrap.appendChild(crEl("p", "cr-sec", "THE TRIALS"));
+    crEls.cards = [];
+    for (var ti = 0; ti < CR_TRIALS.length; ti++) {
+      crState.trials[ti] = crNewTrialState();
+      wrap.appendChild(crBuildTrialCard(CR_TRIALS[ti], ti));
+    }
+
+    wrap.appendChild(crEl("p", "cr-sec", "BENCH LOG"));
+    var log = crEl("div", "cr-log");
+    log.id = "crLog";
+    wrap.appendChild(log);
+    crEls.log = log;
+
+    var banner = crEl("div", "cr-banner",
+      "CARRYWRIGHT: ALL THREE TRIALS CERTIFIED. THE CARRY CROSSED IN 8.");
+    banner.id = "crBanner";
+    banner.style.display = "none";
+    wrap.appendChild(banner);
+    crEls.banner = banner;
+
+    var foot = crEl("div", "cr-foot");
+    var certAll = crEl("button", "cr-btn", "DOWNLOAD BENCH CERTIFICATE");
+    certAll.id = "crCertAllBtn";
+    certAll.style.display = "none";
+    certAll.addEventListener("click", crCertAll);
+    foot.appendChild(certAll);
+    crEls.certAll = certAll;
+    var close = crEl("button", "cr-btn", "CLOSE");
+    close.id = "crCloseBtn";
+    close.addEventListener("click", crClose);
+    foot.appendChild(close);
+    wrap.appendChild(foot);
+
+    panel.appendChild(wrap);
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    crEls.overlay = ov;
+
+    ov.addEventListener("click", function (e) { if (e.target === ov) crClose(); });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && crEls.overlay &&
+          crEls.overlay.classList.contains("open")) crClose();
+    });
+  }
+
+  /* ---------------- open / close / boot ---------------- */
+
+  function crOpen() {
+    if (!crEls.overlay) crBuild();
+    crEls.overlay.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+  function crClose() {
+    if (crEls.overlay) crEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", crBuild);
+    } else {
+      crBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      CR: {
+        ARCHS: CR_ARCHS, TRIALS: CR_TRIALS,
+        add: crAdd32, add8: crAdd8,
+        carryTime: crCarryTime, carryTime8: crCarryTime8,
+        sample: crSample, sample8: crSample8,
+        delay: crDelayOf, delay8: crDelayOf8,
+        hex: crHex, introHTML: crIntroHTML, certText: crCertText,
+        ui: {
+          open: crOpen, close: crClose,
+          primerRun: crPrimerRun, primerFrame: crPrimerFrame,
+          checkPred: crCheckPred, run: crRunTrial,
+          commit: crCommit, resetTrial: crResetTrial, certAll: crCertAll,
+          state: function () { return crState; },
+          els: function () { return crEls; }
+        }
+      }
+    });
+  }
+})();
