@@ -646,7 +646,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "37", name: "The Ripple Room", btn: "rlBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "A real reservoir-capacitor bench for OLD IRON power work: a discrete-time rectifier sim with a scope you can watch. Size the cap from stock, hold the rail above the floor, survive the cold-start inrush, respect the voltage rating, and mind the ESR when the load steps.",
     how: "Pick a capacitor from stock, predict the ripple, power the rail, read the scope, and certify all three rails.",
-    spec: "RC RIPPLE \u00B7 3 RAILS" }
+    spec: "RC RIPPLE \u00B7 3 RAILS" },
+  { section: "tapeout", n: "38", name: "The Scan Room", btn: "jsBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+    desc: "JTAG boundary scan for GPU board bring-up: a real 16-cell scan chain, EXTEST interconnect tests, and three dead boards. Find the open, the short, and the stuck pin.",
+    how: "Pick a drive pattern, run the sweep, read the nets, then commit the diagnosis.",
+    spec: "JTAG EXTEST \u00B7 16-CELL CHAIN \u00B7 3 BOARDS" }
 ];
 
 var pgFilter = "all";
@@ -1058,9 +1062,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=ff2d733d05" defer></script>
-<script src="rvdata.js?v=ff2d733d05" defer></script>
-<script src="riscv-lab.js?v=ff2d733d05" defer></script>
-<script src="features.js?v=ff2d733d05" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=69c73e561d" defer></script>
+<script src="rvdata.js?v=69c73e561d" defer></script>
+<script src="riscv-lab.js?v=69c73e561d" defer></script>
+<script src="features.js?v=69c73e561d" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

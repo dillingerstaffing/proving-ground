@@ -21133,7 +21133,7 @@ if (typeof module !== "undefined" && module.exports) {
   var DC_CSS = [
     ".dc-overlay{position:fixed;inset:0;z-index:60;display:none;align-items:flex-start;justify-content:center;background:rgba(8,8,10,.82);padding:18px 12px;overflow-y:auto;-webkit-overflow-scrolling:touch}",
     ".dc-overlay.open{display:flex}",
-    ".dc-panel{width:min(860px,100%);background:var(--panel,#141416);border:1px solid var(--line,#2a2a2e);border-radius:10px;color:var(--paper,#f2efe9);font-family:'Space Grotesk',system-ui,sans-serif;margin:2vh auto;max-height:96vh;display:flex;flex-direction:column}",
+    ".dc-panel{width:min(860px,100%);background:var(--panel,#141416);border:1px solid var(--line,#2a2a2e);border-radius:10px;color:var(--paper,#f2efe9);font-family:'Space Grotesk',system-ui,sans-serif;margin:2vh auto;}",
     ".dc-head{padding:16px 18px 10px;border-bottom:1px solid var(--line,#2a2a2e)}",
     ".dc-head h3{margin:0 0 4px;font-size:20px;letter-spacing:.02em}",
     ".dc-spec{margin:0 0 8px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ember,#ff5a1f);letter-spacing:.12em}",
@@ -21141,7 +21141,8 @@ if (typeof module !== "undefined" && module.exports) {
     ".dc-worked{margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#2a2a2e);border-left:3px solid var(--ember,#ff5a1f);border-radius:0 6px 6px 0;background:rgba(255,90,31,.05);font-size:13px;line-height:1.6}",
     ".dc-worked b{color:#fff}",
     ".dc-failmodes{margin:0 0 4px;font-size:12.5px;line-height:1.5;color:#a9a49a}",
-    ".dc-body{padding:12px 18px;overflow-y:auto}",
+    ".dc-body{padding:12px 18px}",
+    "@media(min-width:561px){.dc-panel{max-height:96vh;display:flex;flex-direction:column}.dc-body{flex:1;min-height:0;overflow-y:auto}}",
     ".dc-tabs{display:flex;gap:8px;margin:2px 0 12px;flex-wrap:wrap}",
     ".dc-tab{flex:1;min-width:140px;min-height:48px;border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;padding:8px 6px;text-align:center}",
     ".dc-tab .dc-tname{display:block;font-size:13px;font-weight:600}",
@@ -21818,7 +21819,7 @@ if (typeof module !== "undefined" && module.exports) {
   var FR_CSS = [
     ".fr-overlay{position:fixed;inset:0;z-index:60;display:none;align-items:flex-start;justify-content:center;background:rgba(8,8,10,.82);padding:18px 12px;overflow-y:auto;-webkit-overflow-scrolling:touch}",
     ".fr-overlay.open{display:flex}",
-    ".fr-panel{width:min(880px,100%);background:var(--panel,#141416);border:1px solid var(--line,#2a2a2e);border-radius:10px;color:var(--paper,#f2efe9);font-family:'Space Grotesk',system-ui,sans-serif;margin:2vh auto;max-height:96vh;display:flex;flex-direction:column}",
+    ".fr-panel{width:min(880px,100%);background:var(--panel,#141416);border:1px solid var(--line,#2a2a2e);border-radius:10px;color:var(--paper,#f2efe9);font-family:'Space Grotesk',system-ui,sans-serif;margin:2vh auto;}",
     ".fr-head{padding:16px 18px 10px;border-bottom:1px solid var(--line,#2a2a2e)}",
     ".fr-head h3{margin:0 0 4px;font-size:20px;letter-spacing:.02em}",
     ".fr-spec{margin:0 0 8px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ember,#ff5a1f);letter-spacing:.12em}",
@@ -21826,7 +21827,8 @@ if (typeof module !== "undefined" && module.exports) {
     ".fr-worked{margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#2a2a2e);border-left:3px solid var(--ember,#ff5a1f);border-radius:0 6px 6px 0;background:rgba(255,90,31,.05);font-size:13px;line-height:1.6}",
     ".fr-worked b{color:#fff}",
     ".fr-failmodes{margin:0 0 4px;font-size:12.5px;line-height:1.5;color:#a9a49a}",
-    ".fr-body{padding:12px 18px;overflow-y:auto}",
+    ".fr-body{padding:12px 18px}",
+    "@media(min-width:561px){.fr-panel{max-height:96vh;display:flex;flex-direction:column}.fr-body{flex:1;min-height:0;overflow-y:auto}}",
     ".fr-tabs{display:flex;gap:8px;margin:2px 0 12px;flex-wrap:wrap}",
     ".fr-tab{flex:1;min-width:150px;min-height:48px;border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;padding:8px 6px;text-align:center}",
     ".fr-tab .fr-tname{display:block;font-size:13px;font-weight:600}",
@@ -22589,7 +22591,7 @@ if (typeof module !== "undefined" && module.exports) {
   var BN_CSS = [
     ".bn-overlay{position:fixed;inset:0;z-index:60;display:none;align-items:flex-start;justify-content:center;background:rgba(8,8,10,.82);padding:18px 12px;overflow-y:auto;-webkit-overflow-scrolling:touch}",
     ".bn-overlay.open{display:flex}",
-    ".bn-panel{width:min(880px,100%);background:var(--panel,#141416);border:1px solid var(--line,#2a2a2e);border-radius:10px;color:var(--paper,#f2efe9);font-family:'Space Grotesk',system-ui,sans-serif;margin:2vh auto;max-height:96vh;display:flex;flex-direction:column}",
+    ".bn-panel{width:min(880px,100%);background:var(--panel,#141416);border:1px solid var(--line,#2a2a2e);border-radius:10px;color:var(--paper,#f2efe9);font-family:'Space Grotesk',system-ui,sans-serif;margin:2vh auto;}",
     ".bn-head{padding:16px 18px 10px;border-bottom:1px solid var(--line,#2a2a2e)}",
     ".bn-head h3{margin:0 0 4px;font-size:20px;letter-spacing:.02em}",
     ".bn-spec{margin:0 0 8px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ember,#ff5a1f);letter-spacing:.12em}",
@@ -22597,7 +22599,8 @@ if (typeof module !== "undefined" && module.exports) {
     ".bn-worked{margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#2a2a2e);border-left:3px solid var(--ember,#ff5a1f);border-radius:0 6px 6px 0;background:rgba(255,90,31,.05);font-size:13px;line-height:1.6}",
     ".bn-worked b{color:#fff}",
     ".bn-failmodes{margin:0 0 4px;font-size:12.5px;line-height:1.5;color:#a9a49a}",
-    ".bn-body{padding:12px 18px;overflow-y:auto}",
+    ".bn-body{padding:12px 18px}",
+    "@media(min-width:561px){.bn-panel{max-height:96vh;display:flex;flex-direction:column}.bn-body{flex:1;min-height:0;overflow-y:auto}}",
     ".bn-tabs{display:flex;gap:8px;margin:2px 0 12px;flex-wrap:wrap}",
     ".bn-tab{flex:1;min-width:150px;min-height:48px;border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;padding:8px 6px;text-align:center}",
     ".bn-tab .bn-tname{display:block;font-size:13px;font-weight:600}",
@@ -23659,7 +23662,7 @@ if (typeof module !== "undefined" && module.exports) {
   var BK_CSS = [
     ".bk-overlay{position:fixed;inset:0;z-index:60;display:none;align-items:flex-start;justify-content:center;background:rgba(8,8,10,.82);padding:18px 12px;overflow-y:auto;-webkit-overflow-scrolling:touch}",
     ".bk-overlay.open{display:flex}",
-    ".bk-panel{width:min(880px,100%);background:var(--panel,#141416);border:1px solid var(--line,#2a2a2e);border-radius:10px;color:var(--paper,#f2efe9);font-family:'Space Grotesk',system-ui,sans-serif;margin:2vh auto;max-height:96vh;display:flex;flex-direction:column}",
+    ".bk-panel{width:min(880px,100%);background:var(--panel,#141416);border:1px solid var(--line,#2a2a2e);border-radius:10px;color:var(--paper,#f2efe9);font-family:'Space Grotesk',system-ui,sans-serif;margin:2vh auto;}",
     ".bk-head{padding:16px 18px 10px;border-bottom:1px solid var(--line,#2a2a2e)}",
     ".bk-head h3{margin:0 0 4px;font-size:20px;letter-spacing:.02em}",
     ".bk-spec{margin:0 0 8px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ember,#ff5a1f);letter-spacing:.12em}",
@@ -23667,7 +23670,8 @@ if (typeof module !== "undefined" && module.exports) {
     ".bk-worked{margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#2a2a2e);border-left:3px solid var(--ember,#ff5a1f);border-radius:0 6px 6px 0;background:rgba(255,90,31,.05);font-size:13px;line-height:1.6}",
     ".bk-worked b{color:#fff}",
     ".bk-failmodes{margin:0 0 4px;font-size:12.5px;line-height:1.5;color:#a9a49a}",
-    ".bk-body{padding:12px 18px;overflow-y:auto}",
+    ".bk-body{padding:12px 18px}",
+    "@media(min-width:561px){.bk-panel{max-height:96vh;display:flex;flex-direction:column}.bk-body{flex:1;min-height:0;overflow-y:auto}}",
     ".bk-tabs{display:flex;gap:8px;margin:2px 0 12px;flex-wrap:wrap}",
     ".bk-tab{flex:1;min-width:150px;min-height:48px;border:1px solid var(--line,#2a2a2e);background:transparent;color:var(--paper,#f2efe9);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;padding:8px 6px;text-align:center}",
     ".bk-tab .bk-tname{display:block;font-size:13px;font-weight:600}",
@@ -25490,6 +25494,1082 @@ if (typeof module !== "undefined" && module.exports) {
       RL: {
         TRIALS: RL_TRIALS, rlSim: rlSim, rlCheck: rlCheck, rlPredOk: rlPredOk,
         rlRatingNeed: rlRatingNeed, newTrialState: rlNewTrialState, newState: rlNewState
+      }
+    });
+  }
+})();
+/* Bench 38 staging: The Scan Room module (appended to features.js at ship time). */
+/* ============================================================
+   THE SCAN ROOM
+   Tapeout bench 38. JTAG boundary scan for GPU board bring-up: a
+   real 16-cell scan chain (U1's 8 output cells, then U2's 8 input
+   cells), EXTEST/SAMPLE instruction select, walking-ones/zeros and
+   all-high/all-low drive patterns, capture and shift-out readout.
+   Three dead boards, three fault classes: OPEN (net floats to its
+   documented pull), SHORT (pair reads the logical OR of the two
+   driven values), STUCK (pin nailed to a value contradicting its
+   pull). The visitor runs sweeps, reads the per-net behavior tags,
+   and commits a diagnosis; the bench runs its own 18-pattern
+   verification sweep and confirms or denies the prediction.
+   Teaches one atomic mechanism: the serial scan chain as a way to
+   interrogate un-probable pins through four wires.
+   Self-contained, appended at the end of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- pure logic: the scan chain ---------------- */
+
+  var JS_NETS = 8, JS_CELLS = 16;
+  /* Documented fixture pulls, net 0..7. A floating net parks here. */
+  var JS_PULLS = [0, 0, 1, 0, 0, 1, 0, 0];
+
+  var JS_TRIALS = [
+    { n: 1, id: "comeback-01", board: "COMEBACK-01",
+      fault: { type: "open", net: 5 },
+      title: "TRIAL 1: THE SILENT SOCKET",
+      symptom: "Board boots fine, but the GPU socket never trains its PCIe link. " +
+        "Eight data nets run between the board controller (U1) and the socket (U2). " +
+        "The socket side is un-probable: BGA balls no probe can reach. Find the break.",
+      hint: "Drive both polarities on every net before you decide. One pattern can lie: " +
+        "the worked example in the intro shows a fault hiding inside a matching pattern." },
+    { n: 2, id: "comeback-02", board: "COMEBACK-02",
+      fault: { type: "short", a: 2, b: 6 },
+      title: "TRIAL 2: THE HAUNTED TACH",
+      symptom: "The fan tach reads garbage, but only while the neighboring data net " +
+        "toggles. Two nets are touching somewhere under the BGA. Name both nets.",
+      hint: "A shorted pair moves together: on this fixture both nets read the logical " +
+        "OR of the two driven values." },
+    { n: 3, id: "comeback-03", board: "COMEBACK-03",
+      fault: { type: "stuck", net: 3, val: 1 },
+      title: "TRIAL 3: THE RESET THAT NEVER COMES",
+      symptom: "The board never leaves reset. The reset net reads high even when the " +
+        "controller drives it low, and the fixture card says that net is pulled low. " +
+        "Call the fault.",
+      hint: "A net that reads a constant contradicting its pull is not floating: " +
+        "something is actively driving it." }
+  ];
+
+  function jsBit(x, k) { return (x >>> k) & 1; }
+
+  /* Net levels seen at the U2 pins for a drive word. driving=false is
+     SAMPLE mode: U1 is high-impedance, so nets park at their pulls
+     (a stuck pin keeps driving: it is stuck). Shorted nets read the
+     OR of the two nets' values, the documented fixture behavior. */
+  function jsDriveNets(drive, fault, driving) {
+    var lv = [], k;
+    for (k = 0; k < JS_NETS; k++) {
+      var v;
+      if (fault.type === "stuck" && fault.net === k) v = fault.val;
+      else if (!driving) v = JS_PULLS[k];
+      else if (fault.type === "open" && fault.net === k) v = JS_PULLS[k];
+      else v = jsBit(drive, k);
+      lv.push(v);
+    }
+    if (fault.type === "short") {
+      var o = lv[fault.a] | lv[fault.b];
+      lv[fault.a] = o; lv[fault.b] = o;
+    }
+    return lv;
+  }
+
+  /* Chain layout: cells[0..7] = U1.0..U1.7 (TDI side), cells[8..15] =
+     U2.0..U2.7 (TDO side). Bits shift in MSB first: the first bit
+     clocked in travels furthest, so word bit k lands in cells[k]. */
+  function jsShiftIn(cells, word16) {
+    var c = cells.slice(), tdo = [], i, j;
+    for (i = 15; i >= 0; i--) {
+      var bit = (word16 >>> i) & 1;
+      tdo.push(c[15]);
+      for (j = 15; j > 0; j--) c[j] = c[j - 1];
+      c[0] = bit;
+    }
+    return { cells: c, tdo: tdo };
+  }
+
+  /* Drive word D (8 bits, bit k = net k) occupies the U1 half of the
+     16-bit shift word (cells[k] holds word bit k), so U1.k ends up
+     holding drive bit k. */
+  function jsShiftDrive(cells, drive) { return jsShiftIn(cells, drive & 0xFF); }
+
+  /* CAPTURE: U2 cells latch the pin levels. Returns the new cells and
+     the captured word (bit k = net k level). */
+  function jsCapture(cells, levels) {
+    var c = cells.slice(), cap = 0, k;
+    for (k = 0; k < JS_NETS; k++) { c[8 + k] = levels[k]; cap |= (levels[k] << k); }
+    return { cells: c, cap: cap };
+  }
+
+  /* SHIFT OUT: clock 16 zeros through; TDO emits U2.7 first, then
+     U2.0, then U1.7..U1.0. cap = U2 word, echo = U1 word (must equal
+     the drive word, or the shift itself is misaligned). */
+  function jsShiftOut(cells) {
+    var r = jsShiftIn(cells, 0), cap = 0, echo = 0, k;
+    for (k = 0; k < 8; k++) {
+      cap |= (r.tdo[7 - k] << k);
+      echo |= (r.tdo[15 - k] << k);
+    }
+    return { cells: r.cells, cap: cap, echo: echo };
+  }
+
+  function jsPatterns() {
+    var p = [], k;
+    for (k = 0; k < 8; k++) p.push({ name: "WALK1-" + k, drive: 1 << k });
+    for (k = 0; k < 8; k++) p.push({ name: "WALK0-" + k, drive: 0xFF ^ (1 << k) });
+    p.push({ name: "ALL-LOW", drive: 0x00 });
+    p.push({ name: "ALL-HIGH", drive: 0xFF });
+    return p;
+  }
+
+  /* One full interconnect sweep: drive, update, capture, read, per
+     pattern. ir is "extest" or "sample". */
+  function jsSweep(fault, ir) {
+    var driving = (ir === "extest");
+    return jsPatterns().map(function (pt) {
+      var lv = jsDriveNets(pt.drive, fault, driving);
+      var cap = 0, k;
+      for (k = 0; k < 8; k++) cap |= (lv[k] << k);
+      return { name: pt.name, drive: pt.drive, cap: cap };
+    });
+  }
+
+  function jsSignature(sweep) {
+    return sweep.map(function (s) { return s.cap.toString(16); }).join(",");
+  }
+
+  /* Per-net behavior tags from a sweep: the instrument reading the
+     visitor reasons from. FOLLOWS = healthy. Constant at the pull =
+     open suspect. Constant against the pull = stuck suspect. Tracks
+     another net under OR = short suspect. */
+  function jsClassify(fault, ir) {
+    return jsClassifySweep(jsSweep(fault, ir || "extest"));
+  }
+
+  /* All single-fault hypotheses: 8 open + 16 stuck + 28 short = 52. */
+  function jsHypotheses() {
+    var h = [], k, a, b;
+    for (k = 0; k < 8; k++) h.push({ type: "open", net: k });
+    for (k = 0; k < 8; k++) h.push({ type: "stuck", net: k, val: 0 });
+    for (k = 0; k < 8; k++) h.push({ type: "stuck", net: k, val: 1 });
+    for (a = 0; a < 8; a++) for (b = a + 1; b < 8; b++) h.push({ type: "short", a: a, b: b });
+    return h;
+  }
+
+  function jsSigOf(h) { return jsSignature(jsSweep(h, "extest")); }
+
+  function jsFaultName(f) {
+    if (f.type === "open") return "OPEN net " + f.net + " (floats to pull " + JS_PULLS[f.net] + ")";
+    if (f.type === "stuck") return "STUCK net " + f.net + " at " + f.val + " (pull is " + JS_PULLS[f.net] + ")";
+    return "SHORT nets " + f.a + " and " + f.b;
+  }
+
+  /* Grade a committed diagnosis against the true fault by comparing
+     full-sweep signatures. The honest ambiguity: EXTEST cannot
+     separate OPEN net k from STUCK net k at the pull value, both read
+     the pull under every drive word. The ambiguous twin passes with
+     a note naming the ambiguity. */
+  function jsGrade(fault, diag) {
+    var trueSig = jsSigOf(fault), diagSig = jsSigOf(diag);
+    var match = (trueSig === diagSig);
+    var twin = false;
+    if (match) {
+      var same = (fault.type === diag.type) &&
+        (fault.type !== "short" ? fault.net === diag.net : (fault.a === diag.a && fault.b === diag.b)) &&
+        (fault.type !== "stuck" || fault.val === diag.val);
+      twin = !same;
+    }
+    var mism = [];
+    if (!match) {
+      var st = jsSweep(fault, "extest"), sd = jsSweep(diag, "extest");
+      for (var i = 0; i < st.length && mism.length < 4; i++) {
+        if (st[i].cap !== sd[i].cap) {
+          mism.push(st[i].name + ": predicted cap " + jsWord8(sd[i].cap) +
+            ", chain read " + jsWord8(st[i].cap));
+        }
+      }
+    }
+    return { pass: match, twin: twin, mismatches: mism };
+  }
+
+  function jsWord8(x) {
+    var s = (x & 0xFF).toString(2);
+    while (s.length < 8) s = "0" + s;
+    return s;
+  }
+
+  function jsWord16(x) {
+    var s = (x & 0xFFFF).toString(2);
+    while (s.length < 16) s = "0" + s;
+    return s;
+  }
+
+  function jsNewTrialState(t) {
+    var c = [];
+    for (var i = 0; i < JS_CELLS; i++) c.push(0);
+    return { trial: t, ir: "extest", cells: c, custom: 0,
+      lastShot: null, sweepCount: 0, tags: null,
+      strikes: 0, passed: false, failed: false, log: [] };
+  }
+
+  /* ---------------- CSS ---------------- */
+
+  var JS_CSS = [
+    ".js-overlay{position:fixed;inset:0;z-index:90;display:none;background:rgba(8,8,10,.86);padding:0;}",
+    ".js-overlay.open{display:block;}",
+    ".js-panel{position:absolute;inset:0;overflow-y:auto;background:var(--ink);color:var(--paper);padding:20px 16px 120px;}",
+    ".js-wrap{max-width:860px;margin:0 auto;}",
+    ".js-head h3{font-family:'Space Grotesk',sans-serif;font-size:26px;letter-spacing:.04em;margin:0 0 4px;color:var(--paper);}",
+    ".js-spec{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);margin:0 0 12px;}",
+    ".js-why,.js-worked,.js-terms,.js-failmodes,.js-fixture{font-size:14px;line-height:1.65;margin:0 0 12px;color:var(--paper);}",
+    ".js-why b,.js-worked b,.js-terms b,.js-failmodes b,.js-fixture b{color:var(--ember);font-weight:600;}",
+    ".js-worked{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--ember);padding:12px 14px;}",
+    ".js-terms{background:var(--panel);border:1px solid var(--line);padding:12px 14px;}",
+    ".js-failmodes{background:var(--panel);border:1px solid var(--line);padding:12px 14px;}",
+    ".js-fixture{background:var(--panel);border:1px dashed var(--line);padding:12px 14px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;}",
+    ".js-how{font-size:14px;margin:18px 0 10px;color:var(--paper);}",
+    ".js-how b{color:var(--ember);}",
+    ".js-sec{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);margin:22px 0 8px;}",
+    ".js-chainbox{background:var(--panel);border:1px solid var(--line);padding:14px 12px;overflow-x:auto;}",
+    ".js-chain{display:grid;grid-template-columns:repeat(8,minmax(40px,1fr));gap:6px;min-width:360px;}",
+    ".js-cell{font-family:'IBM Plex Mono',monospace;text-align:center;border:1px solid var(--line);padding:8px 2px 6px;min-height:48px;background:var(--ink);}",
+    ".js-cell .b{font-size:20px;font-weight:600;color:var(--paper);display:block;line-height:1.2;}",
+    ".js-cell .l{font-size:9.5px;letter-spacing:.08em;color:var(--paper);opacity:.65;display:block;}",
+    ".js-cell.hot{border-color:var(--ember);}",
+    ".js-cell.hot .b{color:var(--ember);}",
+    ".js-cell.u2{border-top:3px solid var(--ember);}",
+    ".js-chaintags{display:flex;justify-content:space-between;min-width:360px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.1em;color:var(--paper);opacity:.75;margin:6px 0 0;}",
+    ".js-netlabels{display:grid;grid-template-columns:repeat(8,minmax(40px,1fr));gap:6px;min-width:360px;margin-top:8px;}",
+    ".js-netlabel{font-family:'IBM Plex Mono',monospace;font-size:10px;text-align:center;color:var(--paper);opacity:.7;}",
+    ".js-trials{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px;}",
+    ".js-trialbtn{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.06em;min-height:48px;padding:10px 14px;background:transparent;color:var(--paper);border:1px solid var(--line);cursor:pointer;}",
+    ".js-trialbtn[aria-pressed='true']{border-color:var(--ember);color:var(--ember);}",
+    ".js-trialbtn:disabled{opacity:.4;cursor:default;}",
+    ".js-symptom{font-size:14px;line-height:1.6;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--ember);padding:12px 14px;margin:0 0 10px;}",
+    ".js-hint{font-size:13px;color:var(--paper);opacity:.8;margin:0 0 12px;}",
+    ".js-ctlrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0;}",
+    ".js-btn{font-family:'IBM Plex Mono',monospace;font-size:12.5px;letter-spacing:.06em;min-height:48px;padding:12px 16px;background:transparent;color:var(--paper);border:1px solid var(--line);cursor:pointer;}",
+    ".js-btn.primary{border-color:var(--ember);color:var(--ember);font-weight:600;}",
+    ".js-btn:disabled{opacity:.35;cursor:default;}",
+    ".js-btn:not(:disabled):hover{border-color:var(--ember);}",
+    ".js-btn:focus-visible,.js-trialbtn:focus-visible,.js-cellbtn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".js-ir{display:flex;gap:8px;align-items:center;font-family:'IBM Plex Mono',monospace;font-size:12px;}",
+    ".js-ir label{display:flex;gap:6px;align-items:center;min-height:48px;padding:8px 12px;border:1px solid var(--line);cursor:pointer;}",
+    ".js-ir input{width:18px;height:18px;accent-color:var(--ember);}",
+    ".js-table{width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:12.5px;margin:10px 0;}",
+    ".js-table th{font-size:10.5px;letter-spacing:.12em;text-align:left;color:var(--paper);opacity:.7;padding:8px;border-bottom:1px solid var(--line);}",
+    ".js-table td{padding:8px;border-bottom:1px solid var(--line);color:var(--paper);}",
+    ".js-table tr.bad td{color:var(--ember);}",
+    ".js-tagok{color:var(--paper);opacity:.75;}",
+    ".js-tagwarn{color:var(--ember);font-weight:600;}",
+    ".js-log{background:#0a0a0c;border:1px solid var(--line);padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;max-height:220px;overflow-y:auto;margin:10px 0;}",
+    ".js-log .lt{color:var(--paper);opacity:.55;}",
+    ".js-log .ok{color:var(--ember);}",
+    ".js-diag{background:var(--panel);border:1px solid var(--line);padding:14px;margin:14px 0;}",
+    ".js-diag fieldset{border:1px solid var(--line);margin:0 0 10px;padding:10px 12px;}",
+    ".js-diag legend{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:var(--ember);padding:0 6px;}",
+    ".js-diag label{display:inline-flex;gap:8px;align-items:center;min-height:48px;margin:0 14px 0 0;font-family:'IBM Plex Mono',monospace;font-size:12.5px;cursor:pointer;}",
+    ".js-diag input[type='radio']{width:18px;height:18px;accent-color:var(--ember);}",
+    ".js-diag select{font-family:'IBM Plex Mono',monospace;font-size:13px;min-height:48px;background:var(--ink);color:var(--paper);border:1px solid var(--line);padding:8px 10px;margin-right:10px;}",
+    ".js-verdict{font-family:'IBM Plex Mono',monospace;font-size:13px;line-height:1.7;background:var(--panel);border:1px solid var(--line);padding:12px 14px;margin:12px 0;white-space:pre-wrap;}",
+    ".js-verdict.pass{border-color:var(--ember);}",
+    ".js-strikes{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ember);letter-spacing:.08em;margin:8px 0;}",
+    ".js-foot{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px;}",
+    ".js-pop{animation:jsPop .2s ease-out;}",
+    "@keyframes jsPop{0%{transform:scale(.96);}100%{transform:scale(1);}}",
+    "@media (prefers-reduced-motion: reduce){.js-pop{animation:none;}}",
+    "button.js-btn,button.js-trialbtn{min-width:48px;}"
+  ].join("\n");
+
+  /* ---------------- DOM helpers ---------------- */
+
+  function jsEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  var jsEls = {};
+  var jsState = { trial: 0, animating: false, trials: [] };
+  var JS_REDUCED = (typeof window !== "undefined" && window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+  function jsLog(html, cls) {
+    var box = jsEls.log;
+    if (!box) return;
+    var line = jsEl("div", null, null);
+    line.innerHTML = "<span class='lt'>&gt; </span><span class='" + (cls || "") + "'>" + html + "</span>";
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function jsEsc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  /* ---------------- intro copy ---------------- */
+
+  function jsIntroHTML() {
+    return (
+      "<p class='js-why'><b>WHY IT MATTERS.</b> A GPU board comes back from assembly and the " +
+      "socket never trains its PCIe link. The balls under the BGA package are un-probable: no meter, " +
+      "no probe, no eyes can reach them. So you make the chips testify about their own pins. JTAG " +
+      "gives you four wires into every chip on the board, TCK the clock, TMS the mode select, TDI " +
+      "the test data in, TDO the test data out, and behind every pin a flip-flop chained into one " +
+      "long shift register. Shift a pattern in, let the pins drive, capture what the far side sees, " +
+      "shift it out. One walk of the chain finds the break: the open net, the shorted pair, the " +
+      "stuck driver. Three dead boards are waiting on your bench.</p>" +
+      "<p class='js-worked'><b>WORKED EXAMPLE, by hand, before you touch the chain.</b> Four nets, " +
+      "pulls [0,0,1,0], net 2 open with its pull-high. You drive 0010 (only net 1 high): healthy nets " +
+      "follow, net 2 floats to its pull, so the capture comes back 0110. Read it net by net: net 1 " +
+      "reads 1, it follows the driver, healthy. Net 2 reads 1 while you drove 0: it does not follow. " +
+      "Now drive 0000: capture 0100, net 2 still reads 1. Two readings, one conclusion: net 2 reads " +
+      "its pull-high under both drive polarities, so the copper between the chips is broken. That is " +
+      "an OPEN. But drive 0100 (net 2 high) and the capture comes back 0100, a perfect match: one " +
+      "pattern can agree with a fault by luck. That is why the verdict sweep below runs 18 patterns, " +
+      "both polarities, every net. No meter, no probe, three drive words, and the chain names the break.</p>" +
+      "<p class='js-terms'><b>THE WORDS, EARNED IN ORDER.</b> <b>JTAG</b>: the four-wire test port " +
+      "built into the chips (named above). <b>Boundary cell</b>: one flip-flop per pin, sitting " +
+      "between the chip's core logic and the pin; in test mode it can drive the pin, or spy on what " +
+      "the pin sees. <b>Scan chain</b>: every boundary cell chained into one shift register, TDI in, " +
+      "TDO out. This bench: 16 cells, U1's 8 output cells first, then U2's 8 input cells. " +
+      "<b>IR</b> (instruction register): picks the test. EXTEST drives the pins from the chain. " +
+      "SAMPLE only watches: the pins are not driven, so the capture reads whatever the board left " +
+      "behind. <b>Pull</b>: a resistor that parks a floating net at a known level. The fixture card " +
+      "lists all eight pulls; a net that always reads its pull is not being driven by anyone.</p>" +
+      "<p class='js-failmodes'><b>FAILURE MODES, STATED PLAINLY.</b> " +
+      "SAMPLE instead of EXTEST: the pins are not driven, so the capture reads leftovers and the " +
+      "behavior panel refuses to analyze; the bench blocks the verdict in SAMPLE mode and tells you " +
+      "to switch IR. " +
+      "One pattern can lie: the worked example shows a fault hiding inside a matching pattern, so " +
+      "the commit runs its own 18-pattern sweep and reports every mismatch. " +
+      "Stale chain: the cells hold the last trial's bits until TRST asserts; every trial starts " +
+      "reset, and the RESET button re-asserts it any time. " +
+      "The shift echo guards the machine itself: after every shot the U1 cells are shifted back out " +
+      "and must equal the drive word. If the echo ever disagrees, the shift is misaligned and no " +
+      "verdict is valid. " +
+      "And the honest limit of the method: EXTEST cannot separate an open net from a pin stuck at " +
+      "the pull value, because both read the pull under every drive word. If your diagnosis is the " +
+      "ambiguous twin, the bench accepts it and names the ambiguity. The shop calls the copper first.</p>" +
+      "<p class='js-fixture'><b>FIXTURE CARD, JTAG-16 BENCH FIXTURE.</b><br>" +
+      "Chain: TDI -&gt; U1.0 U1.1 .. U1.7 -&gt; U2.0 U2.1 .. U2.7 -&gt; TDO.<br>" +
+      "Nets: net k joins U1 pin k to U2 pin k.<br>" +
+      "Pulls: NET0 low, NET1 low, NET2 high, NET3 low, NET4 low, NET5 high, NET6 low, NET7 low.<br>" +
+      "Shorted nets on this fixture both read the logical OR of the two driven values.<br>" +
+      "IR: EXTEST drives the pins from the chain; SAMPLE watches only. TRST resets all cells to 0.</p>"
+    );
+  }
+
+  /* ---------------- state ---------------- */
+
+  function jsCur() { return jsState.trials[jsState.trial]; }
+  function jsTrueFault() { return JS_TRIALS[jsState.trial].fault; }
+
+  /* ---------------- pattern sets ---------------- */
+
+  function jsSetList() {
+    var p = jsPatterns(), w1 = [], w0 = [], k;
+    for (k = 0; k < 8; k++) { w1.push(p[k]); w0.push(p[k + 8]); }
+    return [
+      { id: "full", label: "FULL (18)", patterns: p },
+      { id: "w1", label: "WALKING 1S (8)", patterns: w1 },
+      { id: "w0", label: "WALKING 0S (8)", patterns: w0 },
+      { id: "lo", label: "ALL LOW", patterns: [{ name: "ALL-LOW", drive: 0x00 }] },
+      { id: "hi", label: "ALL HIGH", patterns: [{ name: "ALL-HIGH", drive: 0xFF }] }
+    ];
+  }
+  var JS_SETS = null;
+  function jsSetById(id) {
+    if (!JS_SETS) JS_SETS = jsSetList();
+    for (var i = 0; i < JS_SETS.length; i++) if (JS_SETS[i].id === id) return JS_SETS[i];
+    return JS_SETS[0];
+  }
+
+  function jsSweepSet(fault, ir, patterns) {
+    var driving = (ir === "extest");
+    return patterns.map(function (pt) {
+      var lv = jsDriveNets(pt.drive, fault, driving);
+      var cap = 0, k;
+      for (k = 0; k < 8; k++) cap |= (lv[k] << k);
+      return { name: pt.name, drive: pt.drive, cap: cap };
+    });
+  }
+
+  /* Behavior classification over an arbitrary sweep (subset-aware). */
+  function jsClassifySweep(sw) {
+    var tags = [], k, j;
+    for (k = 0; k < 8; k++) {
+      var follows = sw.every(function (s) { return jsBit(s.cap, k) === jsBit(s.drive, k); });
+      if (follows) { tags.push({ net: k, tag: "FOLLOWS", detail: "follows the driver on every pattern in the set" }); continue; }
+      var vals = sw.map(function (s) { return jsBit(s.cap, k); });
+      var c0 = vals.every(function (v) { return v === 0; });
+      var c1 = vals.every(function (v) { return v === 1; });
+      if (c0 || c1) {
+        var c = c0 ? 0 : 1;
+        if (c === JS_PULLS[k]) tags.push({ net: k, tag: "OPEN?", detail: "ignores the driver, always reads its pull (" + c + ")" });
+        else tags.push({ net: k, tag: "STUCK?", detail: "ignores the driver, always " + c + ", contradicting its pull (" + JS_PULLS[k] + ")" });
+        continue;
+      }
+      var partner = -1;
+      for (j = 0; j < 8; j++) {
+        if (j === k) continue;
+        var okm = sw.every(function (s) { return jsBit(s.cap, k) === (jsBit(s.drive, k) | jsBit(s.drive, j)); });
+        if (okm) { partner = j; break; }
+      }
+      tags.push({ net: k, tag: partner >= 0 ? ("SHORT?-" + partner) : "ODD",
+        detail: partner >= 0 ? "tracks net " + partner + " (logical OR of the two drives)" : "varies without following the driver" });
+    }
+    return tags;
+  }
+
+  /* ---------------- rendering ---------------- */
+
+  function jsRenderChain(hot) {
+    var st = jsCur();
+    if (!jsEls.cells) return;
+    for (var i = 0; i < 16; i++) {
+      var cell = jsEls.cells[i];
+      cell.querySelector(".b").textContent = st.cells[i] ? "1" : "0";
+      cell.classList.toggle("hot", i === hot);
+    }
+  }
+
+  function jsRenderCustom() {
+    var st = jsCur();
+    if (!jsEls.custBits) return;
+    for (var k = 0; k < 8; k++) {
+      jsEls.custBits[k].textContent = jsBit(st.custom, k) ? "1" : "0";
+      jsEls.cust[k].setAttribute("aria-pressed", jsBit(st.custom, k) ? "true" : "false");
+    }
+  }
+
+  function jsRenderTable() {
+    var st = jsCur(), tb = jsEls.tbody;
+    tb.innerHTML = "";
+    jsEls.tags.innerHTML = "";
+    var v = st.view;
+    if (!v) {
+      var tr = jsEl("tr"), td = jsEl("td", null,
+        "No data yet: pick a pattern set and RUN SWEEP, or set a custom word and SINGLE SHOT.");
+      td.colSpan = 4; tr.appendChild(td); tb.appendChild(tr);
+      jsEls.echo.textContent = "";
+      return;
+    }
+    for (var k = 0; k < 8; k++) {
+      var row = jsEl("tr");
+      var drv = v.driving ? jsWord8(v.drive).charAt(7 - k) : "Z";
+      var cap = String(jsBit(v.cap, k));
+      var bad = v.driving && drv !== cap;
+      if (bad) row.className = "bad";
+      row.appendChild(jsEl("td", null, "NET" + k));
+      row.appendChild(jsEl("td", null, drv));
+      row.appendChild(jsEl("td", null, cap));
+      var tag = v.tags ? v.tags[k].tag : "no drive";
+      row.appendChild(jsEl("td", bad ? "js-tagwarn" : "js-tagok", (bad ? "MISMATCH, " : "") + tag));
+      tb.appendChild(row);
+    }
+    jsEls.echo.textContent = (v.driving ?
+      "Showing " + (v.shownName || "pattern") + ". Shift echo: U1 readback " + jsWord8(v.echo) + " == drive " + jsWord8(v.drive) +
+      " (16/16 bits, the shift is honest)." :
+      "SAMPLE mode: U1 not driven, echo not applicable.");
+    if (v.tags) {
+      if (st.setId !== "full") {
+        jsEls.tags.appendChild(jsEl("p", "js-hint",
+          "Partial pattern set: behavior tags need both polarities to be trustworthy. " +
+          "Run the FULL sweep before you trust a tag."));
+      }
+      v.tags.forEach(function (t) {
+        var p = jsEl("p", "js-hint", null);
+        p.innerHTML = "<b>NET" + t.net + ": " + jsEsc(t.tag) + "</b>, " + jsEsc(t.detail) + ".";
+        jsEls.tags.appendChild(p);
+      });
+    } else {
+      jsEls.tags.appendChild(jsEl("p", "js-hint",
+        "Behavior analysis needs EXTEST: the pins are not driven in SAMPLE mode."));
+    }
+    var tbl = jsEls.table;
+    tbl.classList.remove("js-pop");
+    void tbl.offsetWidth;
+    tbl.classList.add("js-pop");
+  }
+
+  function jsRenderTrials() {
+    var st = jsCur(), t = JS_TRIALS[jsState.trial], i;
+    for (i = 0; i < 3; i++) jsEls.trialBtns[i].setAttribute("aria-pressed", i === jsState.trial ? "true" : "false");
+    jsEls.symptom.textContent = t.title + ": " + t.symptom;
+    jsEls.hint.textContent = "Hint: " + t.hint;
+    jsEls.strikes.textContent = st.passed ? "TRIAL PASSED" :
+      (st.failed ? "TRIAL FAILED, three strikes" : (st.strikes ? "Strikes: " + st.strikes + " of 3" : ""));
+    jsEls.commit.disabled = st.passed || st.failed;
+    jsEls.resetTrial.style.display = st.failed ? "" : "none";
+    jsEls.cert.style.display = st.passed ? "" : "none";
+    for (i = 0; i < jsEls.setBtns.length; i++) {
+      jsEls.setBtns[i].setAttribute("aria-pressed",
+        jsEls.setBtns[i].getAttribute("data-set") === st.setId ? "true" : "false");
+    }
+    jsEls.irE.checked = (st.ir === "extest");
+    jsEls.irS.checked = (st.ir === "sample");
+  }
+
+  function jsRenderAll() {
+    jsRenderChain(-1); jsRenderCustom(); jsRenderTable(); jsRenderTrials();
+  }
+
+  function jsSetBusy(b) {
+    jsState.animating = b;
+    var ids = ["walk", "sweep", "shot", "commit"];
+    for (var i = 0; i < ids.length; i++) if (jsEls[ids[i]]) jsEls[ids[i]].disabled = b;
+  }
+
+  /* ---------------- interactions ---------------- */
+
+  /* Shift a 16-bit word in one TCK tick at a time, rendering each
+     tick so the bit is seen walking TDI to TDO. trackOne highlights
+     the walking 1 for the first-run demo. */
+  function jsAnimateShift(drive, done, trackOne) {
+    var st = jsCur();
+    if (JS_REDUCED) {
+      var r = jsShiftDrive(st.cells, drive);
+      st.cells = r.cells; jsRenderChain(-1);
+      done(); return;
+    }
+    jsSetBusy(true);
+    var c = st.cells.slice(), ticks = 0, word = (drive & 0xFF) << 8;
+    var timer = setInterval(function () {
+      var bit = (word >>> (15 - ticks)) & 1;
+      for (var j = 15; j > 0; j--) c[j] = c[j - 1];
+      c[0] = bit;
+      st.cells = c;
+      jsRenderChain(trackOne ? ticks : 0);
+      ticks++;
+      if (ticks >= 16) {
+        clearInterval(timer);
+        jsRenderChain(-1);
+        done();
+      }
+    }, 28);
+  }
+
+  function jsWalkBit() {
+    var st = jsCur();
+    if (jsState.animating) return;
+    var z = [];
+    for (var i = 0; i < 16; i++) z.push(0);
+    st.cells = z;
+    jsLog("TRST asserted: chain cleared. Shifting a single 1, then fifteen 0s.");
+    var t0 = Date.now();
+    /* word 0x8000: the 1 is clocked in first, so it travels furthest */
+    var word = 0x8000;
+    if (JS_REDUCED) {
+      var r = jsShiftIn(z, word);
+      st.cells = r.cells; jsRenderChain(-1);
+      jsLog("One bit walked 16 cells, TDI to TDO. That is the whole machine: " +
+        "everything else is choosing which bits to shift.", "ok");
+      return;
+    }
+    jsSetBusy(true);
+    var c = z.slice(), ticks = 0;
+    var timer = setInterval(function () {
+      var bit = (word >>> (15 - ticks)) & 1;
+      for (var j = 15; j > 0; j--) c[j] = c[j - 1];
+      c[0] = bit;
+      st.cells = c;
+      jsRenderChain(ticks);
+      ticks++;
+      if (ticks >= 16) {
+        clearInterval(timer);
+        jsSetBusy(false);
+        jsRenderChain(-1);
+        jsLog("One bit walked 16 cells, TDI to TDO, in " + (Date.now() - t0) + " ms. " +
+          "That is the whole machine: everything else is choosing which bits to shift.", "ok");
+      }
+    }, 60);
+  }
+
+  function jsApplySweep(sw, setLabel) {
+    var st = jsCur(), fault = jsTrueFault(), driving = (st.ir === "extest");
+    /* The table shows the first pattern with a mismatch when there is
+       one, so the visitor meets the break immediately; the behavior
+       tags below carry the aggregate over the whole set. */
+    var shown = sw[sw.length - 1], si;
+    if (driving) {
+      for (si = 0; si < sw.length; si++) {
+        if (sw[si].drive !== sw[si].cap) { shown = sw[si]; break; }
+      }
+    }
+    var lv = jsDriveNets(shown.drive, fault, driving);
+    var r2 = jsCapture(jsShiftDrive(st.cells, shown.drive).cells, lv);
+    st.cells = r2.cells;
+    st.view = { drive: shown.drive, cap: r2.cap, echo: shown.drive, driving: driving,
+      tags: driving ? jsClassifySweep(sw) : null, setName: setLabel, sw: sw,
+      shownName: shown.name };
+    st.sweepCount++;
+    jsRenderChain(-1); jsRenderTable(); jsRenderTrials();
+    var bad = [], mismPat = 0, k;
+    if (driving) {
+      for (k = 0; k < 8; k++) if (jsBit(shown.drive, k) !== jsBit(r2.cap, k)) bad.push(k);
+      sw.forEach(function (s) { if (s.drive !== s.cap) mismPat++; });
+    }
+    jsLog("SWEEP " + setLabel + ": " + sw.length + " patterns" +
+      (driving ? ", " + mismPat + " with a mismatch. Showing " + shown.name +
+        ", nets off: " + (bad.length ? bad.join(", ") : "none") + "." : " (SAMPLE: pins not driven).") +
+      " Shift echo: MATCH.", mismPat ? "" : "ok");
+    return st.view;
+  }
+
+  /* Synchronous sweep for tests and reduced-motion: no animation. */
+  function jsSweepNow() {
+    var st = jsCur(), set = jsSetById(st.setId);
+    var sw = jsSweepSet(jsTrueFault(), st.ir, set.patterns);
+    return jsApplySweep(sw, set.label);
+  }
+
+  function jsRunSweep() {
+    var st = jsCur();
+    if (jsState.animating || st.passed || st.failed) return;
+    var set = jsSetById(st.setId);
+    jsSetBusy(true);
+    jsAnimateShift(set.patterns[0].drive, function () {
+      /* UPDATE beat: U1 pins drive. CAPTURE beat: U2 latches. */
+      var flash = function () {
+        for (var i = 0; i < 8; i++) jsEls.cells[i].classList.add("hot");
+        var go = function () {
+          for (var i = 0; i < 8; i++) jsEls.cells[i].classList.remove("hot");
+          jsLog("UPDATE: U1 pins drive. CAPTURE: U2 latches the pin levels.");
+          jsSweepNow();
+          jsSetBusy(false);
+        };
+        if (JS_REDUCED) go(); else setTimeout(go, 150);
+      };
+      flash();
+    }, false);
+  }
+
+  function jsSingleShot() {
+    var st = jsCur();
+    if (jsState.animating || st.passed || st.failed) return;
+    var fault = jsTrueFault(), driving = (st.ir === "extest"), d = st.custom;
+    var lv = jsDriveNets(d, fault, driving);
+    var r2 = jsCapture(jsShiftDrive(st.cells, d).cells, lv);
+    st.cells = r2.cells;
+    st.view = { drive: d, cap: r2.cap, echo: d, driving: driving, tags: null,
+      setName: "SINGLE", sw: [{ name: "SINGLE", drive: d, cap: r2.cap }] };
+    st.sweepCount++;
+    jsRenderChain(-1); jsRenderTable(); jsRenderTrials();
+    var bad = [], k;
+    if (driving) for (k = 0; k < 8; k++) if (jsBit(d, k) !== jsBit(r2.cap, k)) bad.push(k);
+    jsLog("SHOT drive " + jsWord8(d) + " -&gt; cap " + jsWord8(r2.cap) +
+      (driving ? (bad.length ? ": MISMATCH on nets " + bad.join(", ") : ": clean, every net follows") :
+        " (SAMPLE: pins not driven)") + ". Shift echo: MATCH.", bad.length ? "" : "ok");
+  }
+
+  function jsResetChain() {
+    var st = jsCur(), z = [];
+    for (var i = 0; i < 16; i++) z.push(0);
+    st.cells = z; st.view = null;
+    jsRenderAll();
+    jsLog("TRST asserted: chain cleared to all zeros.");
+  }
+
+  function jsSelectTrial(i) {
+    jsState.trial = i;
+    if (!jsState.trials[i]) jsState.trials[i] = jsNewTrialState(JS_TRIALS[i]);
+    var t = JS_TRIALS[i];
+    jsRenderAll();
+    jsLog("Trial " + t.n + " on the bench: " + t.board + ". Chain reset (TRST).");
+  }
+
+  function jsReadDiag() {
+    var t = document.querySelector("input[name='jsFtype']:checked").value;
+    var a = parseInt(jsEls.netA.value, 10), b = parseInt(jsEls.netB.value, 10);
+    if (t === "open") return { type: "open", net: a };
+    if (t === "short") return { type: "short", a: Math.min(a, b), b: Math.max(a, b) };
+    if (t === "stuck0") return { type: "stuck", net: a, val: 0 };
+    return { type: "stuck", net: a, val: 1 };
+  }
+
+  function jsCommitDiag() {
+    var st = jsCur();
+    if (st.passed || st.failed || jsState.animating) return;
+    if (st.sweepCount === 0) {
+      jsLog("Run a sweep or a single shot first: the verdict needs your eyes on the chain, not just the bench's.");
+      return;
+    }
+    if (st.ir !== "extest") {
+      jsLog("IR is SAMPLE: the pins are not driven, so a verdict would certify leftovers. Switch IR to EXTEST.");
+      return;
+    }
+    var t = document.querySelector("input[name='jsFtype']:checked").value;
+    var a = parseInt(jsEls.netA.value, 10), b = parseInt(jsEls.netB.value, 10);
+    if (t === "short" && a === b) {
+      jsLog("A short needs two different nets: pick net A and net B.");
+      return;
+    }
+    var diag = jsReadDiag(), fault = jsTrueFault(), g = jsGrade(fault, diag);
+    var head = "PREDICTED: " + jsFaultName(diag) + ".\n" +
+      "VERDICT SWEEP: 18 patterns x 8 nets = 144 readings.\n";
+    if (g.pass) {
+      st.passed = true;
+      var note = g.twin ?
+        "CONFIRMED, with the honest ambiguity: EXTEST cannot separate " + jsFaultName(diag) +
+        " from " + jsFaultName(fault) + ". The scan genuinely cannot tell; the shop calls the copper first.\n" :
+        "CONFIRMED: all 144 readings match the predicted signature.\n";
+      jsEls.verdict.textContent = head + note + "TRIAL " + JS_TRIALS[jsState.trial].n +
+        " PASSES. The certificate is ready below.";
+      jsEls.verdict.className = "js-verdict pass";
+      jsLog("VERDICT: PASS. " + jsFaultName(diag) + (g.twin ? " (ambiguous twin accepted, ambiguity named)" : ""), "ok");
+    } else {
+      st.strikes++;
+      jsEls.verdict.textContent = head + "MISMATCH: the chain disagrees.\n" +
+        g.mismatches.join("\n") + "\n(showing the first mismatches)\nStrike " + st.strikes + " of 3.";
+      jsEls.verdict.className = "js-verdict";
+      jsLog("VERDICT: MISMATCH. Strike " + st.strikes + " of 3.", "");
+      if (st.strikes >= 3) {
+        st.failed = true;
+        jsLog("TRIAL FAILED: three strikes. Press RESET TRIAL to put the board back on the bench.", "");
+      }
+    }
+    jsRenderTrials();
+  }
+
+  function jsResetTrial() {
+    var t = JS_TRIALS[jsState.trial];
+    jsState.trials[jsState.trial] = jsNewTrialState(t);
+    jsEls.verdict.textContent = "";
+    jsEls.verdict.className = "js-verdict";
+    jsRenderAll();
+    jsLog("TRIAL RESET: chain cleared (TRST), strikes cleared. " + t.board + " is back on the bench.");
+  }
+
+  function jsCert() {
+    var st = jsCur();
+    if (!st.passed) return;
+    var t = JS_TRIALS[jsState.trial], fault = jsTrueFault();
+    var txt = "THE SCAN ROOM, TRIAL " + t.n + " CERTIFICATE\n" +
+      "Board: " + t.board + "\n" +
+      "Fault found: " + jsFaultName(fault) + "\n" +
+      "Method: JTAG EXTEST, 16-cell scan chain, 18-pattern verdict sweep (144 net readings)\n" +
+      "Sweep signature: " + jsSigOf(fault) + "\n" +
+      "Issued: " + new Date().toISOString() + "\n";
+    var blob = new Blob([txt], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "scan-room-trial" + t.n + "-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    jsLog("Certificate downloaded: " + a.download, "ok");
+  }
+
+  /* ---------------- DOM build ---------------- */
+
+  function jsBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("jsBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = JS_CSS;
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "jsBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Scan Room";
+    b.addEventListener("click", jsOpen);
+    box.appendChild(b);
+
+    var ov = jsEl("div", "js-overlay");
+    ov.id = "jsOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Scan Room");
+    var panel = jsEl("div", "js-panel");
+    var wrap = jsEl("div", "js-wrap");
+
+    var head = jsEl("div", "js-head");
+    head.appendChild(jsEl("h3", null, "The Scan Room"));
+    head.appendChild(jsEl("p", "js-spec", "TAPEOUT // JTAG BOUNDARY SCAN"));
+    var intro = jsEl("div", "js-intro");
+    intro.innerHTML = jsIntroHTML();
+    head.appendChild(intro);
+    head.appendChild(jsEl("p", "js-how",
+      "HOW: pick a drive pattern, RUN SWEEP, read the nets, then commit the diagnosis."));
+    wrap.appendChild(head);
+
+    /* the chain */
+    wrap.appendChild(jsEl("p", "js-sec", "THE CHAIN, LIVE"));
+    var chainbox = jsEl("div", "js-chainbox");
+    var chain = jsEl("div", "js-chain");
+    chain.id = "jsChain";
+    jsEls.cells = [];
+    var labels = ["U1.0", "U1.1", "U1.2", "U1.3", "U1.4", "U1.5", "U1.6", "U1.7",
+                  "U2.0", "U2.1", "U2.2", "U2.3", "U2.4", "U2.5", "U2.6", "U2.7"];
+    for (var i = 0; i < 16; i++) {
+      var cell = jsEl("div", "js-cell" + (i >= 8 ? " u2" : ""), null);
+      cell.appendChild(jsEl("span", "b", "0"));
+      cell.appendChild(jsEl("span", "l", labels[i]));
+      chain.appendChild(cell);
+      jsEls.cells.push(cell);
+    }
+    chainbox.appendChild(chain);
+    var tags = jsEl("div", "js-chaintags", null);
+    tags.innerHTML = "<span>TDI -&gt;</span><span>U1 DRIVES (OUTPUT CELLS)</span>";
+    chainbox.appendChild(tags);
+    var tags2 = jsEl("div", "js-chaintags", null);
+    tags2.innerHTML = "<span>U2 CAPTURES (INPUT CELLS)</span><span>-&gt; TDO</span>";
+    chainbox.appendChild(tags2);
+    var netlabels = jsEl("div", "js-netlabels", null);
+    for (var n = 0; n < 8; n++) netlabels.appendChild(jsEl("div", "js-netlabel", "NET" + n));
+    chainbox.appendChild(netlabels);
+    wrap.appendChild(chainbox);
+
+    var walkrow = jsEl("div", "js-ctlrow", null);
+    var walk = jsEl("button", "js-btn primary", "SHIFT ONE BIT THROUGH THE CHAIN");
+    walk.id = "jsWalkBtn";
+    walk.addEventListener("click", jsWalkBit);
+    walkrow.appendChild(walk);
+    walkrow.appendChild(jsEl("span", "js-hint",
+      "First, watch the machine: one button, one bit, sixteen cells."));
+    wrap.appendChild(walkrow);
+    jsEls.walk = walk;
+
+    /* trials */
+    wrap.appendChild(jsEl("p", "js-sec", "THE TRIALS, THREE DEAD BOARDS"));
+    var trow = jsEl("div", "js-trials", null);
+    jsEls.trialBtns = [];
+    for (var ti = 0; ti < 3; ti++) {
+      (function (idx) {
+        var tb = jsEl("button", "js-trialbtn", "TRIAL " + (idx + 1));
+        tb.id = "jsTrial" + idx;
+        tb.setAttribute("aria-pressed", idx === 0 ? "true" : "false");
+        tb.addEventListener("click", function () { jsSelectTrial(idx); });
+        trow.appendChild(tb);
+        jsEls.trialBtns.push(tb);
+      })(ti);
+    }
+    wrap.appendChild(trow);
+    jsEls.symptom = jsEl("p", "js-symptom", "");
+    wrap.appendChild(jsEls.symptom);
+    jsEls.hint = jsEl("p", "js-hint", "");
+    wrap.appendChild(jsEls.hint);
+    jsEls.strikes = jsEl("p", "js-strikes", "");
+    wrap.appendChild(jsEls.strikes);
+
+    /* drive and capture */
+    wrap.appendChild(jsEl("p", "js-sec", "DRIVE AND CAPTURE"));
+    var irrow = jsEl("div", "js-ctlrow", null);
+    var irw = jsEl("div", "js-ir", null);
+    var le = jsEl("label", null, null);
+    var ire = document.createElement("input");
+    ire.type = "radio"; ire.name = "jsIr"; ire.id = "jsIrE"; ire.checked = true;
+    ire.addEventListener("change", function () { jsCur().ir = "extest"; jsRenderTrials(); });
+    le.appendChild(ire); le.appendChild(document.createTextNode("EXTEST (drive the pins)"));
+    var ls = jsEl("label", null, null);
+    var irs = document.createElement("input");
+    irs.type = "radio"; irs.name = "jsIr"; irs.id = "jsIrS";
+    irs.addEventListener("change", function () { jsCur().ir = "sample"; jsRenderTrials(); });
+    ls.appendChild(irs); ls.appendChild(document.createTextNode("SAMPLE (watch only)"));
+    irw.appendChild(le); irw.appendChild(ls);
+    irrow.appendChild(irw);
+    wrap.appendChild(irrow);
+    jsEls.irE = ire; jsEls.irS = irs;
+
+    var setrow = jsEl("div", "js-ctlrow", null);
+    jsEls.setBtns = [];
+    var sets = jsSetList();
+    for (var si = 0; si < sets.length; si++) {
+      (function (s) {
+        var sb = jsEl("button", "js-btn", s.label);
+        sb.setAttribute("data-set", s.id);
+        sb.setAttribute("aria-pressed", s.id === "full" ? "true" : "false");
+        sb.addEventListener("click", function () { jsCur().setId = s.id; jsRenderTrials(); });
+        setrow.appendChild(sb);
+        jsEls.setBtns.push(sb);
+      })(sets[si]);
+    }
+    wrap.appendChild(setrow);
+
+    var custrow = jsEl("div", "js-ctlrow", null);
+    custrow.appendChild(jsEl("span", "js-hint", "Custom word:"));
+    jsEls.cust = [];
+    jsEls.custBits = [];
+    for (var ck = 0; ck < 8; ck++) {
+      (function (k) {
+        var cb = jsEl("button", "js-btn", null);
+        cb.id = "jsCust" + k;
+        cb.setAttribute("aria-pressed", "false");
+        cb.appendChild(document.createTextNode("NET" + k + ": "));
+        var cv = jsEl("span", "cv", "0");
+        cb.appendChild(cv);
+        cb.addEventListener("click", function () {
+          var st = jsCur();
+          st.custom ^= (1 << k);
+          jsRenderCustom();
+        });
+        custrow.appendChild(cb);
+        jsEls.cust.push(cb);
+        jsEls.custBits.push(cv);
+      })(ck);
+    }
+    wrap.appendChild(custrow);
+
+    var runrow = jsEl("div", "js-ctlrow", null);
+    var sweep = jsEl("button", "js-btn primary", "RUN SWEEP");
+    sweep.id = "jsSweepBtn";
+    sweep.addEventListener("click", jsRunSweep);
+    runrow.appendChild(sweep);
+    var shot = jsEl("button", "js-btn", "SINGLE SHOT (CUSTOM WORD)");
+    shot.id = "jsShotBtn";
+    shot.addEventListener("click", jsSingleShot);
+    runrow.appendChild(shot);
+    var rst = jsEl("button", "js-btn", "RESET CHAIN (TRST)");
+    rst.id = "jsResetBtn";
+    rst.addEventListener("click", jsResetChain);
+    runrow.appendChild(rst);
+    wrap.appendChild(runrow);
+    jsEls.sweep = sweep; jsEls.shot = shot; jsEls.commit = null;
+
+    /* net table */
+    wrap.appendChild(jsEl("p", "js-sec", "THE NETS, SHOWN READING"));
+    var table = jsEl("table", "js-table", null);
+    table.id = "jsTable";
+    var thead = jsEl("thead", null, null);
+    var hr = jsEl("tr", null, null);
+    hr.appendChild(jsEl("th", null, "NET"));
+    hr.appendChild(jsEl("th", null, "DRV"));
+    hr.appendChild(jsEl("th", null, "CAP"));
+    hr.appendChild(jsEl("th", null, "BEHAVIOR"));
+    thead.appendChild(hr);
+    table.appendChild(thead);
+    var tbody = jsEl("tbody", null, null);
+    tbody.id = "jsTbody";
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    jsEls.table = table; jsEls.tbody = tbody;
+    jsEls.echo = jsEl("p", "js-hint", "");
+    wrap.appendChild(jsEls.echo);
+    jsEls.tags = jsEl("div", null, null);
+    jsEls.tags.id = "jsTags";
+    wrap.appendChild(jsEls.tags);
+
+    /* log */
+    wrap.appendChild(jsEl("p", "js-sec", "BENCH LOG"));
+    jsEls.log = jsEl("div", "js-log", null);
+    jsEls.log.id = "jsLog";
+    wrap.appendChild(jsEls.log);
+
+    /* diagnose */
+    wrap.appendChild(jsEl("p", "js-sec", "COMMIT THE DIAGNOSIS"));
+    var diag = jsEl("div", "js-diag", null);
+    var fs = jsEl("fieldset", null, null);
+    fs.appendChild(jsEl("legend", null, "FAULT TYPE"));
+    var ftypes = [["open", "OPEN"], ["short", "SHORT (two nets)"], ["stuck0", "STUCK AT 0"], ["stuck1", "STUCK AT 1"]];
+    for (var fi = 0; fi < ftypes.length; fi++) {
+      var fl = jsEl("label", null, null);
+      var fr = document.createElement("input");
+      fr.type = "radio"; fr.name = "jsFtype"; fr.value = ftypes[fi][0];
+      if (fi === 0) fr.checked = true;
+      fl.appendChild(fr);
+      fl.appendChild(document.createTextNode(ftypes[fi][1]));
+      fs.appendChild(fl);
+    }
+    diag.appendChild(fs);
+    var nsrow = jsEl("div", "js-ctlrow", null);
+    nsrow.appendChild(jsEl("span", "js-hint", "Net A:"));
+    var netA = document.createElement("select");
+    netA.id = "jsNetA";
+    var netB = document.createElement("select");
+    netB.id = "jsNetB";
+    for (var nk = 0; nk < 8; nk++) {
+      var oa = document.createElement("option"); oa.value = nk; oa.textContent = "NET" + nk;
+      var ob = document.createElement("option"); ob.value = nk; ob.textContent = "NET" + nk;
+      netA.appendChild(oa); netB.appendChild(ob);
+    }
+    netB.selectedIndex = 1;
+    nsrow.appendChild(netA);
+    nsrow.appendChild(jsEl("span", "js-hint", "Net B (for SHORT):"));
+    nsrow.appendChild(netB);
+    diag.appendChild(nsrow);
+    var commit = jsEl("button", "js-btn primary", "COMMIT DIAGNOSIS");
+    commit.id = "jsCommitBtn";
+    commit.addEventListener("click", jsCommitDiag);
+    diag.appendChild(commit);
+    jsEls.netA = netA; jsEls.netB = netB; jsEls.commit = commit;
+    jsEls.diag = diag;
+    wrap.appendChild(diag);
+    jsEls.verdict = jsEl("div", "js-verdict", "");
+    jsEls.verdict.id = "jsVerdict";
+    wrap.appendChild(jsEls.verdict);
+
+    var resetTrial = jsEl("button", "js-btn", "RESET TRIAL");
+    resetTrial.id = "jsResetTrialBtn";
+    resetTrial.style.display = "none";
+    resetTrial.addEventListener("click", jsResetTrial);
+    wrap.appendChild(resetTrial);
+    jsEls.resetTrial = resetTrial;
+
+    /* foot */
+    var foot = jsEl("div", "js-foot", null);
+    var cert = jsEl("button", "js-btn", "DOWNLOAD CERTIFICATE");
+    cert.id = "jsCertBtn";
+    cert.style.display = "none";
+    cert.addEventListener("click", jsCert);
+    foot.appendChild(cert);
+    jsEls.cert = cert;
+    var close = jsEl("button", "js-btn", "CLOSE");
+    close.id = "jsCloseBtn";
+    close.addEventListener("click", jsClose);
+    foot.appendChild(close);
+    wrap.appendChild(foot);
+
+    panel.appendChild(wrap);
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    jsEls.overlay = ov;
+
+    for (var qi = 0; qi < 3; qi++) jsState.trials[qi] = jsNewTrialState(JS_TRIALS[qi]);
+    jsSelectTrial(0);
+  }
+
+  function jsOpen() {
+    if (!jsEls.overlay) jsBuild();
+    jsEls.overlay.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+  function jsClose() {
+    if (jsEls.overlay) jsEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", jsBuild);
+    } else {
+      jsBuild();
+    }
+  }
+
+  /* node test hook: harmless in the browser */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      JS: {
+        TRIALS: JS_TRIALS, PULLS: JS_PULLS, NETS: JS_NETS,
+        driveNets: jsDriveNets, shiftIn: jsShiftIn, shiftDrive: jsShiftDrive,
+        capture: jsCapture, shiftOut: jsShiftOut, sweep: jsSweep,
+        sweepSet: jsSweepSet, signature: jsSignature, sigOf: jsSigOf,
+        classify: jsClassify, classifySweep: jsClassifySweep,
+        hypotheses: jsHypotheses, grade: jsGrade, word8: jsWord8, word16: jsWord16,
+        faultName: jsFaultName, newTrialState: jsNewTrialState,
+        introHTML: jsIntroHTML,
+        ui: {
+          open: jsOpen, close: jsClose, selectTrial: jsSelectTrial,
+          setIr: function (ir) { jsCur().ir = ir; jsRenderTrials(); },
+          setPatternSet: function (id) { jsCur().setId = id; jsRenderTrials(); },
+          setCustom: function (w) { jsCur().custom = w & 0xFF; jsRenderCustom(); },
+          sweepSync: function (setId) { if (setId) jsCur().setId = setId; return jsSweepNow(); },
+          singleShot: jsSingleShot, commit: jsCommitDiag, resetTrial: jsResetTrial,
+          state: function () { return jsState; }, els: function () { return jsEls; },
+          cert: jsCert
+        }
       }
     });
   }
