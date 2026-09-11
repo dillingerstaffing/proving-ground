@@ -35001,3 +35001,526 @@ if (typeof module !== "undefined" && module.exports) {
     vdBuild();
   }
 })();
+/* ============================================================
+   THE PULLUP ROOM
+   Old Iron bench 49. The one atomic mechanism: a CMOS input
+   reads nothing by itself, so one resistor to the rail decides
+   its idle state. Sizing that resistor is a three-way fight
+   between leakage, power, and noise.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------- the bench's own model, stated in the copy ---------- */
+  var PU_VDD = 3.3;             // rail, volts
+  var PU_VIH = 2.0;             // reads HIGH at or above this, volts
+  var PU_VIL = 0.8;             // reads LOW at or below this, volts
+  var PU_T1 = { r: 10000, leak: 2e-6 };   // the idle pin
+  var PU_T2 = { r: 1e6, leak: 2e-6 };     // the starved pin
+  var PU_TOL = 0.06;          // trial 1/2 prediction tolerance, volts
+  var PU_MAX_PRESS_I = 0.001; // pressed-current budget, amps
+  var PU_MIN_IDLE = 2.4;      // idle pin floor, volts
+  var PU_LADDER = [100, 330, 1000, 3300, 10000, 33000, 100000, 220000, 330000, 470000, 1000000];
+
+  /* ---------- pure sims (no DOM) ---------- */
+  function puPin(r, leak) { return PU_VDD - leak * r; }   // pin voltage, button released
+  function puPressI(r) { return PU_VDD / r; }              // amps with the button pressed
+  function puReadAs(v) {
+    if (v >= PU_VIH) return "HIGH";
+    if (v <= PU_VIL) return "LOW";
+    return "UNDEFINED";
+  }
+  function puFloatSample() {
+    var v = 1.65 + (Math.random() - 0.5) * 2.6;
+    v = Math.max(0, Math.min(PU_VDD, v));
+    return { v: v, s: puReadAs(v) };
+  }
+  function puCheckT12(pred, r, leak) {
+    var p = Number(pred);
+    if (!isFinite(p)) return { ok: false, why: "not a number" };
+    var v = puPin(r, leak);
+    var err = Math.abs(p - v);
+    return { ok: err <= PU_TOL, v: v, err: err };
+  }
+  function puCheckT3(r) {
+    var i = puPressI(r);
+    var v = puPin(r, 2e-6);
+    var iOk = i <= PU_MAX_PRESS_I + 1e-12;
+    var vOk = v >= PU_MIN_IDLE - 1e-9;
+    return { ok: iOk && vOk, i: i, v: v, iOk: iOk, vOk: vOk };
+  }
+  function puFmtV(x) { return (Math.round(x * 100) / 100).toFixed(2); }
+  function puFmtR(r) {
+    if (r >= 1e6) return (Math.round(r / 1e4) / 100).toFixed(2).replace(/\.?0+$/, "") + " M";
+    if (r >= 1e3) return (Math.round(r / 10) / 100).toFixed(2).replace(/\.?0+$/, "") + " k";
+    return String(Math.round(r));
+  }
+  function puFmtA(a) { // amps to uA/mA
+    if (a <= 0) return "0";
+    if (a < 0.001) return (Math.round(a * 1e6 * 10) / 10) + " uA";
+    return (Math.round(a * 1e3 * 10) / 10) + " mA";
+  }
+
+  /* ---------- css ---------- */
+  var PU_CSS = [
+    ".pu-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".pu-overlay.open{display:block}",
+    ".pu-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".pu-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".pu-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".pu-sub{font-size:13px;color:#b9b2a4;margin:0 0 22px;max-width:62ch;line-height:1.6}",
+    ".pu-card{border:1px solid var(--line,#2b2b30);background:var(--panel,#141416);border-radius:10px;padding:18px;margin:0 0 16px}",
+    ".pu-card h3{font-family:'Space Grotesk',sans-serif;font-size:17px;margin:0 0 6px;color:var(--paper,#f2ede4);letter-spacing:.02em}",
+    ".pu-card .why{font-size:13px;line-height:1.65;color:#d8d2c4;margin:0 0 10px;max-width:68ch}",
+    ".pu-card .why b{color:var(--ember,#ff5a1f);font-weight:600}",
+    ".pu-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:8px 0}",
+    ".pu-lab{font-size:11px;letter-spacing:.14em;color:#8f8a7d}",
+    ".pu-in{background:#0c0c0e;border:1px solid var(--line,#2b2b30);color:var(--paper,#f2ede4);border-radius:6px;padding:12px 10px;font-family:inherit;font-size:15px;width:110px;min-height:48px}",
+    ".pu-in:focus{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".pu-btn{font-family:inherit;font-size:13px;letter-spacing:.1em;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,#2b2b30);border-radius:6px;padding:14px 18px;min-height:48px;cursor:pointer}",
+    ".pu-btn:focus{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".pu-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#0c0c0e;font-weight:700}",
+    ".pu-btn:disabled{opacity:.35;cursor:default}",
+    ".pu-btn[aria-pressed='true']{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#0c0c0e;font-weight:700}",
+    ".pu-log{border:1px solid var(--line,#2b2b30);border-radius:8px;background:#0c0c0e;padding:12px;height:150px;overflow-y:auto;font-size:12px;line-height:1.7}",
+    ".pu-log .ok{color:#7fd08a}.pu-log .bad{color:#ff7a5c}.pu-log .warn{color:#ffbf5c}.pu-log .dim{color:#8f8a7d}",
+    ".pu-pop{animation:pupop .2s ease-out}",
+    "@keyframes pupop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    ".pu-meter{border:1px solid var(--line,#2b2b30);border-radius:8px;background:#0c0c0e;padding:14px;margin:10px 0}",
+    ".pu-mbar{height:22px;border:1px solid var(--line,#2b2b30);border-radius:4px;position:relative;overflow:hidden;background:#131316}",
+    ".pu-mfill{position:absolute;left:0;top:0;bottom:0;background:var(--ember,#ff5a1f);width:0%}",
+    ".pu-mnum{font-size:26px;color:var(--paper,#f2ede4);margin:8px 0 0}",
+    ".pu-mnum small{font-size:12px;color:#8f8a7d}",
+    ".pu-mstate{font-size:12px;letter-spacing:.18em;margin-top:6px}",
+    ".pu-mstate.high{color:#7fd08a}.pu-mstate.low{color:#ff7a5c}.pu-mstate.undef{color:#ffbf5c}",
+    ".pu-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:10px 0}",
+    ".pu-stat{border:1px solid var(--line,#2b2b30);border-radius:6px;padding:10px;background:#0c0c0e}",
+    ".pu-stat .k{font-size:10px;letter-spacing:.14em;color:#8f8a7d}",
+    ".pu-stat .v{font-size:16px;color:var(--paper,#f2ede4);margin-top:4px}",
+    ".pu-stat .v.hot{color:var(--ember,#ff5a1f)}",
+    ".pu-banner{border:1px solid var(--ember,#ff5a1f);border-radius:8px;padding:14px;margin:16px 0;display:none;background:rgba(255,90,31,.06)}",
+    ".pu-banner h3{font-family:'Space Grotesk',sans-serif;margin:0 0 6px;color:var(--ember,#ff5a1f);font-size:16px;letter-spacing:.04em}",
+    ".pu-banner p{font-size:13px;color:#d8d2c4;margin:0;line-height:1.6}",
+    "input[type=range].pu-r{width:100%;min-height:48px;accent-color:#ff5a1f}",
+    "@media(prefers-reduced-motion:reduce){.pu-pop{animation:none}}"
+  ].join("\n");
+
+  /* ---------- local helpers ---------- */
+  function puEl(tag, cls, text) {
+    var d = document.createElement(tag);
+    if (cls) d.className = cls;
+    if (text != null) d.textContent = text;
+    return d;
+  }
+  var puState = {
+    step: 0,
+    trials: [{ committed: false, pred: null }, { committed: false, pred: null }, { committed: false, r: null }],
+    tied: false,
+    certified: false
+  };
+  var puEls = null;
+  function puLog(msg, cls) {
+    if (!puEls || !puEls.log) return;
+    var d = puEl("div", cls || "", msg);
+    puEls.log.appendChild(d);
+    puEls.log.scrollTop = puEls.log.scrollHeight;
+  }
+  function puPop(card) {
+    if (!card) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    card.classList.remove("pu-pop");
+    void card.offsetWidth;
+    card.classList.add("pu-pop");
+  }
+
+  /* ---------- copy: why first, worked example, failure modes ---------- */
+  var PU_INTRO_A =
+    "<div class='pu-card'><h3>WHY IT MATTERS</h3>" +
+    "<p class='why'>Every button on the refurb pile, and every GPIO on a RISC-V board, is a <b>CMOS input</b>: " +
+    "a pin that draws almost nothing, a microamp or two, so nothing holds its voltage when nothing is connected. " +
+    "Leave the pin alone and a stray millivolt of noise flips it; your firmware reads ghosts. " +
+    "The fix is one <b>pull-up resistor</b> from the pin up to the rail, which decides the pin's idle state " +
+    "while the button sits released.</p>" +
+    "<p class='why'>One sentence carries the whole bench: a pull-up is a three-way fight between " +
+    "<b>leakage</b> (too big a resistor, and the pin's own hunger pulls it down), " +
+    "<b>power</b> (too small, and a pressed button burns the battery), and " +
+    "<b>noise</b> (no resistor at all, and the pin invents its own truth).</p></div>";
+
+  var PU_INTRO_B =
+    "<div class='pu-card'><h3>WORKED EXAMPLE, CHECK IT BY HAND</h3>" +
+    "<p class='why'>A 3.3 V rail. A 10 k pull-up. The button is released, so the only current through the resistor " +
+    "is the pin's own worst-case leakage, 2 uA. The pin sits one resistor drop below the rail: " +
+    "3.3 - 2e-6 * 10,000 = 3.3 - 0.02 = <b>3.28 V</b>.</p>" +
+    "<p class='why'>The reading rule, earned once here and used everywhere below: at or above 2.0 V the input reads " +
+    "<b>HIGH</b>, at or below 0.8 V it reads <b>LOW</b>, and between them the input is <b>undefined</b>, " +
+    "the machine may read either. 3.28 V is a clean HIGH with 1.28 V of margin.</p>" +
+    "<p class='why'>Press STEP for the arithmetic line by line, then call the numbers yourself in trials 1 and 2.</p></div>";
+
+  var PU_INTRO_C =
+    "<div class='pu-card'><h3>THE THREE WAYS THE PIN LIES</h3>" +
+    "<p class='why'><b>Floating:</b> no pull-up at all, and the pin invents its voltage from noise. " +
+    "Press SAMPLE NOISE in the explorer and watch the reading flip. " +
+    "<b>Starved:</b> a 1 M pull-up lets the 2 uA leakage drop a full 2.0 V, leaving the pin at 1.30 V, " +
+    "inside the forbidden middle where HIGH and LOW are both lies. Trial 2 makes you call it. " +
+    "<b>Cooked:</b> a 100 ohm pull-up holds 3.30 V beautifully, but press the button and 33 mA flows, " +
+    "109 mW, the whole time your finger is down. On a coin cell that is the difference between a year and a week. " +
+    "The explorer is consequence-free, so all three are yours to meet here.</p></div>";
+
+  var PU_INTRO_HTML = PU_INTRO_A + PU_INTRO_B + PU_INTRO_C;
+
+  var PU_STEPS = [
+    "<span class='k'>Idle pin first: button released, the only current is the pin's own leakage, 2 uA, through the pull-up. " +
+    "The pin is not at 3.3 V. It is 3.3 minus the drop across the resistor.</span>",
+    "<span class='k'>The drop: 2 uA through 10 k is 2e-6 * 10e3 = </span><span class='v'>0.02 V</span><span class='k'>.</span>",
+    "<span class='k'>The pin: 3.30 - 0.02 = </span><span class='v'>3.28 V</span><span class='k'>. Against the 2.0 V HIGH threshold, " +
+    "that is a clean HIGH with </span><span class='v'>1.28 V of margin</span><span class='k'>.</span>",
+    "<span class='k'>The fight, sized: 1 M makes the drop 2.00 V and the pin </span><span class='hit'>1.30 V, undefined</span>" +
+    "<span class='k'>. 100 ohms keeps the idle pin at 3.30 V but pulls </span><span class='v'>33 mA</span>" +
+    "<span class='k'> through the pressed button. Trial 3 makes you pick the middle ground.</span>"
+  ];
+
+  /* ---------- meter widget: a pin voltmeter with a state label ---------- */
+  function puMeter(id) {
+    var root = puEl("div", "pu-meter");
+    var bar = puEl("div", "pu-mbar");
+    var fill = puEl("div", "pu-mfill");
+    bar.appendChild(fill);
+    var num = puEl("div", "pu-mnum");
+    var st = puEl("div", "pu-mstate", "");
+    root.appendChild(puEl("div", "pu-lab", "PIN VOLTMETER"));
+    root.appendChild(bar);
+    root.appendChild(num);
+    root.appendChild(st);
+    function show(v, s) {
+      var frac = Math.max(0, Math.min(1, v / PU_VDD));
+      fill.style.width = (frac * 100).toFixed(1) + "%";
+      num.innerHTML = "";
+      num.appendChild(document.createTextNode(puFmtV(v) + " V "));
+      var sm = puEl("small", "", "of " + puFmtV(PU_VDD) + " V rail");
+      num.appendChild(sm);
+      st.textContent = "READS " + s;
+      st.className = "pu-mstate " + (s === "HIGH" ? "high" : (s === "LOW" ? "low" : "undef"));
+    }
+    return { root: root, show: show };
+  }
+
+  /* ---------- trial flow helpers ---------- */
+  function puMaybeCertify() {
+    var all = puState.trials.every(function (t) { return t.committed; });
+    if (puEls && puEls.banner) {
+      puEls.banner.style.display = all ? "block" : "none";
+    }
+    return all;
+  }
+  function puCertLine() {
+    var t = puState.trials;
+    return "THE PULLUP ROOM, CERTIFIED. Idle pin called at " + puFmtV(t[0].pred) +
+      " V, starved pin called at " + puFmtV(t[1].pred) +
+      " V, and a pull-up of " + puFmtR(t[2].r) + " sized yourself: pressed current " +
+      puFmtA(puPressI(t[2].r)) + " at or under 1 mA, idle pin " + puFmtV(puPin(t[2].r, 2e-6)) + " V at or above 2.4 V.";
+  }
+
+  /* ---------- overlay open/close ---------- */
+  function puOpen() { if (puEls) puEls.overlay.classList.add("open"); }
+  function puClose() { if (puEls) puEls.overlay.classList.remove("open"); }
+
+  function puBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("puBtn")) return;
+    puEls = { overlay: null, log: null, banner: null };
+
+    var st = document.createElement("style");
+    st.textContent = PU_CSS;
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "puBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Pullup Room";
+    b.addEventListener("click", puOpen);
+    box.appendChild(b);
+
+    var ov = puEl("div", "pu-overlay");
+    ov.id = "puOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Pullup Room");
+    var x = puEl("button", "pu-btn", "CLOSE");
+    x.id = "puXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Pullup Room");
+    x.addEventListener("click", puClose);
+    ov.appendChild(x);
+    puEls.overlay = ov;
+
+    var panel = puEl("div", "pu-panel");
+    panel.appendChild(puEl("div", "pu-kicker", "OLD IRON BENCH 49"));
+    panel.appendChild(puEl("h2", "pu-title", "The Pullup Room"));
+    panel.appendChild(puEl("p", "pu-sub",
+      "A CMOS input reads nothing by itself, so one resistor decides its idle state. " +
+      "Tie up a floating pin, call its voltage under two different pull-ups, then size the resistor " +
+      "between leakage, power, and noise."));
+
+    var introWrap = puEl("div", "");
+    introWrap.innerHTML = PU_INTRO_HTML;
+    panel.appendChild(introWrap);
+
+    /* arithmetic stepper */
+    var stepCard = puEl("div", "pu-card");
+    stepCard.appendChild(puEl("h3", null, "THE ARITHMETIC, STEP BY STEP"));
+    stepCard.appendChild(puEl("p", "why", "The worked example above, one line at a time. Consequence-free."));
+    var lanes = puEl("div", "pu-lanes", "");
+    lanes.id = "puLanes";
+    stepCard.appendChild(lanes);
+    var stepRow = puEl("div", "pu-row");
+    var stepBtn = puEl("button", "pu-btn", "STEP");
+    stepBtn.type = "button"; stepBtn.id = "puStepBtn";
+    stepBtn.setAttribute("aria-label", "Step through the pull-up arithmetic");
+    stepRow.appendChild(stepBtn);
+    stepCard.appendChild(stepRow);
+    panel.appendChild(stepCard);
+    stepBtn.addEventListener("click", function () {
+      if (puState.step < PU_STEPS.length) {
+        lanes.innerHTML += (puState.step > 0 ? "<br>" : "") + PU_STEPS[puState.step];
+        puState.step++;
+        puPop(stepCard);
+        if (puState.step >= PU_STEPS.length) stepBtn.disabled = true;
+      }
+    });
+
+    /* do-first: sample the noise on a floating pin */
+    var doCard = puEl("div", "pu-card");
+    doCard.appendChild(puEl("h3", null, "DO FIRST: MEET THE FLOATING PIN"));
+    doCard.appendChild(puEl("p", "why",
+      "Nothing is connected to this pin, not even the pull-up. Press SAMPLE NOISE and the meter takes one " +
+      "ambient reading, the way a real board does between interrupts. Everything in this room starts from this moment: " +
+      "a pin with no resistor invents its own truth."));
+    var doMeter = puMeter("puDo");
+    doCard.appendChild(doMeter.root);
+    var doRow = puEl("div", "pu-row");
+    var noiseBtn = puEl("button", "pu-btn", "SAMPLE NOISE");
+    noiseBtn.type = "button"; noiseBtn.id = "puNoiseBtn";
+    noiseBtn.setAttribute("aria-label", "Sample one noisy reading from the floating pin");
+    var tieBtn = puEl("button", "pu-btn solid", "TIE IT UP WITH 10 K");
+    tieBtn.type = "button"; tieBtn.id = "puTieBtn";
+    tieBtn.setAttribute("aria-label", "Connect a 10 k pull-up to the pin");
+    doRow.appendChild(noiseBtn); doRow.appendChild(tieBtn);
+    doCard.appendChild(doRow);
+    panel.appendChild(doCard);
+    noiseBtn.addEventListener("click", function () {
+      var s = puFloatSample();
+      doMeter.show(s.v, s.s);
+      puLog("floating pin reads " + puFmtV(s.v) + " V, " + s.s + ". No resistor, no promise.", "warn");
+      puPop(doCard);
+    });
+    tieBtn.addEventListener("click", function () {
+      if (puState.tied) {
+        puState.tied = false;
+        tieBtn.textContent = "TIE IT UP WITH 10 K";
+        tieBtn.setAttribute("aria-pressed", "false");
+        noiseBtn.disabled = false;
+        puLog("pull-up removed. The pin is floating again.", "dim");
+      } else {
+        puState.tied = true;
+        var v = puPin(10000, 2e-6);
+        doMeter.show(v, puReadAs(v));
+        tieBtn.textContent = "REMOVE THE PULL-UP";
+        tieBtn.setAttribute("aria-pressed", "true");
+        noiseBtn.disabled = true;
+        puLog("10 k pull-up connected: pin at " + puFmtV(v) + " V, reads HIGH, held against the noise. " +
+          "This is the whole bench in one wire.", "ok");
+      }
+      puPop(doCard);
+    });
+
+    /* ---------- TRIAL 1: call the idle pin ---------- */
+    var t1 = puState.trials[0];
+    var c1 = puEl("div", "pu-card");
+    c1.appendChild(puEl("h3", null, "TRIAL 1: CALL THE IDLE PIN"));
+    c1.appendChild(puEl("p", "why",
+      "3.3 V rail, 10 k pull-up, button released, pin leakage 2 uA. Write down the pin voltage in volts, " +
+      "commit it, then reveal the meter. Within 0.06 V counts."));
+    var m1 = puMeter("puM1"); c1.appendChild(m1.root);
+    var r1 = puEl("div", "pu-row");
+    r1.appendChild(puEl("span", "pu-lab", "YOUR CALL (V)"));
+    var in1 = puEl("input", "pu-in"); in1.type = "text"; in1.inputMode = "decimal";
+    in1.id = "puIn1"; in1.setAttribute("aria-label", "Your predicted idle pin voltage in volts");
+    r1.appendChild(in1);
+    var commit1 = puEl("button", "pu-btn solid", "COMMIT PREDICTION");
+    commit1.type = "button"; commit1.id = "puCommit1";
+    var reveal1 = puEl("button", "pu-btn", "REVEAL THE PIN");
+    reveal1.type = "button"; reveal1.id = "puReveal1"; reveal1.disabled = true;
+    r1.appendChild(commit1); r1.appendChild(reveal1);
+    c1.appendChild(r1);
+    panel.appendChild(c1);
+    commit1.addEventListener("click", function () {
+      var chk = puCheckT12(in1.value, PU_T1.r, PU_T1.leak);
+      if (chk.why) { puLog("trial 1: enter a number in volts first.", "bad"); return; }
+      reveal1.disabled = false;
+      puLog("trial 1: prediction " + puFmtV(Number(in1.value)) + " V committed. Reveal the pin.", "dim");
+      puPop(c1);
+    });
+    reveal1.addEventListener("click", function () {
+      var chk = puCheckT12(in1.value, PU_T1.r, PU_T1.leak);
+      m1.show(chk.v, puReadAs(chk.v));
+      if (chk.ok) {
+        t1.committed = true; t1.pred = Number(in1.value);
+        puLog("trial 1: " + puFmtV(t1.pred) + " V vs " + puFmtV(chk.v) +
+          " V on the meter. The idle pin holds HIGH. Trial 1 committed.", "ok");
+        reveal1.disabled = true; in1.disabled = true; commit1.disabled = true;
+        puMaybeCertify();
+      } else {
+        puLog("trial 1: " + puFmtV(Number(in1.value)) + " V vs " + puFmtV(chk.v) +
+          " V, off by " + puFmtV(chk.err) + " V. The drop is 2 uA through 10 k. Recompute and commit again.", "bad");
+      }
+      puPop(c1);
+    });
+
+    /* ---------- TRIAL 2: call the starved pin ---------- */
+    var t2 = puState.trials[1];
+    var c2 = puEl("div", "pu-card");
+    c2.appendChild(puEl("h3", null, "TRIAL 2: CALL THE STARVED PIN"));
+    c2.appendChild(puEl("p", "why",
+      "Same 3.3 V rail, same 2 uA of leakage, but a 1 M pull-up. Call the pin voltage in volts BEFORE " +
+      "you read it, commit, then reveal. Within 0.06 V counts. Watch what the meter's state label says."));
+    var m2 = puMeter("puM2"); c2.appendChild(m2.root);
+    var r2 = puEl("div", "pu-row");
+    r2.appendChild(puEl("span", "pu-lab", "YOUR CALL (V)"));
+    var in2 = puEl("input", "pu-in"); in2.type = "text"; in2.inputMode = "decimal";
+    in2.id = "puIn2"; in2.setAttribute("aria-label", "Your predicted starved pin voltage in volts");
+    r2.appendChild(in2);
+    var commit2 = puEl("button", "pu-btn solid", "COMMIT PREDICTION");
+    commit2.type = "button"; commit2.id = "puCommit2";
+    var reveal2 = puEl("button", "pu-btn", "REVEAL THE PIN");
+    reveal2.type = "button"; reveal2.id = "puReveal2"; reveal2.disabled = true;
+    r2.appendChild(commit2); r2.appendChild(reveal2);
+    c2.appendChild(r2);
+    panel.appendChild(c2);
+    commit2.addEventListener("click", function () {
+      var chk = puCheckT12(in2.value, PU_T2.r, PU_T2.leak);
+      if (chk.why) { puLog("trial 2: enter a number in volts first.", "bad"); return; }
+      reveal2.disabled = false;
+      puLog("trial 2: prediction " + puFmtV(Number(in2.value)) + " V committed. Reveal the pin.", "dim");
+      puPop(c2);
+    });
+    reveal2.addEventListener("click", function () {
+      var chk = puCheckT12(in2.value, PU_T2.r, PU_T2.leak);
+      m2.show(chk.v, puReadAs(chk.v));
+      if (chk.ok) {
+        t2.committed = true; t2.pred = Number(in2.value);
+        puLog("trial 2: " + puFmtV(t2.pred) + " V vs " + puFmtV(chk.v) +
+          " V on the meter, and the label reads UNDEFINED. Leakage won the fight. Trial 2 committed.", "ok");
+        reveal2.disabled = true; in2.disabled = true; commit2.disabled = true;
+        puMaybeCertify();
+      } else {
+        puLog("trial 2: " + puFmtV(Number(in2.value)) + " V vs " + puFmtV(chk.v) +
+          " V, off by " + puFmtV(chk.err) + " V. 2 uA through 1 M is a 2.00 V drop. Recompute and commit again.", "bad");
+      }
+      puPop(c2);
+    });
+
+    /* ---------- TRIAL 3: size the pull-up ---------- */
+    var t3 = puState.trials[2];
+    var c3 = puEl("div", "pu-card");
+    c3.appendChild(puEl("h3", null, "TRIAL 3: SIZE THE PULL-UP"));
+    c3.appendChild(puEl("p", "why",
+      "This machine ships on batteries, and the button pulls the pin to ground when pressed. " +
+      "Pick a resistor from the drawer that keeps the pressed current at or under 1 mA " +
+      "AND the idle pin at or above 2.4 V with 2 uA of leakage. Then certify the size."));
+    var m3 = puMeter("puM3"); c3.appendChild(m3.root);
+    var r3 = puEl("div", "pu-row");
+    r3.appendChild(puEl("span", "pu-lab", "RESISTOR"));
+    var rng3 = document.createElement("input");
+    rng3.type = "range"; rng3.className = "pu-r"; rng3.min = "0"; rng3.max = String(PU_LADDER.length - 1); rng3.step = "1";
+    rng3.value = "5";
+    rng3.setAttribute("aria-label", "Pull-up resistor, 100 ohms to 1 megohm, standard values");
+    r3.appendChild(rng3);
+    var r3val = puEl("span", "pu-lab", "33 k");
+    r3.appendChild(r3val);
+    c3.appendChild(r3);
+    var s3 = puEl("div", "pu-grid");
+    var s3v = puEl("div", "v", "-"), s3i = puEl("div", "v", "-"), s3s = puEl("div", "v", "-");
+    [["IDLE PIN", s3v], ["PRESSED CURRENT", s3i], ["READS AS", s3s]].forEach(function (pair) {
+      var cell = puEl("div", "pu-stat");
+      cell.appendChild(puEl("div", "k", pair[0]));
+      cell.appendChild(pair[1]);
+      s3.appendChild(cell);
+    });
+    c3.appendChild(s3);
+    var cert3 = puEl("button", "pu-btn solid", "CERTIFY THE SIZE");
+    cert3.type = "button"; cert3.id = "puCert3";
+    var row3 = puEl("div", "pu-row"); row3.appendChild(cert3); c3.appendChild(row3);
+    panel.appendChild(c3);
+    function puT3Show() {
+      var r = PU_LADDER[Number(rng3.value)];
+      r3val.textContent = puFmtR(r);
+      var chk = puCheckT3(r);
+      var st = puReadAs(chk.v);
+      m3.show(chk.v, st);
+      s3v.textContent = puFmtV(chk.v) + " V" + (chk.vOk ? "" : " (want >= 2.4)");
+      s3v.className = "v" + (chk.vOk ? "" : " hot");
+      s3i.textContent = puFmtA(chk.i) + (chk.iOk ? "" : " (want <= 1 mA)");
+      s3i.className = "v" + (chk.iOk ? "" : " hot");
+      s3s.textContent = st;
+      s3s.className = "v" + (st === "HIGH" ? "" : " hot");
+    }
+    rng3.addEventListener("input", puT3Show);
+    rng3.addEventListener("change", puT3Show);
+    puT3Show();
+    cert3.addEventListener("click", function () {
+      var r = PU_LADDER[Number(rng3.value)];
+      var chk = puCheckT3(r);
+      if (chk.ok) {
+        t3.committed = true; t3.r = r;
+        puLog("trial 3: " + puFmtR(r) + " pull-up. Idle pin " + puFmtV(chk.v) + " V at or above 2.4, " +
+          "pressed current " + puFmtA(chk.i) + " at or under 1 mA. Sized by you. Trial 3 committed.", "ok");
+        cert3.disabled = true; rng3.disabled = true;
+        puMaybeCertify();
+      } else {
+        var why = [];
+        if (!chk.vOk) why.push("idle pin " + puFmtV(chk.v) + " V below 2.4");
+        if (!chk.iOk) why.push("pressed current " + puFmtA(chk.i) + " above 1 mA");
+        puLog("trial 3: " + puFmtR(r) + " rejected: " + why.join("; ") + ". Keep dialing.", "bad");
+      }
+      puPop(c3);
+    });
+
+    /* cert banner + log */
+    var banner = puEl("div", "pu-banner");
+    banner.id = "puBanner";
+    banner.appendChild(puEl("h3", null, "ROOM CERTIFIED"));
+    banner.appendChild(puEl("p", null,
+      "Three trials committed: the idle pin, the starved pin, and a pull-up you sized yourself. " +
+      "A CMOS input reads nothing by itself; the resistor decides. Take that sentence to the refurb pile."));
+    var certAll = puEl("button", "pu-btn solid", "LOG THE CERTIFICATION");
+    certAll.type = "button"; certAll.id = "puCertAll";
+    banner.appendChild(certAll);
+    panel.appendChild(banner);
+    puEls.banner = banner;
+
+    var logWrap = puEl("div", "pu-card");
+    logWrap.appendChild(puEl("h3", null, "BENCH LOG"));
+    var log = puEl("div", "pu-log");
+    log.id = "puLog";
+    logWrap.appendChild(log);
+    panel.appendChild(logWrap);
+    puEls.log = log;
+
+    certAll.addEventListener("click", function () {
+      if (puState.certified) return;
+      puState.certified = true;
+      puLog(puCertLine(), "ok");
+      certAll.disabled = true;
+      puLog("certification logged. The room remembers your arithmetic.", "dim");
+    });
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    puLog("bench open. The pin is floating and the noise is waiting. Sample it, then tie it up.", "dim");
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", puBuild);
+  } else {
+    puBuild();
+  }
+})();

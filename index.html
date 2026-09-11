@@ -690,7 +690,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "48", name: "The Divider Room", btn: "vdBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "Two resistors, one tap, and the arithmetic everyone gets wrong exactly once. Predict the quiet tap, call the collapse when the ear connects, then size an honest divider under the 10x rule.",
     how: "Step the worked arithmetic by hand, let the ear drink from the tap, call the 3.33 V quiet tap and the 2.00 V collapsed tap before you reveal them, and dial R2 until the 12 V tap holds 3.0 to 3.6 V with a 10x honesty ratio.",
-    spec: "VOLTAGE DIVIDERS \u00B7 3 TRIALS" }
+    spec: "VOLTAGE DIVIDERS \u00B7 3 TRIALS" },
+  { section: "oldiron", n: "49", name: "The Pullup Room", btn: "puBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "A CMOS input reads nothing by itself, so one resistor decides its idle state. Tie up a floating pin, call its voltage under a 10 k and a 1 M pull-up, then size the resistor yourself between leakage, power, and noise.",
+    how: "Sample the noise on a floating pin, tie it up and watch it hold, call the 3.28 V idle pin and the 1.30 V starved pin before you reveal them, then pick a pull-up that keeps pressed current under 1 mA and the idle pin above 2.4 V.",
+    spec: "PULL-UP RESISTORS \u00B7 3 TRIALS" }
 ];
 
 var pgFilter = "all";
@@ -1102,9 +1106,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=95f50e2886" defer></script>
-<script src="rvdata.js?v=95f50e2886" defer></script>
-<script src="riscv-lab.js?v=95f50e2886" defer></script>
-<script src="features.js?v=95f50e2886" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=2fe9f7f125" defer></script>
+<script src="rvdata.js?v=2fe9f7f125" defer></script>
+<script src="riscv-lab.js?v=2fe9f7f125" defer></script>
+<script src="features.js?v=2fe9f7f125" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
