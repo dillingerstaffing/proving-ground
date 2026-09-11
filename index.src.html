@@ -714,7 +714,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "54", name: "The Fuse Room", btn: "fsBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "A fuse is a deliberate weak link: it dies so the wire lives. Size the rating to the load, survive the inrush, never rate it above the wire, then diagnose two dead panels and bolt one fuse-less rail.",
     how: "Call each fuse's verdict before you commit: size three rails, diagnose two panels, predict the smoke time.",
-    spec: "FUSE SIZING \u00B7 3 RAILS \u00B7 2 PANELS" }
+    spec: "FUSE SIZING \u00B7 3 RAILS \u00B7 2 PANELS" },
+  { section: "oldiron", n: "55", name: "The Relay Room", btn: "rlBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "A relay lets a tiny current switch a big current through magnetic isolation. Drive two coils inside their voltage windows, wire a fan and a heater fail-safe, then predict the flyback spike before opening a coil with no diode.",
+    how: "Call every outcome before you act: size two coil drives, wire two loads fail-safe, predict the spike band.",
+    spec: "COIL DRIVE \u00B7 FAIL-SAFE CONTACTS \u00B7 FLYBACK SPIKE" }
 ];
 
 var pgFilter = "all";
