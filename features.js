@@ -8658,7 +8658,7 @@ if (typeof module !== "undefined" && module.exports) {
       brief: "The VCO runs hot and noisy. Jitter is over budget. Widen the loop to quiet it." },
     { id: "C", name: "COLD START", foff: 0.12, fvco: 0, seed: 5303,
       budget: 600, jmax: 25,
-      brief: "The oscillator wakes 12 percent off frequency. Lock it inside 600 steps." }
+      brief: "The oscillator wakes 12 percent off frequency. Lock it inside 600 steps and hold jitter under 25." }
   ];
 
   function lkSim(icpIdx, rIdx, cIdx, card) {
@@ -8859,7 +8859,7 @@ if (typeof module !== "undefined" && module.exports) {
       "Your three knobs are the loop filter: charge pump current (how hard each correction pushes), " +
       "resistor and capacitor (how wide and fast the loop responds). " +
       "Card B makes it concrete: its VCO runs hot and noisy, jitter over budget, and the fix is widening the loop to quiet it. " +
-      "Card C is the other failure mode: the oscillator wakes 12 percent off frequency and you must lock it inside 600 steps. " +
+      "Card C is the other failure mode: the oscillator wakes 12 percent off frequency, and you must lock it inside 600 steps while holding jitter under 25. " +
       "Read lock time and jitter against each card's budget, qualify all three, sign the TAPEOUT clock certificate. " +
       "Built for the <a href=\"https://dillingerstaffing.github.io/tapeout/\" target=\"_blank\" rel=\"noopener\">TAPEOUT bring-up bench</a>.";
     body.appendChild(sub);
