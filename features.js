@@ -3789,10 +3789,12 @@ if (typeof module !== "undefined" && module.exports) {
       '<p class="mb-sub">Every pulled GPU gets its memory re-binned before it ships: looser timings always work but waste bandwidth, tighter timings win speed until the die starts lying. ' +
       "Your four knobs are waits in cycles between the steps of a memory access: tCL (CAS latency), tRCD (RAS to CAS), tRP (precharge), tRAS (row active). " +
       "Each die hides a floor per timing; set one below its floor and errors flood the command bus. " +
+      "The scheduler is FR-FCFS (first-ready, first-come-first-served): from the waiting transactions it issues whichever command can fire earliest, so tighter timings also let it pack more work into every cycle. " +
       "Probe the bus live " +
       "(<b style='color:var(--acid)'>A</b>=activate, <b style='color:var(--cyan)'>R</b>=read, " +
       "<b style='color:var(--orange)'>W</b>=write, <b style='color:var(--steel)'>P</b>=precharge), " +
-      "then qualify: 4000 deterministic transactions, zero luck, errors inside the ECC budget and bandwidth on target. " +
+      "then qualify: 4000 deterministic transactions, zero luck, errors inside the ECC budget (error-correcting code: 2 correctable errors per run, no more) and bandwidth on target. " +
+      "On the entry die the safe timings run clean but only reach 38.3 GB/s against a 38.5 target; tightening to 25/25/22/46 clears 39.5 GB/s for a grade B, while pushing tCL to 22 alone floods 27 errors against the budget of 2. " +
       "Your grade is pure silicon margin: cycles of headroom over the die's hidden floor. " +
       "Qualify all three modules for the Memory Bin Master certificate.</p>";
 
