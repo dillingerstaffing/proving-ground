@@ -30787,3 +30787,861 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 })();
+/* Bench 44 staging: The Watchdog Room module (appended to features.js at ship time). */
+/* ============================================================
+   THE WATCHDOG ROOM
+   Silicon bench 44. The one atomic mechanism: a watchdog timer is
+   a free-running hardware countdown that resets the board when it
+   reaches its timeout, unless software kicks (feeds) it first. A
+   hang becomes a reboot, but only if the timeout is sized right
+   and the kick proves the right code is alive.
+   One sentence takeaway: the watchdog is a countdown you must keep
+   kicking, so a hung program dies and reboots instead of hanging
+   forever, and the kick has to come from the code whose liveness
+   you actually need.
+   Trial 1: size the timeout. Predict the worst-case iteration, run
+   the profiler, then pick a timeout strictly above the worst healthy
+   iteration and inside the 150 ms detection budget. A hang is
+   injected at iteration 60.
+   Trial 2: place the kick. The trial starts with the kick inside a
+   10 ms timer interrupt; a hang at iteration 40 is never caught
+   because the interrupt keeps kicking for a dead main loop. Move
+   the kick to the main loop and the hang is caught.
+   Trial 3: the early edge. A runaway bug kicks every 3 ms from
+   iteration 50, so a plain timeout never ages out. Set the window's
+   early-kick edge LOW so any kick landing sooner than LOW ms after
+   the previous one bites.
+   Do-first: a live "pet the watchdog" widget in the intro, then a
+   hand-checkable worked example. Per-trial and bench certificates
+   as downloadable text. Self-contained IIFE, appended at the end
+   of features.js.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------------- pure logic: the watchdog ---------------- */
+
+  function wdMulberry32(a) {
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /* Discrete virtual-ms simulation of one boot.
+     cfg: { stages:[ms], jitter, seed, iters, timeout, mode:'loop'|'isr',
+            isrPeriod, windowLow (0 = early edge off), hangAt (int|null),
+            runawayAt (int|null) }
+     Rules, stated in the copy: a kick that lands exactly on the
+     deadline is too late (the bite wins ties); hang stops the loop
+     at the start of iteration hangAt; in isr mode the interrupt
+     keeps kicking every isrPeriod ms through a hang; in runaway
+     mode kicks land every 3 ms from the runaway start while the
+     loop work continues (the kick no longer proves the loop lives).
+     Returns { bite:{t,kind,gap,atIter}|null, hangStart, runawayStart,
+     caughtIn (ms from hang/runaway start to bite, or null),
+     maxIter, minIter, itersDone }. */
+  function wdRun(cfg) {
+    var rng = wdMulberry32(cfg.seed >>> 0);
+    var t = 0, lastKick = 0, nextIsr = cfg.isrPeriod || 10, nextRk = null;
+    var bite = null, iterTimes = [], i, hangStart = null, runawayStart = null;
+    function rec(kind, atT, gap) { bite = { t: atT, kind: kind, gap: gap, atIter: i }; }
+    function kick() {
+      var gap = t - lastKick;
+      if (gap >= cfg.timeout) { rec("late", lastKick + cfg.timeout, gap); return false; }
+      if (cfg.windowLow > 0 && gap < cfg.windowLow) { rec("early", t, gap); return false; }
+      lastKick = t;
+      return true;
+    }
+    function advance(dt) {
+      var end = t + dt, bT;
+      if (cfg.mode !== "isr") {
+        if (lastKick + cfg.timeout <= end) {
+          t = lastKick + cfg.timeout;
+          rec("late", t, cfg.timeout);
+          return false;
+        }
+        t = end;
+        return true;
+      }
+      while (t < end) {
+        bT = lastKick + cfg.timeout;
+        if (bT <= nextIsr && bT <= end) { t = bT; rec("late", t, cfg.timeout); return false; }
+        if (nextIsr <= end) {
+          t = nextIsr;
+          if (!kick()) return false;
+          nextIsr += cfg.isrPeriod;
+        } else { t = end; return true; }
+      }
+      return true;
+    }
+    function advanceRunaway(dt) {
+      /* Runaway kicks land every 3 ms on an absolute schedule that
+         persists across stages (nextRk), while the loop work
+         continues underneath. */
+      var end = t + dt, bT, step;
+      while (t < end) {
+        bT = lastKick + cfg.timeout;
+        step = Math.min(nextRk, end);
+        if (bT <= step) { t = bT; rec("late", t, cfg.timeout); return false; }
+        t = step;
+        if (nextRk <= end) { if (!kick()) return false; nextRk += 3; }
+      }
+      return true;
+    }
+    for (i = 0; i < cfg.iters; i++) {
+      if (cfg.hangAt === i) { hangStart = t; break; }
+      var it0 = t, run = (cfg.runawayAt !== null && i >= cfg.runawayAt), ok = true, s;
+      if (run && runawayStart === null) { runawayStart = t; nextRk = t + 3; }
+      for (s = 0; s < cfg.stages.length && ok; s++) {
+        var dt = cfg.stages[s] + Math.floor(rng() * (cfg.jitter + 1));
+        ok = run ? advanceRunaway(dt) : advance(dt);
+      }
+      if (bite) break;
+      iterTimes.push(t - it0);
+      if (cfg.mode === "loop" && !run) { if (!kick()) break; }
+    }
+    if (hangStart !== null && !bite) {
+      if (cfg.mode === "isr") {
+        var limit = hangStart + 1000;
+        while (t < limit) {
+          var bT2 = lastKick + cfg.timeout;
+          if (bT2 <= nextIsr) { t = bT2; rec("late", t, cfg.timeout); break; }
+          t = nextIsr;
+          if (!kick()) break;
+          nextIsr += cfg.isrPeriod;
+        }
+      } else {
+        t = lastKick + cfg.timeout;
+        rec("late", t, cfg.timeout);
+      }
+    }
+    var mx = 0, mn = Infinity, k;
+    for (k = 0; k < iterTimes.length; k++) {
+      if (iterTimes[k] > mx) mx = iterTimes[k];
+      if (iterTimes[k] < mn) mn = iterTimes[k];
+    }
+    var faultStart = hangStart !== null ? hangStart : runawayStart;
+    return {
+      bite: bite, hangStart: hangStart, runawayStart: runawayStart,
+      caughtIn: (bite && faultStart !== null) ? bite.t - faultStart : null,
+      maxIter: mx, minIter: mn, itersDone: iterTimes.length
+    };
+  }
+
+  /* Profiler: same workload and seed as the trial, timeout disabled,
+     reports the worst and best healthy iteration over the full run. */
+  function wdProfile(cfg) {
+    var c = {}, k;
+    for (k in cfg) c[k] = cfg[k];
+    c.timeout = 1e9; c.windowLow = 0; c.hangAt = null; c.runawayAt = null;
+    return wdRun(c);
+  }
+
+  /* Pet widget core (the do-first): counter climbs one step per tick,
+     KICK knocks it to zero, reaching limit bites and resets. Pure so
+     tests can drive it without timers. */
+  function wdPetNew(limit) { return { count: 0, limit: limit, bites: 0, kicks: 0 }; }
+  function wdPetTick(pet) {
+    pet.count++;
+    if (pet.count >= pet.limit) {
+      pet.bites++;
+      pet.count = 0;
+      return "bite";
+    }
+    return "ok";
+  }
+  function wdPetKick(pet) { pet.count = 0; pet.kicks++; }
+
+  /* ---------------- trial configs ---------------- */
+
+  var WD_STAGES = [6, 14, 40]; /* READ 6 ms, SEND 14 ms, LOG 40 ms */
+  var WD_T1 = { stages: WD_STAGES, jitter: 4, seed: 44, iters: 100,
+                hangAt: 60, budget: 150, tMin: 20, tMax: 200, tStep: 5 };
+  var WD_T2 = { stages: WD_STAGES, jitter: 4, seed: 44, iters: 100,
+                hangAt: 40, budget: 150, timeout: 80, isrPeriod: 10 };
+  var WD_T3 = { stages: WD_STAGES, jitter: 4, seed: 44, iters: 100,
+                runawayAt: 50, timeout: 150, lowMin: 0, lowMax: 55, lowStep: 1 };
+  var WD_TITLES = ["THE SAFE WINDOW", "THE WRONG KICKER", "THE EARLY EDGE"];
+
+  /* ---------------- tiny DOM helpers (module-local) ---------------- */
+
+  function wdEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  var WD_CSS = [
+    ".wd-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".wd-overlay.open{display:block}",
+    ".wd-panel{max-width:860px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".wd-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".wd-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".wd-sub{font-size:13px;color:#b9b2a4;margin:0 0 22px;max-width:60ch}",
+    ".wd-card{border:1px solid var(--line,#2b2b30);background:var(--panel,#141416);border-radius:10px;padding:18px;margin:0 0 16px}",
+    ".wd-card h3{font-family:'Space Grotesk',sans-serif;font-size:17px;margin:0 0 6px;color:var(--paper,#f2ede4);letter-spacing:.02em}",
+    ".wd-card .why{font-size:13px;line-height:1.65;color:#d8d2c4;margin:0 0 10px;max-width:68ch}",
+    ".wd-card .why b{color:var(--ember,#ff5a1f);font-weight:600}",
+    ".wd-term{font-size:12px;color:#8f8a7d;line-height:1.6;margin:6px 0 0;max-width:68ch}",
+    ".wd-term b{color:#d8d2c4}",
+    ".wd-read{font-size:13px;line-height:1.9;background:#0c0c0e;border:1px solid var(--line,#2b2b30);border-radius:8px;padding:12px 14px;margin:10px 0;min-height:60px}",
+    ".wd-read .k{color:#8f8a7d}.wd-read .v{color:var(--paper,#f2ede4)}.wd-read .hit{color:var(--ember,#ff5a1f);font-weight:600}.wd-read .good{color:#7fd67f;font-weight:600}",
+    ".wd-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:8px 0}",
+    ".wd-lab{font-size:11px;letter-spacing:.14em;color:#8f8a7d}",
+    ".wd-val{font-size:15px;color:var(--paper,#f2ede4);min-width:90px}",
+    ".wd-in{background:#0c0c0e;border:1px solid var(--line,#2b2b30);color:var(--paper,#f2ede4);border-radius:6px;padding:12px 10px;font-family:inherit;font-size:15px;width:110px;min-height:48px}",
+    ".wd-in:focus{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".wd-range{-webkit-appearance:none;appearance:none;flex:1;min-width:180px;min-height:48px;background:transparent;cursor:pointer}",
+    ".wd-range::-webkit-slider-runnable-track{height:4px;background:#2b2b30;border-radius:2px}",
+    ".wd-range::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:28px;height:28px;margin-top:-12px;border-radius:50%;background:var(--ember,#ff5a1f);border:2px solid #101012}",
+    ".wd-range::-moz-range-track{height:4px;background:#2b2b30;border-radius:2px}",
+    ".wd-range::-moz-range-thumb{width:24px;height:24px;border-radius:50%;background:var(--ember,#ff5a1f);border:2px solid #101012}",
+    ".wd-range:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:4px}",
+    ".wd-btn{background:transparent;border:1px solid var(--ember,#ff5a1f);color:var(--ember,#ff5a1f);border-radius:8px;padding:12px 18px;font-family:inherit;font-size:13px;letter-spacing:.08em;cursor:pointer;min-height:48px;min-width:48px}",
+    ".wd-btn:hover{background:rgba(255,90,31,.12)}",
+    ".wd-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".wd-btn.solid{background:var(--ember,#ff5a1f);color:#101012;font-weight:600}",
+    ".wd-btn:disabled{opacity:.35;cursor:default}",
+    ".wd-btn[aria-pressed=true]{background:var(--ember,#ff5a1f);color:#101012}",
+    ".wd-verdict{font-size:14px;font-weight:600;letter-spacing:.06em;margin:10px 0 0;min-height:22px}",
+    ".wd-verdict.pass{color:#7fd67f}.wd-verdict.miss{color:var(--ember,#ff5a1f)}",
+    ".wd-note{font-size:12px;color:#8f8a7d;line-height:1.6;margin:8px 0 0;max-width:68ch}",
+    ".wd-log{border:1px solid var(--line,#2b2b30);border-radius:8px;background:#0c0c0e;padding:10px 14px;font-size:12px;line-height:1.7;max-height:150px;overflow-y:auto;margin:0 0 16px;color:#b9b2a4}",
+    ".wd-log .ok{color:#7fd67f}.wd-log .bad{color:var(--ember,#ff5a1f)}",
+    ".wd-banner{display:none;border:1px solid var(--ember,#ff5a1f);border-radius:10px;padding:16px;margin:0 0 16px;background:rgba(255,90,31,.07)}",
+    ".wd-banner h3{font-family:'Space Grotesk',sans-serif;color:var(--ember,#ff5a1f);margin:0 0 6px;font-size:18px}",
+    ".wd-banner p{font-size:13px;color:#d8d2c4;margin:0 0 10px}",
+    ".wd-petbar{height:18px;border:1px solid var(--line,#2b2b30);border-radius:9px;background:#0c0c0e;margin:10px 0;position:relative;overflow:hidden}",
+    ".wd-petfill{position:absolute;left:0;top:0;bottom:0;width:0%;background:var(--ember,#ff5a1f)}",
+    ".wd-petbite{position:absolute;right:0;top:0;bottom:0;width:2px;background:#7fd67f}",
+    "@media (prefers-reduced-motion:no-preference){.wd-pop{animation:wdpop .2s ease-out}}",
+    "@keyframes wdpop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    "@media (max-width:560px){.wd-panel{padding:56px 14px 110px}.wd-in{width:96px}.wd-val{min-width:70px}}"
+  ].join("\n");
+
+  var WD_INTRO_A =
+    "<div class='wd-card'><h3>WHY IT MATTERS</h3>" +
+    "<p class='why'>A sensor node on a rooftop freezes at 2 a.m. Nobody is there to press reset, and a frozen machine never calls for help. " +
+    "The <b>watchdog timer</b> is the hardware that notices when software stops noticing: a free-running countdown, independent of your code, " +
+    "that <b>bites</b>, it resets the board, the moment it reaches its <b>timeout</b>. The only way to stop it is to <b>kick</b> it, to prove, " +
+    "over and over, that the program is still alive. Size the timeout right and a hang becomes a reboot. Size it wrong and the cure is worse " +
+    "than the disease: the board resets while healthy, or the hang sits undetected. This room is three ways the sizing goes wrong, and the settings that survive all three.</p>" +
+    "<p class='wd-term'><b>Watchdog timer:</b> a hardware counter that counts up (or down) on its own clock, outside your program's control.</p>" +
+    "<p class='wd-term'><b>Kick (feed):</b> the write your code performs to restart the countdown. Each kick says: I am alive right now.</p>" +
+    "<p class='wd-term'><b>Bite:</b> what the watchdog does at the timeout: it resets the board. No warning, no handler, just a reboot.</p>" +
+    "<p class='wd-term'><b>Timeout:</b> the countdown length in milliseconds. The whole room is about choosing this number honestly.</p>" +
+    "<p class='wd-term'><b>Liveness:</b> the property the kick is supposed to prove: not just that the chip has power, but that the code that matters is still making progress.</p></div>";
+
+  var WD_INTRO_B =
+    "<div class='wd-card'><h3>WORKED EXAMPLE, CHECK IT BY HAND</h3>" +
+    "<p class='why'>The trial-1 machine does three jobs per loop: <b>READ</b> the sensor (6 ms), <b>SEND</b> the packet (14 ms), <b>LOG</b> to flash (40 ms). " +
+    "6 + 14 + 40 = <b>60 ms</b> before jitter. Each job can wobble 0 to 4 ms, so the worst possible iteration is 60 + 12 = <b>72 ms</b>. " +
+    "A timeout of <b>80 ms</b> sits strictly above every healthy iteration, so it never bites a live board, and it still catches a hang <b>80 ms</b> after it starts, " +
+    "inside the 150 ms detection budget. Press RUN PROFILE in trial 1 and the sim measures the worst case over 100 iterations with the same seed, the same weather: it reads 72 ms, exactly the hand calculation.</p></div>";
+
+  var WD_INTRO_C =
+    "<div class='wd-card'><h3>THE FAILURE MODES, NAMED UP FRONT</h3>" +
+    "<p class='why'><b>1. Timeout too short.</b> A healthy iteration outruns the timeout and the board resets mid-work. You will watch this happen in trial 1.</p>" +
+    "<p class='why'><b>2. Timeout too long.</b> The hang is eventually caught, but only after the detection budget burned. A watchdog that reports the fire after the building burned is decoration.</p>" +
+    "<p class='why'><b>3. Kick from the wrong place.</b> An interrupt handler that never hangs keeps kicking for a hung main loop, and the watchdog reports a live board on a dead one. Trial 2.</p>" +
+    "<p class='why'><b>4. Kicking too fast.</b> A runaway bug kicks in a tight loop, the counter never ages, and a plain timeout sees nothing. The window's early edge exists for exactly this. Trial 3.</p>" +
+    "<p class='wd-term'>One tie-break, stated once: a kick that lands exactly on the deadline is too late. The bite wins ties.</p></div>";
+
+  var WD_INTRO_HTML = WD_INTRO_A + WD_INTRO_B + WD_INTRO_C;
+
+  /* ---------------- state ---------------- */
+
+  function wdNewTrialState() {
+    return { attempts: 0, strikes: 0, passed: false, committed: false,
+             predict: null, profiled: null, timeout: null, mode: null, low: null, call: null };
+  }
+  var wdState = {
+    trials: [wdNewTrialState(), wdNewTrialState(), wdNewTrialState()],
+    pet: wdPetNew(30), petTimer: null
+  };
+  var wdEls = null;
+
+  /* ---------------- log + pop ---------------- */
+
+  function wdLog(msg, cls) {
+    if (!wdEls || !wdEls.log) return;
+    var d = wdEl("div", cls || "", msg);
+    wdEls.log.appendChild(d);
+    wdEls.log.scrollTop = wdEls.log.scrollHeight;
+  }
+  function wdPop(card) {
+    if (!card) return;
+    card.classList.remove("wd-pop");
+    void card.offsetWidth;
+    card.classList.add("wd-pop");
+  }
+
+  /* ---------------- shared controls ---------------- */
+
+  function wdSlider(min, max, step, val, label) {
+    var wrap = wdEl("span", "wd-row");
+    var lab = wdEl("span", "wd-lab", label);
+    var r = wdEl("input", "wd-range");
+    r.type = "range"; r.min = String(min); r.max = String(max);
+    r.step = String(step); r.value = String(val);
+    r.setAttribute("aria-label", label + ", " + min + " to " + max);
+    var out = wdEl("span", "wd-val", String(val) + " ms");
+    r.addEventListener("input", function () { out.textContent = r.value + " ms"; });
+    wrap.appendChild(lab); wrap.appendChild(r); wrap.appendChild(out);
+    wrap.getValue = function () { return Number(r.value); };
+    wrap.setValue = function (v) { r.value = String(v); out.textContent = v + " ms"; };
+    return wrap;
+  }
+
+  function wdToggle(options, label) {
+    /* options: [{v, t}] ; two text-labelled buttons, aria-pressed tracked */
+    var wrap = wdEl("span", "wd-row");
+    wrap.appendChild(wdEl("span", "wd-lab", label));
+    var btns = options.map(function (o) {
+      var b = wdEl("button", "wd-btn", o.t);
+      b.type = "button";
+      b.setAttribute("aria-pressed", "false");
+      b.setAttribute("aria-label", label + ": " + o.t);
+      b.addEventListener("click", function () {
+        btns.forEach(function (x) { x.setAttribute("aria-pressed", "false"); });
+        b.setAttribute("aria-pressed", "true");
+        wrap._v = o.v;
+      });
+      wrap.appendChild(b);
+      return b;
+    });
+    wrap.getValue = function () { return wrap._v === undefined ? null : wrap._v; };
+    wrap.setValue = function (v) {
+      wrap._v = v;
+      btns.forEach(function (x, i) {
+        x.setAttribute("aria-pressed", options[i].v === v ? "true" : "false");
+      });
+    };
+    return wrap;
+  }
+
+  function wdNumInput(label, placeholder) {
+    var inp = wdEl("input", "wd-in");
+    inp.type = "text"; inp.inputMode = "numeric"; inp.maxLength = 6;
+    inp.setAttribute("aria-label", label);
+    inp.setAttribute("placeholder", placeholder || "");
+    inp.setAttribute("spellcheck", "false");
+    inp.setAttribute("autocomplete", "off");
+    return inp;
+  }
+
+  function wdTrialShell(card, ti, whyText) {
+    card.appendChild(wdEl("h3", null, "TRIAL " + (ti + 1) + ": " + WD_TITLES[ti]));
+    var p = wdEl("p", "why", ""); p.innerHTML = whyText;
+    card.appendChild(p);
+  }
+
+  function wdRunCertRow(card, ti, runLabel) {
+    var row = wdEl("div", "wd-row");
+    var run = wdEl("button", "wd-btn solid", runLabel);
+    run.type = "button";
+    var reset = wdEl("button", "wd-btn", "RESET TRIAL " + (ti + 1));
+    reset.type = "button";
+    row.appendChild(run); row.appendChild(reset);
+    card.appendChild(row);
+    var verdict = wdEl("p", "wd-verdict", "No run yet.");
+    card.appendChild(verdict);
+    var cert = wdEl("button", "wd-btn", "CERTIFY TRIAL " + (ti + 1));
+    cert.type = "button";
+    cert.disabled = true;
+    cert.addEventListener("click", function () { wdCommit(ti); });
+    card.appendChild(cert);
+    reset.addEventListener("click", function () { wdResetTrial(ti); });
+    return { run: run, verdict: verdict, cert: cert };
+  }
+
+  function wdSetVerdict(built, ti) {
+    var st = wdState.trials[ti];
+    if (st.passed) {
+      built.verdict.textContent = "TRIAL " + (ti + 1) + " PASSED in " + st.attempts +
+        " run(s), " + st.strikes + " strike(s)." +
+        (st.committed ? " Certified." : " CERTIFY is lit.");
+      built.verdict.className = "wd-verdict pass";
+    }
+    built.cert.disabled = !(st.passed && !st.committed);
+  }
+
+  function wdGrade(st) {
+    if (st.strikes === 0) return "GOLD";
+    if (st.strikes <= 2) return "SILVER";
+    return "BRONZE";
+  }
+
+  /* --- trial 1: THE SAFE WINDOW --- */
+  function wdBuildT1(card) {
+    var st = wdState.trials[0];
+    wdTrialShell(card, 0,
+      "Size the timeout for a machine that reads (6 ms), sends (14 ms), and logs (40 ms) every loop, " +
+      "with 0 to 4 ms of jitter per job. A hang is injected at iteration 60 of 100. " +
+      "Your timeout must sit <b>strictly above</b> the worst healthy iteration and <b>at or under 150 ms</b>, " +
+      "the detection budget. Predict the worst case first, profile to check, then run.");
+    var res = wdEl("div", "wd-read");
+    res.innerHTML = "<span class='k'>Predict, profile, set the timeout, run. The hang lands at iteration 60.</span>";
+    card.appendChild(res);
+
+    var prow = wdEl("div", "wd-row");
+    prow.appendChild(wdEl("span", "wd-lab", "PREDICT WORST ITERATION"));
+    var pin = wdNumInput("Predict the worst-case iteration time in milliseconds", "ms");
+    if (st.predict !== null) pin.value = String(st.predict);
+    prow.appendChild(pin);
+    var pbtn = wdEl("button", "wd-btn", "RUN PROFILE");
+    pbtn.type = "button";
+    prow.appendChild(pbtn);
+    card.appendChild(prow);
+
+    var tslider = wdSlider(WD_T1.tMin, WD_T1.tMax, WD_T1.tStep,
+      st.timeout !== null ? st.timeout : 80, "TIMEOUT");
+    card.appendChild(tslider);
+
+    var built = wdRunCertRow(card, 0, "RUN 100 ITERATIONS");
+    wdSetVerdict(built, 0);
+
+    pbtn.addEventListener("click", function () {
+      var pv = parseInt(pin.value, 10);
+      st.predict = isNaN(pv) ? null : pv;
+      var pr = wdProfile(WD_T1);
+      st.profiled = pr.maxIter;
+      var cmp = (st.predict === null) ? "no prediction entered" :
+        (st.predict === pr.maxIter ? "exactly right" :
+         (st.predict < pr.maxIter ? (pr.maxIter - st.predict) + " ms under the measured worst case" :
+          (st.predict - pr.maxIter) + " ms over the measured worst case"));
+      res.innerHTML = "<span class='k'>PROFILE over 100 iterations, same seed, same weather: worst iteration </span>" +
+        "<span class='hit'>" + pr.maxIter + " ms</span><span class='k'>, best </span>" +
+        "<span class='v'>" + pr.minIter + " ms</span><span class='k'>. Your call: </span>" +
+        "<span class='v'>" + (st.predict === null ? "none" : st.predict + " ms") + "</span>" +
+        "<span class='k'>, </span><span class='hit'>" + cmp + "</span><span class='k'>. " +
+        "Hand check: 60 ms of work plus at most 12 ms of jitter = 72 ms. The timeout must clear it strictly.</span>";
+      wdLog("Trial 1 profile: worst " + pr.maxIter + " ms, best " + pr.minIter + " ms.", "ok");
+      wdPop(card);
+    });
+
+    built.run.addEventListener("click", function () {
+      st.attempts++;
+      st.timeout = tslider.getValue();
+      var r = wdRun({ stages: WD_T1.stages, jitter: WD_T1.jitter, seed: WD_T1.seed,
+        iters: WD_T1.iters, timeout: st.timeout, mode: "loop", isrPeriod: 10,
+        windowLow: 0, hangAt: WD_T1.hangAt, runawayAt: null });
+      if (r.bite && r.bite.atIter < WD_T1.hangAt) {
+        st.strikes++;
+        built.verdict.textContent = "SPURIOUS BITE at iteration " + r.bite.atIter +
+          ": a healthy iteration of " + r.bite.gap + " ms reached your " + st.timeout +
+          " ms timeout. The timeout must sit strictly above the worst case (profile: " +
+          r.maxIter + " ms).";
+        built.verdict.className = "wd-verdict miss";
+        wdLog("Trial 1 run " + st.attempts + ": spurious bite at iteration " + r.bite.atIter + ".", "bad");
+      } else if (!r.bite) {
+        st.strikes++;
+        built.verdict.textContent = "NO BITE AT ALL: the hang at iteration 60 never reset the board. " +
+          "This should not happen with a finite timeout; reset the trial and run again.";
+        built.verdict.className = "wd-verdict miss";
+        wdLog("Trial 1 run " + st.attempts + ": no bite, unexpected.", "bad");
+      } else if (r.caughtIn > WD_T1.budget) {
+        st.strikes++;
+        built.verdict.textContent = "CAUGHT TOO LATE: the hang was caught " + r.caughtIn +
+          " ms after it started, past the 150 ms budget. A shorter timeout still clears " +
+          r.maxIter + " ms.";
+        built.verdict.className = "wd-verdict miss";
+        wdLog("Trial 1 run " + st.attempts + ": hang caught in " + r.caughtIn + " ms, over budget.", "bad");
+      } else if (!st.passed) {
+        st.passed = true;
+        built.verdict.textContent = "TRIAL 1 PASSED: timeout " + st.timeout + " ms clears the " +
+          r.maxIter + " ms worst case and caught the hang " + r.caughtIn +
+          " ms after it started, inside the 150 ms budget. CERTIFY is lit.";
+        built.verdict.className = "wd-verdict pass";
+        wdLog("Trial 1 PASSED (" + st.attempts + " runs, " + st.strikes + " strikes).", "ok");
+      }
+      wdSetVerdict(built, 0);
+      wdPop(card);
+    });
+  }
+
+  /* --- trial 2: THE WRONG KICKER --- */
+  function wdBuildT2(card) {
+    var st = wdState.trials[1];
+    wdTrialShell(card, 1,
+      "The watchdog only watches whoever kicks it. This trial starts with the kick inside a <b>timer interrupt</b>: " +
+      "a small routine the hardware runs every 10 ms, even when the main loop is stuck. A hang is injected at iteration 40 of 100, " +
+      "with the timeout fixed at 80 ms. Call it first: will the watchdog catch the hang?");
+    var callRow = wdToggle([{ v: "yes", t: "YES, IT BITES" }, { v: "no", t: "NO BITE" }],
+      "YOUR CALL: DOES THE WATCHDOG CATCH THE HANG?");
+    if (st.call !== null) callRow.setValue(st.call);
+    card.appendChild(callRow);
+
+    var modeRow = wdToggle([{ v: "isr", t: "TIMER INTERRUPT" }, { v: "loop", t: "MAIN LOOP" }],
+      "KICK SOURCE");
+    modeRow.setValue(st.mode !== null ? st.mode : "isr");
+    card.appendChild(modeRow);
+
+    var fix = wdEl("div", "wd-read");
+    fix.innerHTML = "<span class='k'>TIMEOUT fixed at </span><span class='v'>80 ms</span>" +
+      "<span class='k'> (clears the 72 ms worst case). Hang at iteration 40. Detection budget 150 ms.</span>";
+    card.appendChild(fix);
+
+    var built = wdRunCertRow(card, 1, "RUN 100 ITERATIONS");
+    wdSetVerdict(built, 1);
+
+    built.run.addEventListener("click", function () {
+      st.attempts++;
+      st.mode = modeRow.getValue() || "isr";
+      st.call = callRow.getValue();
+      var r = wdRun({ stages: WD_T2.stages, jitter: WD_T2.jitter, seed: WD_T2.seed,
+        iters: WD_T2.iters, timeout: WD_T2.timeout, mode: st.mode, isrPeriod: WD_T2.isrPeriod,
+        windowLow: 0, hangAt: WD_T2.hangAt, runawayAt: null });
+      var said = st.call === null ? "no call entered" :
+        (st.call === "yes" ? "you called BITE" : "you called NO BITE");
+      if (!r.bite) {
+        st.strikes++;
+        built.verdict.textContent = "NO BITE. 1000 ms after the hang, the counter never reached 80 ms: " +
+          "the interrupt kept kicking every 10 ms for a dead main loop. " + said + "; the board says: no. " +
+          "Move the kick to the MAIN LOOP and run again.";
+        built.verdict.className = "wd-verdict miss";
+        wdLog("Trial 2 run " + st.attempts + ": hang never caught, ISR kept kicking.", "bad");
+      } else if (r.bite.atIter < WD_T2.hangAt) {
+        st.strikes++;
+        built.verdict.textContent = "SPURIOUS BITE at iteration " + r.bite.atIter +
+          ": with an 80 ms timeout this should not happen; reset the trial and run again.";
+        built.verdict.className = "wd-verdict miss";
+        wdLog("Trial 2 run " + st.attempts + ": spurious bite, unexpected.", "bad");
+      } else if (r.caughtIn > WD_T2.budget) {
+        st.strikes++;
+        built.verdict.textContent = "CAUGHT TOO LATE: " + r.caughtIn + " ms, past the 150 ms budget.";
+        built.verdict.className = "wd-verdict miss";
+        wdLog("Trial 2 run " + st.attempts + ": caught in " + r.caughtIn + " ms, over budget.", "bad");
+      } else if (!st.passed) {
+        st.passed = true;
+        built.verdict.textContent = "TRIAL 2 PASSED: with the kick in the main loop, the hang was caught " +
+          r.caughtIn + " ms after it started, inside the 150 ms budget. " + said + ". " +
+          "The lesson: kick from the code whose liveness you need. CERTIFY is lit.";
+        built.verdict.className = "wd-verdict pass";
+        wdLog("Trial 2 PASSED (" + st.attempts + " runs, " + st.strikes + " strikes).", "ok");
+      }
+      wdSetVerdict(built, 1);
+      wdPop(card);
+    });
+  }
+
+  /* --- trial 3: THE EARLY EDGE --- */
+  function wdBuildT3(card) {
+    var st = wdState.trials[2];
+    wdTrialShell(card, 2,
+      "A runaway bug starts <b>kicking every 3 ms</b> at iteration 50 of 100, while the loop work continues. " +
+      "A plain timeout never ages out, so it never bites. This trial adds the <b>window</b>: a kick that lands sooner " +
+      "than LOW ms after the previous kick bites immediately. Set LOW above the 3 ms runaway and below the fastest " +
+      "healthy iteration (62 ms). The window's high edge is the 150 ms timeout.");
+    var low = wdSlider(WD_T3.lowMin, WD_T3.lowMax, WD_T3.lowStep,
+      st.low !== null ? st.low : 0, "EARLY EDGE LOW");
+    card.appendChild(low);
+    var fix = wdEl("div", "wd-read");
+    fix.innerHTML = "<span class='k'>TIMEOUT (window high edge) fixed at </span><span class='v'>150 ms</span>" +
+      "<span class='k'>. LOW at 0 disables the early edge. Healthy iterations run 62 to 72 ms; the runaway kicks every 3 ms.</span>";
+    card.appendChild(fix);
+
+    var built = wdRunCertRow(card, 2, "RUN 100 ITERATIONS");
+    wdSetVerdict(built, 2);
+
+    built.run.addEventListener("click", function () {
+      st.attempts++;
+      st.low = low.getValue();
+      var r = wdRun({ stages: WD_T3.stages, jitter: WD_T3.jitter, seed: WD_T3.seed,
+        iters: WD_T3.iters, timeout: WD_T3.timeout, mode: "loop", isrPeriod: 10,
+        windowLow: st.low, hangAt: null, runawayAt: WD_T3.runawayAt });
+      if (r.bite && r.bite.atIter < WD_T3.runawayAt) {
+        st.strikes++;
+        var why = r.bite.kind === "early" ?
+          "a healthy iteration kicked " + r.bite.gap + " ms after the previous kick, under your LOW edge of " +
+          st.low + " ms. LOW must stay below the fastest healthy iteration (62 ms)." :
+          "a healthy iteration of " + r.bite.gap + " ms outran the 150 ms timeout, which should not happen; " +
+          "reset the trial and run again.";
+        built.verdict.textContent = "SPURIOUS BITE at iteration " + r.bite.atIter + ": " + why;
+        built.verdict.className = "wd-verdict miss";
+        wdLog("Trial 3 run " + st.attempts + ": spurious " + r.bite.kind + " bite at iteration " + r.bite.atIter + ".", "bad");
+      } else if (!r.bite) {
+        st.strikes++;
+        built.verdict.textContent = "RUNAWAY MISSED: 100 iterations, kicks every 3 ms from iteration 50, " +
+          "and the watchdog never bit. The early edge is off (LOW = 0) or set at or below 3 ms: " +
+          "it must sit strictly above the runaway's 3 ms kick spacing.";
+        built.verdict.className = "wd-verdict miss";
+        wdLog("Trial 3 run " + st.attempts + ": runaway never caught (LOW=" + st.low + ").", "bad");
+      } else if (r.bite.kind !== "early") {
+        st.strikes++;
+        built.verdict.textContent = "BIT, BUT NOT BY THE WINDOW: a late bite at iteration " + r.bite.atIter +
+          ". The runaway should trip the early edge, not the timeout.";
+        built.verdict.className = "wd-verdict miss";
+        wdLog("Trial 3 run " + st.attempts + ": late bite instead of early, unexpected.", "bad");
+      } else if (!st.passed) {
+        st.passed = true;
+        built.verdict.textContent = "TRIAL 3 PASSED: the runaway was caught " + r.caughtIn +
+          " ms after it began, a kick landed 3 ms after the previous one, under your LOW edge of " +
+          st.low + " ms, while every healthy iteration (62 to 72 ms) passed clean. CERTIFY is lit.";
+        built.verdict.className = "wd-verdict pass";
+        wdLog("Trial 3 PASSED (" + st.attempts + " runs, " + st.strikes + " strikes).", "ok");
+      }
+      wdSetVerdict(built, 2);
+      wdPop(card);
+    });
+  }
+
+  /* ---------------- certify ---------------- */
+
+  function wdCertText(ti) {
+    var st = wdState.trials[ti];
+    var lines = ["THE WATCHDOG ROOM, TRIAL " + (ti + 1) + " CERTIFICATE",
+      "Trial: " + WD_TITLES[ti], "Result: CERTIFIED",
+      "Runs: " + st.attempts + ", strikes: " + st.strikes + ", grade: " + wdGrade(st)];
+    if (ti === 0) lines.push("Timeout: " + st.timeout + " ms (worst healthy iteration 72 ms, budget 150 ms).");
+    if (ti === 1) lines.push("Kick source: main loop (the interrupt kicker never caught the hang).");
+    if (ti === 2) lines.push("Window early edge LOW: " + st.low + " ms (runaway kicked every 3 ms).");
+    lines.push("", "The watchdog is a countdown you keep kicking, so a hung program",
+      "dies and reboots instead of hanging forever.", "",
+      "WATCHKEEPER // THE PROVING GROUND");
+    return lines.join("\n") + "\n";
+  }
+
+  function wdDownload(name, text) {
+    var blob = new Blob([text], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  function wdCommit(ti) {
+    var st = wdState.trials[ti];
+    if (!st.passed || st.committed) return false;
+    st.committed = true;
+    wdDownload("watchdog-room-trial-" + (ti + 1) + "-certificate.txt", wdCertText(ti));
+    wdLog("Trial " + (ti + 1) + " CERTIFIED (" + wdGrade(st) + "). Certificate downloaded.", "ok");
+    wdRebuildCard(ti);
+    var all = wdState.trials.every(function (s) { return s.committed; });
+    if (all) {
+      wdEls.banner.style.display = "block";
+      wdEls.certAll.style.display = "";
+      wdLog("WATCHKEEPER: all three trials certified. Every fault met its bite.", "ok");
+    }
+    return true;
+  }
+
+  function wdCertAll() {
+    var lines = ["THE WATCHDOG ROOM, BENCH CERTIFICATE", "All three trials certified:", ""];
+    for (var i = 0; i < 3; i++) {
+      var st = wdState.trials[i];
+      lines.push("Trial " + (i + 1) + " " + WD_TITLES[i] + ": CERTIFIED (" + st.attempts +
+        " runs, " + st.strikes + " strikes, grade " + wdGrade(st) + ")");
+    }
+    lines.push("", "Size the timeout above the worst healthy iteration and inside the",
+      "detection budget; kick from the code whose liveness you need; and give",
+      "the window an early edge, because a runaway kicks too fast to age out.", "",
+      "WATCHKEEPER // THE PROVING GROUND");
+    wdDownload("watchdog-room-bench-certificate.txt", lines.join("\n") + "\n");
+    wdLog("Bench certificate downloaded.", "ok");
+  }
+
+  function wdResetTrial(ti) {
+    wdState.trials[ti] = wdNewTrialState();
+    wdRebuildCard(ti);
+    wdLog("Trial " + (ti + 1) + " reset.", "");
+  }
+
+  /* ---------------- build ---------------- */
+
+  var wdBuilders = [wdBuildT1, wdBuildT2, wdBuildT3];
+
+  function wdRebuildCard(ti) {
+    var host = wdEls.cardHosts[ti];
+    host.innerHTML = "";
+    var card = wdEl("div", "wd-card");
+    host.appendChild(card);
+    wdBuilders[ti](card);
+    wdPop(card);
+  }
+
+  function wdOpen() {
+    wdEls.overlay.classList.add("open");
+    wdEls.overlay.scrollTop = 0;
+    wdPetStart();
+  }
+  function wdClose() {
+    wdEls.overlay.classList.remove("open");
+    wdPetStop();
+  }
+
+  /* pet widget wiring (do-first, live) */
+  function wdPetRender() {
+    if (!wdEls || !wdEls.petFill) return;
+    var pet = wdState.pet;
+    var pct = Math.min(100, (pet.count / pet.limit) * 100);
+    wdEls.petFill.style.width = pct + "%";
+    wdEls.petCount.textContent = pet.count + " / " + pet.limit;
+    wdEls.petStatus.textContent = "Bites so far: " + pet.bites + ". Kicks: " + pet.kicks + ".";
+  }
+  function wdPetTickUI() {
+    var r = wdPetTick(wdState.pet);
+    if (r === "bite") {
+      wdEls.petStatus.textContent = "BITE: the board reset. The counter restarts at zero. Bites so far: " +
+        wdState.pet.bites + ".";
+      wdLog("Pet widget: you let go, the watchdog bit, the board reset.", "bad");
+    }
+    wdPetRender();
+  }
+  function wdPetStart() {
+    wdPetStop();
+    wdState.petTimer = setInterval(wdPetTickUI, 100);
+  }
+  function wdPetStop() {
+    if (wdState.petTimer) { clearInterval(wdState.petTimer); wdState.petTimer = null; }
+  }
+
+  function wdBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("wdBtn")) return;
+
+    var st = document.createElement("style");
+    st.textContent = WD_CSS;
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "wdBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Watchdog Room";
+    b.addEventListener("click", wdOpen);
+    box.appendChild(b);
+
+    var ov = wdEl("div", "wd-overlay");
+    ov.id = "wdOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Watchdog Room");
+    var x = wdEl("button", "wd-btn", "CLOSE");
+    x.id = "wdXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Watchdog Room");
+    x.addEventListener("click", wdClose);
+    ov.appendChild(x);
+
+    var panel = wdEl("div", "wd-panel");
+    panel.appendChild(wdEl("div", "wd-kicker", "SILICON BENCH 44"));
+    panel.appendChild(wdEl("h2", "wd-title", "The Watchdog Room"));
+    panel.appendChild(wdEl("p", "wd-sub",
+      "A frozen machine never calls for help. Meet the watchdog: the hardware countdown that resets the board when software stops proving it is alive. Size the timeout, place the kick, set the early edge."));
+
+    var introA = wdEl("div", null, "");
+    introA.innerHTML = WD_INTRO_A;
+    panel.appendChild(introA);
+
+    /* do-first: pet the watchdog (live, consequence-free) */
+    var petCard = wdEl("div", "wd-card");
+    petCard.appendChild(wdEl("h3", null, "DO FIRST: PET THE WATCHDOG"));
+    var petWhy = wdEl("p", "why", "The counter climbs one step every 100 ms. Press KICK to knock it back to zero. " +
+      "Let it reach 30 and the board bites: it resets. This is the entire contract; the trials just make you size it. " +
+      "Try pressing KICK a few times to hold the counter near zero, then try letting go.");
+    petCard.appendChild(petWhy);
+    var petRow = wdEl("div", "wd-row");
+    var kickBtn = wdEl("button", "wd-btn solid", "KICK");
+    kickBtn.type = "button";
+    kickBtn.id = "wdKickBtn";
+    kickBtn.setAttribute("aria-label", "Kick the watchdog: restart its countdown");
+    var petCount = wdEl("span", "wd-val", "0 / 30");
+    petCount.id = "wdPetCount";
+    petCount.setAttribute("aria-live", "polite");
+    petRow.appendChild(kickBtn);
+    petRow.appendChild(petCount);
+    petCard.appendChild(petRow);
+    var petBar = wdEl("div", "wd-petbar");
+    var petFill = wdEl("div", "wd-petfill");
+    petFill.id = "wdPetFill";
+    petBar.appendChild(petFill);
+    var petBiteMark = wdEl("div", "wd-petbite");
+    petBiteMark.setAttribute("aria-hidden", "true");
+    petBar.appendChild(petBiteMark);
+    petCard.appendChild(petBar);
+    var petStatus = wdEl("p", "wd-note", "Bites so far: 0. Kicks: 0.");
+    petStatus.id = "wdPetStatus";
+    petCard.appendChild(petStatus);
+    panel.appendChild(petCard);
+    kickBtn.addEventListener("click", function () {
+      wdPetKick(wdState.pet);
+      wdPetRender();
+    });
+
+    var introB = wdEl("div", null, "");
+    introB.innerHTML = WD_INTRO_B;
+    panel.appendChild(introB);
+    var introC = wdEl("div", null, "");
+    introC.innerHTML = WD_INTRO_C;
+    panel.appendChild(introC);
+
+    var banner = wdEl("div", "wd-banner");
+    banner.appendChild(wdEl("h3", null, "BENCH CERTIFIED"));
+    banner.appendChild(wdEl("p", null,
+      "All three trials certified. You can size a timeout, place a kick, and set a window: the three settings between a hang and a reboot."));
+    var certAll = wdEl("button", "wd-btn solid", "DOWNLOAD BENCH CERTIFICATE");
+    certAll.type = "button";
+    certAll.id = "wdCertAllBtn";
+    certAll.addEventListener("click", wdCertAll);
+    banner.appendChild(certAll);
+    panel.appendChild(banner);
+
+    var trials = wdEl("div", null, "");
+    var cardHosts = [];
+    for (var j = 0; j < 3; j++) {
+      var host = wdEl("div", null, "");
+      trials.appendChild(host);
+      cardHosts.push(host);
+    }
+    panel.appendChild(trials);
+
+    var log = wdEl("div", "wd-log");
+    log.setAttribute("aria-live", "polite");
+    panel.appendChild(log);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    wdEls = { overlay: ov, log: log, banner: banner, certAll: certAll, cardHosts: cardHosts,
+              petFill: petFill, petCount: petCount, petStatus: petStatus };
+    for (var k = 0; k < 3; k++) wdRebuildCard(k);
+    var all = wdState.trials.every(function (s) { return s.committed; });
+    wdEls.banner.style.display = all ? "block" : "none";
+    wdEls.certAll.style.display = all ? "" : "none";
+    wdPetRender();
+
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && ov.classList.contains("open")) wdClose();
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", wdBuild);
+  } else {
+    wdBuild();
+  }
+
+  /* test hooks */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = Object.assign(module.exports || {}, {
+      WD: {
+        T1: WD_T1, T2: WD_T2, T3: WD_T3, TITLES: WD_TITLES, STAGES: WD_STAGES,
+        run: wdRun, profile: wdProfile,
+        petNew: wdPetNew, petTick: wdPetTick, petKick: wdPetKick,
+        introHTML: WD_INTRO_HTML, grade: wdGrade,
+        ui: {
+          open: wdOpen, close: wdClose,
+          commit: wdCommit, resetTrial: wdResetTrial,
+          certAll: wdCertAll,
+          state: function () { return wdState; },
+          els: function () { return wdEls; }
+        }
+      }
+    });
+  }
+})();

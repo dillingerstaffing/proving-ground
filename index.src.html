@@ -670,7 +670,11 @@ var PG_BENCHES = [
   { section: "silicon", n: "43", name: "The Borrow Room", btn: "bwBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "Hardware never subtracts: every SUB adds the inverted operand plus one, and the inverted carry-out is the borrow. Chain borrows across bytes, then read the unsigned less-than bit that every branch is really asking about.",
     how: "Predict the result byte and the borrow, step the lanes to see why, then call every unsigned comparison.",
-    spec: "SUB/BORROW \u00B7 3 TRIALS" }
+    spec: "SUB/BORROW \u00B7 3 TRIALS" },
+  { section: "silicon", n: "44", name: "The Watchdog Room", btn: "wdBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "A frozen machine never calls for help. Meet the watchdog: the hardware countdown that resets the board when software stops proving it is alive. Size the timeout, place the kick, and set the early edge that catches a runaway.",
+    how: "Pet the watchdog, predict the worst-case loop, then survive the hang, the misplaced kick, and the runaway.",
+    spec: "WATCHDOG TIMER \u00B7 3 TRIALS" }
 ];
 
 var pgFilter = "all";
