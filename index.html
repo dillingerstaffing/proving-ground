@@ -694,7 +694,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "49", name: "The Pullup Room", btn: "puBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "A CMOS input reads nothing by itself, so one resistor decides its idle state. Tie up a floating pin, call its voltage under a 10 k and a 1 M pull-up, then size the resistor yourself between leakage, power, and noise.",
     how: "Sample the noise on a floating pin, tie it up and watch it hold, call the 3.28 V idle pin and the 1.30 V starved pin before you reveal them, then pick a pull-up that keeps pressed current under 1 mA and the idle pin above 2.4 V.",
-    spec: "PULL-UP RESISTORS \u00B7 3 TRIALS" }
+    spec: "PULL-UP RESISTORS \u00B7 3 TRIALS" },
+  { section: "silicon", n: "50", name: "The LDO Room", btn: "ldoBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "A linear regulator burns the voltage it drops as heat, watt for watt. The input rail is a window: high enough to stay out of dropout, low enough to stay under the die's temperature limit.",
+    how: "Burn a die at 5 V in a SOT-23, call the 127 C die on a 300 mA load within 6 C, size an input rail that holds a 700 mA load at or under 125 C, then fix the crash that is not heat.",
+    spec: "LINEAR REGULATORS \u00B7 3 TRIALS" }
 ];
 
 var pgFilter = "all";
@@ -1106,9 +1110,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=2fe9f7f125" defer></script>
-<script src="rvdata.js?v=2fe9f7f125" defer></script>
-<script src="riscv-lab.js?v=2fe9f7f125" defer></script>
-<script src="features.js?v=2fe9f7f125" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=d9e2c22903" defer></script>
+<script src="rvdata.js?v=d9e2c22903" defer></script>
+<script src="riscv-lab.js?v=d9e2c22903" defer></script>
+<script src="features.js?v=d9e2c22903" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

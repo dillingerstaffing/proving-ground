@@ -35524,3 +35524,602 @@ if (typeof module !== "undefined" && module.exports) {
     puBuild();
   }
 })();
+/* ============================================================
+   THE LDO ROOM
+   Silicon bench 50. The one atomic mechanism: a linear
+   regulator turns the voltage it drops into heat at the load's
+   current, so the input rail is a window, not a value: high
+   enough to stay out of dropout, low enough to stay under the
+   die's temperature limit.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------- the bench's own model, stated in the copy ---------- */
+  var LDO_VOUT = 3.3;       // regulated output, volts
+  var LDO_DROP = 0.3;       // dropout headroom, volts (min input 3.6 V)
+  var LDO_TAMB = 25;        // ambient, C
+  var LDO_TSHUT = 150;      // thermal shutdown trip, C
+  var LDO_TSMOKE = 200;     // die destroyed past this, C
+  var LDO_TMAX = 125;       // trial 2 die-temperature ceiling, C
+  var LDO_TH = { "SOT-23": 200, "SOT-223": 50 }; // thermal resistance, C/W
+  var LDO_T1 = { pkg: "SOT-23", vin: 5.0, i: 0.30 }; // predict scenario
+  var LDO_T2 = { pkg: "SOT-223", i: 0.70 };          // size-the-rail scenario
+  var LDO_T1_TOL = 6;       // trial 1 prediction tolerance, C
+  var LDO_RAILS = [4.2, 5, 9, 12];
+  var LDO_T3 = { vin: 3.45, i: 0.60, pkg: "SOT-223", fixVin: 4.2 }; // dropout diagnosis
+
+  /* ---------- pure sims (no DOM) ---------- */
+  function ldoSim(vin, i, pkg) {
+    var dropout = vin < LDO_VOUT + LDO_DROP;
+    var vout = dropout ? vin - LDO_DROP : LDO_VOUT;
+    var p = (vin - vout) * i;
+    var tj = LDO_TAMB + p * LDO_TH[pkg];
+    return { vout: vout, p: p, tj: tj, dropout: dropout };
+  }
+  function ldoFate(tj) {
+    if (tj >= LDO_TSMOKE) return "smoke";
+    if (tj >= LDO_TSHUT) return "shutdown";
+    return "alive";
+  }
+  function ldoCheckT1(pred) {
+    var p = Number(pred);
+    if (!isFinite(p)) return { ok: false, why: "not a number" };
+    var s = ldoSim(LDO_T1.vin, LDO_T1.i, LDO_T1.pkg);
+    var err = Math.abs(p - s.tj);
+    return { ok: err <= LDO_T1_TOL, tj: s.tj, err: err };
+  }
+  function ldoCheckT2(vin) {
+    var s = ldoSim(vin, LDO_T2.i, LDO_T2.pkg);
+    var ok = !s.dropout && ldoFate(s.tj) === "alive" && s.tj <= LDO_TMAX;
+    return { ok: ok, s: s };
+  }
+  function ldoFmtT(x) { return String(Math.round(x)); }
+  function ldoFmtV(x) { return (Math.round(x * 100) / 100).toFixed(2); }
+  function ldoFmtW(x) {
+    if (x < 1) return String(Math.round(x * 1000)) + " mW";
+    return (Math.round(x * 100) / 100).toFixed(2) + " W";
+  }
+  function ldoFmtI(x) { return String(Math.round(x * 1000)) + " mA"; }
+
+  /* ---------- css ---------- */
+  var LDO_CSS = [
+    ".ldo-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".ldo-overlay.open{display:block}",
+    ".ldo-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".ldo-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".ldo-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".ldo-sub{font-size:14px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.92;margin:0 0 18px;max-width:68ch}",
+    ".ldo-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".ldo-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".ldo-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".ldo-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".ldo-fail{border:1px solid var(--ember,#ff5a1f)}",
+    ".ldo-fail li{font-size:13px;line-height:1.6;margin:0 0 6px;list-style:none}",
+    ".ldo-fail ul{padding:0;margin:0}",
+    ".ldo-fail b{color:var(--ember,#ff5a1f);font-weight:700}",
+    ".ldo-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}",
+    ".ldo-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
+    ".ldo-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".ldo-btn:disabled{opacity:.35;cursor:default}",
+    ".ldo-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#101014}",
+    ".ldo-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".ldo-therm{position:relative;height:26px;border:1px solid var(--line,rgba(242,237,228,.28));margin:12px 0 4px;background:rgba(0,0,0,.35)}",
+    ".ldo-fill{position:absolute;left:0;top:0;bottom:0;width:0%;background:var(--ember,#ff5a1f);transition:width 200ms linear}",
+    ".ldo-fill.hot{background:#ffb01f}",
+    ".ldo-fill.dead{background:#8a8a8a}",
+    ".ldo-read{font-size:13px;line-height:1.7;min-height:88px}",
+    ".ldo-read .big{font-size:26px;font-family:'Space Grotesk',sans-serif}",
+    ".ldo-tag{display:inline-block;font-size:11px;letter-spacing:.14em;padding:4px 10px;border:1px solid var(--line,rgba(242,237,228,.28));margin:2px 6px 2px 0}",
+    ".ldo-tag.ok{color:#9fe870;border-color:#9fe870}",
+    ".ldo-tag.warn{color:#ffb01f;border-color:#ffb01f}",
+    ".ldo-tag.bad{color:#ff5a1f;border-color:#ff5a1f}",
+    ".ldo-in{font-family:'IBM Plex Mono',monospace;font-size:15px;min-height:48px;padding:10px 14px;background:#0c0c10;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));width:150px}",
+    ".ldo-in:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    "input[type=range].ldo-range{width:100%;min-height:48px;accent-color:var(--ember,#ff5a1f)}",
+    ".ldo-choice{display:flex;gap:8px;align-items:center;min-height:48px;padding:8px 12px;border:1px solid var(--line,rgba(242,237,228,.22));cursor:pointer;font-size:13px}",
+    ".ldo-choice input{width:22px;height:22px;accent-color:var(--ember,#ff5a1f)}",
+    ".ldo-verdict{font-size:14px;line-height:1.6;margin:10px 0 0;min-height:24px}",
+    ".ldo-verdict.ok{color:#9fe870}",
+    ".ldo-verdict.bad{color:#ff5a1f}",
+    ".ldo-lanes{font-size:13px;line-height:1.9}",
+    ".ldo-log{font-size:12.5px;line-height:1.7;max-height:280px;overflow-y:auto}",
+    ".ldo-log div{margin:0 0 6px;padding-bottom:6px;border-bottom:1px dotted var(--line,rgba(242,237,228,.14))}",
+    ".ldo-log .ok{color:#9fe870}",
+    ".ldo-log .bad{color:#ff5a1f}",
+    ".ldo-log .dim{opacity:.6}",
+    ".ldo-banner{display:none;border:1px solid var(--ember,#ff5a1f);padding:18px;margin:0 0 14px}",
+    ".ldo-banner h3{font-family:'Space Grotesk',sans-serif;letter-spacing:.14em;font-size:16px;color:var(--ember,#ff5a1f);margin:0 0 8px}",
+    ".ldo-banner p{font-size:13px;line-height:1.65;margin:0 0 12px}",
+    ".ldo-pop{animation:ldoPop 200ms ease-out}",
+    "@keyframes ldoPop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    "@media (prefers-reduced-motion:reduce){.ldo-pop{animation:none}.ldo-fill{transition:none}}"
+  ].join("\n");
+
+  /* ---------- intro copy: why first, worked example, failure modes ---------- */
+  var LDO_INTRO_HTML = [
+    "<div class=\"ldo-card\"><h3>WHY THIS ROOM EXISTS</h3>",
+    "<p class=\"why\">Every 3.3 V rail on a RISC-V board starts life at 5 V, and somebody has to burn the difference. ",
+    "That somebody is a linear regulator: it turns the voltage it drops into heat, watt for watt. So the input rail is a window, not a value. ",
+    "Push it too high and the die cooks itself into thermal shutdown. Park it too low and the regulator runs out of headroom, a failure called dropout, ",
+    "and the output sags below what the chip needs. This room is about living inside the window.</p>",
+    "<p class=\"why\">The arithmetic, worked once. A 5 V rail feeds a 3.3 V regulator driving a 500 mA load. ",
+    "Drop: 5 - 3.3 = 1.7 V. Heat: 1.7 V x 0.5 A = 0.85 W. The package is a SOT-23, a common small 3-pin package; ",
+    "its thermal resistance is 200 C per watt, which means each watt lifts the die 200 C. Rise: 0.85 x 200 = 170 C. ",
+    "Die: 25 + 170 = 195 C, nearly twice the boiling point of water. Thermal shutdown trips at 150 C, " +
+    "so the board crashes. The die survives. ",
+    "The fix is a bigger package or a lower input rail; this room makes you price both.</p></div>",
+    "<div class=\"ldo-card ldo-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3>",
+    "<ul><li><b>THERMAL SHUTDOWN:</b> the die passes 150 C and the output cuts to protect the silicon. The run is dead; reset and retry.</li>",
+    "<li><b>SMOKE:</b> the die passes 200 C and the part is destroyed. Reset the trial.</li>",
+    "<li><b>DROPOUT SAG:</b> the input sits below 3.6 V and the output droops to input minus 0.3 V. Cool die, wrong rail.</li>",
+    "<li><b>CURRENT LIMIT:</b> past 1 A the output folds back. This room keeps its loads under 1 A, so you will meet the first three.</li></ul></div>"
+  ].join("");
+
+  var LDO_STEPS = [
+    "drop = 5.00 - 3.30 = 1.70 V",
+    "heat = 1.70 V x 0.50 A = 0.85 W",
+    "rise = 0.85 W x 200 C/W (SOT-23) = 170 C",
+    "die = 25 C ambient + 170 C = 195 C",
+    "195 C > 150 C trip: thermal shutdown, the board crashes"
+  ];
+
+  /* ---------- dom helpers ---------- */
+  var ldoEls = null;
+  function ldoEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  function ldoLog(msg, cls) {
+    var d = ldoEl("div", cls || "", msg);
+    ldoEls.log.appendChild(d);
+    ldoEls.log.scrollTop = ldoEls.log.scrollHeight;
+  }
+  function ldoPop(card) {
+    card.classList.remove("ldo-pop");
+    void card.offsetWidth;
+    card.classList.add("ldo-pop");
+  }
+
+  /* ---------- state ---------- */
+  var ldoState = {
+    step: 0,
+    free: { dead: false, running: false, tj: LDO_TAMB },
+    trials: [{ committed: false }, { committed: false }, { committed: false }],
+    certified: false
+  };
+
+  /* ---------- thermal animation: exponential approach, same verdict math ---------- */
+  function ldoAnimate(card, vin, i, pkg, done) {
+    var target = ldoSim(vin, i, pkg).tj;
+    var bar = card.querySelector(".ldo-fill");
+    var read = card.querySelector(".ldo-read");
+    var tj = LDO_TAMB, simT = 0, shut = false, smoked = false;
+    var span = Math.max(1, target - LDO_TAMB);
+    var tick = setInterval(function () {
+      simT += 1.2;                       /* simulated seconds per tick */
+      tj = LDO_TAMB + (target - LDO_TAMB) * (1 - Math.exp(-simT / 12));
+      var frac = Math.min(1, Math.max(0, (tj - LDO_TAMB) / span));
+      bar.style.width = (frac * 100).toFixed(1) + "%";
+      bar.className = "ldo-fill" + (tj >= LDO_TSMOKE ? " dead" : (tj >= LDO_TSHUT ? " hot" : ""));
+      var fate = ldoFate(tj);
+      var tag = fate === "alive" ? "<span class=\"ldo-tag ok\">REGULATING</span>" :
+        (fate === "shutdown" ? "<span class=\"ldo-tag warn\">THERMAL SHUTDOWN</span>" :
+          "<span class=\"ldo-tag bad\">SMOKE</span>");
+      read.innerHTML = "<span class=\"big\">" + ldoFmtT(tj) + " C</span> die<br>" + tag +
+        " <span class=\"ldo-tag\">" + ldoFmtW((vin - (vin < LDO_VOUT + LDO_DROP ? vin - LDO_DROP : LDO_VOUT)) * i) + " heat</span>";
+      if (fate === "shutdown" && !shut) { shut = true; ldoLog("die crossed 150 C: thermal shutdown, the output cut.", "bad"); }
+      if (fate === "smoke" && !smoked) { smoked = true; ldoLog("die crossed 200 C: the part is destroyed.", "bad"); }
+      if (simT >= 48 || fate === "smoke") {
+        clearInterval(tick);
+        done({ tj: target, fate: ldoFate(target) });
+      }
+    }, 60);
+    return tick;
+  }
+
+  /* ---------- certification ---------- */
+  function ldoMaybeCertify() {
+    var all = ldoState.trials.every(function (t) { return t.committed; });
+    if (ldoEls && ldoEls.banner) ldoEls.banner.style.display = all ? "block" : "none";
+  }
+  function ldoCertLine() {
+    return "THE LDO ROOM, CERTIFIED. Called the 300 mA die at 127 C within 6 C, sized a " +
+      ldoFmtV(ldoState.trials[1].vin) + " V rail that holds the 700 mA die at or under 125 C, " +
+      "and diagnosed the cool-die crash as dropout, fixed by raising the input to " +
+      ldoFmtV(LDO_T3.fixVin) + " V.";
+  }
+
+  /* ---------- overlay open/close ---------- */
+  function ldoOpen() { if (ldoEls) ldoEls.overlay.classList.add("open"); }
+  function ldoClose() { if (ldoEls) ldoEls.overlay.classList.remove("open"); }
+
+  function ldoBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("ldoBtn")) return;
+    ldoEls = { overlay: null, log: null, banner: null };
+
+    var st = document.createElement("style");
+    st.textContent = LDO_CSS;
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "ldoBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The LDO Room";
+    b.addEventListener("click", ldoOpen);
+    box.appendChild(b);
+
+    var ov = ldoEl("div", "ldo-overlay");
+    ov.id = "ldoOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The LDO Room");
+    var x = ldoEl("button", "ldo-btn", "CLOSE");
+    x.id = "ldoXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The LDO Room");
+    x.addEventListener("click", ldoClose);
+    ov.appendChild(x);
+    ldoEls.overlay = ov;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && ov.classList.contains("open")) ldoClose();
+    });
+
+    var panel = ldoEl("div", "ldo-panel");
+    panel.appendChild(ldoEl("div", "ldo-kicker", "SILICON BENCH 50"));
+    panel.appendChild(ldoEl("h2", "ldo-title", "The LDO Room"));
+    panel.appendChild(ldoEl("p", "ldo-sub",
+      "A linear regulator burns the voltage it drops as heat, watt for watt. The input rail is a window: " +
+      "high enough to stay out of dropout, low enough to stay under the die's temperature limit. " +
+      "Burn one, call a die temperature, size a rail, then fix the crash that is not heat."));
+
+    var introWrap = ldoEl("div", "");
+    introWrap.innerHTML = LDO_INTRO_HTML;
+    panel.appendChild(introWrap);
+
+    /* arithmetic stepper */
+    var stepCard = ldoEl("div", "ldo-card");
+    stepCard.appendChild(ldoEl("h3", null, "THE ARITHMETIC, STEP BY STEP"));
+    stepCard.appendChild(ldoEl("p", "why", "The worked example above, one line at a time. Consequence-free."));
+    var lanes = ldoEl("div", "ldo-lanes", "");
+    lanes.id = "ldoLanes";
+    stepCard.appendChild(lanes);
+    var stepRow = ldoEl("div", "ldo-row");
+    var stepBtn = ldoEl("button", "ldo-btn", "STEP");
+    stepBtn.type = "button"; stepBtn.id = "ldoStepBtn";
+    stepBtn.setAttribute("aria-label", "Step through the LDO arithmetic");
+    stepRow.appendChild(stepBtn);
+    stepCard.appendChild(stepRow);
+    panel.appendChild(stepCard);
+    stepBtn.addEventListener("click", function () {
+      if (ldoState.step < LDO_STEPS.length) {
+        lanes.innerHTML += (ldoState.step > 0 ? "<br>" : "") + LDO_STEPS[ldoState.step];
+        ldoState.step++;
+        ldoPop(stepCard);
+        if (ldoState.step >= LDO_STEPS.length) stepBtn.disabled = true;
+      }
+    });
+
+    /* do-first: burn one */
+    var doCard = ldoEl("div", "ldo-card");
+    doCard.appendChild(ldoEl("h3", null, "DO FIRST: BURN ONE"));
+    doCard.appendChild(ldoEl("p", "why",
+      "A 5 V rail feeds a 3.3 V regulator in a SOT-23 package, and you own the load. " +
+      "Push the slider and press RUN THE LOAD. The bar is the die temperature climbing toward its fate. " +
+      "Nothing here is graded; this is the moment the mechanism becomes yours."));
+    var doRow = ldoEl("div", "ldo-row");
+    var slider = ldoEl("input", "ldo-range");
+    slider.type = "range"; slider.min = "50"; slider.max = "1000"; slider.step = "50";
+    slider.value = "300"; slider.id = "ldoSlider";
+    slider.setAttribute("aria-label", "Load current in milliamps");
+    doRow.appendChild(slider);
+    var sliderVal = ldoEl("span", "", "300 mA");
+    sliderVal.id = "ldoSliderVal";
+    doRow.appendChild(sliderVal);
+    doCard.appendChild(doRow);
+    var therm = ldoEl("div", "ldo-therm");
+    therm.appendChild(ldoEl("div", "ldo-fill"));
+    doCard.appendChild(therm);
+    var doRead = ldoEl("div", "ldo-read");
+    doRead.id = "ldoFreeRead";
+    doRead.innerHTML = "<span class=\"big\">25 C</span> die<br><span class=\"ldo-tag ok\">REGULATING</span>";
+    doCard.appendChild(doRead);
+    var doBtnRow = ldoEl("div", "ldo-row");
+    var runFree = ldoEl("button", "ldo-btn solid", "RUN THE LOAD");
+    runFree.type = "button"; runFree.id = "ldoRunFree";
+    var resetDie = ldoEl("button", "ldo-btn", "RESET THE DIE");
+    resetDie.type = "button"; resetDie.id = "ldoResetDie";
+    doBtnRow.appendChild(runFree);
+    doBtnRow.appendChild(resetDie);
+    doCard.appendChild(doBtnRow);
+    panel.appendChild(doCard);
+    slider.addEventListener("input", function () {
+      sliderVal.textContent = slider.value + " mA";
+    });
+    runFree.addEventListener("click", function () {
+      if (ldoState.free.running || ldoState.free.dead) return;
+      ldoState.free.running = true;
+      runFree.disabled = true;
+      var i = Number(slider.value) / 1000;
+      ldoAnimate(doCard, 5.0, i, "SOT-23", function (r) {
+        ldoState.free.running = false;
+        ldoState.free.tj = r.tj;
+        if (r.fate === "smoke") { ldoState.free.dead = true; runFree.disabled = true; }
+        else runFree.disabled = false;
+        ldoLog("free look: 5 V in, " + ldoFmtI(i) + " out, SOT-23. Die settled at " +
+          ldoFmtT(r.tj) + " C (" + r.fate.toUpperCase() + ").", r.fate === "alive" ? "dim" : "bad");
+        ldoPop(doCard);
+      });
+    });
+    resetDie.addEventListener("click", function () {
+      ldoState.free.dead = false;
+      ldoState.free.tj = LDO_TAMB;
+      runFree.disabled = false;
+      var bar = doCard.querySelector(".ldo-fill");
+      bar.style.width = "0%"; bar.className = "ldo-fill";
+      doRead.innerHTML = "<span class=\"big\">25 C</span> die<br><span class=\"ldo-tag ok\">REGULATING</span>";
+      ldoLog("die swapped for a fresh part. The last one is a paperweight.", "dim");
+    });
+
+    /* trial 1: predict the die temperature */
+    var t1 = ldoEl("div", "ldo-card");
+    t1.appendChild(ldoEl("h3", null, "TRIAL 1: CALL THE DIE"));
+    t1.appendChild(ldoEl("p", "why",
+      "A 5 V rail, a SOT-23 package (200 C per watt), a 300 mA load. " +
+      "Type your call for the die temperature in C, commit it, then reveal: the room runs the load " +
+      "and reads the die. Within 6 C of the truth passes."));
+    var t1Row = ldoEl("div", "ldo-row");
+    var in1 = ldoEl("input", "ldo-in");
+    in1.type = "text"; in1.inputMode = "decimal"; in1.id = "ldoIn1";
+    in1.setAttribute("aria-label", "Predicted die temperature in degrees C");
+    in1.placeholder = "C";
+    var commit1 = ldoEl("button", "ldo-btn", "COMMIT PREDICTION");
+    commit1.type = "button"; commit1.id = "ldoCommit1";
+    var reveal1 = ldoEl("button", "ldo-btn solid", "REVEAL");
+    reveal1.type = "button"; reveal1.id = "ldoReveal1"; reveal1.disabled = true;
+    t1Row.appendChild(in1); t1Row.appendChild(commit1); t1Row.appendChild(reveal1);
+    t1.appendChild(t1Row);
+    var t1Therm = ldoEl("div", "ldo-therm");
+    t1Therm.appendChild(ldoEl("div", "ldo-fill"));
+    t1.appendChild(t1Therm);
+    var t1Read = ldoEl("div", "ldo-read");
+    t1Read.id = "ldoT1Read";
+    t1Read.innerHTML = "<span class=\"big\">? C</span> die<br><span class=\"ldo-tag\">UNRUN</span>";
+    t1.appendChild(t1Read);
+    var v1 = ldoEl("div", "ldo-verdict"); v1.id = "ldoVerdict1";
+    t1.appendChild(v1);
+    panel.appendChild(t1);
+    var t1Pred = null;
+    commit1.addEventListener("click", function () {
+      if (ldoState.trials[0].committed) return;
+      var p = Number(in1.value);
+      if (!isFinite(p)) { ldoLog("trial 1: that is not a number. The die waits.", "bad"); return; }
+      t1Pred = p;
+      reveal1.disabled = false;
+      commit1.disabled = true; in1.disabled = true;
+      ldoLog("trial 1: prediction committed at " + ldoFmtT(p) + " C. Reveal when ready.", "dim");
+    });
+    reveal1.addEventListener("click", function () {
+      if (ldoState.trials[0].committed || t1Pred === null) return;
+      reveal1.disabled = true;
+      ldoAnimate(t1, LDO_T1.vin, LDO_T1.i, LDO_T1.pkg, function (r) {
+        var chk = ldoCheckT1(t1Pred);
+        if (chk.ok) {
+          ldoState.trials[0].committed = true;
+          v1.textContent = "PASS: called " + ldoFmtT(t1Pred) + " C, die read " + ldoFmtT(chk.tj) +
+            " C, error " + ldoFmtT(chk.err) + " C inside 6 C.";
+          v1.className = "ldo-verdict ok";
+          ldoLog("trial 1 committed: your call of " + ldoFmtT(t1Pred) + " C against a true " +
+            ldoFmtT(chk.tj) + " C. The arithmetic is yours now.", "ok");
+        } else {
+          v1.textContent = "MISS: called " + ldoFmtT(t1Pred) + " C, die read " + ldoFmtT(chk.tj) +
+            " C. Rework the arithmetic and reload the trial.";
+          v1.className = "ldo-verdict bad";
+          ldoLog("trial 1 missed: truth is " + ldoFmtT(chk.tj) + " C. The stepper above shows the way.", "bad");
+          commit1.disabled = false; in1.disabled = false; reveal1.disabled = true; t1Pred = null;
+        }
+        ldoMaybeCertify();
+        ldoPop(t1);
+      });
+    });
+
+    /* trial 2: size the input rail */
+    var t2 = ldoEl("div", "ldo-card");
+    t2.appendChild(ldoEl("h3", null, "TRIAL 2: SIZE THE RAIL"));
+    t2.appendChild(ldoEl("p", "why",
+      "A 700 mA load on a SOT-223 (50 C per watt). Pick the input rail: 4.2, 5, 9, or 12 V. " +
+      "The die must hold at or under 125 C and the rail must clear the 3.6 V dropout floor. " +
+      "Commit a rail; the room runs the load and reads the die. Waste watts are priced in the log."));
+    var t2Row = ldoEl("div", "ldo-row");
+    var t2Sel = {};
+    LDO_RAILS.forEach(function (r) {
+      var lab = ldoEl("label", "ldo-choice");
+      var rb = document.createElement("input");
+      rb.type = "radio"; rb.name = "ldoRail2"; rb.value = String(r); rb.id = "ldoRail2_" + String(r).replace(".", "_");
+      lab.appendChild(rb); lab.appendChild(document.createTextNode(ldoFmtV(r) + " V"));
+      t2Row.appendChild(lab);
+      t2Sel[r] = rb;
+    });
+    t2.appendChild(t2Row);
+    var t2BtnRow = ldoEl("div", "ldo-row");
+    var commit2 = ldoEl("button", "ldo-btn solid", "COMMIT RAIL");
+    commit2.type = "button"; commit2.id = "ldoCommit2";
+    var reset2 = ldoEl("button", "ldo-btn", "RESET TRIAL");
+    reset2.type = "button"; reset2.id = "ldoReset2"; reset2.disabled = true;
+    t2BtnRow.appendChild(commit2); t2BtnRow.appendChild(reset2);
+    t2.appendChild(t2BtnRow);
+    var t2Therm = ldoEl("div", "ldo-therm");
+    t2Therm.appendChild(ldoEl("div", "ldo-fill"));
+    t2.appendChild(t2Therm);
+    var t2Read = ldoEl("div", "ldo-read");
+    t2Read.id = "ldoT2Read";
+    t2Read.innerHTML = "<span class=\"big\">? C</span> die<br><span class=\"ldo-tag\">UNRUN</span>";
+    t2.appendChild(t2Read);
+    var v2 = ldoEl("div", "ldo-verdict"); v2.id = "ldoVerdict2";
+    t2.appendChild(v2);
+    panel.appendChild(t2);
+    function ldoT2Pick() {
+      for (var k in t2Sel) if (t2Sel[k].checked) return Number(k);
+      return null;
+    }
+    commit2.addEventListener("click", function () {
+      if (ldoState.trials[1].committed) return;
+      var vin = ldoT2Pick();
+      if (vin === null) { ldoLog("trial 2: pick a rail first.", "bad"); return; }
+      commit2.disabled = true; reset2.disabled = false;
+      var chk = ldoCheckT2(vin);
+      ldoAnimate(t2, vin, LDO_T2.i, LDO_T2.pkg, function (r) {
+        if (chk.ok) {
+          ldoState.trials[1].committed = true;
+          ldoState.trials[1].vin = vin;
+          var best = (vin === 4.2) ? " The cleanest pick: only " + ldoFmtW(chk.s.p) + " of heat." :
+            " It holds, but " + ldoFmtW(chk.s.p) + " of heat against " +
+            ldoFmtW(ldoSim(4.2, LDO_T2.i, LDO_T2.pkg).p) + " at 4.2 V: you left watts on the table.";
+          v2.textContent = "PASS: " + ldoFmtV(vin) + " V in, die " + ldoFmtT(chk.s.tj) +
+            " C at or under 125 C, clear of dropout." + best;
+          v2.className = "ldo-verdict ok";
+          ldoLog("trial 2 committed: " + ldoFmtV(vin) + " V rail, die " + ldoFmtT(chk.s.tj) +
+            " C, waste " + ldoFmtW(chk.s.p) + ".", "ok");
+        } else {
+          v2.textContent = "FAIL: " + ldoFmtV(vin) + " V in drives the die to " + ldoFmtT(chk.s.tj) +
+            " C (" + r.fate.toUpperCase() + "). Reset the trial and price the heat again.";
+          v2.className = "ldo-verdict bad";
+          ldoLog("trial 2 failed: " + ldoFmtV(vin) + " V wastes " + ldoFmtW(chk.s.p) +
+            " and the die " + r.fate + ".", "bad");
+        }
+        ldoMaybeCertify();
+        ldoPop(t2);
+      });
+    });
+    reset2.addEventListener("click", function () {
+      ldoState.trials[1].committed = false;
+      delete ldoState.trials[1].vin;
+      commit2.disabled = false; reset2.disabled = true;
+      for (var k in t2Sel) t2Sel[k].checked = false;
+      var bar = t2.querySelector(".ldo-fill");
+      bar.style.width = "0%"; bar.className = "ldo-fill";
+      t2Read.innerHTML = "<span class=\"big\">? C</span> die<br><span class=\"ldo-tag\">UNRUN</span>";
+      v2.textContent = ""; v2.className = "ldo-verdict";
+      ldoMaybeCertify();
+      ldoLog("trial 2 reset. The rails are cold again.", "dim");
+    });
+
+    /* trial 3: diagnose the cool-die crash */
+    var t3 = ldoEl("div", "ldo-card");
+    t3.appendChild(ldoEl("h3", null, "TRIAL 3: THE CRASH THAT IS NOT HEAT"));
+    t3.appendChild(ldoEl("p", "why",
+      "A board crashes under load. The die reads a cool 60 C. The input rail is 3.45 V, the load is 600 mA, " +
+      "and the output sags to 3.15 V when it should hold 3.30 V. Name the failure, then name the fix. " +
+      "A heatsink cannot fix a rail problem."));
+    t3.appendChild(ldoEl("p", "why", "THE FAILURE IS:"));
+    var d3Row = ldoEl("div", "ldo-row");
+    var d3Sel = {};
+    [["heat", "The die overheated into thermal shutdown"],
+     ["dropout", "The input sits inside dropout headroom"],
+     ["limit", "The load exceeded the 1 A current limit"]].forEach(function (pair, ix) {
+      var lab = ldoEl("label", "ldo-choice");
+      var rb = document.createElement("input");
+      rb.type = "radio"; rb.name = "ldoDiag3"; rb.value = pair[0]; rb.id = "ldoDiag3_" + ix;
+      lab.appendChild(rb); lab.appendChild(document.createTextNode(pair[1]));
+      d3Row.appendChild(lab);
+      d3Sel[pair[0]] = rb;
+    });
+    t3.appendChild(d3Row);
+    t3.appendChild(ldoEl("p", "why", "THE FIX IS:"));
+    var f3Row = ldoEl("div", "ldo-row");
+    var f3Sel = {};
+    [["raise", "Raise the input rail to 4.2 V"],
+     ["sink", "Bolt on a bigger heatsink"],
+     ["halve", "Halve the load to 300 mA"]].forEach(function (pair, ix) {
+      var lab = ldoEl("label", "ldo-choice");
+      var rb = document.createElement("input");
+      rb.type = "radio"; rb.name = "ldoFix3"; rb.value = pair[0]; rb.id = "ldoFix3_" + ix;
+      lab.appendChild(rb); lab.appendChild(document.createTextNode(pair[1]));
+      f3Row.appendChild(lab);
+      f3Sel[pair[0]] = rb;
+    });
+    t3.appendChild(f3Row);
+    var t3BtnRow = ldoEl("div", "ldo-row");
+    var commit3 = ldoEl("button", "ldo-btn solid", "COMMIT DIAGNOSIS");
+    commit3.type = "button"; commit3.id = "ldoCommit3";
+    t3BtnRow.appendChild(commit3);
+    t3.appendChild(t3BtnRow);
+    var v3 = ldoEl("div", "ldo-verdict"); v3.id = "ldoVerdict3";
+    t3.appendChild(v3);
+    panel.appendChild(t3);
+    function ldoT3Pick(sel) {
+      for (var k in sel) if (sel[k].checked) return k;
+      return null;
+    }
+    commit3.addEventListener("click", function () {
+      if (ldoState.trials[2].committed) return;
+      var dg = ldoT3Pick(d3Sel), fx = ldoT3Pick(f3Sel);
+      if (!dg || !fx) { ldoLog("trial 3: name the failure and the fix, both.", "bad"); return; }
+      if (dg !== "dropout") {
+        v3.textContent = "WRONG CALL: the die is cool at 60 C, so heat is not the story. Read the rail: 3.45 V against a 3.6 V dropout floor.";
+        v3.className = "ldo-verdict bad";
+        ldoLog("trial 3: misdiagnosis. A cool die rules out thermal shutdown.", "bad");
+        return;
+      }
+      if (fx !== "raise") {
+        v3.textContent = "RIGHT FAILURE, WRONG FIX: the rail is the problem, so cooling the die or lightening the load changes nothing. Fix the rail.";
+        v3.className = "ldo-verdict bad";
+        ldoLog("trial 3: right failure, wrong fix. The rail is the patient.", "bad");
+        return;
+      }
+      var before = ldoSim(LDO_T3.vin, LDO_T3.i, LDO_T3.pkg);
+      var after = ldoSim(LDO_T3.fixVin, LDO_T3.i, LDO_T3.pkg);
+      ldoState.trials[2].committed = true;
+      commit3.disabled = true;
+      v3.textContent = "PASS: dropout, fixed at the rail. Input 3.45 V held the output at " +
+        ldoFmtV(before.vout) + " V; at 4.2 V the output holds " + ldoFmtV(after.vout) +
+        " V and the die sits at " + ldoFmtT(after.tj) + " C.";
+      v3.className = "ldo-verdict ok";
+      ldoLog("trial 3 committed: dropout at 3.45 V in (output " + ldoFmtV(before.vout) +
+        " V), repaired to " + ldoFmtV(after.vout) + " V out at 4.2 V in.", "ok");
+      ldoMaybeCertify();
+      ldoPop(t3);
+    });
+
+    /* certification banner */
+    var banner = ldoEl("div", "ldo-banner");
+    banner.id = "ldoBanner";
+    banner.appendChild(ldoEl("h3", null, "ROOM CERTIFIED"));
+    banner.appendChild(ldoEl("p", null,
+      "You priced the heat, sized the window, and refused to heatsink a rail problem. " +
+      "Log the certification and the room remembers."));
+    var certAll = ldoEl("button", "ldo-btn solid", "LOG THE CERTIFICATION");
+    certAll.type = "button"; certAll.id = "ldoCertAllBtn";
+    banner.appendChild(certAll);
+    panel.appendChild(banner);
+    ldoEls.banner = banner;
+
+    var logWrap = ldoEl("div", "ldo-card");
+    logWrap.appendChild(ldoEl("h3", null, "BENCH LOG"));
+    var log = ldoEl("div", "ldo-log");
+    log.id = "ldoLog";
+    logWrap.appendChild(log);
+    panel.appendChild(logWrap);
+    ldoEls.log = log;
+
+    certAll.addEventListener("click", function () {
+      if (ldoState.certified) return;
+      ldoState.certified = true;
+      ldoLog(ldoCertLine(), "ok");
+      certAll.disabled = true;
+      ldoLog("certification logged. The room remembers your arithmetic.", "dim");
+    });
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    ldoLog("bench open. The rail is 5 V, the package is SOT-23, and the die is at room temperature. Burn one.", "dim");
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", ldoBuild);
+  } else {
+    ldoBuild();
+  }
+})();
