@@ -698,7 +698,11 @@ var PG_BENCHES = [
   { section: "silicon", n: "50", name: "The LDO Room", btn: "ldoBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "A linear regulator burns the voltage it drops as heat, watt for watt. The input rail is a window: high enough to stay out of dropout, low enough to stay under the die's temperature limit.",
     how: "Burn a die at 5 V in a SOT-23, call the 127 C die on a 300 mA load within 6 C, size an input rail that holds a 700 mA load at or under 125 C, then fix the crash that is not heat.",
-    spec: "LINEAR REGULATORS \u00B7 3 TRIALS" }
+    spec: "LINEAR REGULATORS \u00B7 3 TRIALS" },
+  { section: "oldiron", n: "51", name: "The Stripe Room", btn: "stripeBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "Resistor color codes on the bench: read 4-band and 5-band stripes, survive gold multipliers and the wrong-end trap, verify every part against the bench meter.",
+    how: "Read each part's stripes, enter the value in ohms, commit the reading, then the meter verifies.",
+    spec: "4+5 BAND \u00B7 8 PARTS" }
 ];
 
 var pgFilter = "all";
@@ -1110,9 +1114,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=d9e2c22903" defer></script>
-<script src="rvdata.js?v=d9e2c22903" defer></script>
-<script src="riscv-lab.js?v=d9e2c22903" defer></script>
-<script src="features.js?v=d9e2c22903" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=b8f7537303" defer></script>
+<script src="rvdata.js?v=b8f7537303" defer></script>
+<script src="riscv-lab.js?v=b8f7537303" defer></script>
+<script src="features.js?v=b8f7537303" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

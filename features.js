@@ -36123,3 +36123,522 @@ if (typeof module !== "undefined" && module.exports) {
     ldoBuild();
   }
 })();
+/* ============================================================
+   BENCH 51: THE STRIPE ROOM (oldiron)
+   Resistor color codes on the bench: read 4-band and 5-band
+   stripes, survive gold multipliers and the wrong-end trap, and
+   verify every part against the bench meter.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------- the code chart, stated in the copy ---------- */
+  var SR_DIGIT = { black: 0, brown: 1, red: 2, orange: 3, yellow: 4, green: 5,
+                   blue: 6, violet: 7, gray: 8, white: 9 };
+  var SR_MULT = { black: 1, brown: 10, red: 100, orange: 1e3, yellow: 1e4,
+                  green: 1e5, blue: 1e6, violet: 1e7, gray: 1e8, white: 1e9,
+                  gold: 0.1, silver: 0.01 };
+  var SR_TOL = { brown: 1, red: 2, gold: 5, silver: 10 };
+  var SR_HEX = { black: "#181818", brown: "#6e3b1e", red: "#d92b2b",
+                 orange: "#e8821e", yellow: "#f0cf26", green: "#2fa04a",
+                 blue: "#2a72d8", violet: "#7d40d4", gray: "#8d8d8d",
+                 white: "#f4f4f4", gold: "#c9a227", silver: "#bcc3ca" };
+  function srCap(c) { return c.charAt(0).toUpperCase() + c.slice(1); }
+
+  /* parts: bands in TRUE reading order; rev=true means the room drew it backwards */
+  var SR_PARTS = [
+    { id: "s1a", trial: 1, bands: ["red", "red", "brown", "gold"], rev: false,
+      blurb: "The classic 4-band part.", tols: [5, 10] },
+    { id: "s1b", trial: 1, bands: ["brown", "black", "red", "gold"], rev: false,
+      blurb: "Red multiplier, gold tolerance.", tols: [5, 10] },
+    { id: "s1c", trial: 1, bands: ["yellow", "violet", "orange", "silver"], rev: false,
+      blurb: "Silver tolerance, orange multiplier.", tols: [5, 10] },
+    { id: "s2a", trial: 2, bands: ["brown", "black", "black", "red", "brown"], rev: false,
+      blurb: "Five bands: three digits now.", tols: [1, 2, 5] },
+    { id: "s2b", trial: 2, bands: ["yellow", "violet", "red", "brown", "brown"], rev: false,
+      blurb: "Precision 1%, brown multiplier.", tols: [1, 2, 5] },
+    { id: "s2c", trial: 2, bands: ["yellow", "violet", "gold", "gold"], rev: false,
+      blurb: "Gold as a multiplier: divide by 10.", tols: [2, 5] },
+    { id: "s3a", trial: 3, bands: ["red", "red", "brown", "gold"], rev: true,
+      blurb: "Drawn backwards on purpose. Find the tolerance end first.", tols: [5, 10] },
+    { id: "s3b", trial: 3, bands: ["red", "violet", "brown", "gold"], rev: false,
+      blurb: "Drawn correctly. The trap is assuming they all are.", tols: [5, 10] }
+  ];
+
+  /* ---------- pure sims (no DOM) ---------- */
+  function stripeNominal(bands) {
+    var nd = bands.length - 2, v = 0, i;
+    for (i = 0; i < nd; i++) v = v * 10 + SR_DIGIT[bands[i]];
+    v = v * SR_MULT[bands[nd]];
+    return { value: v, tol: SR_TOL[bands[nd + 1]] };
+  }
+  function stripeMeter(nom) {
+    return nom.value * (1 + (Math.random() * 2 - 1) * nom.tol / 100);
+  }
+  function stripeTrim3(x) { return String(Number(x.toPrecision(3))); }
+  function stripeFmt(v) {
+    var a = Math.abs(v);
+    if (a >= 1e6) return stripeTrim3(v / 1e6) + " MΩ";
+    if (a >= 1e3) return stripeTrim3(v / 1e3) + " kΩ";
+    return stripeTrim3(v) + " Ω";
+  }
+  function stripeWindow(nom) {
+    var lo = nom.value * (1 - nom.tol / 100), hi = nom.value * (1 + nom.tol / 100);
+    return stripeFmt(lo) + " to " + stripeFmt(hi);
+  }
+
+  /* ---------- css ---------- */
+  var SR_CSS = [
+    ".stripe-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".stripe-overlay.open{display:block}",
+    ".stripe-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".stripe-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".stripe-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".stripe-sub{font-size:14px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.92;margin:0 0 18px;max-width:68ch}",
+    ".stripe-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".stripe-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".stripe-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".stripe-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".stripe-fail{border:1px solid var(--ember,#ff5a1f)}",
+    ".stripe-fail li{font-size:13px;line-height:1.6;margin:0 0 6px;list-style:none}",
+    ".stripe-fail ul{padding:0;margin:0}",
+    ".stripe-fail b{color:var(--ember,#ff5a1f);font-weight:700}",
+    ".stripe-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}",
+    ".stripe-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
+    ".stripe-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".stripe-btn:disabled{opacity:.35;cursor:default}",
+    ".stripe-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#101014}",
+    ".stripe-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".stripe-in{font-family:'IBM Plex Mono',monospace;font-size:15px;min-height:48px;padding:10px 14px;background:#0c0c10;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));width:170px}",
+    ".stripe-in:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".stripe-choice{display:flex;gap:8px;align-items:center;min-height:48px;padding:8px 12px;border:1px solid var(--line,rgba(242,237,228,.22));cursor:pointer;font-size:13px}",
+    ".stripe-choice input{width:22px;height:22px;accent-color:var(--ember,#ff5a1f)}",
+    ".stripe-verdict{font-size:14px;line-height:1.6;margin:10px 0 0;min-height:24px}",
+    ".stripe-verdict.ok{color:#9fe870}",
+    ".stripe-verdict.bad{color:#ff5a1f}",
+    ".stripe-meter{font-size:13px;line-height:1.7;margin:8px 0 0;min-height:20px}",
+    ".stripe-lanes{font-size:13px;line-height:1.9}",
+    ".stripe-log{font-size:12.5px;line-height:1.7;max-height:280px;overflow-y:auto}",
+    ".stripe-log div{margin:0 0 6px;padding-bottom:6px;border-bottom:1px dotted var(--line,rgba(242,237,228,.14))}",
+    ".stripe-log .ok{color:#9fe870}",
+    ".stripe-log .bad{color:#ff5a1f}",
+    ".stripe-log .dim{opacity:.6}",
+    ".stripe-banner{display:none;border:1px solid var(--ember,#ff5a1f);padding:18px;margin:0 0 14px}",
+    ".stripe-banner h3{font-family:'Space Grotesk',sans-serif;letter-spacing:.14em;font-size:16px;color:var(--ember,#ff5a1f);margin:0 0 8px}",
+    ".stripe-banner p{font-size:13px;line-height:1.65;margin:0 0 12px}",
+    ".stripe-pop{animation:stripePop 200ms ease-out}",
+    "@keyframes stripePop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    "@media (prefers-reduced-motion:reduce){.stripe-pop{animation:none}}",
+    ".stripe-rwrap{display:flex;align-items:center;justify-content:center;margin:14px 0 6px}",
+    ".stripe-lead{width:56px;height:3px;background:#9a9a9a;flex:0 0 auto}",
+    ".stripe-body{position:relative;width:min(420px,78%);height:64px;background:#d9b878;border-radius:10px;flex:0 1 auto;box-shadow:inset 0 -6px 10px rgba(0,0,0,.25)}",
+    ".stripe-band{position:absolute;top:0;bottom:0;width:22px;border-left:1px solid rgba(0,0,0,.55);border-right:1px solid rgba(0,0,0,.55)}",
+    ".stripe-legend{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:8px 0 4px}",
+    ".stripe-swatch{display:flex;gap:8px;align-items:center;min-height:48px;padding:6px 12px;border:1px solid var(--line,rgba(242,237,228,.22));font-size:12px;background:transparent;color:var(--paper,#f2ede4);cursor:pointer;font-family:'IBM Plex Mono',monospace}",
+    ".stripe-swatch:hover{border-color:var(--ember,#ff5a1f)}",
+    ".stripe-swatch:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".stripe-chip{width:22px;height:22px;border:1px solid rgba(0,0,0,.6);flex:0 0 auto}",
+    ".stripe-chart{font-size:13px;line-height:1.9}",
+    ".stripe-chart b{color:var(--ember,#ff5a1f)}",
+    ".stripe-parthead{font-size:12px;letter-spacing:.18em;color:var(--ember,#ff5a1f);margin-bottom:6px}",
+    ".stripe-blurb{font-size:13px;opacity:.85;margin:0 0 6px}"
+  ].join("\n");
+
+  /* ---------- intro copy: why first, worked example, failure modes ---------- */
+  var SR_INTRO_HTML = [
+    "<div class=\"stripe-card\"><h3>WHY THIS ROOM EXISTS</h3>",
+    "<p class=\"why\">Before a resistor earns a place in a circuit, you read its stripes. The body is too small to print a number on, ",
+    "so the industry painted the value on in color. Every bench hand reads bands at a glance, and a misread band is a 50-cent part ",
+    "that lies to the circuit. This room is the whole skill: digit bands, the multiplier, the tolerance band, and the one trap, ",
+    "reading the stripes from the wrong end.</p>",
+    "<p class=\"why\">The worked example, by hand. A part carries red, red, brown, then a wide gap, then gold. ",
+    "Red is the digit 2, so the first two bands give 22. Brown is a multiplier of 10: 22 x 10 = 220 ohms. ",
+    "Gold, set apart by the gap, is the tolerance: 5%. The bench meter reads this part at 218 ohms, inside the 209 to 231 window ",
+    "that 5% allows. The reading agrees with the stripes. That agreement is the whole game you are about to play.</p></div>",
+    "<div class=\"stripe-card stripe-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3>",
+    "<ul><li><b>WRONG-END READ:</b> stripes read from the tolerance end name a different part, or an impossible one. ",
+    "The wide gap marks the tolerance end; read from the other side.</li>",
+    "<li><b>GOLD AND SILVER ARE NEVER DIGITS:</b> they appear only as the multiplier (gold divides by 10, silver divides by 100) ",
+    "or as the tolerance (gold 5%, silver 10%). A reading that starts with gold is wrong by definition.</li>",
+    "<li><b>OUT OF TOLERANCE:</b> if the meter reads outside the band's window, the part has drifted or failed. ",
+    "Every part in this room is healthy; the meter is here to confirm your reading, not to trap you.</li></ul></div>"
+  ].join("");
+
+  var SR_CHART_HTML = [
+    "<div class=\"stripe-card\"><h3>THE CODE CHART, KEPT ON THE BENCH</h3>",
+    "<p class=\"stripe-chart\"><b>DIGITS:</b> black 0, brown 1, red 2, orange 3, yellow 4, green 5, blue 6, violet 7, gray 8, white 9<br>",
+    "<b>MULTIPLIER:</b> black x1, brown x10, red x100, orange x1k, yellow x10k, green x100k, blue x1M, violet x10M, gray x100M, white x1G, gold /10, silver /100<br>",
+    "<b>TOLERANCE:</b> brown 1%, red 2%, gold 5%, silver 10%. A part with no tolerance band reads 20%; it is an old-timer's marking, and every part in this room carries a tolerance band.</p></div>"
+  ].join("");
+
+  var SR_STEPS = [
+    "Band 1 is RED. The chart says red is the digit 2.",
+    "Band 2 is RED, the second digit. Two digits now: 22.",
+    "Band 3 is BROWN, a multiplier of 10. 22 x 10 = 220 ohms.",
+    "Band 4 is GOLD, set apart by the wide gap: tolerance 5%. This band always goes last.",
+    "The stripes say 220 ohms, plus or minus 5%. The meter must read between 209 and 231 ohms."
+  ];
+
+  /* ---------- dom helpers ---------- */
+  var stripeEls = null;
+  function srEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  function srLog(msg, cls) {
+    var d = srEl("div", cls || "", msg);
+    stripeEls.log.appendChild(d);
+    stripeEls.log.scrollTop = stripeEls.log.scrollHeight;
+  }
+  function srPop(card) {
+    card.classList.remove("stripe-pop");
+    void card.offsetWidth;
+    card.classList.add("stripe-pop");
+  }
+
+  /* ---------- state ---------- */
+  var srState = { step: 0, parts: {}, certified: false };
+  SR_PARTS.forEach(function (p) { srState.parts[p.id] = { passed: false, strikes: 0 }; });
+
+  /* ---------- resistor renderer ---------- */
+  function stripeBandPos(n, rev) {
+    if (n === 4) return rev ? [8, 32, 46, 60] : [20, 34, 48, 70];
+    return rev ? [6, 26, 38, 50, 66] : [16, 28, 40, 52, 72];
+  }
+  function stripeResistor(p, card) {
+    var bands = p.bands.slice();
+    if (p.rev) bands.reverse();
+    var n = bands.length, pos = stripeBandPos(n, p.rev);
+    var wrap = srEl("div", "stripe-rwrap");
+    wrap.appendChild(srEl("div", "stripe-lead"));
+    var body = srEl("div", "stripe-body");
+    bands.forEach(function (c, i) {
+      var b = srEl("span", "stripe-band");
+      b.style.background = SR_HEX[c];
+      b.style.left = "calc(" + pos[i] + "% - 11px)";
+      b.title = "band " + (i + 1) + ": " + c;
+      body.appendChild(b);
+    });
+    wrap.appendChild(body);
+    wrap.appendChild(srEl("div", "stripe-lead"));
+    var leg = srEl("div", "stripe-legend");
+    bands.forEach(function (c, i) {
+      var sw = srEl("button", "stripe-swatch");
+      sw.type = "button";
+      sw.setAttribute("aria-label", "Band " + (i + 1) + " is " + c + ". Announce it in the log.");
+      var chip = srEl("span", "stripe-chip");
+      chip.style.background = SR_HEX[c];
+      sw.appendChild(chip);
+      sw.appendChild(document.createTextNode("BAND " + (i + 1) + ": " + srCap(c)));
+      (function (ix, cc) {
+        sw.addEventListener("click", function () {
+          srLog("band " + (ix + 1) + " is " + cc + ". Check it against the chart.", "dim");
+        });
+      })(i, c);
+      leg.appendChild(sw);
+    });
+    var frag = document.createDocumentFragment();
+    frag.appendChild(wrap);
+    frag.appendChild(leg);
+    return frag;
+  }
+
+  /* ---------- certification ---------- */
+  function srMaybeCertify() {
+    var all = SR_PARTS.every(function (p) { return srState.parts[p.id].passed; });
+    if (stripeEls && stripeEls.banner) stripeEls.banner.style.display = all ? "block" : "none";
+  }
+  function srCertLine() {
+    return "THE STRIPE ROOM, CERTIFIED. Read 8 parts by their stripes: three 4-band, " +
+      "three precision and gold-multiplier, two through the wrong-end trap. Every meter reading agreed.";
+  }
+
+  /* ---------- part card ---------- */
+  function stripePick(name) {
+    var els = document.getElementsByName(name);
+    for (var i = 0; i < els.length; i++) if (els[i].checked) return els[i].value;
+    return null;
+  }
+  function stripePartCard(p, num) {
+    var card = srEl("div", "stripe-card");
+    card.id = "stripeCard_" + p.id;
+    card.appendChild(srEl("div", "stripe-parthead", "TRIAL " + p.trial + " \u00B7 PART " + num + " OF 8"));
+    card.appendChild(srEl("p", "stripe-blurb", p.blurb));
+    card.appendChild(stripeResistor(p, card));
+
+    if (p.trial === 3) {
+      var dLabel = srEl("p", "why", "READING DIRECTION FIRST: which end carries band 1?");
+      card.appendChild(dLabel);
+      var dRow = srEl("div", "stripe-row");
+      [["left", "LEFT END"], ["right", "RIGHT END"]].forEach(function (pair, ix) {
+        var lab = srEl("label", "stripe-choice");
+        var rb = document.createElement("input");
+        rb.type = "radio"; rb.name = "stripeDir_" + p.id; rb.value = pair[0];
+        rb.id = "stripeDir_" + p.id + "_" + ix;
+        lab.appendChild(rb);
+        lab.appendChild(document.createTextNode(pair[1]));
+        dRow.appendChild(lab);
+      });
+      card.appendChild(dRow);
+    }
+
+    var row = srEl("div", "stripe-row");
+    var inp = srEl("input", "stripe-in");
+    inp.type = "text"; inp.inputMode = "decimal"; inp.id = "stripeVal_" + p.id;
+    inp.setAttribute("aria-label", "Decoded value in ohms, plain number");
+    inp.placeholder = "ohms, e.g. 4700";
+    row.appendChild(inp);
+    p.tols.forEach(function (t, ix) {
+      var lab = srEl("label", "stripe-choice");
+      var rb = document.createElement("input");
+      rb.type = "radio"; rb.name = "stripeTol_" + p.id; rb.value = String(t);
+      rb.id = "stripeTol_" + p.id + "_" + ix;
+      lab.appendChild(rb);
+      lab.appendChild(document.createTextNode(String(t) + "% tol"));
+      row.appendChild(lab);
+    });
+    card.appendChild(row);
+    var btnRow = srEl("div", "stripe-row");
+    var commit = srEl("button", "stripe-btn solid", "COMMIT READING");
+    commit.type = "button"; commit.id = "stripeCommit_" + p.id;
+    btnRow.appendChild(commit);
+    card.appendChild(btnRow);
+    var meter = srEl("div", "stripe-meter"); meter.id = "stripeMeter_" + p.id;
+    card.appendChild(meter);
+    var verdict = srEl("div", "stripe-verdict"); verdict.id = "stripeVerdict_" + p.id;
+    card.appendChild(verdict);
+
+    commit.addEventListener("click", function () { stripeCommit(p); });
+    return card;
+  }
+
+  function stripeCommit(p) {
+    var st = srState.parts[p.id];
+    if (st.passed) return;
+    var card = document.getElementById("stripeCard_" + p.id);
+    var verdict = document.getElementById("stripeVerdict_" + p.id);
+    var meterEl = document.getElementById("stripeMeter_" + p.id);
+    var nom = stripeNominal(p.bands);
+
+    if (p.trial === 3) {
+      var dir = stripePick("stripeDir_" + p.id);
+      if (!dir) { srLog("part " + p.id + ": choose the reading direction first.", "bad"); return; }
+      var want = p.rev ? "right" : "left";
+      if (dir !== want) {
+        st.strikes++;
+        var whyDir = p.rev
+          ? "You read from the tolerance end. The wide gap and the gold band mark the last band; start at the other side."
+          : "The wide gap sits at the right, so the tolerance band is last; start at the left end.";
+        verdict.textContent = "WRONG END: " + whyDir + " A reading that begins with gold or silver is wrong by definition.";
+        verdict.className = "stripe-verdict bad";
+        srLog("part " + p.id + ": wrong-end read. " + whyDir, "bad");
+        srPop(card);
+        return;
+      }
+    }
+
+    var raw = document.getElementById("stripeVal_" + p.id).value;
+    var val = Number(raw);
+    if (!isFinite(val)) {
+      srLog("part " + p.id + ": that is not a number. The stripes wait.", "bad");
+      return;
+    }
+    var tolPick = stripePick("stripeTol_" + p.id);
+    if (tolPick === null) {
+      srLog("part " + p.id + ": pick the tolerance the last band names.", "bad");
+      return;
+    }
+    var tol = Number(tolPick);
+    var m = stripeMeter(nom);
+    meterEl.textContent = "METER: " + stripeFmt(m) + " (healthy window " + stripeWindow(nom) + ")";
+    var valOk = Math.abs(val - nom.value) <= 1e-9 * Math.max(1, nom.value);
+    var tolOk = tol === nom.tol;
+    if (valOk && tolOk) {
+      st.passed = true;
+      commitDisable(p);
+      verdict.textContent = "PASS: the stripes say " + stripeFmt(nom.value) + ", " + nom.tol +
+        "%. The meter agrees.";
+      verdict.className = "stripe-verdict ok";
+      srLog("part " + p.id + " committed: " + stripeFmt(nom.value) + " at " + nom.tol +
+        "%, meter " + stripeFmt(m) + ". Clean read.", "ok");
+    } else {
+      st.strikes++;
+      if (!valOk && !tolOk) {
+        verdict.textContent = "MISS: you read " + stripeFmt(val) + " at " + tol +
+          "%; the stripes say " + stripeFmt(nom.value) + " at " + nom.tol +
+          "%. Walk the chart: digits, multiplier, tolerance band last.";
+      } else if (!valOk) {
+        verdict.textContent = "MISS: you read " + stripeFmt(val) + "; the stripes say " +
+          stripeFmt(nom.value) + ". Recount the digits and the multiplier.";
+      } else {
+        verdict.textContent = "VALUE RIGHT, TOLERANCE WRONG: the last band is " +
+          srCap(p.bands[p.bands.length - 1]) + ", which names " + nom.tol + "%.";
+      }
+      verdict.className = "stripe-verdict bad";
+      srLog("part " + p.id + ": miss. Value " + (valOk ? "right" : "wrong") +
+        ", tolerance " + (tolOk ? "right" : "wrong") + ".", "bad");
+    }
+    srMaybeCertify();
+    srPop(card);
+  }
+  function commitDisable(p) {
+    document.getElementById("stripeVal_" + p.id).disabled = true;
+    document.getElementById("stripeCommit_" + p.id).disabled = true;
+    var i, els;
+    els = document.getElementsByName("stripeTol_" + p.id);
+    for (i = 0; i < els.length; i++) els[i].disabled = true;
+    els = document.getElementsByName("stripeDir_" + p.id);
+    for (i = 0; i < els.length; i++) els[i].disabled = true;
+  }
+
+  /* ---------- overlay open/close ---------- */
+  function stripeOpen() { if (stripeEls) stripeEls.overlay.classList.add("open"); }
+  function stripeClose() { if (stripeEls) stripeEls.overlay.classList.remove("open"); }
+
+  function stripeBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("stripeBtn")) return;
+    stripeEls = { overlay: null, log: null, banner: null };
+
+    var st = document.createElement("style");
+    st.textContent = SR_CSS;
+    document.head.appendChild(st);
+
+    var b = document.createElement("button");
+    b.id = "stripeBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Stripe Room";
+    b.addEventListener("click", stripeOpen);
+    box.appendChild(b);
+
+    var ov = srEl("div", "stripe-overlay");
+    ov.id = "stripeOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Stripe Room");
+    var x = srEl("button", "stripe-btn", "CLOSE");
+    x.id = "stripeXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Stripe Room");
+    x.addEventListener("click", stripeClose);
+    ov.appendChild(x);
+    stripeEls.overlay = ov;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && ov.classList.contains("open")) stripeClose();
+    });
+
+    var panel = srEl("div", "stripe-panel");
+    panel.appendChild(srEl("div", "stripe-kicker", "OLD IRON BENCH 51"));
+    panel.appendChild(srEl("h2", "stripe-title", "The Stripe Room"));
+    panel.appendChild(srEl("p", "stripe-sub",
+      "A resistor's value is painted on its body in colored stripes. Read the digits, the multiplier, " +
+      "and the tolerance, verify every part against the bench meter, and do not read from the wrong end."));
+
+    var introWrap = srEl("div", "");
+    introWrap.innerHTML = SR_INTRO_HTML;
+    panel.appendChild(introWrap);
+    var chartWrap = srEl("div", "");
+    chartWrap.innerHTML = SR_CHART_HTML;
+    panel.appendChild(chartWrap);
+
+    /* do-first stepper: consequence-free */
+    var stepCard = srEl("div", "stripe-card");
+    stepCard.appendChild(srEl("h3", null, "DO FIRST: READ ONE FREE"));
+    stepCard.appendChild(srEl("p", "why",
+      "The room hands you one part, red red brown gold, and walks the reading with you. " +
+      "Press REVEAL NEXT BAND; nothing here is graded."));
+    stepCard.appendChild(stripeResistor(
+      { bands: ["red", "red", "brown", "gold"], rev: false }, stepCard));
+    var lanes = srEl("div", "stripe-lanes", "");
+    lanes.id = "stripeLanes";
+    stepCard.appendChild(lanes);
+    var stepRow = srEl("div", "stripe-row");
+    var stepBtn = srEl("button", "stripe-btn", "REVEAL NEXT BAND");
+    stepBtn.type = "button"; stepBtn.id = "stripeStepBtn";
+    stepBtn.setAttribute("aria-label", "Step through the stripe reading");
+    stepRow.appendChild(stepBtn);
+    stepCard.appendChild(stepRow);
+    panel.appendChild(stepCard);
+    stepBtn.addEventListener("click", function () {
+      if (srState.step < SR_STEPS.length) {
+        lanes.innerHTML += (srState.step > 0 ? "<br>" : "") + SR_STEPS[srState.step];
+        srState.step++;
+        srPop(stepCard);
+        if (srState.step >= SR_STEPS.length) stepBtn.disabled = true;
+      }
+    });
+
+    /* trials */
+    var t1Head = srEl("div", "stripe-card");
+    t1Head.appendChild(srEl("h3", null, "TRIAL 1: FOUR BANDS"));
+    t1Head.appendChild(srEl("p", "why",
+      "Three classic parts. Read the two digit bands, the multiplier, and the tolerance. " +
+      "Enter the value in ohms as a plain number (4700 for 4.7k), pick the tolerance the last band names, " +
+      "then COMMIT READING and let the meter confirm."));
+    panel.appendChild(t1Head);
+
+    var t2Head = srEl("div", "stripe-card");
+    t2Head.appendChild(srEl("h3", null, "TRIAL 2: PRECISION AND GOLD"));
+    t2Head.appendChild(srEl("p", "why",
+      "Five-band parts carry three digit bands, and gold now appears as the multiplier: it divides by 10, " +
+      "silver divides by 100. Same game, tighter parts."));
+    panel.appendChild(t2Head);
+
+    var t3Head = srEl("div", "stripe-card");
+    t3Head.appendChild(srEl("h3", null, "TRIAL 3: THE WRONG END"));
+    t3Head.appendChild(srEl("p", "why",
+      "One of these two parts is drawn backwards. Choose the reading direction BEFORE the value: " +
+      "the wide gap and the gold or silver band mark the tolerance end, and gold and silver are never digits. " +
+      "Commit the wrong direction and the reading is void."));
+    panel.appendChild(t3Head);
+
+    var n = 0;
+    SR_PARTS.forEach(function (p) {
+      n++;
+      var headCard = (p.id === "s1a") ? t1Head : (p.id === "s2a") ? t2Head : (p.id === "s3a") ? t3Head : null;
+      if (headCard) headCard.appendChild(srEl("p", "why",
+        p.id === "s1a" ? "PARTS 1 TO 3:" : p.id === "s2a" ? "PARTS 4 TO 6:" : "PARTS 7 AND 8:"));
+      panel.appendChild(stripePartCard(p, n));
+    });
+
+    /* certification banner */
+    var banner = srEl("div", "stripe-banner");
+    banner.id = "stripeBanner";
+    banner.appendChild(srEl("h3", null, "ROOM CERTIFIED"));
+    banner.appendChild(srEl("p", null,
+      "Eight parts read by their stripes, two of them through the wrong-end trap. " +
+      "Log the certification and the room remembers."));
+    var certAll = srEl("button", "stripe-btn solid", "LOG THE CERTIFICATION");
+    certAll.type = "button"; certAll.id = "stripeCertAllBtn";
+    banner.appendChild(certAll);
+    panel.appendChild(banner);
+    stripeEls.banner = banner;
+
+    var logWrap = srEl("div", "stripe-card");
+    logWrap.appendChild(srEl("h3", null, "BENCH LOG"));
+    var log = srEl("div", "stripe-log");
+    log.id = "stripeLog";
+    logWrap.appendChild(log);
+    panel.appendChild(logWrap);
+    stripeEls.log = log;
+
+    certAll.addEventListener("click", function () {
+      if (srState.certified) return;
+      srState.certified = true;
+      srLog(srCertLine(), "ok");
+      certAll.disabled = true;
+      srLog("certification logged. The room remembers your readings.", "dim");
+    });
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    srLog("bench open. Eight parts on the bench, stripes up. The chart is on the wall; the meter is warm.", "dim");
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", stripeBuild);
+  } else {
+    stripeBuild();
+  }
+})();
