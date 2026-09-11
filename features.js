@@ -13913,7 +13913,8 @@ if (typeof module !== "undefined" && module.exports) {
 
     var sub = cbEl("p", "cb-sub");
     sub.innerHTML = "The <b>OLD IRON</b> bench network runs on hand-crimped Cat5e, and a bad crimp means a bench with no network. " +
-      "Seat eight conductors into an 8P8C plug, match the T568 standard on the reference table below, " +
+      "Seat eight conductors into an 8P8C plug (the 8-wire modular connector on the end of every Ethernet patch lead), " +
+      "match the T568 standard on the reference table below, " +
       "run the cable tester, and certify three cables at a full gigabit. " +
       "PATCH-01 is the drill: wire your end to T568B, straight through, pin for pin. " +
       "XOVER-02 teaches the crossover: your end goes T568A, so pairs 1-2 and 3-6 trade places. " +
