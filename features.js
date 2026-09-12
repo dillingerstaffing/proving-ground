@@ -46032,3 +46032,680 @@ if (typeof module !== "undefined" && module.exports) {
     arBuild();
   }
 })();
+/* The Endian Room: bench 64.
+   One atomic mechanism: byte order. The rule that turns a multi-byte
+   value into bytes in memory, and back. RISC-V is little-endian; the
+   network is big-endian. Lay out a word by hand, call the load, place
+   the store, un-garble the wire frame.
+   Self-contained IIFE: only the page-provided globals (document, window)
+   are touched; every helper is en-prefixed. */
+(function () {
+  "use strict";
+
+  /* ---------- pure logic (exported for tests, no DOM) ---------- */
+  function enBytesLE(w) {
+    w = w >>> 0;
+    return [w & 0xFF, (w >>> 8) & 0xFF, (w >>> 16) & 0xFF, (w >>> 24) & 0xFF];
+  }
+  function enWordLE(b) {
+    return (((b[3] << 24) | (b[2] << 16) | (b[1] << 8) | b[0]) >>> 0);
+  }
+  function enWordBE(b) {
+    return (((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) >>> 0);
+  }
+  function enSwap16(v) {
+    v = v & 0xFFFF;
+    return ((((v & 0xFF) << 8) | ((v >>> 8) & 0xFF)) >>> 0);
+  }
+  function enSwap32(v) {
+    v = v >>> 0;
+    return ((((v & 0xFF) << 24) | (((v >>> 8) & 0xFF) << 16) |
+             (((v >>> 16) & 0xFF) << 8) | ((v >>> 24) & 0xFF)) >>> 0);
+  }
+  function enParseHex(s) {
+    var m = String(s).trim().replace(/^0x/i, "").match(/^[0-9a-fA-F]{1,8}$/);
+    return m ? (parseInt(m[0], 16) >>> 0) : null;
+  }
+  function enParseDec(s) {
+    var m = String(s).trim().match(/^[0-9]{1,10}$/);
+    return m ? parseInt(m[0], 10) : null;
+  }
+  function enFmt(w) {
+    var s = (w >>> 0).toString(16).toUpperCase();
+    return "0x" + ("00000000" + s).slice(-8);
+  }
+  function enFmt2(b) {
+    var s = (b & 0xFF).toString(16).toUpperCase();
+    return s.length < 2 ? "0" + s : s;
+  }
+  function enAddr(i) {
+    return "0x" + (0x1000 + i).toString(16).toUpperCase();
+  }
+  function enRandomWord() {
+    return (Math.floor(Math.random() * 4294967296)) >>> 0;
+  }
+  function enPredictT1(word, pred) { return (pred >>> 0) === (word >>> 0); }
+  function enPredictT2(word, byte) { return (byte & 0xFF) === ((word >>> 16) & 0xFF); }
+  function enPredictT3(pred) { return pred === 443; }
+
+  /* ---------- test hooks (harmless in the browser) ---------- */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.EN = {
+      bytesLE: enBytesLE, wordLE: enWordLE, wordBE: enWordBE,
+      swap16: enSwap16, swap32: enSwap32,
+      parseHex: enParseHex, parseDec: enParseDec,
+      fmt: enFmt, fmt2: enFmt2, addr: enAddr,
+      predictT1: enPredictT1, predictT2: enPredictT2, predictT3: enPredictT3,
+      introHTML: null /* filled after the copy const below */
+    };
+  }
+
+  /* ---------- intro copy: why first, worked example, failure modes ---------- */
+  var EN_INTRO_HTML = [
+    "<div class=\"tm-card\"><h3>WHY THIS ROOM EXISTS</h3>",
+    "<p class=\"why\">Every system you will ever bring up moves bytes, and bytes travel in an order " +
+    "someone chose. A 32-bit number is four bytes plus one rule: which byte sits at the lowest " +
+    "address. RISC-V chose <b>little-endian</b>: the least-significant byte lives at the lowest " +
+    "address, so a word load at 0x1000 picks up bits 7:0 from 0x1000, bits 15:8 from 0x1001, and " +
+    "so on. The network chose the opposite: <b>big-endian</b>, most-significant byte first, and " +
+    "every header on every wire arrives that way. Read a value in the other order and nothing " +
+    "traps, nothing warns, and every number you touch is wrong. The bytes are all present and " +
+    "all correct; the order is not. This room is one mechanism, the order rule, taught three " +
+    "ways: lay a word into memory by hand, call what a load reads back, and un-garble a frame " +
+    "that crossed the endian boundary.</p>",
+    "<p class=\"why\">Six terms, earned now. A <b>byte</b> is 8 bits. A <b>halfword</b> is 16 bits, " +
+    "a <b>word</b> is 32. An <b>address</b> is one byte's position in memory. " +
+    "<b>Little-endian</b> means the least-significant byte sits at the lowest address " +
+    "(RISC-V's choice). <b>Big-endian</b> means the most-significant byte sits at the lowest " +
+    "address (the network's choice, also called network order).</p></div>",
+    "<div class=\"tm-card\"><h3>THE WORKED EXAMPLE</h3>",
+    "<p class=\"why\">Store 0xDEADBEEF at address 0x1000, little-endian. Check it with a finger: " +
+    "0x1000 holds EF (the low byte), 0x1001 holds BE, 0x1002 holds AD, 0x1003 holds DE (the " +
+    "high byte). Load a word at 0x1000 and the core reassembles 0xDEADBEEF, which is 3,735,928,559 " +
+    "in decimal. Read the same four bytes big-endian and you get 0xEFBEADDE, which is " +
+    "4,022,250,974: every byte right, the number wrong. The trials scale this exact hand-trace " +
+    "up: one load you call before you run, one store you place by hand, one wire frame you " +
+    "un-garble.</p></div>",
+    "<div class=\"tm-card tm-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3><ul>",
+    "<li><b>THE SILENT MISREAD:</b> a load in the wrong order never traps. The value is simply " +
+    "wrong, and it looks plausible enough to ship. Every bug in this room is this bug.</li>",
+    "<li><b>THE ASSUMED ORDER:</b> reading the bytes in address order as the value is " +
+    "big-endian thinking on a little-endian machine. Trial 1 catches it by name.</li>",
+    "<li><b>THE HALFWORD TRAP:</b> swapping a 32-bit word as two 16-bit halves produces " +
+    "neither order. Trial 2 makes the byte positions visible so the swap lands on the right " +
+    "boundaries.</li>",
+    "<li><b>THE UNPACKED HEADER:</b> network order is big-endian, always. A little-endian " +
+    "host must swap every 16- and 32-bit header field. Port 443 arrives as bytes 01 BB, and a " +
+    "naive host read says 47,873. Trial 3.</li>",
+    "<li><b>THE DOUBLE SWAP:</b> swap on send and swap again on receive and the two errors " +
+    "cancel, until one peer stops swapping. Trial 3 swaps once, at the boundary, and shows " +
+    "you the naive read so you can see exactly what the swap fixes.</li></ul></div>"
+  ].join("");
+
+  if (typeof module !== "undefined" && module.exports && module.exports.EN) {
+    module.exports.EN.introHTML = EN_INTRO_HTML;
+  }
+
+  /* ---------- DOM: element helper, CSS, state ---------- */
+  function enEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  var EN_CSS = [
+    ".en-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".en-overlay.open{display:block}",
+    ".en-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".en-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".en-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".en-sub{font-size:14px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.92;margin:0 0 18px;max-width:68ch}",
+    ".en-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".en-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".en-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".en-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".en-card b{color:var(--ember,#ff5a1f)}",
+    ".tm-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".tm-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".tm-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".tm-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".tm-card b{color:var(--ember,#ff5a1f)}",
+    ".tm-fail{border:1px solid var(--ember,#ff5a1f)}",
+    ".tm-fail li{font-size:13px;line-height:1.6;margin:0 0 6px;list-style:none}",
+    ".tm-fail ul{padding:0;margin:0}",
+    ".en-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}",
+    ".en-lab{font-size:12px;letter-spacing:.12em;opacity:.75}",
+    ".en-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
+    ".en-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".en-btn:disabled{opacity:.35;cursor:default}",
+    ".en-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".en-btn.sel{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12)}",
+    ".en-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#101014}",
+    ".en-verdict{font-size:14px;line-height:1.6;margin:10px 0 0;min-height:24px}",
+    ".en-verdict.ok{color:#9fe870}",
+    ".en-verdict.bad{color:#ff5a1f}",
+    ".en-read{font-size:14px;line-height:1.7;margin:8px 0 0;min-height:22px;white-space:pre-line}",
+    ".en-log{font-size:12.5px;line-height:1.7;max-height:280px;overflow-y:auto}",
+    ".en-log div{margin:0 0 4px}",
+    ".en-log .dim{opacity:.6}",
+    ".en-input{font-family:'IBM Plex Mono',monospace;font-size:14px;min-height:48px;padding:10px 14px;background:rgba(8,8,10,.6);color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));width:170px}",
+    ".en-input:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".en-input:disabled{opacity:.35}",
+    ".en-mem{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}",
+    ".en-byte{border:1px solid var(--line,rgba(242,237,228,.28));min-width:76px;text-align:center;padding:8px 6px}",
+    ".en-addr{font-size:11px;letter-spacing:.1em;opacity:.6;margin-bottom:6px}",
+    ".en-val{font-size:20px;letter-spacing:.08em}",
+    ".en-byte.hit{border-color:var(--ember,#ff5a1f);animation:en-pop 200ms ease-out}",
+    ".en-byte.hit .en-val{color:var(--ember,#ff5a1f)}",
+    "@keyframes en-pop{0%{transform:scale(.55)}100%{transform:scale(1)}}",
+    "@media(prefers-reduced-motion:reduce){.en-byte.hit{animation:none}}",
+    ".en-legend{font-size:11px;letter-spacing:.1em;opacity:.6;margin:4px 0 0}",
+    ".en-banner{border:1px solid var(--ember,#ff5a1f);padding:18px;margin:18px 0;display:none}",
+    ".en-banner.show{display:block}",
+    ".en-banner h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".en-cert{white-space:pre-line;font-size:13px;line-height:1.7;margin:10px 0}",
+    ".en-strikes{font-size:12px;letter-spacing:.14em;color:var(--ember,#ff5a1f);margin:0 0 14px}",
+    ".en-link{color:var(--ember,#ff5a1f)}",
+    ".en-foot{font-size:12px;letter-spacing:.1em;opacity:.7;margin:14px 0}"
+  ].join("\n");
+
+  var enEls = {};
+  var enSt = null;
+  var enEscBound = false;
+
+  function enNewState() {
+    return {
+      t1: { word: enRandomWord(), predOk: false, pass: false },
+      t2: { word: enRandomWord(), predOk: false, pass: false },
+      t3: { predOk: false, pass: false },
+      strikes: 0, failed: false, cert: false
+    };
+  }
+  function enLog(msg, cls) {
+    if (!enEls.log) return;
+    var d = document.createElement("div");
+    if (cls) d.className = cls;
+    d.textContent = msg;
+    enEls.log.appendChild(d);
+    enEls.log.scrollTop = enEls.log.scrollHeight;
+  }
+  function enStrike(note) {
+    if (enSt.failed || enSt.cert) return;
+    enSt.strikes++;
+    if (enEls.strikes) enEls.strikes.textContent = "STRIKES: " + enSt.strikes + "/3";
+    enLog("STRIKE " + enSt.strikes + "/3: " + note, "dim");
+    if (enSt.strikes >= 3) enFail();
+  }
+  function enFail() {
+    enSt.failed = true;
+    if (enEls.failCard) enEls.failCard.style.display = "block";
+    enLog("ROOM FAILED: three strikes. The bytes do not care about your confidence. Reset and run it again.", "dim");
+  }
+
+  /* ---------- shared: a 4-byte memory strip ---------- */
+  function enBuildMem(host, prefix) {
+    var strip = enEl("div", "en-mem");
+    var vals = [];
+    for (var i = 0; i < 4; i++) {
+      (function (i) {
+        var cell = enEl("div", "en-byte");
+        cell.appendChild(enEl("div", "en-addr", enAddr(i)));
+        var v = enEl("div", "en-val", "--");
+        v.id = prefix + "V" + i;
+        cell.appendChild(v);
+        strip.appendChild(cell);
+        vals.push(v);
+      })(i);
+    }
+    host.appendChild(strip);
+    host.appendChild(enEl("p", "en-legend", "LOW BYTE AT LOW ADDRESS. RISC-V READS THIS STRIP LITTLE-ENDIAN."));
+    return vals;
+  }
+  function enFillMem(vals, bytes, hit) {
+    for (var i = 0; i < 4; i++) {
+      vals[i].textContent = enFmt2(bytes[i]);
+      var cell = vals[i].parentNode;
+      cell.classList.remove("hit");
+      if (hit) {
+        void cell.offsetWidth;
+        cell.classList.add("hit");
+      }
+    }
+  }
+
+  /* ---------- do-first card: the lay-out sandbox ---------- */
+  function enBuildDoFirst(panel) {
+    var card = enEl("div", "en-card");
+    card.appendChild(enEl("h3", "", "DO FIRST: LAY A WORD INTO MEMORY"));
+    var p = enEl("p", "why",
+      "No wrong answers on this card. Type any 8 hex digits (try DEADBEEF), press LAY OUT, " +
+      "and watch the four bytes land at 0x1000 to 0x1003. Then press READ BACK and the core " +
+      "reassembles the word. FLIP VIEW reads the same bytes big-endian: the other order the " +
+      "network speaks.");
+    card.appendChild(p);
+    var vals = enBuildMem(card, "enDf");
+    var row = enEl("div", "en-row");
+    var inp = enEl("input", "en-input");
+    inp.id = "enDfIn"; inp.setAttribute("aria-label", "Word to lay out, 8 hex digits");
+    inp.setAttribute("placeholder", "DEADBEEF"); inp.setAttribute("spellcheck", "false");
+    row.appendChild(inp);
+    var lay = enEl("button", "en-btn solid", "LAY OUT");
+    lay.id = "enDfLay";
+    var read = enEl("button", "en-btn", "READ BACK");
+    read.id = "enDfRead";
+    var flip = enEl("button", "en-btn", "FLIP VIEW (BIG-ENDIAN)");
+    flip.id = "enDfFlip";
+    row.appendChild(lay); row.appendChild(read); row.appendChild(flip);
+    card.appendChild(row);
+    var out = enEl("div", "en-read", "");
+    out.id = "enDfOut"; out.setAttribute("aria-live", "polite");
+    card.appendChild(out);
+    var cur = { word: null, flipped: false };
+    lay.addEventListener("click", function () {
+      var w = enParseHex(inp.value);
+      if (w === null) { out.textContent = "Type 1 to 8 hex digits first."; return; }
+      cur.word = w; cur.flipped = false;
+      enFillMem(vals, enBytesLE(w), true);
+      out.textContent = enFmt(w) + " laid out little-endian. 0x1000 holds the low byte " +
+        enFmt2(w & 0xFF) + ".";
+      enLog("do-first: laid out " + enFmt(w) + ".", "dim");
+    });
+    read.addEventListener("click", function () {
+      if (cur.word === null) { out.textContent = "Lay a word out first."; return; }
+      var b = enBytesLE(cur.word);
+      var back = cur.flipped ? enWordBE(b) : enWordLE(b);
+      out.textContent = (cur.flipped ? "Big-endian read: " : "Little-endian read: ") +
+        enFmt(back) + (back === cur.word ? " (matches)" : " (differs: same bytes, other order)");
+      enLog("do-first: read back " + enFmt(back) + (cur.flipped ? " big-endian." : " little-endian."), "dim");
+    });
+    flip.addEventListener("click", function () {
+      if (cur.word === null) { out.textContent = "Lay a word out first."; return; }
+      cur.flipped = !cur.flipped;
+      flip.classList.toggle("sel", cur.flipped);
+      out.textContent = cur.flipped
+        ? "Now viewing big-endian. Same bytes on the strip, different rule: the high byte would sit at the low address."
+        : "Back to little-endian, RISC-V's rule.";
+    });
+    panel.appendChild(card);
+  }
+
+  /* ---------- trial 1: THE LOAD ---------- */
+  function enBuildT1(panel) {
+    var t = enSt.t1;
+    var card = enEl("div", "en-card");
+    card.appendChild(enEl("h3", "", "TRIAL 1: THE LOAD"));
+    card.appendChild(enEl("p", "why",
+      "A sensor register holds these four bytes at 0x1000. A RISC-V LW (load word) reads " +
+      "little-endian. Call the 32-bit word before you run the load: type it as 8 hex digits, " +
+      "COMMIT THE CALL, then RUN LOAD to verify."));
+    var vals = enBuildMem(card, "enT1");
+    enFillMem(vals, enBytesLE(t.word), false);
+    var row = enEl("div", "en-row");
+    row.appendChild(enEl("span", "en-lab", "YOUR CALL:"));
+    var inp = enEl("input", "en-input");
+    inp.id = "enT1Pred"; inp.setAttribute("aria-label", "Predicted word, 8 hex digits");
+    inp.setAttribute("placeholder", "0x????????"); inp.setAttribute("spellcheck", "false");
+    row.appendChild(inp);
+    var commit = enEl("button", "en-btn", "COMMIT CALL");
+    commit.id = "enT1Commit";
+    var run = enEl("button", "en-btn solid", "RUN LOAD");
+    run.id = "enT1Run";
+    row.appendChild(commit); row.appendChild(run);
+    card.appendChild(row);
+    var stat = enEl("div", "en-verdict", "");
+    stat.id = "enT1Stat"; stat.setAttribute("aria-live", "polite");
+    card.appendChild(stat);
+    commit.addEventListener("click", function () {
+      if (enSt.failed || t.pass) return;
+      var p = enParseHex(inp.value);
+      if (p === null) { stat.className = "en-verdict"; stat.textContent = "Type 8 hex digits first; the call needs a value."; return; }
+      if (enPredictT1(t.word, p)) {
+        t.predOk = true;
+        stat.className = "en-verdict";
+        stat.textContent = "CALL RIGHT: " + enFmt(p) + ". Now RUN LOAD and watch the core agree with you.";
+        enLog("t1 call right: " + enFmt(p) + ".", "dim");
+        commit.disabled = true; inp.disabled = true;
+      } else {
+        var b = enBytesLE(t.word);
+        var hint = (p === enWordBE(b))
+          ? " You read the bytes in address order: that is big-endian thinking. RISC-V puts the low byte at the low address, so 0x1000 holds bits 7:0."
+          : " Rebuild it: 0x1000 holds the LOW byte (bits 7:0), 0x1003 holds the HIGH byte.";
+        stat.className = "en-verdict bad";
+        stat.textContent = "CALL WRONG." + hint;
+        enStrike("t1 call " + enFmt(p) + " against " + enFmt(t.word));
+      }
+    });
+    run.addEventListener("click", function () {
+      if (enSt.failed || t.pass) return;
+      if (!t.predOk) {
+        stat.className = "en-verdict";
+        stat.textContent = "The room wants your call first: commit the predicted word above.";
+        return;
+      }
+      var b = enBytesLE(t.word);
+      enFillMem(vals, b, true);
+      t.pass = true;
+      stat.className = "en-verdict ok";
+      stat.textContent = "TRIAL 1 PASS: LW at 0x1000 reads " + enFmt(t.word) + ". Low byte at low address, every time.";
+      enLog("t1 pass: " + enFmt(t.word) + ".", "dim");
+      run.disabled = true;
+      enCheckCert();
+    });
+    panel.appendChild(card);
+  }
+
+  /* ---------- trial 2: THE STORE ---------- */
+  function enBuildT2(panel) {
+    var t = enSt.t2;
+    var card = enEl("div", "en-card");
+    card.appendChild(enEl("h3", "", "TRIAL 2: THE STORE"));
+    card.appendChild(enEl("p", "why",
+      "The core stores the word " + enFmt(t.word) + " at 0x1000. Which byte lands at 0x1002? " +
+      "Call it (two hex digits), COMMIT THE CALL, then STORE AND REVEAL. Count from the low " +
+      "byte at 0x1000, not from the left of the number."));
+    var vals = enBuildMem(card, "enT2");
+    var row = enEl("div", "en-row");
+    row.appendChild(enEl("span", "en-lab", "BYTE AT 0x1002:"));
+    var inp = enEl("input", "en-input");
+    inp.id = "enT2Pred"; inp.setAttribute("aria-label", "Predicted byte at 0x1002, two hex digits");
+    inp.setAttribute("placeholder", "??"); inp.setAttribute("spellcheck", "false");
+    inp.setAttribute("maxlength", "2");
+    row.appendChild(inp);
+    var commit = enEl("button", "en-btn", "COMMIT CALL");
+    commit.id = "enT2Commit";
+    var run = enEl("button", "en-btn solid", "STORE AND REVEAL");
+    run.id = "enT2Run";
+    row.appendChild(commit); row.appendChild(run);
+    card.appendChild(row);
+    var stat = enEl("div", "en-verdict", "");
+    stat.id = "enT2Stat"; stat.setAttribute("aria-live", "polite");
+    card.appendChild(stat);
+    var want = (t.word >>> 16) & 0xFF;
+    commit.addEventListener("click", function () {
+      if (enSt.failed || t.pass) return;
+      var p = enParseHex(inp.value);
+      if (p === null || p > 0xFF) { stat.className = "en-verdict"; stat.textContent = "Type two hex digits first; the call needs a byte."; return; }
+      if (enPredictT2(t.word, p)) {
+        t.predOk = true;
+        stat.className = "en-verdict";
+        stat.textContent = "CALL RIGHT: " + enFmt2(p) + " at 0x1002. STORE AND REVEAL to watch it land.";
+        enLog("t2 call right: " + enFmt2(p) + " at 0x1002.", "dim");
+        commit.disabled = true; inp.disabled = true;
+      } else {
+        stat.className = "en-verdict bad";
+        stat.textContent = "CALL WRONG. 0x1002 holds bits 23:16, the third byte counting from the low byte " +
+          "at 0x1000. The leftmost byte of the number is the LAST one stored, at 0x1003.";
+        enStrike("t2 call " + enFmt2(p) + " against " + enFmt2(want));
+      }
+    });
+    run.addEventListener("click", function () {
+      if (enSt.failed || t.pass) return;
+      if (!t.predOk) {
+        stat.className = "en-verdict";
+        stat.textContent = "The room wants your call first: commit the byte above.";
+        return;
+      }
+      enFillMem(vals, enBytesLE(t.word), true);
+      t.pass = true;
+      stat.className = "en-verdict ok";
+      stat.textContent = "TRIAL 2 PASS: SW wrote " + enFmt(t.word) + ", " + enFmt2(want) + " landed at 0x1002 (bits 23:16).";
+      enLog("t2 pass: " + enFmt2(want) + " at 0x1002.", "dim");
+      run.disabled = true;
+      enCheckCert();
+    });
+    panel.appendChild(card);
+  }
+
+  /* ---------- trial 3: THE WIRE ---------- */
+  function enBuildT3(panel) {
+    var t = enSt.t3;
+    var card = enEl("div", "en-card");
+    card.appendChild(enEl("h3", "", "TRIAL 3: THE WIRE"));
+    var intro = enEl("p", "why",
+      "A sensor sends its port as two bytes on the wire: 01 then BB. The wire speaks " +
+      "big-endian, so the true port is 0x01BB. Your RISC-V host is little-endian: reading " +
+      "those bytes in place gives 0xBB01. Call the TRUE port number in decimal, COMMIT THE " +
+      "CALL, then press READ NAIVE to see the garbled read and SWAP16 to fix it at the " +
+      "boundary. The swap arithmetic itself is a solved problem: the Endian byte-swap " +
+      "primitives proof card on the ");
+    var a = document.createElement("a");
+    a.href = "https://dillingerstaffing.github.io/portfolio/";
+    a.target = "_blank"; a.rel = "noopener";
+    a.className = "en-link";
+    a.textContent = "RISC-V portfolio";
+    intro.appendChild(a);
+    var intro2 = document.createElement("span");
+    intro2.textContent = " differential-tests the rev8 idiom, so this room treats SWAP16 as a tool, not a derivation.";
+    intro.appendChild(intro2);
+    card.appendChild(intro);
+    var strip = enEl("div", "en-mem");
+    var wlab = enEl("span", "en-lab", "ON THE WIRE (BIG-ENDIAN):");
+    card.appendChild(wlab);
+    var v0 = enEl("div", "en-val", "01"); v0.id = "enT3V0";
+    var v1 = enEl("div", "en-val", "BB"); v1.id = "enT3V1";
+    var c0 = enEl("div", "en-byte"); c0.appendChild(enEl("div", "en-addr", "FIRST")); c0.appendChild(v0);
+    var c1 = enEl("div", "en-byte"); c1.appendChild(enEl("div", "en-addr", "SECOND")); c1.appendChild(v1);
+    strip.appendChild(c0); strip.appendChild(c1);
+    card.appendChild(strip);
+    var row = enEl("div", "en-row");
+    row.appendChild(enEl("span", "en-lab", "TRUE PORT (DECIMAL):"));
+    var inp = enEl("input", "en-input");
+    inp.id = "enT3Pred"; inp.setAttribute("aria-label", "Predicted true port number, decimal");
+    inp.setAttribute("placeholder", "???"); inp.setAttribute("spellcheck", "false");
+    inp.setAttribute("inputmode", "numeric");
+    row.appendChild(inp);
+    var commit = enEl("button", "en-btn", "COMMIT CALL");
+    commit.id = "enT3Commit";
+    var naive = enEl("button", "en-btn", "READ NAIVE");
+    naive.id = "enT3Naive";
+    var swap = enEl("button", "en-btn solid", "SWAP16");
+    swap.id = "enT3Swap";
+    row.appendChild(commit); row.appendChild(naive); row.appendChild(swap);
+    card.appendChild(row);
+    var read = enEl("div", "en-read", "");
+    read.id = "enT3Read"; read.setAttribute("aria-live", "polite");
+    card.appendChild(read);
+    var stat = enEl("div", "en-verdict", "");
+    stat.id = "enT3Stat"; stat.setAttribute("aria-live", "polite");
+    card.appendChild(stat);
+    commit.addEventListener("click", function () {
+      if (enSt.failed || t.pass) return;
+      var p = enParseDec(inp.value);
+      if (p === null) { stat.className = "en-verdict"; stat.textContent = "Type the port in decimal digits first."; return; }
+      if (enPredictT3(p)) {
+        t.predOk = true;
+        stat.className = "en-verdict";
+        stat.textContent = "CALL RIGHT: port 443. READ NAIVE to see the garbled read, then SWAP16 to fix it.";
+        enLog("t3 call right: 443.", "dim");
+        commit.disabled = true; inp.disabled = true;
+      } else {
+        stat.className = "en-verdict bad";
+        stat.textContent = "CALL WRONG. The wire is big-endian: first byte 01 is the HIGH byte, so the " +
+          "value is 0x01BB. A little-endian host reading in place sees 0xBB01 instead: swap once, at the boundary.";
+        enStrike("t3 call " + p + " against 443");
+      }
+    });
+    naive.addEventListener("click", function () {
+      if (enSt.failed || t.pass) return;
+      var raw = enSwap16(0x01BB);
+      read.textContent = "NAIVE HOST READ: bytes 01 BB in place read little-endian as 0x" +
+        ("0000" + raw.toString(16).toUpperCase()).slice(-4) + " = " + raw + ". " +
+        "Port " + raw + " does not exist here; the read is the bug.";
+      enLog("t3 naive read: 0xBB01 = 47873.", "dim");
+    });
+    swap.addEventListener("click", function () {
+      if (enSt.failed || t.pass) return;
+      if (!t.predOk) {
+        stat.className = "en-verdict";
+        stat.textContent = "The room wants your call first: commit the true port above.";
+        return;
+      }
+      var fixed = enSwap16(0xBB01);
+      read.textContent = "SWAP16(0xBB01) = 0x01BB = 443. One swap, at the boundary, and the frame is honest.";
+      t.pass = true;
+      stat.className = "en-verdict ok";
+      stat.textContent = "TRIAL 3 PASS: the frame meant port 443, not 47,873. Never swap twice.";
+      enLog("t3 pass: port 443.", "dim");
+      swap.disabled = true; naive.disabled = true;
+      enCheckCert();
+    });
+    panel.appendChild(card);
+  }
+
+  /* ---------- cert ---------- */
+  function enCheckCert() {
+    if (enSt.cert || enSt.failed) return;
+    if (enSt.t1.pass && enSt.t2.pass && enSt.t3.pass) {
+      enSt.cert = true;
+      if (enEls.certP) enEls.certP.textContent = enCertLine();
+      if (enEls.banner) enEls.banner.classList.add("show");
+      enLog("ROOM CERTIFIED: the load called, the store placed, the wire frame un-garbled.", "dim");
+    }
+  }
+  function enCertLine() {
+    var b1 = enBytesLE(enSt.t1.word).map(enFmt2).join(" ");
+    var b2 = (enSt.t2.word >>> 16) & 0xFF;
+    return "THE ENDIAN ROOM, BENCH 64, THE PROVING GROUND\n" +
+      "load: LW at 0x1000 read " + enFmt(enSt.t1.word) + " from bytes " + b1 + "\n" +
+      "store: SW of " + enFmt(enSt.t2.word) + " put " + enFmt2(b2) + " at 0x1002 (bits 23:16)\n" +
+      "wire: big-endian frame 01 BB read naive as 47873, true port 443 after one SWAP16\n" +
+      "RISC-V is little-endian; the wire is not.";
+  }
+  function enDownloadCert() {
+    var txt = enCertLine();
+    var blob = new Blob([txt], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "endian-room-bench64-cert.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  /* ---------- close, build ---------- */
+  function enClose() {
+    if (enEls.overlay) enEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+  function enOpen() {
+    if (enEls.overlay) { enEls.overlay.classList.add("open"); document.body.style.overflow = "hidden"; }
+  }
+
+  function enBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box) return;
+    if (document.getElementById("enBtn")) return;
+
+    enSt = enNewState();
+
+    var sty = document.createElement("style");
+    sty.id = "enStyle";
+    sty.textContent = EN_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "enBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Endian Room";
+    b.addEventListener("click", enOpen);
+    box.appendChild(b);
+
+    var ov = enEl("div", "en-overlay");
+    ov.id = "enOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Endian Room");
+    var x = enEl("button", "en-btn", "CLOSE");
+    x.id = "enXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Endian Room");
+    x.addEventListener("click", enClose);
+    ov.appendChild(x);
+    enEls.overlay = ov;
+    if (!enEscBound) {
+      enEscBound = true;
+      document.addEventListener("keydown", function (ev) {
+        if (ev.key === "Escape" && enEls.overlay && enEls.overlay.classList.contains("open")) enClose();
+      });
+    }
+
+    var panel = enEl("div", "en-panel");
+    panel.appendChild(enEl("div", "en-kicker", "SILICON BENCH 64"));
+    panel.appendChild(enEl("h2", "en-title", "The Endian Room"));
+    panel.appendChild(enEl("p", "en-sub",
+      "One rule turns a 32-bit word into four bytes in memory, and back. RISC-V reads " +
+      "little-endian; the wire speaks big-endian. Lay out 0xDEADBEEF by hand, call the word " +
+      "a load returns, and un-garble a big-endian port number. Three strikes and the room resets."));
+    var introWrap = enEl("div", "");
+    introWrap.innerHTML = EN_INTRO_HTML;
+    panel.appendChild(introWrap);
+
+    var strikes = enEl("p", "en-strikes", "STRIKES: 0/3");
+    strikes.id = "enStrikes";
+    strikes.setAttribute("aria-live", "polite");
+    enEls.strikes = strikes;
+    panel.appendChild(strikes);
+
+    enBuildDoFirst(panel);
+    enBuildT1(panel);
+    enBuildT2(panel);
+    enBuildT3(panel);
+
+    var fail = enEl("div", "en-card", "");
+    fail.id = "enFailCard";
+    fail.style.display = "none";
+    fail.appendChild(enEl("h3", "", "THREE STRIKES"));
+    fail.appendChild(enEl("p", "why",
+      "The room failed. The bytes do not care about your confidence. Reset and run it again: " +
+      "the low byte lives at the low address."));
+    var reset = enEl("button", "en-btn solid", "RESET ROOM");
+    reset.id = "enResetBtn";
+    reset.addEventListener("click", enResetRoom);
+    fail.appendChild(reset);
+    enEls.failCard = fail;
+    panel.appendChild(fail);
+
+    var banner = enEl("div", "en-banner");
+    banner.id = "enBanner";
+    banner.appendChild(enEl("h3", "", "ROOM CERTIFIED"));
+    var certP = enEl("div", "en-cert", "");
+    certP.id = "enCertLine";
+    banner.appendChild(certP);
+    var dl = enEl("button", "en-btn", "DOWNLOAD CERTIFICATE");
+    dl.id = "enCertDl";
+    dl.addEventListener("click", enDownloadCert);
+    banner.appendChild(dl);
+    enEls.banner = banner; enEls.certP = certP;
+    panel.appendChild(banner);
+
+    var logCard = enEl("div", "en-card");
+    logCard.appendChild(enEl("h3", "", "BENCH LOG"));
+    var log = enEl("div", "en-log", "");
+    log.id = "enLog";
+    log.setAttribute("aria-live", "polite");
+    logCard.appendChild(log);
+    panel.appendChild(logCard);
+    enEls.log = log;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    enLog("bench open. Four bytes, one rule: the low byte lives at the low address. The do-first card asks nothing of you.", "dim");
+  }
+
+  function enResetRoom() {
+    var sty = document.getElementById("enStyle");
+    if (sty && sty.parentNode) sty.parentNode.removeChild(sty);
+    var btn = document.getElementById("enBtn");
+    if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
+    if (enEls.overlay && enEls.overlay.parentNode) enEls.overlay.parentNode.removeChild(enEls.overlay);
+    enEls = {};
+    enSt = null;
+    enBuild();
+    enOpen();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", enBuild);
+  } else {
+    enBuild();
+  }
+})();

@@ -750,8 +750,12 @@ var PG_BENCHES = [
   { section: "silicon", n: "63", name: "The Arbiter Room", btn: "arBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "Three masters, one memory bus: the arbiter grants exactly one requester per cycle. Watch fixed priority starve a lane at 0 of 16, race an urgent page-walk through two referees, and dial a 2:1:1 bandwidth contract to the cycle.",
     how: "Predict the grant counts, run the storm, fix the starving lane, then prove a 2:1:1 traffic contract.",
-    spec: "FIXED / RR / WRR \u00B7 3 TRIALS" }
-];
+    spec: "FIXED / RR / WRR \u00B7 3 TRIALS" },
+  { section: "silicon", n: "64", name: "The Endian Room", btn: "enBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "Byte order on the bench: the one rule that turns a 32-bit word into four bytes in memory, and back. Lay out 0xDEADBEEF at 0x1000 by hand, call what a little-endian load reads, and un-garble a big-endian wire frame.",
+    how: "Lay out a word byte by byte, predict the load and the store, then fix the big-endian frame.",
+    spec: "BYTE ORDER \u00B7 3 TRIALS" }
+ ];
 
 var pgFilter = "all";
 var pgLastPoint = null;
