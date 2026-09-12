@@ -722,7 +722,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "56", name: "The MOSFET Room", btn: "mfBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "The MOSFET switches amps with volts: clear the gate threshold with margin, budget the on-resistance heat, and respect the gate as a capacitor at PWM rates. Pick parts from the tray, diagnose two dead benches by measurement, and park one gate at the threshold to watch it cook.",
     how: "Flip the do-first gate, pick each part and commit, probe the dead benches and commit a verdict, then predict the threshold-park outcome before applying power.",
-    spec: "GATE VOLTAGE \u00B7 RDS(ON) \u00B7 3 TRIALS" }
+    spec: "GATE VOLTAGE \u00B7 RDS(ON) \u00B7 3 TRIALS" },
+  { section: "tapeout", n: "57", name: "The Crystal Room", btn: "xoBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+    desc: "UART has no shared clock: each byte re-times from its start bit, so both ends must agree within 2 percent. Fit load caps to hold a 16 MHz crystal inside its ppm budget, watch the RC oscillator drift a link dead in a hot chamber, and diagnose a firmware clock lie by measurement.",
+    how: "Run the free link test, predict the hot-chamber result before running it, size the load caps at the counter, then diagnose a dead link.",
+    spec: "PPM BUDGET \u00B7 LOAD CAPS \u00B7 3 TRIALS" }
 ];
 
 var pgFilter = "all";
@@ -1134,9 +1138,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=fd5bad1f44" defer></script>
-<script src="rvdata.js?v=fd5bad1f44" defer></script>
-<script src="riscv-lab.js?v=fd5bad1f44" defer></script>
-<script src="features.js?v=fd5bad1f44" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=4103e840c5" defer></script>
+<script src="rvdata.js?v=4103e840c5" defer></script>
+<script src="riscv-lab.js?v=4103e840c5" defer></script>
+<script src="features.js?v=4103e840c5" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

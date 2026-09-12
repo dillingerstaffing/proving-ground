@@ -40549,3 +40549,680 @@ if (typeof module !== "undefined" && module.exports) {
     mfBuild();
   }
 })();
+
+/* ============================================================
+   BENCH 57: THE CRYSTAL ROOM (tapeout)
+   One atomic mechanism: a UART link has no shared clock, so both
+   ends must agree within about 2 percent. The crystal's ppm budget
+   and its two load capacitors are the contract that guarantees it.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------- the one mechanism, stated as data ---------- */
+  var XO_F0 = 16.0;            /* MHz, the bench crystal */
+  var XO_XTAL_TOL = 12;        /* ppm: this unit's room-temperature tolerance */
+  var XO_XTAL_TEMP = 0.2;      /* ppm per degC above 25 */
+  var XO_PULL = 8.26;          /* ppm per pF of load-capacitance error */
+  var XO_CL_SPEC = 18;         /* pF, the rated load */
+  var XO_CL_MIN = 12, XO_CL_MAX = 24; /* oscillation window */
+  var XO_RC_BASE = 0.005;      /* RC error at 25 C, as a fraction */
+  var XO_RC_DRIFT = 0.001;     /* RC drift per degC, as a fraction */
+  var XO_UART_OK = 0.02;       /* the bench's working budget */
+  var XO_UART_DEAD = 0.5 / 9.5; /* half a bit of drift over 9.5 bit times */
+  var XO_STRAY = 4;            /* pF per side, measured on the bench boards */
+  var XO_T1_TEMP = 85;         /* the hot chamber, degC */
+  var XO_CAPS = [15, 22, 30, 39]; /* the tray, pF */
+  var XO_PPM_BUDGET = 30;      /* the datasheet tolerance, ppm */
+
+  function xoCl(cap, stray) { return cap / 2 + stray; }
+  function xoXtalPpm(cap, stray, tempC) {
+    var cl = xoCl(cap, stray);
+    if (cl < XO_CL_MIN || cl > XO_CL_MAX) return null; /* silent: never starts */
+    return XO_XTAL_TOL + XO_XTAL_TEMP * (tempC - 25) + (XO_CL_SPEC - cl) * XO_PULL;
+  }
+  function xoRcPpm(tempC) { return (XO_RC_BASE + XO_RC_DRIFT * (tempC - 25)) * 1e6; }
+  function xoMulberry(seed) {
+    var a = seed >>> 0;
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  /* 100 frames at 115200, 10 bits each. Deterministic per seed. */
+  function xoLink(ppmA, ppmB, seed) {
+    var m = Math.abs(ppmA - ppmB) / 1e6;
+    if (m <= XO_UART_OK) return { errors: 0, verdict: "CLEAN", mismatch: m };
+    if (m >= XO_UART_DEAD) return { errors: 100, verdict: "DEAD", mismatch: m };
+    var p = (m - XO_UART_OK) / (XO_UART_DEAD - XO_UART_OK);
+    var rnd = xoMulberry(seed), e = 0, i;
+    for (i = 0; i < 100; i++) if (rnd() < p) e++;
+    return { errors: e, verdict: "FLAKY", mismatch: m };
+  }
+  function xoFmtPpm(p) { return (p >= 0 ? "+" : "") + p.toFixed(1) + " ppm"; }
+  function xoFmtPct(ppm) {
+    var pc = ppm / 1e4;
+    return (pc >= 0 ? "+" : "") + pc.toFixed(2) + " %";
+  }
+  function xoFmtMhz(ppm) { return (XO_F0 * (1 + ppm / 1e6)).toFixed(6) + " MHz"; }
+
+  var XO_T1_PREDS = ["CLEAN", "FLAKY", "DEAD"];
+  function xoPredictT1(ix) {
+    if (ix === 2) return { ok: true,
+      why: "Called it. The RC oscillator sits at +6.5 % in the 85 C chamber against the UART's 2 % working " +
+        "budget, past the 5.26 % hard ceiling: 100 of 100 frames corrupt. RUN LINK TEST is armed. Watch it die, then fix it." };
+    if (ix === 0) return { ok: false,
+      why: "Clean needs both clocks inside 2 %. The RC oscillator drifts 0.1 % per degree from its +0.5 % " +
+        "room-temperature error: at 85 C that is +6.5 %, past the ceiling where the stop bit always lands wrong. Try again." };
+    return { ok: false,
+      why: "Flaky is the middle band, 2 % to 5.26 %. +6.5 % is past the hard ceiling: the stop bit lands wrong on " +
+        "every frame, so every frame dies. Try again." };
+  }
+
+  function xoMeasureT2(cap) {
+    var cl = xoCl(cap, XO_STRAY);
+    if (cl < XO_CL_MIN || cl > XO_CL_MAX)
+      return { ok: false, silent: true, cl: cl, ppm: null,
+        why: "NO START: load " + cl.toFixed(1) + " pF is below the " + XO_CL_MIN + " pF the oscillator needs to " +
+          "sustain. The counter reads silence. A crystal that cannot start is not a slow crystal, it is a dead board." };
+    var ppm = XO_XTAL_TOL + (XO_CL_SPEC - cl) * XO_PULL; /* measured at 25 C */
+    if (Math.abs(ppm) <= XO_PPM_BUDGET)
+      return { ok: true, silent: false, cl: cl, ppm: ppm,
+        why: "PASS: load " + cl.toFixed(1) + " pF, " + xoFmtMhz(ppm) + ", " + xoFmtPpm(ppm) + ", inside the " +
+          "±" + XO_PPM_BUDGET + " ppm budget. The 28 pF the formula asks for is not in the tray; 30 pF is the honest " +
+          "standard value, and the counter proves it." };
+    var dir = ppm > 0 ? "high" : "low";
+    return { ok: false, silent: false, cl: cl, ppm: ppm,
+      why: "MISS: load " + cl.toFixed(1) + " pF, " + xoFmtPpm(ppm) + ", outside the ±" + XO_PPM_BUDGET + " ppm budget. " +
+        (ppm > 0 ? "Light on the load pulls the crystal high." : "Heavy on the load pulls the crystal low.") +
+        " The crystal runs " + dir + ", and the datasheet only promises its frequency at the rated load." };
+  }
+
+  var XO_T3_VERDICTS = ["FIRMWARE CLOCK MISMATCH", "WRONG LOAD CAPS", "DEAD CRYSTAL"];
+  function xoVerdictT3(ix) {
+    if (ix === 0) return { ok: true,
+      why: "Called it. A 16 MHz crystal with firmware dividing for 12 MHz: the real baud is 115200 x 16/12 = " +
+        "153600 against the peer's 115200, a 33 % mismatch. SET F_CPU is armed." };
+    if (ix === 1) return { ok: false,
+      why: "The caps measure fine: 30 pF fitted, load 19.0 pF, +3.7 ppm at the counter, inside budget. " +
+        "The load is not the liar. Read the firmware config." };
+    return { ok: false,
+      why: "The crystal is alive: the counter reads 16.000060 MHz, +3.7 ppm. Something else is killing the link." };
+  }
+
+  /* node/jsdom test hooks: assigned before any DOM is touched, so a
+     hostile docStub still gets the exports. */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.XO = {
+      F0: XO_F0, XTAL_TOL: XO_XTAL_TOL, PULL: XO_PULL, CL_SPEC: XO_CL_SPEC,
+      CL_MIN: XO_CL_MIN, CL_MAX: XO_CL_MAX, STRAY: XO_STRAY, T1_TEMP: XO_T1_TEMP,
+      CAPS: XO_CAPS, PPM_BUDGET: XO_PPM_BUDGET, UART_OK: XO_UART_OK, UART_DEAD: XO_UART_DEAD,
+      T1_PREDS: XO_T1_PREDS, T3_VERDICTS: XO_T3_VERDICTS,
+      cl: xoCl, xtalPpm: xoXtalPpm, rcPpm: xoRcPpm, link: xoLink,
+      fmtPpm: xoFmtPpm, fmtPct: xoFmtPct, fmtMhz: xoFmtMhz,
+      predictT1: xoPredictT1, measureT2: xoMeasureT2, verdictT3: xoVerdictT3,
+      introHTML: null /* filled after the copy const below */
+    };
+  }
+
+  /* ---------- intro copy: why first, worked example, failure modes ---------- */
+  var XO_INTRO_HTML = [
+    "<div class=\"xo-card\"><h3>WHY THIS ROOM EXISTS</h3>",
+    "<p class=\"why\">A UART is two wires and no shared clock. Every byte opens with a <b>start bit</b>, and the ",
+    "receiver re-times itself from that edge, then samples the next nine bits near their middles. That is the ",
+    "whole agreement, and it is fragile: if your clock runs 3 percent fast, the receiver samples the last bit ",
+    "almost a third of a bit late, and bytes come out corrupt. Nothing on the wire tells you the clock is the ",
+    "liar. It looks exactly like bad data, bad code, or a bad cable. This room is the contract behind the clock.</p>",
+    "<p class=\"why\">The <b>crystal</b> is a quartz tuning fork for electricity: its physical cut sets its frequency, ",
+    "here 16.000 MHz. The oscillator circuit needs two <b>load capacitors</b>, and the crystal's rated frequency ",
+    "assumes exactly one load, its <b>CL spec</b>, here 18 pF. The load the crystal sees is C/2 plus the board's ",
+    "stray capacitance. <b>ppm</b> means parts per million, the unit of the promise: 30 ppm is 30 microseconds of ",
+    "disagreement every second, about two and a half seconds per day. The UART's working rule on this bench is ",
+    "<b>2 percent</b>, which is 20,000 ppm, about twenty-nine minutes a day. That sounds roomy, until a hot ",
+    "RC oscillator spends it. The <b>RC oscillator</b> is the chip's built-in resistor-capacitor clock: no crystal, ",
+    "cheap, and it drifts about 0.1 percent per degree.</p></div>",
+    "<div class=\"xo-card\"><h3>THE WORKED EXAMPLE</h3>",
+    "<p class=\"why\">The bench board's strays measure 4 pF per side, and the crystal is rated at CL 18 pF. ",
+    "The sizing formula is C = 2 x (CL spec - stray) = 2 x (18 - 4) = 28 pF. The tray holds standard values, so ",
+    "30 pF is the honest pick: the load becomes 30/2 + 4 = 19 pF, one pF off spec, pulling about 8 ppm low, while ",
+    "this unit's own tolerance adds 12 ppm high. The counter reads 16.000060 MHz, +3.7 ppm, inside the 30 ppm ",
+    "budget. That is the whole skill: size the caps from the strays, prove it at the counter.</p>",
+    "<p class=\"why\">The 2 percent rule comes from the frame. At 115,200 baud each bit lasts 8.68 microseconds, ",
+    "and the receiver samples the stop bit about 9.5 bit times after the start edge. Half a bit of drift is the ",
+    "hard ceiling: 0.5 / 9.5 = 5.26 percent. The bench works at 2 percent to leave margin for noise, which is ",
+    "why the RC oscillator's 6.5 percent at 85 C kills every frame.</p></div>",
+    "<div class=\"xo-card xo-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3><ul>",
+    "<li><b>HOT RC:</b> the built-in RC oscillator drifts 0.1 percent per degree from a +0.5 percent room-temperature ",
+    "error. Clean on the bench at 25 C, flaky past 40 C, dead in the 85 C enclosure. Symptom: links that pass in ",
+    "the lab and die in the field.</li>",
+    "<li><b>WRONG CAPS:</b> load capacitance off the spec pulls the frequency a few dozen ppm; far off spec and the ",
+    "oscillator never starts, and the counter reads silence. Trial 2's 15 pF caps are that mistake on purpose.</li>",
+    "<li><b>FIRMWARE LIES:</b> the crystal is 16 MHz but the firmware believes 12 MHz. The baud rate divides from ",
+    "the believed clock, so the real baud runs a third too fast and every frame dies. The bytes look corrupt. ",
+    "The clock is the liar.</li>",
+    "<li><b>SILENT CORRUPTION:</b> none of these raise an error flag on the wire. When bytes corrupt, suspect the ",
+    "clock before the code.</li></ul></div>"
+  ].join("");
+  if (typeof module !== "undefined" && module.exports && module.exports.XO) {
+    module.exports.XO.introHTML = XO_INTRO_HTML;
+  }
+
+  /* ---------- css ---------- */
+  var XO_CSS = [
+    ".xo-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".xo-overlay.open{display:block}",
+    ".xo-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".xo-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".xo-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".xo-sub{font-size:14px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.92;margin:0 0 18px;max-width:68ch}",
+    ".xo-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".xo-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".xo-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".xo-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".xo-card b{color:var(--ember,#ff5a1f)}",
+    ".xo-fail{border:1px solid var(--ember,#ff5a1f)}",
+    ".xo-fail li{font-size:13px;line-height:1.6;margin:0 0 6px;list-style:none}",
+    ".xo-fail ul{padding:0;margin:0}",
+    ".xo-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}",
+    ".xo-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
+    ".xo-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".xo-btn:disabled{opacity:.35;cursor:default}",
+    ".xo-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".xo-btn.sel{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12)}",
+    ".xo-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#101014}",
+    ".xo-verdict{font-size:14px;line-height:1.6;margin:10px 0 0;min-height:24px}",
+    ".xo-verdict.ok{color:#9fe870}",
+    ".xo-verdict.bad{color:#ff5a1f}",
+    ".xo-read{font-size:14px;line-height:1.7;margin:8px 0 0;min-height:22px;white-space:pre-line}",
+    ".xo-log{font-size:12.5px;line-height:1.7;max-height:280px;overflow-y:auto}",
+    ".xo-log div{margin:0 0 6px;padding-bottom:6px;border-bottom:1px dotted var(--line,rgba(242,237,228,.14))}",
+    ".xo-log .ok{color:#9fe870}",
+    ".xo-log .bad{color:#ff5a1f}",
+    ".xo-log .dim{opacity:.6}",
+    ".xo-banner{display:none;border:1px solid var(--ember,#ff5a1f);padding:18px;margin:0 0 14px}",
+    ".xo-banner h3{font-family:'Space Grotesk',sans-serif;letter-spacing:.14em;font-size:16px;color:var(--ember,#ff5a1f);margin:0 0 8px}",
+    ".xo-banner p{font-size:13px;line-height:1.65;margin:0 0 12px}",
+    ".xo-pop{animation:xoPop 200ms ease-out}",
+    "@keyframes xoPop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    "@media (prefers-reduced-motion:reduce){.xo-pop{animation:none}}",
+    ".xo-box{font-size:12px;letter-spacing:.12em;border:1px solid var(--line,rgba(242,237,228,.28));padding:10px 14px;margin:10px 0;max-width:420px;text-align:center}",
+    ".xo-box.clean{border-color:#9fe870;color:#9fe870}",
+    ".xo-box.flaky{border-color:#ffd23f;color:#ffd23f}",
+    ".xo-box.dead{border-color:#ff5a1f;color:#ff5a1f}"
+  ].join("\n");
+
+  /* ---------- tiny DOM helpers (page-local, prefixed) ---------- */
+  var xoEls = null;
+  var xoState = null;
+  function xoEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  function xoLog(msg, cls) {
+    if (!xoEls || !xoEls.log) return;
+    var d = xoEl("div", cls || "", msg);
+    xoEls.log.appendChild(d);
+    xoEls.log.scrollTop = xoEls.log.scrollHeight;
+  }
+  function xoPop(card) {
+    card.classList.remove("xo-pop");
+    void card.offsetWidth;
+    card.classList.add("xo-pop");
+  }
+  function xoCertLine() {
+    return "Predicted the hot-chamber kill before a byte flew, sized load caps to hold 16.000 MHz inside " +
+      "±30 ppm, and diagnosed a firmware clock lie by measurement. The room remembers.";
+  }
+  function xoAllPassed() {
+    var s = xoState;
+    return s.t1.passed && s.t2.passed && s.t3.passed;
+  }
+  function xoMaybeCertify() {
+    if (xoEls && xoEls.banner) xoEls.banner.style.display = xoAllPassed() ? "block" : "none";
+  }
+  function xoLinkLine(res) {
+    var mm = (res.mismatch * 100).toFixed(2) + " %";
+    if (res.verdict === "CLEAN") return "LINK CLEAN: 100 of 100 frames clean. Mismatch " + mm + ", inside the 2 % budget.";
+    if (res.verdict === "DEAD") return "LINK DEAD: 100 of 100 frames corrupt. Mismatch " + mm + ", past the 5.26 % hard ceiling.";
+    return "LINK FLAKY: " + res.errors + " of 100 frames corrupt. Mismatch " + mm + ", inside the 2 to 5.26 % middle band.";
+  }
+  function xoBoardLine(label, ppm) {
+    return label + ": " + xoFmtMhz(ppm) + " (" + xoFmtPpm(ppm) + ", " + xoFmtPct(ppm) + ")";
+  }
+
+  /* ---------- do-first card: consequence-free link test ---------- */
+  function xoDoFirstCard() {
+    var card = xoEl("div", "xo-card");
+    card.appendChild(xoEl("h3", null, "DO FIRST: RUN THE LINK, FREE"));
+    card.appendChild(xoEl("p", "why",
+      "Two boards, both crystal-clocked, 115,200 baud, chamber at 25 C. Flip board B to its RC oscillator, " +
+      "heat the chamber, run the link test. Nothing here is graded; the trials below are where it counts."));
+    var row = xoEl("div", "xo-row");
+    var tempLab = xoEl("span", null, "CHAMBER");
+    tempLab.id = "xoDoFirst_tempLab";
+    var tDown = xoEl("button", "xo-btn", "COOLER");
+    tDown.id = "xoDoFirst_cooler";
+    tDown.setAttribute("aria-label", "Lower chamber temperature");
+    var tUp = xoEl("button", "xo-btn", "HOTTER");
+    tUp.id = "xoDoFirst_hotter";
+    tUp.setAttribute("aria-label", "Raise chamber temperature");
+    var srcX = xoEl("button", "xo-btn sel", "B: CRYSTAL");
+    srcX.id = "xoDoFirst_srcX";
+    var srcR = xoEl("button", "xo-btn", "B: RC");
+    srcR.id = "xoDoFirst_srcR";
+    var run = xoEl("button", "xo-btn solid", "RUN LINK TEST");
+    run.id = "xoDoFirst_run";
+    row.appendChild(tempLab); row.appendChild(tDown); row.appendChild(tUp);
+    row.appendChild(srcX); row.appendChild(srcR); row.appendChild(run);
+    card.appendChild(row);
+    var box = xoEl("div", "xo-box", "CHAMBER 25 C");
+    box.id = "xoDoFirst_box";
+    card.appendChild(box);
+    var read = xoEl("div", "xo-read", "");
+    read.id = "xoDoFirst_read";
+    card.appendChild(read);
+
+    var st = { temp: 25, srcB: "XTAL" };
+    function render() {
+      tempLab.textContent = "CHAMBER " + st.temp + " C";
+      box.textContent = "CHAMBER " + st.temp + " C · B: " + st.srcB;
+      srcX.classList.toggle("sel", st.srcB === "XTAL");
+      srcR.classList.toggle("sel", st.srcB === "RC");
+    }
+    tDown.addEventListener("click", function () {
+      st.temp = Math.max(25, st.temp - 5); render(); xoPop(card);
+    });
+    tUp.addEventListener("click", function () {
+      st.temp = Math.min(85, st.temp + 5); render(); xoPop(card);
+    });
+    srcX.addEventListener("click", function () { st.srcB = "XTAL"; render(); });
+    srcR.addEventListener("click", function () { st.srcB = "RC"; render(); });
+    run.addEventListener("click", function () {
+      var ppmA = xoXtalPpm(30, XO_STRAY, st.temp);
+      var ppmB = st.srcB === "XTAL" ? xoXtalPpm(30, XO_STRAY, st.temp) : xoRcPpm(st.temp);
+      var res = xoLink(ppmA, ppmB, 5701);
+      box.className = "xo-box " + res.verdict.toLowerCase();
+      read.textContent = xoBoardLine("A", ppmA) + "\n" + xoBoardLine("B", ppmB) + "\n" + xoLinkLine(res);
+      xoLog("free look: chamber " + st.temp + " C, B=" + st.srcB + " -> " + res.verdict +
+        " (" + res.errors + "/100 corrupt).", res.verdict === "CLEAN" ? "ok" : "dim");
+      xoPop(card);
+    });
+    render();
+    return card;
+  }
+
+  /* ---------- trial 1: predict the hot chamber ---------- */
+  function xoT1Card() {
+    var card = xoEl("div", "xo-card");
+    card.appendChild(xoEl("h3", null, "TRIAL 1: PREDICT THE HOT CHAMBER"));
+    card.appendChild(xoEl("p", "why",
+      "Board A: crystal. Board B: RC oscillator. Chamber: 85 C. First call it, CLEAN, FLAKY, or DEAD, " +
+      "before any bytes fly. Then run the link test and watch. Then fit the crystal to board B and certify the link clean."));
+    var s = xoState.t1;
+    var row = xoEl("div", "xo-row");
+    XO_T1_PREDS.forEach(function (p, i) {
+      var b = xoEl("button", "xo-btn", p);
+      b.id = "xoT1_pred_" + i;
+      b.addEventListener("click", function () { xoT1Predict(i, card); });
+      row.appendChild(b);
+    });
+    card.appendChild(row);
+    var verdict = xoEl("div", "xo-verdict", "");
+    verdict.id = "xoT1_verdict";
+    card.appendChild(verdict);
+    var run = xoEl("button", "xo-btn solid", "RUN LINK TEST");
+    run.id = "xoT1_run";
+    run.disabled = true;
+    run.addEventListener("click", function () { xoT1Run(card); });
+    var fix = xoEl("button", "xo-btn", "FIT THE CRYSTAL TO BOARD B");
+    fix.id = "xoT1_fix";
+    fix.disabled = true;
+    fix.addEventListener("click", function () { xoT1Fix(card); });
+    var row2 = xoEl("div", "xo-row");
+    row2.appendChild(run); row2.appendChild(fix);
+    card.appendChild(row2);
+    var read = xoEl("div", "xo-read", "");
+    read.id = "xoT1_read";
+    card.appendChild(read);
+    return card;
+  }
+  function xoT1Els() {
+    return {
+      verdict: document.getElementById("xoT1_verdict"),
+      read: document.getElementById("xoT1_read"),
+      run: document.getElementById("xoT1_run"),
+      fix: document.getElementById("xoT1_fix")
+    };
+  }
+  function xoT1Predict(i, card) {
+    var s = xoState.t1, E = xoT1Els(), r = xoPredictT1(i);
+    E.verdict.textContent = (r.ok ? "PREDICTION RIGHT: " : "PREDICTION WRONG: ") + r.why;
+    E.verdict.className = "xo-verdict " + (r.ok ? "ok" : "bad");
+    if (r.ok) { s.predicted = true; if (!s.ran) E.run.disabled = false; }
+    xoLog("trial 1 prediction: " + XO_T1_PREDS[i] + " -> " + (r.ok ? "right" : "wrong") + ".", r.ok ? "ok" : "bad");
+    xoPop(card);
+  }
+  function xoT1Run(card) {
+    var s = xoState.t1, E = xoT1Els();
+    var ppmA = xoXtalPpm(30, XO_STRAY, XO_T1_TEMP);
+    var ppmB = s.fixed ? xoXtalPpm(30, XO_STRAY, XO_T1_TEMP) : xoRcPpm(XO_T1_TEMP);
+    var res = xoLink(ppmA, ppmB, s.fixed ? 5702 : 5703);
+    E.read.textContent = "CHAMBER " + XO_T1_TEMP + " C\n" +
+      xoBoardLine("A (CRYSTAL)", ppmA) + "\n" +
+      xoBoardLine("B (" + (s.fixed ? "CRYSTAL" : "RC") + ")", ppmB) + "\n" + xoLinkLine(res);
+    s.ran = true;
+    if (!s.fixed) {
+      E.verdict.textContent = "WATCHED IT DIE: " + xoLinkLine(res) + " Now fit the crystal.";
+      E.verdict.className = "xo-verdict bad";
+      E.fix.disabled = false;
+      E.run.disabled = true;
+      xoLog("trial 1: RC at 85 C -> " + res.verdict + " (" + res.errors + "/100).", "bad");
+    } else {
+      s.passed = true;
+      E.verdict.textContent = "CERTIFIED: " + xoLinkLine(res) + " Trial 1 passes.";
+      E.verdict.className = "xo-verdict ok";
+      E.run.disabled = true;
+      E.fix.disabled = true;
+      xoLog("trial 1: crystal fitted, link clean at 85 C. Trial 1 passes.", "ok");
+      xoMaybeCertify();
+    }
+    xoPop(card);
+  }
+  function xoT1Fix(card) {
+    var s = xoState.t1, E = xoT1Els();
+    s.fixed = true;
+    E.fix.disabled = true;
+    E.run.disabled = false;
+    E.verdict.textContent = "Crystal fitted to board B. Run the link test again and certify it clean.";
+    E.verdict.className = "xo-verdict";
+    xoLog("trial 1: crystal fitted to board B.", "dim");
+    xoPop(card);
+  }
+
+  /* ---------- trial 2: size the load caps ---------- */
+  function xoT2Card() {
+    var card = xoEl("div", "xo-card");
+    card.appendChild(xoEl("h3", null, "TRIAL 2: SIZE THE LOAD CAPS"));
+    card.appendChild(xoEl("p", "why",
+      "Crystal 16.000 MHz, CL spec 18 pF, strays 4 pF per side, tolerance budget ±30 ppm. " +
+      "The tray holds 15, 22, 30, 39 pF. Fit a pair, measure at the counter. The room passes only inside the budget."));
+    var s = xoState.t2;
+    var row = xoEl("div", "xo-row");
+    XO_CAPS.forEach(function (c) {
+      var b = xoEl("button", "xo-btn", c + " pF");
+      b.id = "xoT2_cap_" + c;
+      b.setAttribute("aria-pressed", "false");
+      b.addEventListener("click", function () {
+        s.cap = c;
+        Array.prototype.forEach.call(row.children, function (x) {
+          x.classList.remove("sel");
+          x.setAttribute("aria-pressed", "false");
+        });
+        b.classList.add("sel");
+        b.setAttribute("aria-pressed", "true");
+      });
+      row.appendChild(b);
+    });
+    card.appendChild(row);
+    var fit = xoEl("button", "xo-btn solid", "FIT CAPS AND MEASURE");
+    fit.id = "xoT2_fit";
+    fit.addEventListener("click", function () { xoT2Measure(card); });
+    var row2 = xoEl("div", "xo-row");
+    row2.appendChild(fit);
+    card.appendChild(row2);
+    var read = xoEl("div", "xo-read", "No caps fitted. The counter waits.");
+    read.id = "xoT2_read";
+    card.appendChild(read);
+    var verdict = xoEl("div", "xo-verdict", "");
+    verdict.id = "xoT2_verdict";
+    card.appendChild(verdict);
+    return card;
+  }
+  function xoT2Measure(card) {
+    var s = xoState.t2;
+    var read = document.getElementById("xoT2_read");
+    var verdict = document.getElementById("xoT2_verdict");
+    if (s.cap == null) {
+      verdict.textContent = "Pick a value from the tray first.";
+      verdict.className = "xo-verdict bad";
+      return;
+    }
+    var r = xoMeasureT2(s.cap);
+    if (r.silent) {
+      read.textContent = s.cap + " pF fitted.\nCOUNTER: silence. No oscillation.";
+    } else {
+      read.textContent = s.cap + " pF fitted.\nLOAD: " + r.cl.toFixed(1) + " pF against the 18 pF spec.\n" +
+        "COUNTER: " + xoFmtMhz(r.ppm) + ", " + xoFmtPpm(r.ppm) + " (budget ±" + XO_PPM_BUDGET + " ppm).";
+    }
+    verdict.textContent = (r.ok ? "PASS: " : "MISS: ") + r.why;
+    verdict.className = "xo-verdict " + (r.ok ? "ok" : "bad");
+    if (r.ok && !s.passed) {
+      s.passed = true;
+      xoLog("trial 2: " + s.cap + " pF fitted, " + xoFmtPpm(r.ppm) + " at the counter. Trial 2 passes.", "ok");
+      xoMaybeCertify();
+    } else if (!r.ok) {
+      xoLog("trial 2: " + s.cap + " pF -> " + (r.silent ? "no start" : xoFmtPpm(r.ppm)) + ".", "bad");
+    }
+    xoPop(card);
+  }
+
+  /* ---------- trial 3: diagnose the dead link ---------- */
+  function xoT3Card() {
+    var card = xoEl("div", "xo-card");
+    card.appendChild(xoEl("h3", null, "TRIAL 3: DIAGNOSE THE DEAD LINK"));
+    card.appendChild(xoEl("p", "why",
+      "A board arrives with a dead UART: every byte corrupt. Probe it, free and ungraded: read the firmware's " +
+      "clock config, measure the crystal at the counter. Then commit a verdict. A right verdict unlocks the repair."));
+    var row = xoEl("div", "xo-row");
+    var pFw = xoEl("button", "xo-btn", "READ FIRMWARE CLOCK CONFIG");
+    pFw.id = "xoT3_probeFw";
+    pFw.addEventListener("click", function () { xoT3Probe("fw", card); });
+    var pX = xoEl("button", "xo-btn", "MEASURE CRYSTAL AT COUNTER");
+    pX.id = "xoT3_probeXtal";
+    pX.addEventListener("click", function () { xoT3Probe("xtal", card); });
+    row.appendChild(pFw); row.appendChild(pX);
+    card.appendChild(row);
+    var notes = xoEl("div", "xo-read", "No probes yet. The board sits dead on the bench.");
+    notes.id = "xoT3_notes";
+    card.appendChild(notes);
+    var row2 = xoEl("div", "xo-row");
+    XO_T3_VERDICTS.forEach(function (v, i) {
+      var b = xoEl("button", "xo-btn", v);
+      b.id = "xoT3_verdict_" + i;
+      b.addEventListener("click", function () { xoT3Commit(i, card); });
+      row2.appendChild(b);
+    });
+    card.appendChild(row2);
+    var verdict = xoEl("div", "xo-verdict", "");
+    verdict.id = "xoT3_verdict";
+    card.appendChild(verdict);
+    var fix = xoEl("button", "xo-btn solid", "SET F_CPU = 16 MHZ");
+    fix.id = "xoT3_fix";
+    fix.disabled = true;
+    fix.addEventListener("click", function () { xoT3Fix(card); });
+    var row3 = xoEl("div", "xo-row");
+    row3.appendChild(fix);
+    card.appendChild(row3);
+    var read = xoEl("div", "xo-read", "");
+    read.id = "xoT3_read";
+    card.appendChild(read);
+    return card;
+  }
+  function xoT3Probe(which, card) {
+    var s = xoState.t3;
+    var notes = document.getElementById("xoT3_notes");
+    if (which === "fw") {
+      s.probedFw = true;
+      notes.textContent = "FIRMWARE: F_CPU = 12 MHz. The UART divider is built from this number." +
+        (s.probedXtal ? "\nCOUNTER: 16.000060 MHz, +3.7 ppm. The crystal is healthy and on frequency." : "");
+      xoLog("trial 3 probe: firmware F_CPU = 12 MHz.", "dim");
+    } else {
+      s.probedXtal = true;
+      notes.textContent = "COUNTER: 16.000060 MHz, +3.7 ppm. The crystal is healthy and on frequency." +
+        (s.probedFw ? "\nFIRMWARE: F_CPU = 12 MHz. The UART divider is built from this number." : "");
+      xoLog("trial 3 probe: crystal 16.000060 MHz, +3.7 ppm.", "dim");
+    }
+    xoPop(card);
+  }
+  function xoT3Commit(i, card) {
+    var s = xoState.t3, r = xoVerdictT3(i);
+    var verdict = document.getElementById("xoT3_verdict");
+    verdict.textContent = (r.ok ? "VERDICT RIGHT: " : "VERDICT WRONG: ") + r.why;
+    verdict.className = "xo-verdict " + (r.ok ? "ok" : "bad");
+    if (r.ok) document.getElementById("xoT3_fix").disabled = false;
+    xoLog("trial 3 verdict: " + XO_T3_VERDICTS[i] + " -> " + (r.ok ? "right" : "wrong") + ".", r.ok ? "ok" : "bad");
+    xoPop(card);
+  }
+  function xoT3Fix(card) {
+    var s = xoState.t3;
+    var read = document.getElementById("xoT3_read");
+    var verdict = document.getElementById("xoT3_verdict");
+    var ppmA = xoXtalPpm(30, XO_STRAY, 25), ppmB = xoXtalPpm(30, XO_STRAY, 25);
+    var res = xoLink(ppmA, ppmB, 5704);
+    read.textContent = "F_CPU = 16 MHZ. Both ends divide 115,200 from the true clock.\n" + xoLinkLine(res);
+    s.passed = true;
+    verdict.textContent = "CERTIFIED: " + xoLinkLine(res) + " Trial 3 passes.";
+    verdict.className = "xo-verdict ok";
+    document.getElementById("xoT3_fix").disabled = true;
+    xoLog("trial 3: F_CPU set to 16 MHz, link clean. Trial 3 passes.", "ok");
+    xoMaybeCertify();
+    xoPop(card);
+  }
+
+  /* ---------- certificate ---------- */
+  function xoDownloadCert() {
+    var txt = [
+      "THE CRYSTAL ROOM",
+      "TAPEOUT BENCH 57 · THE PROVING GROUND",
+      "",
+      "Trial 1: predicted the 85 C hot-chamber kill (RC at +6.5 % vs the 2 % UART budget),",
+      "         watched it die, fitted the crystal, certified the link clean.",
+      "Trial 2: sized load caps from measured strays: 30 pF -> 19.0 pF load,",
+      "         16.000060 MHz, +3.7 ppm, inside the ±30 ppm budget.",
+      "Trial 3: diagnosed a dead UART by measurement: 16 MHz crystal against",
+      "         firmware dividing for 12 MHz; set F_CPU = 16 MHz, link clean.",
+      "",
+      xoCertLine()
+    ].join("\n");
+    var blob = new Blob([txt], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = (window.URL || window.webkitURL).createObjectURL(blob);
+    a.download = "crystal-room-cert.txt";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { (window.URL || window.webkitURL).revokeObjectURL(a.href); }, 4000);
+    xoLog("certificate downloaded.", "ok");
+  }
+
+  /* ---------- overlay open/close ---------- */
+  function xoOpen() { if (xoEls) xoEls.overlay.classList.add("open"); }
+  function xoClose() { if (xoEls) xoEls.overlay.classList.remove("open"); }
+
+  function xoBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("xoBtn")) return;
+    xoState = {
+      t1: { predicted: false, ran: false, fixed: false, passed: false },
+      t2: { cap: null, passed: false },
+      t3: { probedFw: false, probedXtal: false, passed: false }
+    };
+    xoEls = { overlay: null, log: null, banner: null };
+
+    var sty = document.createElement("style");
+    sty.textContent = XO_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "xoBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Crystal Room";
+    b.addEventListener("click", xoOpen);
+    box.appendChild(b);
+
+    var ov = xoEl("div", "xo-overlay");
+    ov.id = "xoOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Crystal Room");
+    var x = xoEl("button", "xo-btn", "CLOSE");
+    x.id = "xoXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Crystal Room");
+    x.addEventListener("click", xoClose);
+    ov.appendChild(x);
+    xoEls.overlay = ov;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && ov.classList.contains("open")) xoClose();
+    });
+
+    var panel = xoEl("div", "xo-panel");
+    panel.appendChild(xoEl("div", "xo-kicker", "TAPEOUT BENCH 57"));
+    panel.appendChild(xoEl("h2", "xo-title", "The Crystal Room"));
+    panel.appendChild(xoEl("p", "xo-sub",
+      "A UART has no shared clock, so both ends must agree within 2 percent. Size the load caps that hold " +
+      "a 16 MHz crystal inside its ppm budget, watch an RC oscillator drift a link dead in a hot chamber, " +
+      "and diagnose a firmware clock lie by measurement."));
+
+    var introWrap = xoEl("div", "");
+    introWrap.innerHTML = XO_INTRO_HTML;
+    panel.appendChild(introWrap);
+
+    panel.appendChild(xoDoFirstCard());
+
+    var t1Head = xoEl("div", "xo-card");
+    t1Head.appendChild(xoEl("h3", null, "TRIAL 1: PREDICT, THEN VERIFY"));
+    t1Head.appendChild(xoEl("p", "why",
+      "Board A runs a crystal. Board B runs its RC oscillator. The chamber sits at 85 C. " +
+      "Call the outcome before any bytes fly."));
+    panel.appendChild(t1Head);
+    panel.appendChild(xoT1Card());
+
+    var t2Head = xoEl("div", "xo-card");
+    t2Head.appendChild(xoEl("h3", null, "TRIAL 2: SIZE THE LOAD CAPS"));
+    t2Head.appendChild(xoEl("p", "why",
+      "The counter is the judge. Fit a pair from the tray, measure, and land inside ±30 ppm."));
+    panel.appendChild(t2Head);
+    panel.appendChild(xoT2Card());
+
+    var t3Head = xoEl("div", "xo-card");
+    t3Head.appendChild(xoEl("h3", null, "TRIAL 3: DIAGNOSE BY MEASUREMENT"));
+    t3Head.appendChild(xoEl("p", "why",
+      "The link is dead and the bytes look corrupt. Probe first, verdict second, repair third."));
+    panel.appendChild(t3Head);
+    panel.appendChild(xoT3Card());
+
+    /* certification banner */
+    var banner = xoEl("div", "xo-banner");
+    banner.id = "xoBanner";
+    banner.appendChild(xoEl("h3", null, "ROOM CERTIFIED"));
+    banner.appendChild(xoEl("p", null, xoCertLine()));
+    var dl = xoEl("button", "xo-btn solid", "DOWNLOAD CERTIFICATE");
+    dl.id = "xoCertDl";
+    dl.addEventListener("click", xoDownloadCert);
+    banner.appendChild(dl);
+    panel.appendChild(banner);
+    xoEls.banner = banner;
+
+    /* bench log */
+    var logCard = xoEl("div", "xo-card");
+    logCard.appendChild(xoEl("h3", null, "BENCH LOG"));
+    var log = xoEl("div", "xo-log");
+    log.id = "xoLog";
+    log.setAttribute("aria-live", "polite");
+    logCard.appendChild(log);
+    panel.appendChild(logCard);
+    xoEls.log = log;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    xoLog("bench open. Two boards, one chamber, one frequency counter. The crystal is fitted at 30 pF.", "dim");
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", xoBuild);
+  } else {
+    xoBuild();
+  }
+})();
