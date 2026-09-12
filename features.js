@@ -41945,3 +41945,796 @@ if (typeof module !== "undefined" && module.exports) {
     snBuild();
   }
 })();
+/* Bench 59: The Zener Room (shipped 2026-09-12).
+   An OLD IRON shunt-regulator lab: one resistor plus one Zener diode holds a
+   rail, and the whole bench is the arithmetic Iz = Is - Iload. Teaches one
+   atomic mechanism: the Zener drinks whatever the load does not, clamping the
+   rail at its breakdown voltage; regulation dies the moment the load outruns
+   the feed. Size the feed, diagnose a starved rail and a cooking Zener by
+   measurement, then call POP/HOLD/SAG for three load/feed combos before power
+   flows. */
+(function () {
+  "use strict";
+
+  /* ---------- the one mechanism, stated as data ---------- */
+  var ZN_VIN = 12.0;        /* V, the bench rail */
+  var ZN_VZ = 5.1;          /* V, the Zener breakdown voltage */
+  var ZN_IZ_KNEE = 2.0;     /* mA: below this the clamp goes soft */
+  var ZN_PZ_MAX = 200;      /* mW: the Zener's power budget */
+  var ZN_PR_MAX = 250;      /* mW: the 1/4 W feed resistor's budget */
+  var ZN_T1_LOAD = 2.0;     /* mA, the trial-1 load */
+  var ZN_T1_TRAY = [4700, 2200, 1000, 470, 220]; /* ohm, feed resistor tray */
+  var ZN_T2A = { feed: 1000, load: 8, fixFeed: 470,
+                 name: "RAIL A", spec: "1 k\u03A9 feed \u00B7 8 mA load" };
+  var ZN_T2B = { feed: 100, load: 0, fixFeed: 1000,
+                 name: "RAIL B", spec: "100 \u03A9 feed \u00B7 load unplugged" };
+  var ZN_T3_CASES = [
+    { feed: 1000, load: 0, key: "a", label: "1 k\u03A9 FEED \u00B7 NO LOAD" },
+    { feed: 100,  load: 0, key: "b", label: "100 \u03A9 FEED \u00B7 NO LOAD" },
+    { feed: 1000, load: 8, key: "c", label: "1 k\u03A9 FEED \u00B7 8 mA LOAD" }
+  ];
+  var ZN_T3_FATES = ["HOLD", "POP", "SAG"];
+
+  function znFeedMa(r) { return (ZN_VIN - ZN_VZ) / r * 1000; }
+
+  /* The honest model. If the load outruns the feed the Zener is dry and the
+     feed resistor becomes the whole circuit; otherwise the Zener clamps at Vz
+     and drinks Is - Iload, regulated only above the knee. */
+  function znSim(r, iload) {
+    var is = znFeedMa(r);
+    var pr = (ZN_VIN - ZN_VZ) * is;
+    if (iload > is + 1e-12) {
+      return { regulated: false, vout: ZN_VIN - iload * r / 1000,
+               iz: 0, is: is, pz: 0, pr: pr };
+    }
+    var iz = is - iload;
+    return { regulated: iz >= ZN_IZ_KNEE - 1e-12, vout: ZN_VZ,
+             iz: iz, is: is, pz: ZN_VZ * iz, pr: pr };
+  }
+
+  function znFmtV(v) { return v.toFixed(2) + " V"; }
+  function znFmtMa(i) { return i.toFixed(1) + " mA"; }
+  function znFmtMw(p) { return p.toFixed(0) + " mW"; }
+  function znFeedSpec(r) {
+    return r >= 1000 ? (r / 1000) + " k\u03A9" : r + " \u03A9";
+  }
+
+  /* Trial 1: three honest checks on a fitted feed. */
+  function znT1Check(ix) {
+    var r = ZN_T1_TRAY[ix], s = znSim(r, ZN_T1_LOAD);
+    var checks = [
+      { key: "REG",
+        ok: s.regulated,
+        line: s.regulated
+          ? "Iz " + znFmtMa(s.iz) + " at or above the " + ZN_IZ_KNEE.toFixed(0) +
+            " mA knee: the clamp holds, rail " + znFmtV(s.vout)
+          : (s.iz <= 0
+              ? "feed brings " + znFmtMa(s.is) + ", load takes " + znFmtMa(ZN_T1_LOAD) +
+                ": the Zener is dry, rail sags to " + znFmtV(s.vout)
+              : "Iz " + znFmtMa(s.iz) + " under the " + ZN_IZ_KNEE.toFixed(0) +
+                " mA knee: the clamp goes soft, regulation not guaranteed") },
+      { key: "ZENER",
+        ok: s.pz <= ZN_PZ_MAX + 1e-9,
+        line: "Zener " + znFmtMw(s.pz) + " " +
+          (s.pz <= ZN_PZ_MAX + 1e-9 ? "inside" : "past") +
+          " the " + ZN_PZ_MAX + " mW budget" },
+      { key: "FEED",
+        ok: s.pr <= ZN_PR_MAX + 1e-9,
+        line: "feed resistor " + znFmtMw(s.pr) + " " +
+          (s.pr <= ZN_PR_MAX + 1e-9 ? "inside" : "past") +
+          " the " + ZN_PR_MAX + " mW budget" }
+    ];
+    var pass = checks[0].ok && checks[1].ok && checks[2].ok;
+    return { sim: s, checks: checks, pass: pass };
+  }
+  function znT1Truth(ix) { return znSim(ZN_T1_TRAY[ix], ZN_T1_LOAD).iz; }
+  function znPredictT1(ix, v) {
+    var t = znT1Truth(ix);
+    return { ok: Math.abs(v - t) <= 0.5 + 1e-9, truth: t };
+  }
+
+  /* Trial 2: probe truth for each rail, current feed or refitted. */
+  function znT2Sim(cfg, fixed) {
+    var r = fixed ? cfg.fixFeed : cfg.feed;
+    return { r: r, s: znSim(r, cfg.load), cfg: cfg };
+  }
+  function znT2Probe(which, kind, fixed) {
+    var cfg = which === "a" ? ZN_T2A : ZN_T2B;
+    var t = znT2Sim(cfg, fixed), s = t.s, r = t.r;
+    var tag = cfg.name + (fixed ? " (refitted " + znFeedSpec(r) + ")" : "");
+    if (kind === "rail") return { note: tag + " RAIL: " + znFmtV(s.vout) +
+      (s.regulated ? ". Clamped at Vz." : ". Not clamped: the Zener is not in the circuit.") };
+    if (kind === "feed") {
+      var cur = s.regulated ? s.is : cfg.load;
+      return { note: tag + " FEED: " + (cur * r / 1000).toFixed(1) + " V across the " +
+        znFeedSpec(r) + " = " + znFmtMa(cur) + " through the feed." };
+    }
+    if (kind === "zener") return { note: tag + " ZENER: " + znFmtMa(s.iz) +
+      (s.iz >= ZN_IZ_KNEE ? ", above the knee." : s.iz > 0 ? ", BELOW the knee: soft clamp." : ", DRY: drinking nothing.") };
+    return { note: tag + " TEMP: " + znFmtMw(s.pz) + " in the Zener against a " + ZN_PZ_MAX +
+      " mW budget: " + (s.pz > ZN_PZ_MAX ? "TOO HOT TO TOUCH." : "warm, not dangerous.") };
+  }
+  var ZN_T2A_VERDICTS = [
+    "LOAD STARVED THE ZENER",
+    "FEED RESISTOR OPEN",
+    "ZENER SHORTED"
+  ];
+  var ZN_T2B_VERDICTS = [
+    "FEED TOO FAT, ZENER COOKING",
+    "ZENER LEAKY",
+    "RAIL FINE, SHIP IT"
+  ];
+  function znVerdictT2(which, ix) {
+    var t = znT2Sim(which === "a" ? ZN_T2A : ZN_T2B, false), s = t.s;
+    if (which === "a") {
+      if (ix === 0) return { ok: true,
+        why: "Called it. The feed brings " + znFmtMa(s.is) + " and the load takes " +
+          znFmtMa(ZN_T2A.load) + ": Iz = 0, rail sags to " + znFmtV(s.vout) +
+          ". REFIT is armed: fit the " + znFeedSpec(ZN_T2A.fixFeed) + " feed." };
+      if (ix === 1) return { ok: false,
+        why: "The feed drops " + (ZN_T2A.load * ZN_T2A.feed / 1000).toFixed(1) +
+          " V at " + znFmtMa(ZN_T2A.load) + ": current flows, so the resistor is not open. Probe the Zener." };
+      return { ok: false,
+        why: "A shorted Zener would pin the rail near 0 V. The rail sits at " + znFmtV(s.vout) +
+          ": the Zener is simply dry. Probe the feed." };
+    }
+    if (ix === 0) return { ok: true,
+      why: "Called it. The " + znFeedSpec(ZN_T2B.feed) + " feed pours " + znFmtMa(s.iz) +
+        " into the Zener with no load: " + znFmtMw(s.pz) + " past the " + ZN_PZ_MAX +
+        " mW budget. It holds today and pops in the field. REFIT is armed: fit the " +
+        znFeedSpec(ZN_T2B.fixFeed) + " feed." };
+    if (ix === 1) return { ok: false,
+      why: "A leaky Zener would drag the rail below Vz. The rail holds exactly " + znFmtV(s.vout) +
+        ": the Zener is healthy, it is just being force-fed. Probe the feed." };
+    return { ok: false,
+      why: "It holds 5.10 V on your bench, with " + znFmtMw(s.pz) + " cooking a " + ZN_PZ_MAX +
+        " mW part. Ship it and the field report reads 'dead after a month'. Probe the temp." };
+  }
+
+  /* Trial 3: the fate of each rail, called before power flows. */
+  function znFate(i) {
+    var c = ZN_T3_CASES[i], s = znSim(c.feed, c.load);
+    if (s.pz > ZN_PZ_MAX + 1e-9) return "POP";
+    if (!s.regulated) return "SAG";
+    return "HOLD";
+  }
+  function znT3Line(i) {
+    var c = ZN_T3_CASES[i], s = znSim(c.feed, c.load), f = znFate(i);
+    if (f === "POP") return c.label + " -> IZ " + znFmtMa(s.iz) + " \u00B7 PZ " + znFmtMw(s.pz) +
+      " past the " + ZN_PZ_MAX + " mW budget: POP, the Zener vents.";
+    if (f === "SAG") return c.label + " -> RAIL " + znFmtV(s.vout) + " \u00B7 IZ " + znFmtMa(s.iz) +
+      ": SAG, the feed brings " + znFmtMa(s.is) + " and the load wants " + znFmtMa(c.load) + ".";
+    return c.label + " -> RAIL " + znFmtV(s.vout) + " \u00B7 IZ " + znFmtMa(s.iz) +
+      " \u00B7 PZ " + znFmtMw(s.pz) + ": HOLD, the Zener sips the feed.";
+  }
+
+  /* node/jsdom test hooks: assigned before any DOM is touched, so a
+     hostile docStub still gets the exports. */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.ZN = {
+      VIN: ZN_VIN, VZ: ZN_VZ, IZ_KNEE: ZN_IZ_KNEE, PZ_MAX: ZN_PZ_MAX,
+      PR_MAX: ZN_PR_MAX, T1_LOAD: ZN_T1_LOAD, T1_TRAY: ZN_T1_TRAY,
+      T2A: ZN_T2A, T2B: ZN_T2B, T3_CASES: ZN_T3_CASES, T3_FATES: ZN_T3_FATES,
+      T2A_VERDICTS: ZN_T2A_VERDICTS, T2B_VERDICTS: ZN_T2B_VERDICTS,
+      feedMa: znFeedMa, sim: znSim, t1Check: znT1Check, t1Truth: znT1Truth,
+      predictT1: znPredictT1, t2Sim: znT2Sim, t2Probe: znT2Probe,
+      verdictT2: znVerdictT2, fate: znFate, t3Line: znT3Line,
+      fmtV: znFmtV, fmtMa: znFmtMa, fmtMw: znFmtMw, feedSpec: znFeedSpec,
+      introHTML: null /* filled after the copy const below */
+    };
+  }
+
+  /* ---------- intro copy: why first, worked example, failure modes ---------- */
+  var ZN_INTRO_HTML = [
+    "<div class=\"zn-card\"><h3>WHY THIS ROOM EXISTS</h3>",
+    "<p class=\"why\">A regulator does not need a chip. A resistor and one special diode hold a rail steady: ",
+    "the resistor feeds current from the 12 V rail, the Zener diode drinks whatever the load does not, ",
+    "and the rail sits at the Zener's breakdown voltage. Two parts, no feedback loop, and this exact circuit ",
+    "still ships in millions of small rails. The catch is the whole room: the Zener can only drink so much. ",
+    "When the load gets greedy, the regulation dies before anything else does.</p>",
+    "<p class=\"why\">Three terms, earned now. The <b>breakdown voltage</b> Vz is the Zener's one trick: run ",
+    "backwards, a 5.1 V Zener blocks like any diode below 5.1 V and avalanches at 5.1 V, clamping there while ",
+    "current flows through it. The <b>knee</b> is the spec's honesty line: below about 2 mA of Zener current ",
+    "the clamp goes soft and the rail droops, so the feed must keep the Zener above 2 mA even at the hungriest ",
+    "load. The <b>Zener current</b> Iz is the drink: feed current minus load current, Iz = Is - Iload. That one ",
+    "subtraction is the whole arithmetic of the room.</p></div>",
+    "<div class=\"zn-card\"><h3>THE WORKED EXAMPLE</h3>",
+    "<p class=\"why\">12 V in, a 5.1 V Zener, a 1 k\u03A9 feed. The feed sees 12 - 5.1 = 6.9 V, so it carries ",
+    "6.9 mA, every second, whatever the load does. No load: the Zener drinks all 6.9 mA and burns 5.1 x 6.9 = ",
+    "35 mW, a warm coin, not a fire. A 2 mA load sips 2 mA off the top; the Zener drinks the remaining 4.9 mA; ",
+    "the rail never moves from 5.10 V. An 8 mA load: the feed only brings 6.9 mA, the Zener starves to zero, and ",
+    "the resistor becomes the whole circuit: 12 - 8 x 1 = 4.0 V on the rail. Size the feed for the hungriest ",
+    "load, plus the Zener's 2 mA knee, and the rail holds. That sentence is the room.</p></div>",
+    "<div class=\"zn-card zn-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3><ul>",
+    "<li><b>STARVED:</b> load current past the feed current, Iz = 0, rail sags to 12 - I x R. You will blame ",
+    "the firmware. The feed did it.</li>",
+    "<li><b>COOKED:</b> no load, fat feed: the Zener drinks the whole feed and its power rating is the only ",
+    "thing between you and smoke. 352 mW into a 200 mW part pops in the field, not on your bench.</li>",
+    "<li><b>HOT FEED:</b> (Vin - Vz) x Is cooks the resistor too. 250 mW is a promise, not a suggestion.</li>",
+    "<li><b>NO RESISTOR:</b> a Zener straight across 12 V tries to drink the whole supply and becomes a fuse. ",
+    "The Diode Room taught the no-resistor kill on the forward side; this is the reverse side.</li>",
+    "<li><b>WRONG WAY:</b> a Zener fitted forward clamps at 0.7 V, a diode doing diode things. Probe before ",
+    "you trust.</li>",
+    "<li><b>THE BIG RAIL:</b> this circuit tops out at milliamps of load. For the 700 mA rail, the series ",
+    "answer lives in The LDO Room: same job, a transistor burns the difference instead of the resistor.</li></ul></div>"
+  ].join("");
+  if (typeof module !== "undefined" && module.exports && module.exports.ZN) {
+    module.exports.ZN.introHTML = ZN_INTRO_HTML;
+  }
+
+  /* ---------- css ---------- */
+  var ZN_CSS = [
+    ".zn-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".zn-overlay.open{display:block}",
+    ".zn-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".zn-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".zn-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".zn-sub{font-size:14px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.92;margin:0 0 18px;max-width:68ch}",
+    ".zn-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".zn-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".zn-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".zn-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".zn-card b{color:var(--ember,#ff5a1f)}",
+    ".zn-fail{border:1px solid var(--ember,#ff5a1f)}",
+    ".zn-fail li{font-size:13px;line-height:1.6;margin:0 0 6px;list-style:none}",
+    ".zn-fail ul{padding:0;margin:0}",
+    ".zn-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}",
+    ".zn-lab{font-size:12px;letter-spacing:.12em;opacity:.75}",
+    ".zn-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
+    ".zn-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".zn-btn:disabled{opacity:.35;cursor:default}",
+    ".zn-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".zn-btn.sel{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12)}",
+    ".zn-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#101014}",
+    ".zn-verdict{font-size:14px;line-height:1.6;margin:10px 0 0;min-height:24px}",
+    ".zn-verdict.ok{color:#9fe870}",
+    ".zn-verdict.bad{color:#ff5a1f}",
+    ".zn-read{font-size:14px;line-height:1.7;margin:8px 0 0;min-height:22px;white-space:pre-line}",
+    ".zn-log{font-size:12.5px;line-height:1.7;max-height:280px;overflow-y:auto}",
+    ".zn-log div{margin:0 0 4px}",
+    ".zn-log .dim{opacity:.6}",
+    ".zn-log .ok{color:#9fe870}",
+    ".zn-log .bad{color:#ff5a1f}",
+    ".zn-notes{font-size:13px;line-height:1.7;margin:8px 0 0;min-height:22px;white-space:pre-line}",
+    ".zn-banner{display:none;border:1px solid var(--ember,#ff5a1f);background:rgba(255,90,31,.08);padding:18px;margin:0 0 14px}",
+    ".zn-banner h3{font-family:'Space Grotesk',sans-serif;font-size:18px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".zn-banner p{font-size:13px;line-height:1.65;margin:0 0 12px;max-width:70ch}",
+    ".zn-box{font-size:12px;letter-spacing:.12em;border:1px solid var(--line,rgba(242,237,228,.28));padding:10px 14px;margin:10px 0;max-width:560px;text-align:center}",
+    ".zn-num{font-family:'IBM Plex Mono',monospace;font-size:14px;min-height:48px;padding:10px 14px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));width:200px}",
+    ".zn-num:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".zn-pop{animation:znPop 200ms ease-out}",
+    "@keyframes znPop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    "@media (prefers-reduced-motion:reduce){.zn-pop{animation:none}}",
+    "@media (max-width:640px){.zn-panel{padding:48px 14px 100px}.zn-num{width:100%}}"
+  ].join("\n");
+
+  /* ---------- dom helpers ---------- */
+  var znState = null, znEls = null;
+
+  function znEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  function znLog(msg, cls) {
+    if (!znEls || !znEls.log) return;
+    var d = znEl("div", cls || "", msg);
+    znEls.log.appendChild(d);
+    znEls.log.scrollTop = znEls.log.scrollHeight;
+  }
+  function znPop(card) {
+    card.classList.remove("zn-pop");
+    void card.offsetWidth;
+    card.classList.add("zn-pop");
+  }
+  function znCertLine() {
+    var r1 = znFeedSpec(ZN_T1_TRAY[znState.t1.feed === null ? 2 : znState.t1.feed]);
+    return "Called the Zener current before the load stepped, sized the " + r1 + " feed so the Zener stays " +
+      "above its 2 mA knee, found the starved rail and the cooking Zener by measurement, and called POP, " +
+      "HOLD, and SAG before power flowed. The room remembers.";
+  }
+  function znAllPassed() {
+    var s = znState;
+    return s.t1.passed && s.t2a.passed && s.t2b.passed && s.t3.passed;
+  }
+  function znRefreshCert() {
+    if (!znEls || !znEls.banner) return;
+    if (znAllPassed()) {
+      var cp = (typeof document !== "undefined") ? document.getElementById("znCertP") : null;
+      if (cp) cp.textContent = znCertLine();
+      znEls.banner.style.display = "block";
+      znLog("all trials pass. ROOM CERTIFIED.", "ok");
+    } else {
+      znEls.banner.style.display = "none";
+    }
+  }
+
+  /* ---------- do-first card: meter the holding rail, free ---------- */
+  function znDoFirstCard() {
+    var card = znEl("div", "zn-card");
+    card.appendChild(znEl("h3", null, "DO FIRST: METER THE HOLDING RAIL, FREE"));
+    card.appendChild(znEl("p", "why",
+      "A 5.1 V Zener on a 1 k\u03A9 feed is already fitted. Step the load, press METER, watch the rail " +
+      "hold while the Zener's drink shrinks. Push the load past the feed and watch the clamp let go. " +
+      "Nothing here is graded; the trials below are where it counts."));
+    var row = znEl("div", "zn-row");
+    var loadLab = znEl("span", "zn-lab", "LOAD");
+    var st = { load: 2 };
+    var loads = [0, 2, 4, 6, 8], lBtns = [];
+    loads.forEach(function (a) {
+      var b = znEl("button", "zn-btn", a + " mA");
+      b.id = "znDoFirst_load_" + a;
+      b.setAttribute("aria-label", "Set load to " + a + " milliamps");
+      b.addEventListener("click", function () {
+        st.load = a;
+        lBtns.forEach(function (x, i) { x.classList.toggle("sel", loads[i] === a); });
+        loadLab.textContent = "LOAD " + a + " mA";
+        znPop(card);
+      });
+      lBtns.push(b);
+      row.appendChild(b);
+    });
+    lBtns[1].classList.add("sel");
+    var run = znEl("button", "zn-btn solid", "METER THE RAIL");
+    run.id = "znDoFirst_run";
+    row.appendChild(run);
+    card.appendChild(row);
+    var read = znEl("div", "zn-read", "LOAD 2 mA \u00B7 press METER THE RAIL");
+    read.id = "znDoFirst_read";
+    card.appendChild(read);
+    run.addEventListener("click", function () {
+      var s = znSim(1000, st.load);
+      read.textContent = "RAIL " + znFmtV(s.vout) + " \u00B7 FEED " + znFmtMa(s.is) +
+        " \u00B7 ZENER " + znFmtMa(s.iz) +
+        "\n" + (s.regulated
+          ? "The rail holds: the Zener drinks the difference."
+          : "The clamp let go: the load outran the feed, Iz = 0.");
+      znLog("do-first: metered " + st.load + " mA on 1 k\u03A9: rail " + znFmtV(s.vout) +
+        ", Iz " + znFmtMa(s.iz) + ".", "dim");
+      znPop(card);
+    });
+    return card;
+  }
+
+  /* ---------- trial 1: size the feed ---------- */
+  function znT1Card() {
+    var card = znEl("div", "zn-card");
+    card.appendChild(znEl("p", "why",
+      "The 12 V rail feeds a 2 mA load through a 5.1 V Zener. Three checks, all honest: the Zener stays " +
+      "at or above its 2 mA knee, Zener power inside 200 mW, feed resistor inside 250 mW. " +
+      "Call the Zener current in mA (within 0.5) before you run."));
+    var row = znEl("div", "zn-row");
+    row.appendChild(znEl("span", "zn-lab", "TRAY"));
+    var fBtns = [];
+    ZN_T1_TRAY.forEach(function (r, i) {
+      var b = znEl("button", "zn-btn", znFeedSpec(r));
+      b.id = "znT1_f" + i;
+      b.setAttribute("aria-label", "Fit the " + znFeedSpec(r) + " feed resistor");
+      b.addEventListener("click", function () {
+        znState.t1.feed = i;
+        znState.t1.predicted = false;
+        znState.t1.passed = false;
+        znRefreshCert();
+        fBtns.forEach(function (x, j) { x.classList.toggle("sel", j === i); });
+        pred.value = "";
+        verdict.textContent = "Feed fitted: " + znFeedSpec(r) + ". Call the Zener current, then run.";
+        verdict.className = "zn-verdict";
+        read.textContent = "";
+        run.disabled = true;
+        znPop(card);
+      });
+      fBtns.push(b);
+      row.appendChild(b);
+    });
+    card.appendChild(row);
+
+    var prow = znEl("div", "zn-row");
+    prow.appendChild(znEl("span", "zn-lab", "PREDICTED IZ"));
+    var pred = znEl("input", "zn-num");
+    pred.id = "znT1_pred";
+    pred.type = "number";
+    pred.step = "0.1";
+    pred.min = "0";
+    pred.setAttribute("aria-label", "Predicted Zener current in milliamps");
+    pred.placeholder = "mA";
+    prow.appendChild(pred);
+    var callBtn = znEl("button", "zn-btn", "CALL IZ");
+    callBtn.id = "znT1_call";
+    prow.appendChild(callBtn);
+    var run = znEl("button", "zn-btn solid", "RUN LOAD STEP");
+    run.id = "znT1_run";
+    run.disabled = true;
+    prow.appendChild(run);
+    card.appendChild(prow);
+
+    var read = znEl("div", "zn-read", "");
+    read.id = "znT1_read";
+    card.appendChild(read);
+    var verdict = znEl("div", "zn-verdict", "Pick a feed from the tray.");
+    verdict.id = "znT1_verdict";
+    verdict.setAttribute("aria-live", "polite");
+    card.appendChild(verdict);
+
+    callBtn.addEventListener("click", function () {
+      var ix = znState.t1.feed;
+      if (ix === null) { verdict.textContent = "Fit a feed first."; verdict.className = "zn-verdict bad"; return; }
+      var v = parseFloat(pred.value, 10);
+      var truth = znT1Truth(ix);
+      if (!isFinite(v) || v < 0) { verdict.textContent = "Type a number in mA."; verdict.className = "zn-verdict bad"; return; }
+      var p = znPredictT1(ix, v);
+      var feedIs = znFeedMa(ZN_T1_TRAY[ix]).toFixed(1);
+      if (p.ok) {
+        znState.t1.predicted = true;
+        run.disabled = false;
+        verdict.textContent = "PREDICTION RIGHT: Iz = " + truth.toFixed(1) + " mA. RUN LOAD STEP is armed.";
+        verdict.className = "zn-verdict ok";
+        znLog("t1: predicted Iz " + v + " mA for " + znFeedSpec(ZN_T1_TRAY[ix]) + ", true " + truth.toFixed(1) + " mA.", "ok");
+      } else {
+        znState.t1.predicted = false;
+        run.disabled = true;
+        verdict.textContent = "PREDICTION WRONG: " + (truth <= 0
+          ? "the feed brings only " + feedIs + " mA against a 2.0 mA load, so the Zener is dry: Iz = 0.0 mA."
+          : "Iz = Is - Iload = " + feedIs + " - 2.0 mA. Do the subtraction, then call it again.");
+        verdict.className = "zn-verdict bad";
+        znLog("t1: wrong Iz prediction " + v + " mA (true " + truth.toFixed(1) + " mA).", "bad");
+      }
+      znPop(card);
+    });
+
+    run.addEventListener("click", function () {
+      var ix = znState.t1.feed;
+      if (ix === null || !znState.t1.predicted) return;
+      var chk = znT1Check(ix), s = chk.sim;
+      read.textContent = "RAIL " + znFmtV(s.vout) + " \u00B7 IZ " + znFmtMa(s.iz) +
+        " \u00B7 PZ " + znFmtMw(s.pz) + " \u00B7 FEED " + znFmtMw(s.pr);
+      var lines = chk.checks.map(function (c) { return (c.ok ? "PASS" : "FAIL") + ": " + c.line; });
+      if (chk.pass) {
+        znState.t1.passed = true;
+        var warm = s.pz > 100 ? " It runs warm at " + znFmtMw(s.pz) + " of the 200 mW budget: fine, but no margin." : "";
+        verdict.textContent = lines.join("\n") + "\nTrial 1 passes: the " + znFeedSpec(ZN_T1_TRAY[ix]) +
+          " feed holds the rail." + warm;
+        verdict.className = "zn-verdict ok";
+        znLog("t1: " + znFeedSpec(ZN_T1_TRAY[ix]) + " passes all three checks. Trial 1 passes.", "ok");
+        znRefreshCert();
+      } else {
+        verdict.textContent = lines.join("\n") + "\nTrial 1 fails on this feed. Read the failing check, pick another part.";
+        verdict.className = "zn-verdict bad";
+        znLog("t1: " + znFeedSpec(ZN_T1_TRAY[ix]) + " fails: " +
+          chk.checks.filter(function (c) { return !c.ok; }).map(function (c) { return c.key; }).join(", ") + ".", "bad");
+      }
+      znPop(card);
+    });
+    return card;
+  }
+
+  /* ---------- trial 2: two sick rails, probe, verdict, repair ---------- */
+  function znT2RailCard(which) {
+    var cfg = which === "a" ? ZN_T2A : ZN_T2B;
+    var verdicts = which === "a" ? ZN_T2A_VERDICTS : ZN_T2B_VERDICTS;
+    var st = which === "a" ? znState.t2a : znState.t2b;
+    var card = znEl("div", "zn-card");
+    card.appendChild(znEl("p", "why",
+      which === "a"
+        ? "Rail A drove an 8 mA load and came back wrong. Someone added a hungry load to a feed sized for a mouse. Probe first, verdict second, repair third."
+        : "Rail B came back with its load unplugged and its Zener too hot to touch. It regulates fine, which is exactly the lie. Probe first, verdict second, repair third."));
+    var box = znEl("div", "zn-box", cfg.name + ": " + cfg.spec);
+    box.id = "znT2" + which + "_box";
+    card.appendChild(box);
+
+    var row = znEl("div", "zn-row");
+    var pRail = znEl("button", "zn-btn", "PROBE RAIL");
+    pRail.id = "znT2" + which + "_probeRail";
+    pRail.setAttribute("aria-label", "Probe " + cfg.name + " rail voltage");
+    var pFeed = znEl("button", "zn-btn", "PROBE FEED");
+    pFeed.id = "znT2" + which + "_probeFeed";
+    pFeed.setAttribute("aria-label", "Probe " + cfg.name + " feed current");
+    var pZ = znEl("button", "zn-btn", "PROBE ZENER");
+    pZ.id = "znT2" + which + "_probeZener";
+    pZ.setAttribute("aria-label", "Probe " + cfg.name + " Zener current");
+    row.appendChild(pRail); row.appendChild(pFeed); row.appendChild(pZ);
+    if (which === "b") {
+      var pT = znEl("button", "zn-btn", "PROBE TEMP");
+      pT.id = "znT2b_probeTemp";
+      pT.setAttribute("aria-label", "Probe rail B Zener temperature");
+      row.appendChild(pT);
+    }
+    card.appendChild(row);
+
+    var notes = znEl("div", "zn-notes", "No probes yet. The bench is waiting.");
+    notes.id = "znT2" + which + "_notes";
+    card.appendChild(notes);
+
+    var vrow = znEl("div", "zn-row");
+    vrow.appendChild(znEl("span", "zn-lab", "VERDICT"));
+    var vBtns = [];
+    verdicts.forEach(function (v, i) {
+      var b = znEl("button", "zn-btn", v);
+      b.id = "znT2" + which + "_v" + i;
+      b.disabled = true;
+      b.setAttribute("aria-label", "Commit verdict: " + v);
+      b.addEventListener("click", function () {
+        var r = znVerdictT2(which, i);
+        if (st.passed) { st.passed = false; znRefreshCert(); }
+        if (r.ok) {
+          st.committed = true;
+          verdict.textContent = "VERDICT RIGHT: " + r.why;
+          verdict.className = "zn-verdict ok";
+          fix.disabled = false;
+          znLog("t2" + which + ": correct verdict. Fix armed.", "ok");
+        } else {
+          verdict.textContent = "VERDICT WRONG: " + r.why;
+          verdict.className = "zn-verdict bad";
+          znLog("t2" + which + ": wrong verdict (" + v + ").", "bad");
+        }
+        znPop(card);
+      });
+      vBtns.push(b);
+      vrow.appendChild(b);
+    });
+    card.appendChild(vrow);
+
+    var fix = znEl("button", "zn-btn solid",
+      which === "a" ? "REFIT 470 \u03A9 FEED" : "REFIT 1 k\u03A9 FEED");
+    fix.id = "znT2" + which + "_fix";
+    fix.disabled = true;
+    var frow = znEl("div", "zn-row");
+    frow.appendChild(fix);
+    card.appendChild(frow);
+
+    var verdict = znEl("div", "zn-verdict", "Probe " + cfg.name + " before committing a verdict.");
+    verdict.id = "znT2" + which + "_verdict";
+    verdict.setAttribute("aria-live", "polite");
+    card.appendChild(verdict);
+
+    function probe(kind) {
+      var r = znT2Probe(which, kind, st.fixed);
+      notes.textContent = (notes.textContent === "No probes yet. The bench is waiting." ? "" : notes.textContent + "\n") + r.note;
+      st.probed = true;
+      vBtns.forEach(function (b) { b.disabled = false; });
+      if (verdict.textContent === "Probe " + cfg.name + " before committing a verdict.") verdict.textContent = "";
+      if (st.committed && st.fixed && kind === "rail") {
+        var t = znT2Sim(cfg, true), s = t.s;
+        st.passed = true;
+        verdict.textContent = cfg.name + " now reads " + znFmtV(s.vout) + ", Iz " + znFmtMa(s.iz) +
+          (which === "a"
+            ? ": the fatter feed outruns the hungry load. Trial 2 rail A passes."
+            : ", Pz " + znFmtMw(s.pz) + ": the thinner feed starves the cook. Trial 2 rail B passes.");
+        verdict.className = "zn-verdict ok";
+        znLog("t2" + which + ": refitted and confirmed. Rail " + which.toUpperCase() + " passes.", "ok");
+        znRefreshCert();
+      }
+      znPop(card);
+    }
+    pRail.addEventListener("click", function () { probe("rail"); znLog("t2" + which + ": probed rail.", "dim"); });
+    pFeed.addEventListener("click", function () { probe("feed"); znLog("t2" + which + ": probed feed.", "dim"); });
+    pZ.addEventListener("click", function () { probe("zener"); znLog("t2" + which + ": probed zener.", "dim"); });
+    if (which === "b") pT.addEventListener("click", function () { probe("temp"); znLog("t2b: probed temp.", "dim"); });
+
+    fix.addEventListener("click", function () {
+      if (!st.committed) return;
+      st.fixed = true;
+      box.textContent = cfg.name + ": refitted " + znFeedSpec(cfg.fixFeed) + " feed \u00B7 " +
+        (which === "a" ? "8 mA load" : "load unplugged");
+      fix.disabled = true;
+      notes.textContent += "\nFEED REFITTED: " + znFeedSpec(cfg.fixFeed) +
+        " now feeds the rail. Re-probe the RAIL to confirm.";
+      verdict.textContent = "Feed refitted. PROBE RAIL again to confirm the reading.";
+      verdict.className = "zn-verdict";
+      znLog("t2" + which + ": feed refitted to " + znFeedSpec(cfg.fixFeed) + ". Re-probe to confirm.", "dim");
+      znPop(card);
+    });
+    return card;
+  }
+
+  /* ---------- trial 3: call the fate, then power ---------- */
+  function znT3Card() {
+    var card = znEl("div", "zn-card");
+    card.appendChild(znEl("p", "why",
+      "Three rails, three fates. The Zener budget is 200 mW, the knee is 2 mA. Call HOLD, POP, or SAG for " +
+      "each rail before any power flows, then apply power and face the meter. POP means the Zener cooks " +
+      "past its budget; SAG means the load outruns the feed."));
+    ZN_T3_CASES.forEach(function (c, i) {
+      var row = znEl("div", "zn-row");
+      var lab = znEl("span", "zn-lab", c.label);
+      lab.id = "znT3_lab_" + c.key;
+      row.appendChild(lab);
+      ZN_T3_FATES.forEach(function (f) {
+        var b = znEl("button", "zn-btn", f);
+        b.id = "znT3_" + c.key + "_" + f.toLowerCase();
+        b.setAttribute("aria-label", "Predict " + f + " for rail " + c.key.toUpperCase());
+        b.addEventListener("click", function () { setPred(i, f, b, row); });
+        row.appendChild(b);
+      });
+      card.appendChild(row);
+    });
+    var run = znEl("button", "zn-btn solid", "APPLY POWER");
+    run.id = "znT3_run";
+    run.disabled = true;
+    var rrow = znEl("div", "zn-row");
+    rrow.appendChild(run);
+    card.appendChild(rrow);
+    var read = znEl("div", "zn-read", "");
+    read.id = "znT3_read";
+    card.appendChild(read);
+    var verdict = znEl("div", "zn-verdict", "Call all three fates first.");
+    verdict.id = "znT3_verdict";
+    verdict.setAttribute("aria-live", "polite");
+    card.appendChild(verdict);
+
+    function setPred(i, f, btn, row) {
+      znState.t3.pred[i] = f;
+      if (znState.t3.passed) { znState.t3.passed = false; znRefreshCert(); }
+      var kids = row.querySelectorAll("button");
+      for (var k = 0; k < kids.length; k++) kids[k].classList.toggle("sel", kids[k] === btn);
+      var done = znState.t3.pred.every(function (x) { return x !== null; });
+      run.disabled = !done;
+      if (done) verdict.textContent = "All three called. APPLY POWER is armed.";
+      znPop(card);
+    }
+    run.addEventListener("click", function () {
+      if (!znState.t3.pred.every(function (x) { return x !== null; })) return;
+      var right = 0;
+      var lines = ZN_T3_CASES.map(function (c, i) {
+        var truth = znFate(i), called = znState.t3.pred[i], okx = called === truth;
+        if (okx) right++;
+        return znT3Line(i) + "\n(you called " + called + ": " + (okx ? "right" : "wrong") + ")";
+      });
+      read.textContent = lines.join("\n\n");
+      if (right === 3) {
+        znState.t3.passed = true;
+        verdict.textContent = "3 of 3 fates right. The no-load rail holds, the fat feed pops its Zener, " +
+          "the hungry load sags its rail: Iz = Is - Iload decides all three. Trial 3 passes.";
+        verdict.className = "zn-verdict ok";
+        znLog("t3: 3/3 fate calls right. Trial 3 passes.", "ok");
+        znRefreshCert();
+      } else {
+        verdict.textContent = right + " of 3 calls right. Work each rail through the sim: Iz = (12 - 5.1) / R - Iload, " +
+          "then PZ = 5.1 x Iz against the 200 mW budget, then the knee. Call them again.";
+        verdict.className = "zn-verdict bad";
+        znLog("t3: " + right + "/3 calls right.", "bad");
+      }
+      znPop(card);
+    });
+    return card;
+  }
+
+  /* ---------- certificate ---------- */
+  function znDownloadCert() {
+    var r1 = znFeedSpec(ZN_T1_TRAY[znState.t1.feed === null ? 2 : znState.t1.feed]);
+    var txt = [
+      "THE PROVING GROUND \u00B7 BENCH 59 \u00B7 THE ZENER ROOM",
+      "OLD IRON BENCH \u00B7 " + new Date().toISOString(),
+      "",
+      "TRIAL 1 \u00B7 SIZE THE FEED: " + r1 + " fitted for the 2 mA load, Iz called before the load stepped,",
+      "  all three checks pass (knee >= 2 mA, Zener <= 200 mW, feed <= 250 mW).",
+      "TRIAL 2 \u00B7 TWO SICK RAILS: rail A starved by its 8 mA load (Iz = 0, rail 4.00 V), refitted 470 \u03A9;",
+      "  rail B cooked by its 100 \u03A9 feed at no load (352 mW), refitted 1 k\u03A9.",
+      "TRIAL 3 \u00B7 CALL THE FATE: 3/3 right: HOLD (1 k\u03A9, no load), POP (100 \u03A9, no load),",
+      "  SAG (1 k\u03A9, 8 mA load).",
+      "",
+      "ROOM CERTIFIED. " + znCertLine()
+    ].join("\n");
+    var blob = new Blob([txt], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = (window.URL || window.webkitURL).createObjectURL(blob);
+    a.download = "zener-room-bench59-cert.txt";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { (window.URL || window.webkitURL).revokeObjectURL(a.href); }, 4000);
+    znLog("certificate downloaded.", "ok");
+  }
+
+  /* ---------- overlay open/close ---------- */
+  function znOpen() { if (znEls) znEls.overlay.classList.add("open"); }
+  function znClose() { if (znEls) znEls.overlay.classList.remove("open"); }
+
+  function znBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("znBtn")) return;
+    znState = {
+      t1: { feed: null, predicted: false, passed: false },
+      t2a: { probed: false, committed: false, fixed: false, passed: false },
+      t2b: { probed: false, committed: false, fixed: false, passed: false },
+      t3: { pred: [null, null, null], passed: false }
+    };
+    znEls = { overlay: null, log: null, banner: null };
+
+    var sty = document.createElement("style");
+    sty.textContent = ZN_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "znBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Zener Room";
+    b.addEventListener("click", znOpen);
+    box.appendChild(b);
+
+    var ov = znEl("div", "zn-overlay");
+    ov.id = "znOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Zener Room");
+    var x = znEl("button", "zn-btn", "CLOSE");
+    x.id = "znXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Zener Room");
+    x.addEventListener("click", znClose);
+    ov.appendChild(x);
+    znEls.overlay = ov;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && ov.classList.contains("open")) znClose();
+    });
+
+    var panel = znEl("div", "zn-panel");
+    panel.appendChild(znEl("div", "zn-kicker", "OLD IRON BENCH 59"));
+    panel.appendChild(znEl("h2", "zn-title", "The Zener Room"));
+    panel.appendChild(znEl("p", "zn-sub",
+      "A shunt regulator in two parts: the feed resistor brings current, the Zener diode drinks whatever " +
+      "the load does not, and the rail sits at the breakdown voltage. Size the feed, diagnose a starved " +
+      "rail and a cooking Zener by measurement, then call each rail's fate before power flows."));
+
+    var introWrap = znEl("div", "");
+    introWrap.innerHTML = ZN_INTRO_HTML;
+    panel.appendChild(introWrap);
+
+    panel.appendChild(znDoFirstCard());
+
+    var t1Head = znEl("div", "zn-card");
+    t1Head.appendChild(znEl("h3", null, "TRIAL 1: SIZE THE FEED"));
+    t1Head.appendChild(znEl("p", "why",
+      "The 12 V rail feeds a 2 mA load through a 5.1 V Zener. Fit a feed from the tray, call the Zener " +
+      "current in mA, then run the load step and pass all three checks."));
+    panel.appendChild(t1Head);
+    panel.appendChild(znT1Card());
+
+    var t2Head = znEl("div", "zn-card");
+    t2Head.appendChild(znEl("h3", null, "TRIAL 2: TWO SICK RAILS"));
+    t2Head.appendChild(znEl("p", "why",
+      "Two rails misbehave, two different diseases. Probe first, verdict second, repair third, on each."));
+    panel.appendChild(t2Head);
+    panel.appendChild(znT2RailCard("a"));
+    panel.appendChild(znT2RailCard("b"));
+
+    var t3Head = znEl("div", "zn-card");
+    t3Head.appendChild(znEl("h3", null, "TRIAL 3: CALL THE FATE"));
+    t3Head.appendChild(znEl("p", "why",
+      "Three rails, three fates: HOLD, POP, or SAG. Call all three before any power flows, then apply " +
+      "power and face the meter."));
+    panel.appendChild(t3Head);
+    panel.appendChild(znT3Card());
+
+    /* certification banner */
+    var banner = znEl("div", "zn-banner");
+    banner.id = "znBanner";
+    banner.appendChild(znEl("h3", null, "ROOM CERTIFIED"));
+    var certP = znEl("p", null, znCertLine());
+    certP.id = "znCertP";
+    banner.appendChild(certP);
+    var dl = znEl("button", "zn-btn solid", "DOWNLOAD CERTIFICATE");
+    dl.id = "znCertDl";
+    dl.addEventListener("click", znDownloadCert);
+    banner.appendChild(dl);
+    panel.appendChild(banner);
+    znEls.banner = banner;
+
+    /* bench log */
+    var logCard = znEl("div", "zn-card");
+    logCard.appendChild(znEl("h3", null, "BENCH LOG"));
+    var log = znEl("div", "zn-log");
+    log.id = "znLog";
+    log.setAttribute("aria-live", "polite");
+    logCard.appendChild(log);
+    panel.appendChild(logCard);
+    znEls.log = log;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    znLog("bench open. 12 V rail, 5.1 V Zener on a 1 k\u03A9 feed, meter in hand. The tray holds five parts.", "dim");
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", znBuild);
+  } else {
+    znBuild();
+  }
+})();

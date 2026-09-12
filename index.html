@@ -730,7 +730,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "58", name: "The Shunt Room", btn: "sntBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "The ammeter always lies a little: a shunt resistor turns current into a readable voltage, but every reading costs burden voltage and the sense taps must not share load current. Size a shunt inside the burden budget, catch a two-wire liar by measurement, and park an overcurrent trip exactly at the edge.",
     how: "Meter the rail free, predict the burden of your picked shunt, probe the lying sense taps, then call trip or hold for three loads before applying power.",
-    spec: "BURDEN BUDGET \u00B7 KELVIN TAPS \u00B7 3 TRIALS" }
+    spec: "BURDEN BUDGET \u00B7 KELVIN TAPS \u00B7 3 TRIALS" },
+  { section: "oldiron", n: "59", name: "The Zener Room", btn: "znBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "A regulator in two parts: a resistor feeds current and a Zener diode drinks whatever the load does not, holding the rail at its breakdown voltage. Size the feed, starve one rail and cook another by measurement, then call each rail's fate before power flows.",
+    how: "Meter the holding rail free, fit a feed that keeps the Zener above its 2 mA knee, probe the two sick rails and commit a verdict, then call HOLD, POP, or SAG for three rails before applying power.",
+    spec: "SHUNT REGULATION \u00B7 3 TRIALS" }
 ];
 
 var pgFilter = "all";
@@ -1142,9 +1146,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=53adb592a4" defer></script>
-<script src="rvdata.js?v=53adb592a4" defer></script>
-<script src="riscv-lab.js?v=53adb592a4" defer></script>
-<script src="features.js?v=53adb592a4" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=ce82ffd525" defer></script>
+<script src="rvdata.js?v=ce82ffd525" defer></script>
+<script src="riscv-lab.js?v=ce82ffd525" defer></script>
+<script src="features.js?v=ce82ffd525" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
