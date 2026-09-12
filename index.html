@@ -718,7 +718,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "55", name: "The Relay Room", btn: "rlBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "A relay lets a tiny current switch a big current through magnetic isolation. Drive two coils inside their voltage windows, wire a fan and a heater fail-safe, then predict the flyback spike before opening a coil with no diode.",
     how: "Call every outcome before you act: size two coil drives, wire two loads fail-safe, predict the spike band.",
-    spec: "COIL DRIVE \u00B7 FAIL-SAFE CONTACTS \u00B7 FLYBACK SPIKE" }
+    spec: "COIL DRIVE \u00B7 FAIL-SAFE CONTACTS \u00B7 FLYBACK SPIKE" },
+  { section: "oldiron", n: "56", name: "The MOSFET Room", btn: "mfBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "The MOSFET switches amps with volts: clear the gate threshold with margin, budget the on-resistance heat, and respect the gate as a capacitor at PWM rates. Pick parts from the tray, diagnose two dead benches by measurement, and park one gate at the threshold to watch it cook.",
+    how: "Flip the do-first gate, pick each part and commit, probe the dead benches and commit a verdict, then predict the threshold-park outcome before applying power.",
+    spec: "GATE VOLTAGE \u00B7 RDS(ON) \u00B7 3 TRIALS" }
 ];
 
 var pgFilter = "all";
@@ -1130,9 +1134,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=82bf7c87b6" defer></script>
-<script src="rvdata.js?v=82bf7c87b6" defer></script>
-<script src="riscv-lab.js?v=82bf7c87b6" defer></script>
-<script src="features.js?v=82bf7c87b6" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=fd5bad1f44" defer></script>
+<script src="rvdata.js?v=fd5bad1f44" defer></script>
+<script src="riscv-lab.js?v=fd5bad1f44" defer></script>
+<script src="features.js?v=fd5bad1f44" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

@@ -39564,3 +39564,988 @@ if (typeof module !== "undefined" && module.exports) {
     rlBuild();
   }
 })();
+/* ============================================================
+   BENCH 56: THE MOSFET ROOM (oldiron)
+   One atomic mechanism: an N-channel MOSFET switches load
+   current with gate voltage, not gate current. Above the
+   threshold voltage the channel is fully on and the only heat
+   is I squared times Rds(on); below the threshold it sits
+   half-open and burns. The gate draws no DC current (it is a
+   capacitor), so a logic pin can command amps, but the gate
+   must be driven past the threshold with margin, and driven
+   fast when the load switches at PWM rates.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------- the one mechanism, stated as data ---------- */
+  var MF_QG = 70e-9;   /* gate charge of the big logic-level part, coulombs */
+  var MF_T3_PARK = 1.5; /* trial 3: gate parked inside the threshold band, V */
+
+  /* the tray: four MOSFETs, honest datasheet curves.
+     rds is [Vgs, Rds(on)] pairs, the curve the bench believes. */
+  var MF_PARTS = [
+    { id: "mA", name: "AO3400-CLASS", kind: "LOGIC-LEVEL", pkg: "SOT-23",
+      vgsth: [0.65, 1.45], vdsMax: 30,
+      rds: [[1.45, 0.40], [2.5, 0.038], [3.3, 0.032], [4.5, 0.028], [10, 0.026]],
+      card: "AO3400-CLASS \u00B7 LOGIC-LEVEL \u00B7 SOT-23 \u00B7 Vgs(th) 0.65 to 1.45 V \u00B7 Rds(on) 28 m\u03A9 at 4.5 V \u00B7 30 V" },
+    { id: "mB", name: "IRLZ44N-CLASS", kind: "LOGIC-LEVEL", pkg: "TO-220",
+      vgsth: [1.0, 2.0], vdsMax: 55,
+      rds: [[2.0, 0.30], [2.5, 0.030], [3.3, 0.026], [4.5, 0.022], [10, 0.020]],
+      card: "IRLZ44N-CLASS \u00B7 LOGIC-LEVEL \u00B7 TO-220 \u00B7 Vgs(th) 1.0 to 2.0 V \u00B7 Rds(on) 22 m\u03A9 at 4.5 V \u00B7 55 V" },
+    { id: "mC", name: "IRF540-CLASS", kind: "STANDARD-LEVEL", pkg: "TO-220",
+      vgsth: [2.0, 4.0], vdsMax: 100,
+      rds: [[4.0, 0.80], [5, 0.30], [10, 0.044]],
+      card: "IRF540-CLASS \u00B7 STANDARD-LEVEL \u00B7 TO-220 \u00B7 Vgs(th) 2.0 to 4.0 V \u00B7 Rds(on) 44 m\u03A9 at 10 V \u00B7 100 V" },
+    { id: "mD", name: "2N7002-CLASS", kind: "LOGIC-LEVEL", pkg: "SOT-23",
+      vgsth: [0.8, 2.5], vdsMax: 60,
+      rds: [[2.5, 2.5], [3.3, 2.0], [4.5, 1.8], [10, 1.7]],
+      card: "2N7002-CLASS \u00B7 LOGIC-LEVEL \u00B7 SOT-23 \u00B7 Vgs(th) 0.8 to 2.5 V \u00B7 Rds(on) 1.8 \u03A9 at 4.5 V \u00B7 60 V" }
+  ];
+
+  /* trial 1: three loads, one tray. budget is conduction watts. */
+  var MF_T1 = [
+    { id: "l1", load: "12 V LAMP", rail: 12, amps: 6, vDrive: 3.3, budget: 1.0 },
+    { id: "l2", load: "5 V FAN", rail: 5, amps: 2, vDrive: 3.3, budget: 0.5 },
+    { id: "l3", load: "24 V HEATER", rail: 24, amps: 8, vDrive: 5, budget: 1.5 }
+  ];
+
+  function mfPart(id) {
+    for (var i = 0; i < MF_PARTS.length; i++) if (MF_PARTS[i].id === id) return MF_PARTS[i];
+    return null;
+  }
+  function mfRds(part, vgs) {
+    var t = part.rds, i;
+    if (vgs <= t[0][0]) return t[0][1];
+    for (i = 1; i < t.length; i++) {
+      if (vgs <= t[i][0]) {
+        var v0 = t[i - 1][0], r0 = t[i - 1][1], v1 = t[i][0], r1 = t[i][1];
+        return r0 + (r1 - r0) * (vgs - v0) / (v1 - v0);
+      }
+    }
+    return t[t.length - 1][1];
+  }
+  function mfTempWord(pW, budget) {
+    if (pW <= 0.5 * budget) return "COOL";
+    if (pW <= budget) return "WARM, IN BUDGET";
+    return "COOKING" + (pW >= 5 ? ", SMOKE SOON" : "");
+  }
+  function mfVerdictT1(load, part) {
+    var vd = load.vDrive.toFixed(1);
+    if (part.vdsMax < load.rail)
+      return { ok: false, reason: "VOLTAGE", rds: null, pW: null,
+        why: "VOLTAGE: " + load.rail + " V rail on a " + part.vdsMax + " V part. No margin, no pass." };
+    if (part.vgsth[1] >= load.vDrive) {
+      var rds = mfRds(part, load.vDrive), pW = load.amps * load.amps * rds;
+      return { ok: false, reason: "THRESHOLD", rds: rds, pW: pW,
+        why: "THRESHOLD: " + vd + " V gate against a " + part.vgsth[1].toFixed(2) +
+          " V worst-case threshold. The datasheet only promises the threshold sits below the max, so some " +
+          "units never turn on at all, and the unlucky half-open unit sits near " + rds.toFixed(2) +
+          " \u03A9 and burns " + pW.toFixed(1) + " W. Never drive a standard-level gate from " + vd + " V logic." };
+    }
+    var r2 = mfRds(part, load.vDrive), p2 = load.amps * load.amps * r2;
+    if (p2 > load.budget)
+      return { ok: false, reason: "HEAT", rds: r2, pW: p2,
+        why: "COOKS: Rds(on) " + Math.round(r2 * 1000) + " m\u03A9 at " + vd + " V gate is " +
+          p2.toFixed(2) + " W against a " + load.budget.toFixed(1) + " W budget. The part turns on fine and " +
+          "still loses: on-resistance is heat, not a footnote." };
+    return { ok: true, reason: "OK", rds: r2, pW: p2,
+      why: "IN BUDGET: Rds(on) " + Math.round(r2 * 1000) + " m\u03A9 at " + vd + " V gate, " +
+        p2.toFixed(2) + " W, " + mfTempWord(p2, load.budget).toLowerCase() + ". The " +
+        part.vgsth[1].toFixed(2) + " V worst-case threshold is cleared with margin." };
+  }
+
+  /* trial 2 bench A: standard-level part on 3.3 V logic. numbers from the model. */
+  function mfBenchA() {
+    var part = mfPart("mC"), rds = mfRds(part, 3.3), rLamp = 12 / 6;
+    var i = 12 / (rLamp + rds);
+    return { vgs: 3.3, vds: i * rds, amps: i, pFet: i * i * rds, lampV: 12 - i * rds, rds: rds };
+  }
+  function mfBenchAFixed() {
+    var part = mfPart("mB"), rds = mfRds(part, 3.3), rLamp = 12 / 6;
+    var i = 12 / (rLamp + rds);
+    return { vds: i * rds, amps: i, pFet: i * i * rds };
+  }
+  var MF_T2A_VERDICTS = [
+    "GATE STARVED: standard-level FET on 3.3 V logic",
+    "FET DEAD SHORT",
+    "LAMP SHORTED",
+    "GATE DRIVER TOO WEAK"
+  ];
+  function mfVerdictA(ix) {
+    if (ix === 0) return { ok: true,
+      why: "Called it. Vds 3.4 V on a part whose threshold runs to 4.0 V: the 3.3 V gate never clears it, " +
+        "the channel sits half-open, 14.7 W cooks the package. The lamp is dim because the FET is eating 3.4 V of its rail." };
+    if (ix === 1) return { ok: false,
+      why: "A dead short reads about 0 V across the FET and the lamp would see the full rail, bright. Vds reads 3.4 V: the FET is half-open, not shorted." };
+    if (ix === 2) return { ok: false,
+      why: "A shorted lamp would pull the rail down and the FET would read near 0 V across it, saturated. The 3.4 V sits across the FET, not the lamp." };
+    return { ok: false,
+      why: "The driver is innocent: the probe reads 3.3 V at the gate, exactly what the pin is asked to deliver. The part asks for more than 3.3 V can promise." };
+  }
+  function mfFixA(ix) {
+    if (ix === 0) return { ok: true,
+      why: "Logic-level part fitted. Vds 0.2 V, 6 A, 0.91 W: the lamp sees its full rail and the FET runs warm, in budget." };
+    return { ok: false,
+      why: "Even driven at 10 V the 44 m\u03A9 part burns 6\u00B2 \u00D7 0.044 = 1.58 W at 6 A, over the 1 W budget. " +
+        "The right fix is the part whose on-resistance fits the load, not a stronger drive into the wrong part." };
+  }
+
+  /* trial 2 bench B: 1 k gate resistor at 40 kHz. switching loss from the model. */
+  function mfSwLoss(rg) {
+    var t = MF_QG * rg / 10; /* Vdrive 10 V */
+    var psw = 12 * 6 * t * 40000;
+    var pcond = 36 * mfRds(mfPart("mB"), 10);
+    return { t: t, psw: psw, pcond: pcond, ptot: psw + pcond };
+  }
+  function mfFmtT(t) {
+    if (t < 1e-6) return (t * 1e9).toFixed(0) + " ns";
+    return (t * 1e6).toFixed(2) + " \u00B5s";
+  }
+  var MF_T2B_VERDICTS = [
+    "SWITCHING LOSS: slow gate edges at 40 kHz",
+    "RDS(ON) TOO HIGH",
+    "SHOOT-THROUGH",
+    "NO THERMAL PASTE"
+  ];
+  function mfVerdictB(ix) {
+    if (ix === 0) return { ok: true,
+      why: "Called it. 7 \u00B5s edges at 40 kHz: 12 V \u00D7 6 A \u00D7 7 \u00B5s \u00D7 40 kHz is 20 W of switching loss " +
+        "on top of 0.7 W of conduction. The DC hold proved Rds(on) innocent: the heat only exists while switching." };
+    if (ix === 1) return { ok: false,
+      why: "Rds(on) is innocent: hold the gate at 10 V DC and the FET falls back toward 41 C. The heat appears only while the gate is moving." };
+    if (ix === 2) return { ok: false,
+      why: "Shoot-through needs a half-bridge, two FETs fighting. There is one FET on this bench." };
+    return { ok: false,
+      why: "Paste cannot fix 20 W of switching loss. The package is not the problem; the edges are." };
+  }
+  var MF_T2B_FIX = [
+    { rg: 1000, label: "1 k\u03A9 (NO CHANGE)" },
+    { rg: 220, label: "220 \u03A9" },
+    { rg: 47, label: "47 \u03A9" },
+    { rg: 10, label: "10 \u03A9" }
+  ];
+  function mfFixB(ix) {
+    var f = MF_T2B_FIX[ix], s = mfSwLoss(f.rg);
+    if (s.ptot <= 2.0)
+      return { ok: true, rg: f.rg, s: s,
+        why: "EDGES " + mfFmtT(s.t) + ", switching loss " + s.psw.toFixed(2) + " W, total " +
+          s.ptot.toFixed(2) + " W: inside the 2 W repair budget. The gate still swings the full 10 V, it just gets there fast." };
+    return { ok: false, rg: f.rg, s: s,
+      why: "STILL COOKS: edges " + mfFmtT(s.t) + ", switching loss " + s.psw.toFixed(2) + " W, total " +
+        s.ptot.toFixed(2) + " W against the 2 W repair budget. Faster." };
+  }
+
+  /* trial 3: the gate parked at the threshold. */
+  var MF_T3_PREDS = ["SWITCHES CLEAN", "RUNS WARM, LIVES", "COOKS TO SMOKE"];
+  function mfPredictT3(ix) {
+    if (ix === 2) return { ok: true,
+      why: "Called it. At 1.5 V the gate sits inside the 1.0 to 2.0 V threshold band: the channel is half-open " +
+        "near 0.3 \u03A9, and 6\u00B2 \u00D7 0.3 is 10.8 W in a TO-220 with no heatsink. APPLY POWER is armed." };
+    if (ix === 0) return { ok: false,
+      why: "Clean switching needs the gate past the threshold with margin. 1.5 V is inside the 1.0 to 2.0 V band: the channel never fully opens." };
+    return { ok: false,
+      why: "Warm would need full enhancement, and 1.5 V never gets there. Half-open at 6 A is not warm, it is 10.8 W." };
+  }
+  function mfFixT3(vgs) {
+    var part = mfPart("mB");
+    if (vgs < 3.3)
+      return { ok: false,
+        why: "That is the crime you just watched: 1.5 V sits inside the threshold band and the FET cooks. Drive it with margin." };
+    var rds = mfRds(part, vgs), pW = 36 * rds;
+    return { ok: true,
+      why: "GATE " + vgs + " V: clears the 2.0 V worst-case threshold with margin, Rds(on) " +
+        Math.round(rds * 1000) + " m\u03A9, " + pW.toFixed(2) + " W, " + mfTempWord(pW, 1).toLowerCase() +
+        ". 3.3 V was poison for the standard-level part in Trial 1 and plenty for this logic-level part: " +
+        "the datasheet's Vgs(th) max decides, not the voltage alone." };
+  }
+
+  /* node/jsdom test hooks: assigned before any DOM is touched, so a
+     hostile docStub still gets the exports. */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.MF = {
+      PARTS: MF_PARTS, T1: MF_T1, QG: MF_QG, T3_PARK: MF_T3_PARK,
+      T2A_VERDICTS: MF_T2A_VERDICTS, T2B_VERDICTS: MF_T2B_VERDICTS, T2B_FIX: MF_T2B_FIX,
+      T3_PREDS: MF_T3_PREDS,
+      part: mfPart, rds: mfRds, verdictT1: mfVerdictT1,
+      benchA: mfBenchA, benchAFixed: mfBenchAFixed, verdictA: mfVerdictA, fixA: mfFixA,
+      swLoss: mfSwLoss, fmtT: mfFmtT, verdictB: mfVerdictB, fixB: mfFixB,
+      predictT3: mfPredictT3, fixT3: mfFixT3,
+      introHTML: null /* filled after the copy const below */
+    };
+  }
+
+  /* ---------- intro copy: why first, worked example, failure modes ---------- */
+  var MF_INTRO_HTML = [
+    "<div class=\"mf-card\"><h3>WHY THIS ROOM EXISTS</h3>",
+    "<p class=\"why\">A microcontroller pin can source 12 mA. A 12 V lamp wants 6 A. The MOSFET bridges that gap ",
+    "with voltage, not current: raise its <b>gate</b> past the <b>threshold voltage</b> and a channel opens between ",
+    "<b>drain</b> and <b>source</b>, and the pin commanding it draws essentially nothing, because the gate is a ",
+    "capacitor. Two datasheet numbers decide everything: <b>Vgs(th)</b>, the threshold the gate must clear with ",
+    "margin, and <b>Rds(on)</b>, the on-resistance that turns your load current into heat by I-squared-R. ",
+    "This room is the whole skill: read those two numbers, pick the part that survives your load, drive the gate ",
+    "hard and fast, and never park it at the threshold.</p>",
+    "<p class=\"why\">The worked example, by hand. IRLZ44N-class, logic-level: Vgs(th) 1.0 to 2.0 V, ",
+    "Rds(on) 22 milliohms at Vgs = 4.5 V. A 12 V lamp at 6 A, gate driven at 5 V. 5 V clears the 2.0 V ",
+    "worst-case threshold, so every unit off the reel is fully on. Heat: 6-squared x 0.022 = 0.79 W, warm to the ",
+    "touch, no heatsink drama. Now the same lamp on the IRF540-class standard-level part, gate at 3.3 V logic: ",
+    "its threshold runs 2.0 to 4.0 V, so a 3.3 V gate may never open the channel at all, and the unlucky half-open ",
+    "unit sits near an ohm: 36 x 1 = 36 W, smoke in seconds. Trial 1, load 1, is this exact trap: pick the logic-level part.</p></div>",
+    "<div class=\"mf-card mf-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3>",
+    "<ul><li><b>STARVED GATE:</b> gate drive under the part's worst-case threshold. The datasheet promises only ",
+    "that the threshold sits below the max, so a 3.3 V gate on a 4.0 V max part may never turn the unit on at all; ",
+    "the unlucky unit sits half-open near an ohm and cooks. Read Vgs(th) max, not typ.</li>",
+    "<li><b>THE THRESHOLD PARK:</b> a gate held inside the threshold band, by a trim pot or a slowly rising driver. ",
+    "The channel is half-open: a fraction of an ohm at 6 A is tens of watts. The fix is margin: drive the gate to ",
+    "the datasheet's Rds(on) test voltage or beyond.</li>",
+    "<li><b>SWITCHING LOSS:</b> the gate is a capacitor, about 70 nC on the big parts. Charging it through a large ",
+    "gate resistor takes microseconds, and at 40 kHz PWM those microseconds cost watts: 12 V x 6 A x 7 microseconds x ",
+    "40 kHz is 20 W. The same FET is cool at DC. Size the gate resistor for the switching rate.</li>",
+    "<li><b>INDUCTIVE KICK:</b> a coil's collapsing field hurls a voltage spike at the drain on turn-off. ",
+    "Symptom: it worked once, then never again. The fix is a diode across the coil, taught properly in The Relay Room (bench 55).</li>",
+    "<li><b>FLOATING GATE:</b> an unconnected gate is an antenna and drifts on by itself. If the driver can go ",
+    "high-impedance, park the gate with a 100 k resistor to ground so off means off.</li></ul></div>"
+  ].join("");
+  if (typeof module !== "undefined" && module.exports && module.exports.MF) {
+    module.exports.MF.introHTML = MF_INTRO_HTML;
+  }
+
+  /* ---------- css ---------- */
+  var MF_CSS = [
+    ".mf-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".mf-overlay.open{display:block}",
+    ".mf-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".mf-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".mf-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".mf-sub{font-size:14px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.92;margin:0 0 18px;max-width:68ch}",
+    ".mf-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".mf-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".mf-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".mf-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".mf-card b{color:var(--ember,#ff5a1f)}",
+    ".mf-fail{border:1px solid var(--ember,#ff5a1f)}",
+    ".mf-fail li{font-size:13px;line-height:1.6;margin:0 0 6px;list-style:none}",
+    ".mf-fail ul{padding:0;margin:0}",
+    ".mf-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}",
+    ".mf-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
+    ".mf-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".mf-btn:disabled{opacity:.35;cursor:default}",
+    ".mf-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".mf-btn.sel{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12)}",
+    ".mf-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#101014}",
+    ".mf-verdict{font-size:14px;line-height:1.6;margin:10px 0 0;min-height:24px}",
+    ".mf-verdict.ok{color:#9fe870}",
+    ".mf-verdict.bad{color:#ff5a1f}",
+    ".mf-read{font-size:14px;line-height:1.7;margin:8px 0 0;min-height:22px}",
+    ".mf-log{font-size:12.5px;line-height:1.7;max-height:280px;overflow-y:auto}",
+    ".mf-log div{margin:0 0 6px;padding-bottom:6px;border-bottom:1px dotted var(--line,rgba(242,237,228,.14))}",
+    ".mf-log .ok{color:#9fe870}",
+    ".mf-log .bad{color:#ff5a1f}",
+    ".mf-log .dim{opacity:.6}",
+    ".mf-banner{display:none;border:1px solid var(--ember,#ff5a1f);padding:18px;margin:0 0 14px}",
+    ".mf-banner h3{font-family:'Space Grotesk',sans-serif;letter-spacing:.14em;font-size:16px;color:var(--ember,#ff5a1f);margin:0 0 8px}",
+    ".mf-banner p{font-size:13px;line-height:1.65;margin:0 0 12px}",
+    ".mf-pop{animation:mfPop 200ms ease-out}",
+    "@keyframes mfPop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    "@media (prefers-reduced-motion:reduce){.mf-pop{animation:none}}",
+    ".mf-parthead{font-size:12px;letter-spacing:.18em;color:var(--ember,#ff5a1f);margin-bottom:6px}",
+    ".mf-spec{font-size:13px;line-height:1.7;margin:0 0 8px}",
+    ".mf-box{font-size:12px;letter-spacing:.12em;border:1px solid var(--line,rgba(242,237,228,.28));padding:10px 14px;margin:10px 0;max-width:360px;text-align:center}",
+    ".mf-box.live{border-color:#9fe870;color:#9fe870}",
+    ".mf-box.dead{border-color:#ff5a1f;color:#ff5a1f}",
+    ".mf-heat{height:10px;border:1px solid var(--line,rgba(242,237,228,.28));margin:8px 0 0;max-width:360px}",
+    ".mf-heat i{display:block;height:100%;background:var(--ember,#ff5a1f);width:0%}",
+    ".mf-smoke{font-size:13px;letter-spacing:.2em;color:#ff5a1f;margin:8px 0 0;min-height:20px}"
+  ].join("\n");
+
+  /* ---------- tiny DOM helpers (page-local, prefixed) ---------- */
+  var mfEls = null;
+  var mfState = null;
+  function mfEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  function mfLog(msg, cls) {
+    if (!mfEls || !mfEls.log) return;
+    var d = mfEl("div", cls || "", msg);
+    mfEls.log.appendChild(d);
+    mfEls.log.scrollTop = mfEls.log.scrollHeight;
+  }
+  function mfPop(card) {
+    card.classList.remove("mf-pop");
+    void card.offsetWidth;
+    card.classList.add("mf-pop");
+  }
+  function mfCertLine() {
+    return "Three loads switched on voltage-driven gates, two dead benches diagnosed by measurement, " +
+      "and one gate parked at the threshold to meet the linear-region cook. The room remembers.";
+  }
+  function mfAllPassed() {
+    var s = mfState;
+    return s.t1.every(function (x) { return x.passed; }) &&
+      s.t2.every(function (x) { return x.passed && x.repaired; }) &&
+      s.t3.predicted && s.t3.powered && s.t3.fixed;
+  }
+  function mfMaybeCertify() {
+    if (mfEls && mfEls.banner) mfEls.banner.style.display = mfAllPassed() ? "block" : "none";
+  }
+
+  /* ---------- do-first card: consequence-free gate drive ---------- */
+  function mfDoFirstCard() {
+    var card = mfEl("div", "mf-card");
+    card.appendChild(mfEl("h3", null, "DO FIRST: GATE IT, FREE"));
+    card.appendChild(mfEl("p", "why",
+      "The room hands you a 12 V lamp on a logic-level FET, gate driven by a proper driver, already sized. " +
+      "Flip the gate. Watch the gate current: 0.0 mA. Voltage commands, current obeys, and the driver pays " +
+      "nothing to hold it. Nothing here is graded."));
+    var box = mfEl("div", "mf-box", "GATE 0 V \u00B7 CHANNEL CLOSED \u00B7 LAMP OFF");
+    box.id = "mfDoFirst_box";
+    card.appendChild(box);
+    var read = mfEl("p", "mf-read", "Vgs 0 V \u00B7 GATE CURRENT 0.0 mA \u00B7 LAMP OFF \u00B7 COOL");
+    read.id = "mfDoFirst_read";
+    card.appendChild(read);
+    var row = mfEl("div", "mf-row");
+    var hi = mfEl("button", "mf-btn solid", "GATE TO 10 V");
+    hi.type = "button"; hi.id = "mfDoFirst_hi";
+    hi.setAttribute("aria-label", "Drive the gate to 10 volts, ungraded");
+    hi.addEventListener("click", function () {
+      box.className = "mf-box live";
+      box.textContent = "GATE 10 V \u00B7 CHANNEL OPEN \u00B7 LAMP ON";
+      read.textContent = "Vgs 10 V \u00B7 Rds 20 m\u03A9 \u00B7 LAMP 6 A \u00B7 0.72 W \u00B7 GATE CURRENT 0.0 mA \u00B7 WARM";
+      mfLog("do-first: gate at 10 V, lamp on, gate current 0.0 mA.", "dim");
+      mfPop(card);
+    });
+    var lo = mfEl("button", "mf-btn", "GATE TO 0 V");
+    lo.type = "button"; lo.id = "mfDoFirst_lo";
+    lo.setAttribute("aria-label", "Drive the gate to 0 volts, ungraded");
+    lo.addEventListener("click", function () {
+      box.className = "mf-box";
+      box.textContent = "GATE 0 V \u00B7 CHANNEL CLOSED \u00B7 LAMP OFF";
+      read.textContent = "Vgs 0 V \u00B7 GATE CURRENT 0.0 mA \u00B7 LAMP OFF \u00B7 COOL";
+      mfLog("do-first: gate at 0 V, lamp off.", "dim");
+      mfPop(card);
+    });
+    row.appendChild(hi); row.appendChild(lo);
+    card.appendChild(row);
+    return card;
+  }
+
+  /* ---------- trial 1 card: pick the part from the tray ---------- */
+  function mfT1Card(load, num) {
+    var st = mfState.t1[num - 1];
+    var card = mfEl("div", "mf-card");
+    card.id = "mfT1_" + load.id;
+    card.appendChild(mfEl("div", "mf-parthead", "TRIAL 1 \u00B7 PART " + num + " OF 3"));
+    card.appendChild(mfEl("p", "mf-spec",
+      load.load + " \u00B7 " + load.rail + " V RAIL \u00B7 " + load.amps + " A LOAD \u00B7 " +
+      load.vDrive.toFixed(1) + " V GATE DRIVE \u00B7 CONDUCTION BUDGET " + load.budget.toFixed(1) + " W"));
+    card.appendChild(mfEl("p", "why",
+      "Pick the MOSFET, then COMMIT SIZING. The bench reads the part's curve at your gate voltage: the drive " +
+      "must clear the part's worst-case threshold, the voltage rating must clear the rail, and I-squared-R must " +
+      "land inside the budget. On some loads there is one right answer; on others, a window."));
+    var tray = mfEl("div", "mf-row");
+    var sel = null, btns = [];
+    MF_PARTS.forEach(function (p) {
+      var b = mfEl("button", "mf-btn", p.card);
+      b.type = "button"; b.id = "mfT1_" + load.id + "_" + p.id;
+      b.setAttribute("aria-label", "Choose the " + p.name + " MOSFET, " + p.kind);
+      b.addEventListener("click", function () {
+        if (st.passed) return;
+        sel = p;
+        btns.forEach(function (x) { x.classList.remove("sel"); });
+        b.classList.add("sel");
+      });
+      btns.push(b); tray.appendChild(b);
+    });
+    card.appendChild(tray);
+    var read = mfEl("p", "mf-read", "No part fitted yet.");
+    read.id = "mfT1_" + load.id + "_read";
+    card.appendChild(read);
+    var commit = mfEl("button", "mf-btn solid", "COMMIT SIZING");
+    commit.type = "button"; commit.id = "mfT1_" + load.id + "_commit";
+    commit.setAttribute("aria-label", "Commit the MOSFET sizing for " + load.load);
+    var verdict = mfEl("p", "mf-verdict", "");
+    verdict.id = "mfT1_" + load.id + "_verdict";
+    commit.addEventListener("click", function () {
+      if (st.passed) return;
+      if (sel === null) {
+        verdict.textContent = "Pick a part first.";
+        verdict.className = "mf-verdict bad";
+        return;
+      }
+      var v = mfVerdictT1(load, sel);
+      if (v.rds === null) {
+        read.textContent = "Rds(on): not applicable, the voltage rating fails first.";
+      } else {
+        read.textContent = "Rds(on) " + Math.round(v.rds * 1000) + " m\u03A9 at " + load.vDrive.toFixed(1) +
+          " V gate \u00B7 " + load.amps + " A \u00B7 " +
+          (v.pW === null ? "no power computed" : v.pW.toFixed(2) + " W \u00B7 " + mfTempWord(v.pW, load.budget));
+      }
+      if (v.ok) {
+        st.passed = true;
+        verdict.textContent = "PASS: " + v.why;
+        verdict.className = "mf-verdict ok";
+        mfLog("trial 1 " + load.id + ": " + sel.name + " fitted, " + v.pW.toFixed(2) + " W, in budget.", "ok");
+        btns.forEach(function (x) { x.disabled = true; });
+        commit.disabled = true;
+      } else {
+        st.strikes++;
+        verdict.textContent = "MISS: " + v.why;
+        verdict.className = "mf-verdict bad";
+        mfLog("trial 1 " + load.id + ": " + sel.name + " misses (" + v.reason.toLowerCase() + ").", "bad");
+      }
+      mfMaybeCertify();
+      mfPop(card);
+    });
+    card.appendChild(commit);
+    card.appendChild(verdict);
+    return card;
+  }
+
+  /* ---------- trial 2 card A: the dim lamp ---------- */
+  function mfT2ACard() {
+    var st = mfState.t2[0];
+    var card = mfEl("div", "mf-card");
+    card.id = "mfT2_a";
+    card.appendChild(mfEl("div", "mf-parthead", "TRIAL 2 \u00B7 DEAD BENCH 1 OF 2"));
+    card.appendChild(mfEl("p", "mf-spec",
+      "THE DIM LAMP \u00B7 12 V RAIL \u00B7 6 A LAMP \u00B7 3.3 V GATE DRIVE \u00B7 FITTED: IRF540-CLASS"));
+    card.appendChild(mfEl("p", "why",
+      "The lamp glows dim and the FET runs hot. Probe it, free and ungraded: Vgs tells whether the pin is " +
+      "driving, Vds tells whether the channel is fully open, the part card tells what the gate was promised. " +
+      "Then commit a verdict. A right verdict unlocks the repair."));
+    var probes = mfEl("div", "mf-row");
+    var notes = mfEl("div", "mf-read", "No measurements yet.");
+    notes.id = "mfT2_a_notes";
+    var seen = {};
+    function probe(id, label, text) {
+      var b = mfEl("button", "mf-btn", label);
+      b.type = "button"; b.id = id;
+      b.setAttribute("aria-label", label + ", free measurement");
+      b.addEventListener("click", function () {
+        if (!seen[id]) {
+          seen[id] = true;
+          notes.textContent = (notes.textContent === "No measurements yet." ? "" : notes.textContent + " ") + text;
+          mfLog("bench A probe: " + label + ".", "dim");
+          mfPop(card);
+        }
+      });
+      probes.appendChild(b);
+    }
+    var A = mfBenchA();
+    probe("mfT2_a_pVgs", "PROBE Vgs", "Vgs " + A.vgs.toFixed(1) + " V: the pin is driving.");
+    probe("mfT2_a_pVds", "PROBE Vds", "Vds " + A.vds.toFixed(1) + " V: a saturated FET reads millivolts, so 3.4 V means the channel is half-open.");
+    probe("mfT2_a_pTemp", "PROBE TEMP", "94 C and climbing: " + A.pFet.toFixed(1) + " W in a TO-220 with no heatsink.");
+    probe("mfT2_a_pCard", "READ PART CARD", "IRF540-CLASS \u00B7 STANDARD-LEVEL \u00B7 Vgs(th) 2.0 to 4.0 V \u00B7 Rds(on) 44 m\u03A9 at Vgs = 10 V. Note where Rds(on) is specified: 10 V, not 3.3 V.");
+    card.appendChild(probes);
+    card.appendChild(notes);
+
+    var vRow = mfEl("div", "mf-row");
+    var vSel = null, vBtns = [];
+    MF_T2A_VERDICTS.forEach(function (label, ix) {
+      var b = mfEl("button", "mf-btn", label);
+      b.type = "button"; b.id = "mfT2_a_v" + ix;
+      b.setAttribute("aria-label", "Verdict: " + label);
+      b.addEventListener("click", function () {
+        if (st.passed) return;
+        vSel = ix;
+        vBtns.forEach(function (x) { x.classList.remove("sel"); });
+        b.classList.add("sel");
+      });
+      vBtns.push(b); vRow.appendChild(b);
+    });
+    card.appendChild(vRow);
+    var commit = mfEl("button", "mf-btn solid", "COMMIT VERDICT");
+    commit.type = "button"; commit.id = "mfT2_a_commit";
+    commit.setAttribute("aria-label", "Commit the diagnosis verdict for bench A");
+    var verdict = mfEl("p", "mf-verdict", "");
+    verdict.id = "mfT2_a_verdict";
+    var repairWrap = mfEl("div", "");
+    repairWrap.id = "mfT2_a_repairWrap";
+    repairWrap.style.display = "none";
+    repairWrap.appendChild(mfEl("p", "mf-spec", "REPAIR: the drive stays 3.3 V logic. Fit the fix."));
+    var rRow = mfEl("div", "mf-row");
+    var rSel = null, rBtns = [];
+    ["FIT THE LOGIC-LEVEL PART", "FIT A 10 V GATE DRIVER"].forEach(function (label, ix) {
+      var b = mfEl("button", "mf-btn", label);
+      b.type = "button"; b.id = "mfT2_a_r" + ix;
+      b.setAttribute("aria-label", label);
+      b.addEventListener("click", function () {
+        if (st.repaired) return;
+        rSel = ix;
+        rBtns.forEach(function (x) { x.classList.remove("sel"); });
+        b.classList.add("sel");
+      });
+      rBtns.push(b); rRow.appendChild(b);
+    });
+    repairWrap.appendChild(rRow);
+    var rCommit = mfEl("button", "mf-btn solid", "COMMIT REPAIR");
+    rCommit.type = "button"; rCommit.id = "mfT2_a_rcommit";
+    rCommit.setAttribute("aria-label", "Commit the repair for bench A");
+    var rVerdict = mfEl("p", "mf-verdict", "");
+    rVerdict.id = "mfT2_a_rverdict";
+    rCommit.addEventListener("click", function () {
+      if (st.repaired) return;
+      if (rSel === null) {
+        rVerdict.textContent = "Pick a fix first.";
+        rVerdict.className = "mf-verdict bad";
+        return;
+      }
+      var v = mfFixA(rSel), F = mfBenchAFixed();
+      if (v.ok) {
+        st.repaired = true;
+        rVerdict.textContent = "PASS: " + v.why;
+        rVerdict.className = "mf-verdict ok";
+        notes.textContent = "Vds " + F.vds.toFixed(1) + " V \u00B7 " + F.amps.toFixed(2) + " A \u00B7 " +
+          F.pFet.toFixed(2) + " W \u00B7 LAMP FULL BRIGHT \u00B7 WARM, IN BUDGET";
+        mfLog("bench A repaired: logic-level part fitted.", "ok");
+        rBtns.forEach(function (x) { x.disabled = true; });
+        rCommit.disabled = true;
+      } else {
+        st.strikes++;
+        rVerdict.textContent = "MISS: " + v.why;
+        rVerdict.className = "mf-verdict bad";
+        mfLog("bench A repair miss.", "bad");
+      }
+      mfMaybeCertify();
+      mfPop(card);
+    });
+    repairWrap.appendChild(rCommit);
+    repairWrap.appendChild(rVerdict);
+    commit.addEventListener("click", function () {
+      if (st.passed) return;
+      if (vSel === null) {
+        verdict.textContent = "Pick a verdict first.";
+        verdict.className = "mf-verdict bad";
+        return;
+      }
+      var v = mfVerdictA(vSel);
+      if (v.ok) {
+        st.passed = true;
+        verdict.textContent = "PASS: " + v.why;
+        verdict.className = "mf-verdict ok";
+        mfLog("bench A diagnosed: gate starved.", "ok");
+        vBtns.forEach(function (x) { x.disabled = true; });
+        commit.disabled = true;
+        repairWrap.style.display = "";
+      } else {
+        st.strikes++;
+        verdict.textContent = "MISS: " + v.why;
+        verdict.className = "mf-verdict bad";
+        mfLog("bench A verdict miss.", "bad");
+      }
+      mfMaybeCertify();
+      mfPop(card);
+    });
+    card.appendChild(commit);
+    card.appendChild(verdict);
+    card.appendChild(repairWrap);
+    return card;
+  }
+
+  /* ---------- trial 2 card B: the PWM cooker ---------- */
+  function mfT2BCard() {
+    var st = mfState.t2[1];
+    var card = mfEl("div", "mf-card");
+    card.id = "mfT2_b";
+    card.appendChild(mfEl("div", "mf-parthead", "TRIAL 2 \u00B7 DEAD BENCH 2 OF 2"));
+    card.appendChild(mfEl("p", "mf-spec",
+      "THE PWM COOKER \u00B7 12 V RAIL \u00B7 6 A LAMP \u00B7 GATE 0/10 V AT 40 kHz \u00B7 FITTED: IRLZ44N-CLASS \u00B7 GATE RESISTOR 1 k\u03A9 \u00B7 REPAIR BUDGET 2 W"));
+    card.appendChild(mfEl("p", "why",
+      "At DC this bench is cool; at 40 kHz the FET climbs toward smoke. Probe it, free and ungraded, including " +
+      "one experiment the last tech never ran: hold the gate at 10 V DC and watch the temperature. Then commit " +
+      "a verdict. A right verdict unlocks the repair: pick the gate resistor that keeps total loss inside 2 W."));
+    var S = mfSwLoss(1000);
+    var probes = mfEl("div", "mf-row");
+    var notes = mfEl("div", "mf-read", "No measurements yet.");
+    notes.id = "mfT2_b_notes";
+    var seen = {};
+    function probe(id, label, text) {
+      var b = mfEl("button", "mf-btn", label);
+      b.type = "button"; b.id = id;
+      b.setAttribute("aria-label", label + ", free measurement");
+      b.addEventListener("click", function () {
+        if (!seen[id]) {
+          seen[id] = true;
+          notes.textContent = (notes.textContent === "No measurements yet." ? "" : notes.textContent + " ") + text;
+          mfLog("bench B probe: " + label + ".", "dim");
+          mfPop(card);
+        }
+      });
+      probes.appendChild(b);
+    }
+    probe("mfT2_b_pGate", "PROBE GATE (SCOPE)",
+      "Gate rise " + mfFmtT(S.t) + ", fall " + mfFmtT(S.t) + ": the gate is a 70 nC capacitor and the 1 k\u03A9 resistor fills it slowly.");
+    probe("mfT2_b_pVds", "PROBE Vds",
+      "The drain spends " + mfFmtT(S.t) + " crossing 12 V, twice every 25 \u00B5s cycle. During the crossing, volts times amps is watts.");
+    probe("mfT2_b_pTemp", "PROBE TEMP",
+      "118 C and climbing at 40 kHz: " + S.ptot.toFixed(1) + " W total, " + S.pcond.toFixed(1) + " W conduction plus " + S.psw.toFixed(1) + " W switching.");
+    probe("mfT2_b_pHold", "HOLD GATE AT 10 V DC",
+      "Temperature falls back toward 41 C. At DC the same FET is cool, so Rds(on) is innocent: the heat only exists while the gate is moving.");
+    card.appendChild(probes);
+    card.appendChild(notes);
+
+    var vRow = mfEl("div", "mf-row");
+    var vSel = null, vBtns = [];
+    MF_T2B_VERDICTS.forEach(function (label, ix) {
+      var b = mfEl("button", "mf-btn", label);
+      b.type = "button"; b.id = "mfT2_b_v" + ix;
+      b.setAttribute("aria-label", "Verdict: " + label);
+      b.addEventListener("click", function () {
+        if (st.passed) return;
+        vSel = ix;
+        vBtns.forEach(function (x) { x.classList.remove("sel"); });
+        b.classList.add("sel");
+      });
+      vBtns.push(b); vRow.appendChild(b);
+    });
+    card.appendChild(vRow);
+    var commit = mfEl("button", "mf-btn solid", "COMMIT VERDICT");
+    commit.type = "button"; commit.id = "mfT2_b_commit";
+    commit.setAttribute("aria-label", "Commit the diagnosis verdict for bench B");
+    var verdict = mfEl("p", "mf-verdict", "");
+    verdict.id = "mfT2_b_verdict";
+    var repairWrap = mfEl("div", "");
+    repairWrap.id = "mfT2_b_repairWrap";
+    repairWrap.style.display = "none";
+    repairWrap.appendChild(mfEl("p", "mf-spec",
+      "REPAIR: fit the gate resistor. Total loss (conduction plus switching) must land inside 2 W."));
+    var rRow = mfEl("div", "mf-row");
+    var rSel = null, rBtns = [];
+    MF_T2B_FIX.forEach(function (f, ix) {
+      var b = mfEl("button", "mf-btn", f.label);
+      b.type = "button"; b.id = "mfT2_b_r" + ix;
+      b.setAttribute("aria-label", "Fit a " + f.label + " gate resistor");
+      b.addEventListener("click", function () {
+        if (st.repaired) return;
+        rSel = ix;
+        rBtns.forEach(function (x) { x.classList.remove("sel"); });
+        b.classList.add("sel");
+      });
+      rBtns.push(b); rRow.appendChild(b);
+    });
+    repairWrap.appendChild(rRow);
+    var rCommit = mfEl("button", "mf-btn solid", "COMMIT REPAIR");
+    rCommit.type = "button"; rCommit.id = "mfT2_b_rcommit";
+    rCommit.setAttribute("aria-label", "Commit the repair for bench B");
+    var rVerdict = mfEl("p", "mf-verdict", "");
+    rVerdict.id = "mfT2_b_rverdict";
+    rCommit.addEventListener("click", function () {
+      if (st.repaired) return;
+      if (rSel === null) {
+        rVerdict.textContent = "Pick a resistor first.";
+        rVerdict.className = "mf-verdict bad";
+        return;
+      }
+      var v = mfFixB(rSel);
+      if (v.ok) {
+        st.repaired = true;
+        rVerdict.textContent = "PASS: " + v.why;
+        rVerdict.className = "mf-verdict ok";
+        notes.textContent = "EDGES " + mfFmtT(v.s.t) + " \u00B7 SWITCHING " + v.s.psw.toFixed(2) + " W \u00B7 TOTAL " +
+          v.s.ptot.toFixed(2) + " W \u00B7 IN THE 2 W BUDGET \u00B7 TEMP SETTLING NEAR 45 C";
+        mfLog("bench B repaired: " + MF_T2B_FIX[rSel].label + " gate resistor.", "ok");
+        rBtns.forEach(function (x) { x.disabled = true; });
+        rCommit.disabled = true;
+      } else {
+        st.strikes++;
+        rVerdict.textContent = "MISS: " + v.why;
+        rVerdict.className = "mf-verdict bad";
+        mfLog("bench B repair miss at " + MF_T2B_FIX[rSel].label + ".", "bad");
+      }
+      mfMaybeCertify();
+      mfPop(card);
+    });
+    repairWrap.appendChild(rCommit);
+    repairWrap.appendChild(rVerdict);
+    commit.addEventListener("click", function () {
+      if (st.passed) return;
+      if (vSel === null) {
+        verdict.textContent = "Pick a verdict first.";
+        verdict.className = "mf-verdict bad";
+        return;
+      }
+      var v = mfVerdictB(vSel);
+      if (v.ok) {
+        st.passed = true;
+        verdict.textContent = "PASS: " + v.why;
+        verdict.className = "mf-verdict ok";
+        mfLog("bench B diagnosed: switching loss.", "ok");
+        vBtns.forEach(function (x) { x.disabled = true; });
+        commit.disabled = true;
+        repairWrap.style.display = "";
+      } else {
+        st.strikes++;
+        verdict.textContent = "MISS: " + v.why;
+        verdict.className = "mf-verdict bad";
+        mfLog("bench B verdict miss.", "bad");
+      }
+      mfMaybeCertify();
+      mfPop(card);
+    });
+    card.appendChild(commit);
+    card.appendChild(verdict);
+    card.appendChild(repairWrap);
+    return card;
+  }
+
+  /* ---------- trial 3 card: the threshold park ---------- */
+  function mfT3Card() {
+    var st = mfState.t3;
+    var card = mfEl("div", "mf-card");
+    card.id = "mfT3";
+    card.appendChild(mfEl("div", "mf-parthead", "TRIAL 3 \u00B7 PREDICT, THEN POWER"));
+    card.appendChild(mfEl("p", "mf-spec",
+      "IRLZ44N-CLASS \u00B7 12 V LAMP \u00B7 6 A \u00B7 GATE PARKED AT 1.5 V BY A TRIM POT"));
+    card.appendChild(mfEl("p", "why",
+      "The last tech set the gate trim pot to 1.5 V, inside the part's 1.0 to 2.0 V threshold band, and walked away. " +
+      "First, call what happens, before any power flows. Then APPLY POWER and watch what the math was hiding. " +
+      "Then drive this exact gate the way it should have been driven."));
+    var read = mfEl("p", "mf-read", "GATE 1.5 V \u00B7 no power applied yet.");
+    read.id = "mfT3_read";
+    card.appendChild(read);
+    var heat = mfEl("div", "mf-heat", "");
+    heat.id = "mfT3_heat";
+    heat.style.display = "none";
+    var heatBar = mfEl("i", "");
+    heatBar.id = "mfT3_heatbar";
+    heat.appendChild(heatBar);
+    card.appendChild(heat);
+    var smoke = mfEl("p", "mf-smoke", "");
+    smoke.id = "mfT3_smoke";
+    card.appendChild(smoke);
+
+    var pRow = mfEl("div", "mf-row");
+    pRow.id = "mfT3_predRow";
+    MF_T3_PREDS.forEach(function (label, ix) {
+      var pb = mfEl("button", "mf-btn", label);
+      pb.type = "button"; pb.id = "mfT3_p" + ix;
+      pb.setAttribute("aria-label", "Predict: " + label);
+      pb.addEventListener("click", function () {
+        if (st.predicted || st.powered) return;
+        var r = mfPredictT3(ix);
+        var note = document.getElementById("mfT3_predNote");
+        if (r.ok) {
+          st.predicted = true;
+          note.textContent = "PREDICTION LOGGED: " + r.why;
+          note.className = "mf-verdict ok";
+          document.getElementById("mfT3_power").disabled = false;
+          mfLog("trial 3: predicted the threshold cook, correctly.", "ok");
+        } else {
+          note.textContent = "MISS: " + r.why;
+          note.className = "mf-verdict bad";
+          mfLog("trial 3: wrong prediction.", "bad");
+        }
+        mfPop(card);
+      });
+      pRow.appendChild(pb);
+    });
+    card.appendChild(pRow);
+    var predNote = mfEl("p", "mf-verdict", "");
+    predNote.id = "mfT3_predNote";
+    card.appendChild(predNote);
+
+    var power = mfEl("button", "mf-btn solid", "APPLY POWER");
+    power.type = "button"; power.id = "mfT3_power";
+    power.disabled = true;
+    power.setAttribute("aria-label", "Apply power with the gate parked at 1.5 volts");
+    power.addEventListener("click", function () {
+      if (st.powered || !st.predicted) return;
+      st.powered = true;
+      power.disabled = true;
+      var steps = ["25 C", "62 C", "98 C", "134 C", "171 C"], i = 0;
+      heat.style.display = "";
+      mfLog("trial 3: power applied, gate parked at 1.5 V.", "dim");
+      var tick = setInterval(function () {
+        heatBar.style.width = ((i + 1) * 20) + "%";
+        read.textContent = "GATE 1.5 V \u00B7 RDS ~0.3 \u03A9 \u00B7 10.8 W and climbing \u00B7 " + steps[i];
+        i++;
+        if (i >= steps.length) {
+          clearInterval(tick);
+          read.textContent = "GATE 1.5 V \u00B7 CHANNEL DEAD \u00B7 0.0 A.";
+          smoke.textContent = "POP. THE FET IS DEAD.";
+          var note2 = document.getElementById("mfT3_predNote");
+          note2.textContent = "10.8 W in a TO-220 with no heatsink. The threshold is where the FET is half on: " +
+            "never park a gate there, and never let a slow driver linger there on the way past. " +
+            "Now do it right: drive this exact gate with margin.";
+          note2.className = "mf-verdict bad";
+          mfLog("trial 3: 10.8 W, FET dead. Predicted and witnessed.", "bad");
+          document.getElementById("mfT3_fixRow").style.display = "flex";
+          document.getElementById("mfT3_fixCommit").style.display = "";
+          mfPop(card);
+        }
+      }, 220);
+    });
+    card.appendChild(power);
+
+    var fixWrap = mfEl("div", "");
+    fixWrap.id = "mfT3_fixWrap";
+    fixWrap.appendChild(mfEl("p", "mf-spec",
+      "DO IT RIGHT: the same IRLZ44N-class part, Vgs(th) 1.0 to 2.0 V, Rds(on) specified at 4.5 V. " +
+      "Pick the gate drive voltage."));
+    var fixRow = mfEl("div", "mf-row");
+    fixRow.id = "mfT3_fixRow";
+    fixRow.style.display = "none";
+    var fixBtns = [], fixSel = null;
+    [1.5, 3.3, 5, 10].forEach(function (v) {
+      var fb = mfEl("button", "mf-btn", v.toFixed(1) + " V");
+      fb.type = "button"; fb.id = "mfT3_v" + String(v).replace(".", "p");
+      fb.setAttribute("aria-label", "Drive the gate at " + v + " volts");
+      fb.addEventListener("click", function () {
+        if (st.fixed) return;
+        fixSel = v;
+        fixBtns.forEach(function (x) { x.classList.remove("sel"); });
+        fb.classList.add("sel");
+      });
+      fixBtns.push(fb); fixRow.appendChild(fb);
+    });
+    fixWrap.appendChild(fixRow);
+    var fixCommit = mfEl("button", "mf-btn solid", "COMMIT THE FIX");
+    fixCommit.type = "button"; fixCommit.id = "mfT3_fixCommit";
+    fixCommit.style.display = "none";
+    fixCommit.setAttribute("aria-label", "Commit the gate drive fix");
+    var fixVerdict = mfEl("p", "mf-verdict", "");
+    fixVerdict.id = "mfT3_fixVerdict";
+    fixCommit.addEventListener("click", function () {
+      if (st.fixed) return;
+      if (fixSel === null) {
+        fixVerdict.textContent = "Pick a voltage first.";
+        fixVerdict.className = "mf-verdict bad";
+        return;
+      }
+      var v = mfFixT3(fixSel);
+      if (v.ok) {
+        st.fixed = true;
+        read.textContent = "GATE " + fixSel.toFixed(1) + " V \u00B7 LAMP 6 A \u00B7 " +
+          (36 * mfRds(mfPart("mB"), fixSel)).toFixed(2) + " W \u00B7 WARM, IN BUDGET";
+        smoke.textContent = "";
+        fixVerdict.textContent = "PASS: " + v.why;
+        fixVerdict.className = "mf-verdict ok";
+        mfLog("trial 3: gate driven at " + fixSel.toFixed(1) + " V, FET alive and cool.", "ok");
+        fixBtns.forEach(function (x) { x.disabled = true; });
+        fixCommit.disabled = true;
+      } else {
+        fixVerdict.textContent = "MISS: " + v.why;
+        fixVerdict.className = "mf-verdict bad";
+        mfLog("trial 3: fix miss at " + fixSel.toFixed(1) + " V.", "bad");
+      }
+      mfMaybeCertify();
+      mfPop(card);
+    });
+    fixWrap.appendChild(fixCommit);
+    fixWrap.appendChild(fixVerdict);
+    card.appendChild(fixWrap);
+    return card;
+  }
+
+  /* ---------- overlay open/close ---------- */
+  function mfOpen() { if (mfEls) mfEls.overlay.classList.add("open"); }
+  function mfClose() { if (mfEls) mfEls.overlay.classList.remove("open"); }
+
+  function mfBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("mfBtn")) return;
+    mfState = {
+      t1: [{ passed: false, strikes: 0 }, { passed: false, strikes: 0 }, { passed: false, strikes: 0 }],
+      t2: [{ passed: false, repaired: false, strikes: 0 }, { passed: false, repaired: false, strikes: 0 }],
+      t3: { predicted: false, powered: false, fixed: false }
+    };
+    mfEls = { overlay: null, log: null, banner: null };
+
+    var sty = document.createElement("style");
+    sty.textContent = MF_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "mfBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The MOSFET Room";
+    b.addEventListener("click", mfOpen);
+    box.appendChild(b);
+
+    var ov = mfEl("div", "mf-overlay");
+    ov.id = "mfOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The MOSFET Room");
+    var x = mfEl("button", "mf-btn", "CLOSE");
+    x.id = "mfXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The MOSFET Room");
+    x.addEventListener("click", mfClose);
+    ov.appendChild(x);
+    mfEls.overlay = ov;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && ov.classList.contains("open")) mfClose();
+    });
+
+    var panel = mfEl("div", "mf-panel");
+    panel.appendChild(mfEl("div", "mf-kicker", "OLD IRON BENCH 56"));
+    panel.appendChild(mfEl("h2", "mf-title", "The MOSFET Room"));
+    panel.appendChild(mfEl("p", "mf-sub",
+      "A logic pin commands 6 amps with voltage alone. Read the threshold, budget the on-resistance, " +
+      "drive the gate hard and fast, and never park it where the channel is half-open."));
+
+    var introWrap = mfEl("div", "");
+    introWrap.innerHTML = MF_INTRO_HTML;
+    panel.appendChild(introWrap);
+
+    panel.appendChild(mfDoFirstCard());
+
+    var t1Head = mfEl("div", "mf-card");
+    t1Head.appendChild(mfEl("h3", null, "TRIAL 1: PICK THE PART"));
+    t1Head.appendChild(mfEl("p", "why",
+      "Three loads, one tray of four MOSFETs. For each: the gate drive must clear the part's worst-case " +
+      "threshold, the voltage rating must clear the rail, and the conduction heat must land inside the budget. " +
+      "Read the part cards like datasheets: where Rds(on) is specified matters as much as the number."));
+    panel.appendChild(t1Head);
+    MF_T1.forEach(function (load, i) { panel.appendChild(mfT1Card(load, i + 1)); });
+
+    var t2Head = mfEl("div", "mf-card");
+    t2Head.appendChild(mfEl("h3", null, "TRIAL 2: DIAGNOSE THE DEAD BENCH"));
+    t2Head.appendChild(mfEl("p", "why",
+      "Two dead benches, two different diseases. Probe each, free and ungraded, then commit a verdict. " +
+      "A right verdict unlocks the repair."));
+    panel.appendChild(t2Head);
+    panel.appendChild(mfT2ACard());
+    panel.appendChild(mfT2BCard());
+
+    var t3Head = mfEl("div", "mf-card");
+    t3Head.appendChild(mfEl("h3", null, "TRIAL 3: THE THRESHOLD PARK"));
+    t3Head.appendChild(mfEl("p", "why",
+      "A gate parked inside the threshold band. First, call what happens, before any power flows. " +
+      "Then APPLY POWER and watch what the math was hiding. Then drive this exact gate the way it should " +
+      "have been driven."));
+    panel.appendChild(t3Head);
+    panel.appendChild(mfT3Card());
+
+    /* certification banner */
+    var banner = mfEl("div", "mf-banner");
+    banner.id = "mfBanner";
+    banner.appendChild(mfEl("h3", null, "ROOM CERTIFIED"));
+    banner.appendChild(mfEl("p", null, mfCertLine()));
+    panel.appendChild(banner);
+    mfEls.banner = banner;
+
+    /* bench log */
+    var logCard = mfEl("div", "mf-card");
+    logCard.appendChild(mfEl("h3", null, "BENCH LOG"));
+    var log = mfEl("div", "mf-log");
+    log.id = "mfLog";
+    log.setAttribute("aria-live", "polite");
+    logCard.appendChild(log);
+    panel.appendChild(logCard);
+    mfEls.log = log;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    mfLog("bench open. One 12 V lamp on the bench, meter in hand, MOSFET tray unlocked.", "dim");
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", mfBuild);
+  } else {
+    mfBuild();
+  }
+})();
