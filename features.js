@@ -42738,3 +42738,745 @@ if (typeof module !== "undefined" && module.exports) {
     znBuild();
   }
 })();
+/* ============================================================
+   BENCH 60: THE OP-AMP ROOM (oldiron)
+   One atomic mechanism: an op-amp's feedback turns wild
+   open-loop gain into a precise closed-loop copy with muscle.
+   A follower copies a voltage without asking the source for
+   current: the load current comes from the supply rails.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------- the one mechanism, stated as data ---------- */
+  var OP_SUPPLY = 5.0;        /* V, single supply */
+  var OP_RAIL_LO = 0.1;       /* V: ideal amp output floor */
+  var OP_RAIL_HI = 4.9;       /* V: ideal amp output ceiling */
+  var OP_T1_VIN = 1.0;        /* V, the trial-1 input */
+  var OP_T1_PAIRS = [
+    { rf: 10, rg: 10, spec: "Rf 10k \u00B7 Rg 10k" },
+    { rf: 22, rg: 10, spec: "Rf 22k \u00B7 Rg 10k" },
+    { rf: 30, rg: 10, spec: "Rf 30k \u00B7 Rg 10k" },
+    { rf: 47, rg: 10, spec: "Rf 47k \u00B7 Rg 10k" }
+  ];
+  var OP_T2_VS = 2.5;         /* V, the sleepy sensor's ideal voltage */
+  var OP_T2_RS = 100;         /* kohm, the sensor's source impedance */
+  var OP_T2_RL = 1;           /* kohm, the thirsty ADC input */
+  var OP_T3_GAIN = 11;        /* fixed 11x amp in trial 3 */
+  var OP_T3_INS = [0.2, 0.45, 0.5];
+  var OP_T2_VERDICTS = [
+    "WIRE THE FOLLOWER",
+    "USE A BIGGER DIVIDER",
+    "ADD A GAIN OF 10"
+  ];
+
+  function opClamp(v) {
+    if (v > OP_RAIL_HI) return OP_RAIL_HI;
+    if (v < OP_RAIL_LO) return OP_RAIL_LO;
+    return v;
+  }
+  function opGain(rf, rg) { return 1 + rf / rg; }
+  function opAsked(gain, vin) { return gain * vin; }
+  function opOut(gain, vin) { return opClamp(opAsked(gain, vin)); }
+  function opClip(gain, vin) { return opAsked(gain, vin) > OP_RAIL_HI + 1e-12; }
+
+  /* loaded divider: Thevenin, then the load */
+  function opDivLoaded(vs, r1k, r2k, rlk) {
+    var vth = vs * r2k / (r1k + r2k);
+    var rth = r1k * r2k / (r1k + r2k);
+    return vth * rlk / (rth + rlk);
+  }
+  /* the sensor: ideal voltage behind source impedance, into the load */
+  function opT2Truth() {
+    return OP_T2_VS * OP_T2_RL / (OP_T2_RS + OP_T2_RL);
+  }
+  /* the "bigger divider" wrong fix, honestly: sensor -> 100k/100k divider -> 1k ADC */
+  function opT2BigDiv() {
+    var r2rl = 100 * OP_T2_RL / (100 + OP_T2_RL); /* kohm, R2 || RL */
+    var vx = OP_T2_VS * (100 + r2rl) / (OP_T2_RS + 100 + r2rl);
+    return vx * r2rl / (100 + r2rl);
+  }
+
+  function opFmtV(v) { return v.toFixed(2) + " V"; }
+
+  /* trial 1 key: right prediction within tolerance, and a clean (unclipped) output */
+  function opT1Key(ix, pred) {
+    var p = OP_T1_PAIRS[ix];
+    var gain = opGain(p.rf, p.rg);
+    var asked = opAsked(gain, OP_T1_VIN);
+    var out = opOut(gain, OP_T1_VIN);
+    var right = Math.abs(pred - asked) <= Math.max(0.02 * asked, 0.05);
+    var clean = !opClip(gain, OP_T1_VIN);
+    return { gain: gain, asked: asked, out: out, right: right, clean: clean,
+             pass: right && clean };
+  }
+
+  /* trial 2 key */
+  function opT2Key(ix) {
+    if (ix === 0) return { ok: true,
+      why: "Called it. The follower copies the sensor's 2.50 V and the 1k load's 2.5 mA comes from the 5 V " +
+        "rail, not the sensor. WIRE THE FOLLOWER is armed: put the buffer between the sensor and the load." };
+    if (ix === 1) return { ok: false,
+      why: "A 100k/100k divider has a 50k Thevenin, still 50 times the 1k load, and the sleepy sensor sags " +
+        "driving it: the ADC reads " + opT2BigDiv().toFixed(2) + " V instead of 2.50 V. Bigger resistors do " +
+        "not fix a ratio problem, they only add noise." };
+    return { ok: false,
+      why: "Gain of 10 on a collapsed 0.02 V gives 0.25 V, still wrong, and it amplifies the noise too. " +
+        "The error is in the loading, not the level: decouple the load first, amplify later." };
+  }
+
+  /* node/jsdom test hooks: assigned before any DOM is touched, so a
+     hostile docStub still gets the exports. */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.OP = {
+      SUPPLY: OP_SUPPLY, RAIL_LO: OP_RAIL_LO, RAIL_HI: OP_RAIL_HI,
+      T1_VIN: OP_T1_VIN, T1_PAIRS: OP_T1_PAIRS,
+      T2_VS: OP_T2_VS, T2_RS: OP_T2_RS, T2_RL: OP_T2_RL,
+      T3_GAIN: OP_T3_GAIN, T3_INS: OP_T3_INS,
+      T2_VERDICTS: OP_T2_VERDICTS,
+      clamp: opClamp, gain: opGain, asked: opAsked, out: opOut, clip: opClip,
+      divLoaded: opDivLoaded, t2Truth: opT2Truth,
+      t2BigDiv: opT2BigDiv, t1Key: opT1Key, t2Key: opT2Key, fmtV: opFmtV,
+      introHTML: null /* filled after the copy const below */
+    };
+  }
+
+  /* ---------- intro copy: why first, worked example, failure modes ---------- */
+  var OP_INTRO_HTML = [
+    "<div class=\"oa-card\"><h3>WHY THIS ROOM EXISTS</h3>",
+    "<p class=\"why\">Sensors make voltages but almost no current. Loads, ADC inputs, long cables, want milliamps. ",
+    "Hook a sleepy sensor straight to a thirsty load and the voltage collapses, because the load and the source ",
+    "fight over the same current. The op-amp <b>follower</b> breaks the fight: one amplifier with its output wired ",
+    "back to its input copies the input voltage exactly, and the load current comes from the amplifier's own ",
+    "supply rails, not from the sensor. The input asks for almost nothing; the output gives milliamps. That is ",
+    "the whole room: a copy with muscle. Bench multimeters buffer their inputs this way, audio gear buffers ",
+    "everything, and every DAC that drives a cable sits behind a follower.</p>",
+    "<p class=\"why\">Three terms, earned now. A <b>follower</b> has its output tied to its input, so the feedback ",
+    "forces the output to equal the input: gain exactly 1, a copy. <b>Gain</b> for the non-inverting amplifier is ",
+    "set by two resistors: gain = 1 + Rf/Rg, no transistor math, just the ratio. The <b>rails</b> are the supply ",
+    "voltages: the output cannot go past them. Asking for more is called <b>clipping</b>, and the top of the wave ",
+    "goes flat.</p></div>",
+    "<div class=\"oa-card\"><h3>THE WORKED EXAMPLE</h3>",
+    "<p class=\"why\">A 10k/10k divider on 5 V reads 2.50 V with nothing attached. Hang a 1k load on it: the ",
+    "divider's Thevenin is 5k, so the load sees 2.5 x 1/6 = 0.42 V. The divider lies under load. Now put a ",
+    "follower between them. The follower sees the same 2.50 V, copies it, and the 1k load draws its 2.5 mA ",
+    "straight from the 5 V rail. Same input voltage, two answers: 0.42 V without the buffer, 2.50 V with it. ",
+    "That 2.08 V of difference is what a follower is for.</p></div>",
+    "<div class=\"oa-card oa-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3><ul>",
+    "<li><b>CLIP:</b> gain 5.7 on a 1.0 V input asks for 5.70 V from a 5 V rail. The output parks at 4.9 V and the ",
+    "top goes flat. The amplifier never warns you; the waveform just stops being the waveform.</li>",
+    "<li><b>COLLAPSE:</b> skip the buffer and a 2.50 V sensor behind 100k reads 0.02 V into a 1k load. The sensor ",
+    "is fine, the divider math is honest, the reading is garbage. Trial 2 is that collapse on purpose.</li>",
+    "<li><b>COPIED GARBAGE:</b> the follower cannot fix a wrong input. Amplify a collapsed 0.02 V by 10 and you get ",
+    "a louder 0.25 V, still wrong. Fix the loading first, amplify second.</li></ul></div>"
+  ].join("");
+  if (typeof module !== "undefined" && module.exports && module.exports.OP) {
+    module.exports.OP.introHTML = OP_INTRO_HTML;
+  }
+
+  /* ---------- css ---------- */
+  var OP_CSS = [
+    ".oa-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".oa-overlay.open{display:block}",
+    ".oa-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".oa-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".oa-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".oa-sub{font-size:14px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.92;margin:0 0 18px;max-width:68ch}",
+    ".oa-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".oa-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".oa-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".oa-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".oa-card b{color:var(--ember,#ff5a1f)}",
+    ".oa-fail{border:1px solid var(--ember,#ff5a1f)}",
+    ".oa-fail li{font-size:13px;line-height:1.6;margin:0 0 6px;list-style:none}",
+    ".oa-fail ul{padding:0;margin:0}",
+    ".oa-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}",
+    ".oa-lab{font-size:12px;letter-spacing:.12em;opacity:.75}",
+    ".oa-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
+    ".oa-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".oa-btn:disabled{opacity:.35;cursor:default}",
+    ".oa-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".oa-btn.sel{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12)}",
+    ".oa-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#101014}",
+    ".oa-verdict{font-size:14px;line-height:1.6;margin:10px 0 0;min-height:24px}",
+    ".oa-verdict.ok{color:#9fe870}",
+    ".oa-verdict.bad{color:#ff5a1f}",
+    ".oa-read{font-size:14px;line-height:1.7;margin:8px 0 0;min-height:22px;white-space:pre-line}",
+    ".oa-log{font-size:12.5px;line-height:1.7;max-height:280px;overflow-y:auto}",
+    ".oa-log div{margin:0 0 4px}",
+    ".oa-log .dim{opacity:.6}",
+    ".oa-log .ok{color:#9fe870}",
+    ".oa-log .bad{color:#ff5a1f}",
+    ".oa-notes{font-size:13px;line-height:1.7;margin:8px 0 0;min-height:22px;white-space:pre-line}",
+    ".oa-banner{display:none;border:1px solid var(--ember,#ff5a1f);background:rgba(255,90,31,.08);padding:18px;margin:0 0 14px}",
+    ".oa-banner h3{font-family:'Space Grotesk',sans-serif;font-size:18px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".oa-banner p{font-size:13px;line-height:1.65;margin:0 0 12px;max-width:70ch}",
+    ".oa-box{font-size:12px;letter-spacing:.12em;border:1px solid var(--line,rgba(242,237,228,.28));padding:10px 14px;margin:10px 0;max-width:560px;text-align:center}",
+    ".oa-num{font-family:'IBM Plex Mono',monospace;font-size:14px;min-height:48px;padding:10px 14px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));width:200px}",
+    ".oa-num:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".oa-pop{animation:oaPop 200ms ease-out}",
+    "@keyframes oaPop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    "@media (prefers-reduced-motion:reduce){.oa-pop{animation:none}}",
+    "@media (max-width:640px){.oa-panel{padding:48px 14px 100px}.oa-num{width:100%}}",
+    "input[type=range].oa-range{min-height:48px;flex:1;min-width:180px;accent-color:var(--ember,#ff5a1f)}"
+  ].join("\n");
+
+  /* ---------- dom helpers ---------- */
+  var opState = null, opEls = null;
+
+  function opEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  function opLog(msg, cls) {
+    if (!opEls || !opEls.log) return;
+    var d = opEl("div", cls || "", msg);
+    opEls.log.appendChild(d);
+    opEls.log.scrollTop = opEls.log.scrollHeight;
+  }
+  function opPop(card) {
+    card.classList.remove("oa-pop");
+    void card.offsetWidth;
+    card.classList.add("oa-pop");
+  }
+  function opCertLine() {
+    var s = opState;
+    var p = s.t1.pair === null ? "?" : OP_T1_PAIRS[s.t1.pair].spec;
+    return "Called the gain before the amp ran, sized " + p + " for a clean output inside the rails, " +
+      "watched the sleepy sensor collapse to 0.02 V and wired the follower, and parked the 11x amp " +
+      "on the rail truth. The room remembers.";
+  }
+  function opAllPassed() {
+    var s = opState;
+    return s.t1.passed && s.t2.passed && s.t3.passed;
+  }
+  function opRefreshCert() {
+    if (!opEls || !opEls.banner) return;
+    if (opAllPassed()) {
+      var cp = (typeof document !== "undefined") ? document.getElementById("oaCertP") : null;
+      if (cp) cp.textContent = opCertLine();
+      opEls.banner.style.display = "block";
+      opLog("all three trials pass. ROOM CERTIFIED.", "ok");
+    } else {
+      opEls.banner.style.display = "none";
+    }
+  }
+
+  /* ---------- do-first card: drive the follower, free ---------- */
+  function opDoFirstCard() {
+    var card = opEl("div", "oa-card");
+    card.appendChild(opEl("h3", null, "DO FIRST: DRIVE THE FOLLOWER, FREE"));
+    card.appendChild(opEl("p", "why",
+      "The follower is wired and waiting. Slide the input, press DRIVE, watch the output copy it. " +
+      "Hang the 1k load on the output and drive it again: the copy holds, because the load current " +
+      "comes from the 5 V rail, not the slider. Nothing here is graded; the trials below are where it counts."));
+    var row = opEl("div", "oa-row");
+    row.appendChild(opEl("span", "oa-lab", "INPUT"));
+    var st = { vin: 2.5, load: false };
+    var slider = opEl("input", "oa-range");
+    slider.id = "oaDoFirst_in";
+    slider.type = "range";
+    slider.min = "0";
+    slider.max = "5";
+    slider.step = "0.1";
+    slider.value = "2.5";
+    slider.setAttribute("aria-label", "Follower input voltage, 0 to 5 volts");
+    var inLab = opEl("span", "oa-lab", "2.50 V");
+    slider.addEventListener("input", function () {
+      st.vin = parseFloat(slider.value, 10);
+      inLab.textContent = st.vin.toFixed(2) + " V";
+    });
+    row.appendChild(slider);
+    row.appendChild(inLab);
+    var loadB = opEl("button", "oa-btn", "HANG 1k LOAD");
+    loadB.id = "oaDoFirst_load";
+    loadB.setAttribute("aria-label", "Hang a 1 kilo-ohm load on the follower output");
+    loadB.addEventListener("click", function () {
+      st.load = !st.load;
+      loadB.classList.toggle("sel", st.load);
+      loadB.textContent = st.load ? "REMOVE 1k LOAD" : "HANG 1k LOAD";
+      opLog("do-first: 1k load " + (st.load ? "hung on the output." : "removed."), "dim");
+      opPop(card);
+    });
+    row.appendChild(loadB);
+    var run = opEl("button", "oa-btn solid", "DRIVE");
+    run.id = "oaDoFirst_run";
+    row.appendChild(run);
+    card.appendChild(row);
+    var read = opEl("div", "oa-read", "VIN 2.50 V \u00B7 press DRIVE");
+    read.id = "oaDoFirst_read";
+    card.appendChild(read);
+    run.addEventListener("click", function () {
+      var out = opOut(1, st.vin);
+      var ima = st.load ? out / 1 : 0;
+      read.textContent = "VIN " + opFmtV(st.vin) + " \u00B7 VOUT " + opFmtV(out) +
+        (st.load ? "\nLOAD 1k \u00B7 IOUT " + ima.toFixed(2) + " mA, straight from the 5 V rail" : "") +
+        "\nThe copy holds. The slider is a whisper; the rails do the lifting.";
+      opLog("do-first: drove " + opFmtV(st.vin) + ", output " + opFmtV(out) +
+        (st.load ? ", 1k load held." : "."), "dim");
+      opPop(card);
+    });
+    return card;
+  }
+
+  /* ---------- trial 1: size the gain ---------- */
+  function opT1Card() {
+    var card = opEl("div", "oa-card");
+    card.appendChild(opEl("p", "why",
+      "The input is 1.00 V and the rails are 0.1 to 4.9 V. Gain = 1 + Rf/Rg, set by the tray. " +
+      "Call the output in volts before you run. The call must be right AND the output clean: " +
+      "ask for more than 4.9 V and the top goes flat, and a flat trial is a failed trial."));
+    var row = opEl("div", "oa-row");
+    row.appendChild(opEl("span", "oa-lab", "TRAY"));
+    var pBtns = [];
+    OP_T1_PAIRS.forEach(function (p, i) {
+      var b = opEl("button", "oa-btn", p.spec);
+      b.id = "oaT1_p" + i;
+      b.setAttribute("aria-label", "Fit " + p.spec);
+      b.addEventListener("click", function () {
+        if (opState.t1.passed) { opState.t1.passed = false; opRefreshCert(); }
+        opState.t1.pair = i;
+        opState.t1.called = false;
+        opState.t1.ran = false;
+        pBtns.forEach(function (x, j) { x.classList.toggle("sel", j === i); });
+        pred.value = "";
+        verdict.textContent = "Pair fitted: " + p.spec + ". Gain = 1 + " + p.rf + "/" + p.rg +
+          ". Call the output, then run.";
+        verdict.className = "oa-verdict";
+        read.textContent = "";
+        run.disabled = true;
+        opPop(card);
+      });
+      pBtns.push(b);
+      row.appendChild(b);
+    });
+    card.appendChild(row);
+
+    var prow = opEl("div", "oa-row");
+    prow.appendChild(opEl("span", "oa-lab", "CALLED OUTPUT"));
+    var pred = opEl("input", "oa-num");
+    pred.id = "oaT1_pred";
+    pred.type = "number";
+    pred.step = "0.05";
+    pred.min = "0";
+    pred.setAttribute("aria-label", "Called output voltage in volts");
+    pred.placeholder = "V";
+    prow.appendChild(pred);
+    var callBtn = opEl("button", "oa-btn", "CALL THE OUTPUT");
+    callBtn.id = "oaT1_call";
+    prow.appendChild(callBtn);
+    var run = opEl("button", "oa-btn solid", "RUN THE AMP");
+    run.id = "oaT1_run";
+    run.disabled = true;
+    prow.appendChild(run);
+    card.appendChild(prow);
+
+    var read = opEl("div", "oa-read", "");
+    read.id = "oaT1_read";
+    card.appendChild(read);
+    var verdict = opEl("div", "oa-verdict", "Pick a resistor pair from the tray.");
+    verdict.id = "oaT1_verdict";
+    verdict.setAttribute("aria-live", "polite");
+    card.appendChild(verdict);
+
+    callBtn.addEventListener("click", function () {
+      var ix = opState.t1.pair;
+      if (ix === null) { verdict.textContent = "Fit a pair first."; verdict.className = "oa-verdict bad"; return; }
+      var v = parseFloat(pred.value, 10);
+      if (!isFinite(v) || v < 0) { verdict.textContent = "Type a number in volts."; verdict.className = "oa-verdict bad"; return; }
+      var p = OP_T1_PAIRS[ix];
+      var gain = opGain(p.rf, p.rg);
+      var asked = opAsked(gain, OP_T1_VIN);
+      if (Math.abs(v - asked) <= Math.max(0.02 * asked, 0.05)) {
+        opState.t1.called = true;
+        run.disabled = false;
+        verdict.textContent = "CALL RIGHT: gain " + gain.toFixed(1) + " asks for " + opFmtV(asked) +
+          ". RUN THE AMP is armed.";
+        verdict.className = "oa-verdict ok";
+        opLog("t1: called " + v + " V for " + p.spec + ", true " + asked.toFixed(2) + " V.", "ok");
+      } else {
+        opState.t1.called = false;
+        run.disabled = true;
+        verdict.textContent = "CALL WRONG: gain = 1 + " + p.rf + "/" + p.rg + " = " + gain.toFixed(1) +
+          ", times 1.00 V. Do the multiply, then call it again.";
+        verdict.className = "oa-verdict bad";
+        opLog("t1: wrong call " + v + " V (true " + asked.toFixed(2) + " V).", "bad");
+      }
+      opPop(card);
+    });
+
+    run.addEventListener("click", function () {
+      var ix = opState.t1.pair;
+      if (ix === null || !opState.t1.called) return;
+      var p = OP_T1_PAIRS[ix];
+      var gain = opGain(p.rf, p.rg);
+      var asked = opAsked(gain, OP_T1_VIN);
+      var out = opOut(gain, OP_T1_VIN);
+      var clean = !opClip(gain, OP_T1_VIN);
+      opState.t1.ran = true;
+      read.textContent = "GAIN " + gain.toFixed(1) + " \u00B7 ASKED " + opFmtV(asked) + " \u00B7 OUTPUT " + opFmtV(out);
+      if (clean) {
+        opState.t1.passed = true;
+        verdict.textContent = "Trial 1 passes: the " + p.spec + " pair puts " + opFmtV(out) +
+          " on the output, clean, a full " + (OP_RAIL_HI - out).toFixed(2) + " V under the rail.";
+        verdict.className = "oa-verdict ok";
+        opLog("t1: " + p.spec + " clean at " + opFmtV(out) + ". Trial 1 passes.", "ok");
+        opRefreshCert();
+      } else {
+        verdict.textContent = "Trial 1 fails on this pair: asked " + opFmtV(asked) + ", the rails only give " +
+          opFmtV(OP_RAIL_HI) + ". The call was right but the headroom is not there. Pick a smaller gain.";
+        verdict.className = "oa-verdict bad";
+        opLog("t1: " + p.spec + " clips (" + opFmtV(asked) + " asked).", "bad");
+      }
+      opPop(card);
+    });
+    return card;
+  }
+
+  /* ---------- trial 2: the collapse ---------- */
+  function opT2Card() {
+    var card = opEl("div", "oa-card");
+    card.appendChild(opEl("p", "why",
+      "The sensor makes 2.50 V but it is sleepy: 100k of source impedance. The ADC input is a thirsty 1k. " +
+      "Predict the direct-read voltage, run the meter, then commit a fix. The verdict buttons arm after " +
+      "you probe."));
+    var box = opEl("div", "oa-box",
+      "SENSOR 2.50 V \u00B7 100k SOURCE\nADC INPUT 1k \u00B7 WIRED DIRECT");
+    box.id = "oaT2_box";
+    card.appendChild(box);
+
+    var prow = opEl("div", "oa-row");
+    prow.appendChild(opEl("span", "oa-lab", "CALLED READING"));
+    var pred = opEl("input", "oa-num");
+    pred.id = "oaT2_pred";
+    pred.type = "number";
+    pred.step = "0.01";
+    pred.min = "0";
+    pred.setAttribute("aria-label", "Called direct-read voltage in volts");
+    pred.placeholder = "V";
+    prow.appendChild(pred);
+    var callBtn = opEl("button", "oa-btn", "CALL THE READING");
+    callBtn.id = "oaT2_call";
+    prow.appendChild(callBtn);
+    var probe = opEl("button", "oa-btn", "RUN THE METER");
+    probe.id = "oaT2_probe";
+    probe.disabled = true;
+    prow.appendChild(probe);
+    card.appendChild(prow);
+
+    var read = opEl("div", "oa-read", "");
+    read.id = "oaT2_read";
+    card.appendChild(read);
+
+    var vrow = opEl("div", "oa-row");
+    vrow.appendChild(opEl("span", "oa-lab", "FIX"));
+    var vBtns = [];
+    OP_T2_VERDICTS.forEach(function (v, i) {
+      var b = opEl("button", "oa-btn", v);
+      b.id = "oaT2_v" + i;
+      b.disabled = true;
+      b.addEventListener("click", function () {
+        var r = opT2Key(i);
+        if (opState.t2.passed) { opState.t2.passed = false; opRefreshCert(); }
+        if (r.ok) {
+          opState.t2.committed = true;
+          verdict.textContent = "FIX RIGHT: " + r.why;
+          verdict.className = "oa-verdict ok";
+          fix.disabled = false;
+          opLog("t2: correct fix, follower. Wire armed.", "ok");
+        } else {
+          verdict.textContent = "FIX WRONG: " + r.why;
+          verdict.className = "oa-verdict bad";
+          opLog("t2: wrong fix (" + OP_T2_VERDICTS[i] + ").", "bad");
+        }
+        opPop(card);
+      });
+      vBtns.push(b);
+      vrow.appendChild(b);
+    });
+    card.appendChild(vrow);
+
+    var frow = opEl("div", "oa-row");
+    var fix = opEl("button", "oa-btn solid", "WIRE THE FOLLOWER");
+    fix.id = "oaT2_fix";
+    fix.disabled = true;
+    frow.appendChild(fix);
+    card.appendChild(frow);
+
+    var verdict = opEl("div", "oa-verdict", "Call the direct-read voltage first.");
+    verdict.id = "oaT2_verdict";
+    verdict.setAttribute("aria-live", "polite");
+    card.appendChild(verdict);
+
+    callBtn.addEventListener("click", function () {
+      var v = parseFloat(pred.value, 10);
+      var truth = opT2Truth();
+      if (!isFinite(v) || v < 0) { verdict.textContent = "Type a number in volts."; verdict.className = "oa-verdict bad"; return; }
+      if (Math.abs(v - truth) <= 0.01) {
+        opState.t2.called = true;
+        probe.disabled = false;
+        verdict.textContent = "CALL RIGHT: 2.5 x 1/101 = " + truth.toFixed(3) + " V. RUN THE METER is armed.";
+        verdict.className = "oa-verdict ok";
+        opLog("t2: called " + v + " V, true " + truth.toFixed(3) + " V.", "ok");
+      } else {
+        opState.t2.called = false;
+        probe.disabled = true;
+        verdict.textContent = "CALL WRONG: the sensor and the load are a divider. The load gets 2.5 x 1k/(100k + 1k). " +
+          "Do the divide, then call it again.";
+        verdict.className = "oa-verdict bad";
+        opLog("t2: wrong call " + v + " V (true " + truth.toFixed(3) + " V).", "bad");
+      }
+      opPop(card);
+    });
+
+    probe.addEventListener("click", function () {
+      if (!opState.t2.called) return;
+      var truth = opT2Truth();
+      read.textContent = "SENSOR 2.50 V \u00B7 ADC READS " + truth.toFixed(3) + " V" +
+        "\nThe divider math is honest and the reading is garbage. Commit a fix.";
+      opState.t2.probed = true;
+      vBtns.forEach(function (b) { b.disabled = false; });
+      verdict.textContent = "2.50 V in, " + truth.toFixed(2) + " V out. The fix buttons are armed.";
+      verdict.className = "oa-verdict";
+      opLog("t2: metered direct: " + truth.toFixed(3) + " V. Collapse confirmed.", "dim");
+      opPop(card);
+    });
+
+    fix.addEventListener("click", function () {
+      if (!opState.t2.committed) return;
+      opState.t2.fixed = true;
+      box.textContent = "SENSOR 2.50 V \u00B7 100k SOURCE\nFOLLOWER \u00B7 ADC INPUT 1k";
+      fix.disabled = true;
+      read.textContent = "SENSOR 2.50 V \u00B7 ADC READS " + opFmtV(opOut(1, OP_T2_VS)) +
+        "\nThe follower copies the 2.50 V and the 1k load's 2.5 mA comes from the 5 V rail. Trial 2 passes.";
+      opState.t2.passed = true;
+      verdict.textContent = "Follower wired: the ADC reads 2.50 V. Trial 2 passes.";
+      verdict.className = "oa-verdict ok";
+      opLog("t2: follower wired, ADC reads 2.50 V. Trial 2 passes.", "ok");
+      opRefreshCert();
+      opPop(card);
+    });
+    return card;
+  }
+
+  /* ---------- trial 3: the rail truth ---------- */
+  function opT3Card() {
+    var card = opEl("div", "oa-card");
+    card.appendChild(opEl("p", "why",
+      "The amp is fixed at 11x and the rails are 0.1 to 4.9 V. The model is ideal: the output is the asked " +
+      "voltage, pinned at the rails. Call CLIP or CLEAN for 0.20, 0.45, and 0.50 V before any power flows, " +
+      "then apply power. The rail line is inclusive: asked 4.9 V or more clips."));
+    OP_T3_INS.forEach(function (vin) {
+      var key = String(vin).replace(".", "p");
+      var row = opEl("div", "oa-row");
+      var lab = opEl("span", "oa-lab", opFmtV(vin) + " IN");
+      lab.id = "oaT3_lab_" + key;
+      var cl = opEl("button", "oa-btn", "CLIP");
+      cl.id = "oaT3_" + key + "_clip";
+      cl.setAttribute("aria-label", "Call clip at " + vin + " volts input");
+      var cn = opEl("button", "oa-btn", "CLEAN");
+      cn.id = "oaT3_" + key + "_clean";
+      cn.setAttribute("aria-label", "Call clean at " + vin + " volts input");
+      cl.addEventListener("click", function () { setPred(vin, true, cl, cn); });
+      cn.addEventListener("click", function () { setPred(vin, false, cl, cn); });
+      row.appendChild(lab); row.appendChild(cl); row.appendChild(cn);
+      card.appendChild(row);
+    });
+    var row = opEl("div", "oa-row");
+    var run = opEl("button", "oa-btn solid", "APPLY POWER");
+    run.id = "oaT3_run";
+    run.disabled = true;
+    row.appendChild(run);
+    card.appendChild(row);
+    var read = opEl("div", "oa-read", "");
+    read.id = "oaT3_read";
+    card.appendChild(read);
+    var verdict = opEl("div", "oa-verdict", "Call all three inputs first.");
+    verdict.id = "oaT3_verdict";
+    verdict.setAttribute("aria-live", "polite");
+    card.appendChild(verdict);
+
+    function setPred(vin, clip, cb, nb) {
+      opState.t3.pred[String(vin)] = clip;
+      if (opState.t3.passed) { opState.t3.passed = false; opRefreshCert(); }
+      cb.classList.toggle("sel", clip);
+      nb.classList.toggle("sel", !clip);
+      var done = OP_T3_INS.every(function (x) { return opState.t3.pred[String(x)] !== null; });
+      run.disabled = !done;
+      if (done) verdict.textContent = "All three called. APPLY POWER is armed.";
+      opPop(card);
+    }
+    run.addEventListener("click", function () {
+      var done = OP_T3_INS.every(function (x) { return opState.t3.pred[String(x)] !== null; });
+      if (!done) return;
+      var right = 0;
+      var lines = OP_T3_INS.map(function (vin) {
+        var asked = opAsked(OP_T3_GAIN, vin);
+        var clips = opClip(OP_T3_GAIN, vin);
+        var called = opState.t3.pred[String(vin)];
+        var ok = called === clips;
+        if (ok) right++;
+        return opFmtV(vin) + " -> asked " + opFmtV(asked) + " " + (clips ? "CLIP at " + opFmtV(OP_RAIL_HI) : "CLEAN") +
+          " (you called " + (called ? "CLIP" : "CLEAN") + ": " + (ok ? "right" : "wrong") + ")";
+      });
+      read.textContent = lines.join("\n");
+      opState.t3.ran = true;
+      if (right === 3) {
+        opState.t3.passed = true;
+        verdict.textContent = "3 of 3 calls right. 0.45 x 11 = 4.95 V asked, the rails give 4.9 V: " +
+          "the amp can only copy inside its rails. Trial 3 passes.";
+        verdict.className = "oa-verdict ok";
+        opLog("t3: 3/3 rail calls right. Trial 3 passes.", "ok");
+        opRefreshCert();
+      } else {
+        verdict.textContent = right + " of 3 calls right. Multiply each input by 11 and compare against the " +
+          "4.9 V rail, then call them again.";
+        verdict.className = "oa-verdict bad";
+        opLog("t3: " + right + "/3 calls right.", "bad");
+      }
+      opPop(card);
+    });
+    return card;
+  }
+
+  /* ---------- certificate ---------- */
+  function opDownloadCert() {
+    var s = opState;
+    var p = s.t1.pair === null ? "?" : OP_T1_PAIRS[s.t1.pair].spec;
+    var txt = [
+      "THE PROVING GROUND \u00B7 BENCH 60 \u00B7 THE OP-AMP ROOM",
+      "OLD IRON BENCH \u00B7 " + new Date().toISOString(),
+      "",
+      "TRIAL 1 \u00B7 SIZE THE GAIN: " + p + " fitted, output called before the amp ran,",
+      "  clean output inside the 0.1 to 4.9 V rails.",
+      "TRIAL 2 \u00B7 THE COLLAPSE: 2.50 V sensor behind 100k read 0.02 V into a 1k load;",
+      "  follower wired, ADC reads 2.50 V.",
+      "TRIAL 3 \u00B7 THE RAIL TRUTH: fixed 11x amp;",
+      "  3/3 CLIP/CLEAN calls right, rails own the output.",
+      "",
+      "ROOM CERTIFIED. " + opCertLine()
+    ].join("\n");
+    var blob = new Blob([txt], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = (window.URL || window.webkitURL).createObjectURL(blob);
+    a.download = "op-amp-room-bench60-cert.txt";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { (window.URL || window.webkitURL).revokeObjectURL(a.href); }, 4000);
+    opLog("certificate downloaded.", "ok");
+  }
+
+  /* ---------- overlay open/close ---------- */
+  function opOpen() { if (opEls) opEls.overlay.classList.add("open"); }
+  function opClose() { if (opEls) opEls.overlay.classList.remove("open"); }
+
+  function opBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("opBtn")) return;
+    opState = {
+      t1: { pair: null, called: false, ran: false, passed: false },
+      t2: { called: false, probed: false, committed: false, fixed: false, passed: false },
+      t3: { pred: { "0.2": null, "0.45": null, "0.5": null }, ran: false, passed: false }
+    };
+    opEls = { overlay: null, log: null, banner: null };
+
+    var sty = document.createElement("style");
+    sty.textContent = OP_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "opBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Op-Amp Room";
+    b.addEventListener("click", opOpen);
+    box.appendChild(b);
+
+    var ov = opEl("div", "oa-overlay");
+    ov.id = "oaOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Op-Amp Room");
+    var x = opEl("button", "oa-btn", "CLOSE");
+    x.id = "oaXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Op-Amp Room");
+    x.addEventListener("click", opClose);
+    ov.appendChild(x);
+    opEls.overlay = ov;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && ov.classList.contains("open")) opClose();
+    });
+
+    var panel = opEl("div", "oa-panel");
+    panel.appendChild(opEl("div", "oa-kicker", "OLD IRON BENCH 60"));
+    panel.appendChild(opEl("h2", "oa-title", "The Op-Amp Room"));
+    panel.appendChild(opEl("p", "oa-sub",
+      "An op-amp's feedback turns wild open-loop gain into a precise closed-loop copy with muscle. " +
+      "Size a gain inside the rails, watch a sleepy sensor collapse under a thirsty load and wire the " +
+      "follower that fixes it, then call the rail truth on a fixed 11x amp."));
+
+    var introWrap = opEl("div", "");
+    introWrap.innerHTML = OP_INTRO_HTML;
+    panel.appendChild(introWrap);
+
+    panel.appendChild(opDoFirstCard());
+
+    var t1Head = opEl("div", "oa-card");
+    t1Head.appendChild(opEl("h3", null, "TRIAL 1: SIZE THE GAIN"));
+    t1Head.appendChild(opEl("p", "why",
+      "1.00 V in, rails 0.1 to 4.9 V. Fit a resistor pair, call the output in volts, then run the amp " +
+      "and pass it clean."));
+    panel.appendChild(t1Head);
+    panel.appendChild(opT1Card());
+
+    var t2Head = opEl("div", "oa-card");
+    t2Head.appendChild(opEl("h3", null, "TRIAL 2: THE COLLAPSE"));
+    t2Head.appendChild(opEl("p", "why",
+      "A 2.50 V sensor with 100k of source impedance feeds a 1k ADC input. Call the reading, run the " +
+      "meter, commit the fix."));
+    panel.appendChild(t2Head);
+    panel.appendChild(opT2Card());
+
+    var t3Head = opEl("div", "oa-card");
+    t3Head.appendChild(opEl("h3", null, "TRIAL 3: THE RAIL TRUTH"));
+    t3Head.appendChild(opEl("p", "why",
+      "Fixed 11x amp. Call CLIP or CLEAN for each input before any power flows, then apply power and " +
+      "face the rails."));
+    panel.appendChild(t3Head);
+    panel.appendChild(opT3Card());
+
+    /* certification banner */
+    var banner = opEl("div", "oa-banner");
+    banner.id = "oaBanner";
+    banner.appendChild(opEl("h3", null, "ROOM CERTIFIED"));
+    var certP = opEl("p", null, opCertLine());
+    certP.id = "oaCertP";
+    banner.appendChild(certP);
+    var dl = opEl("button", "oa-btn solid", "DOWNLOAD CERTIFICATE");
+    dl.id = "oaCertDl";
+    dl.addEventListener("click", opDownloadCert);
+    banner.appendChild(dl);
+    panel.appendChild(banner);
+    opEls.banner = banner;
+
+    /* bench log */
+    var logCard = opEl("div", "oa-card");
+    logCard.appendChild(opEl("h3", null, "BENCH LOG"));
+    var log = opEl("div", "oa-log");
+    log.id = "oaLog";
+    log.setAttribute("aria-live", "polite");
+    logCard.appendChild(log);
+    panel.appendChild(logCard);
+    opEls.log = log;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    opLog("bench open. Follower wired, 5 V rail, tray holds four resistor pairs.", "dim");
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", opBuild);
+  } else {
+    opBuild();
+  }
+})();

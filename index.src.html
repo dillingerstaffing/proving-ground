@@ -734,7 +734,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "59", name: "The Zener Room", btn: "znBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "A regulator in two parts: a resistor feeds current and a Zener diode drinks whatever the load does not, holding the rail at its breakdown voltage. Size the feed, starve one rail and cook another by measurement, then call each rail's fate before power flows.",
     how: "Meter the holding rail free, fit a feed that keeps the Zener above its 2 mA knee, probe the two sick rails and commit a verdict, then call HOLD, POP, or SAG for three rails before applying power.",
-    spec: "SHUNT REGULATION \u00B7 3 TRIALS" }
+    spec: "SHUNT REGULATION \u00B7 3 TRIALS" },
+  { section: "oldiron", n: "60", name: "The Op-Amp Room", btn: "opBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "An op-amp's feedback turns wild open-loop gain into a precise closed-loop copy with muscle. Size a gain inside the rails, watch a sleepy sensor collapse under a thirsty load and wire the follower that fixes it, then call CLIP or CLEAN on a fixed 11x amp.",
+    how: "Drive the follower free, fit a resistor pair and call the output before the amp runs, call the collapsed reading and wire the follower, then call CLIP or CLEAN for three inputs before applying power.",
+    spec: "GAIN 1+Rf/Rg \u00B7 FOLLOWER \u00B7 3 TRIALS" }
 ];
 
 var pgFilter = "all";
