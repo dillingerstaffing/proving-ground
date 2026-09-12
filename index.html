@@ -742,7 +742,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "61", name: "The 555 Room", btn: "t5Btn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "The cheapest heartbeat in the drawer: two comparators stare at one capacitor while it ramps between 1/3 and 2/3 of the supply, and three parts turn charge and discharge into a ticking square wave. Size a 2.00 Hz tick, stretch the duty past 90 percent, and diagnose two dead boards by measurement.",
     how: "Free-run the chip first, fit parts and call the frequency before power flows, stretch the duty past 90 percent, then probe two dead boards and name each fault.",
-    spec: "555 ASTABLE \u00B7 3 TRIALS" }
+    spec: "555 ASTABLE \u00B7 3 TRIALS" },
+  { section: "oldiron", n: "62", name: "The Inductor Room", btn: "inBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "Current through a coil cannot change instantly: V = L di/dt. Open the switch and the coil makes whatever voltage it needs to keep its current moving, 5.00 kV from 10 mH at half an amp. Measure the kick, race the current ramp against a relay pull-in window, and diagnose two boards the same law killed.",
+    how: "Free-run the coil first, call each kick and each ramp time before power flows, then probe two dead boards and name the fault the coil caused.",
+    spec: "V = L di/dt \u00B7 FLYBACK \u00B7 SATURATION" }
 ];
 
 var pgFilter = "all";
@@ -1154,9 +1158,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=cc3bd97fbe" defer></script>
-<script src="rvdata.js?v=cc3bd97fbe" defer></script>
-<script src="riscv-lab.js?v=cc3bd97fbe" defer></script>
-<script src="features.js?v=cc3bd97fbe" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=4adbf62f2a" defer></script>
+<script src="rvdata.js?v=4adbf62f2a" defer></script>
+<script src="riscv-lab.js?v=4adbf62f2a" defer></script>
+<script src="features.js?v=4adbf62f2a" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

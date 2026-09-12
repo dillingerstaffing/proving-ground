@@ -44296,3 +44296,870 @@ if (typeof module !== "undefined" && module.exports) {
     t5Build();
   }
 })();
+/* ============================================================
+   BENCH 62: THE INDUCTOR ROOM (oldiron)
+   One atomic mechanism: current through a coil cannot change
+   instantly. V = L di/dt: the coil forces whatever voltage it
+   needs to keep its current moving, and it stores 1/2 L I^2 in
+   its field. Trial 1 measures the flyback kick when the switch
+   opens. Trial 2 races the current ramp against a relay pull-in
+   window. Trial 3 diagnoses two boards killed by the same law:
+   one with no freewheeling diode, one with a saturated choke.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------- the one mechanism, stated as data ---------- */
+  var IN_T_OPEN = 1e-6;               /* s, switch contact opening time */
+  var IN_V_SUP = 12.0;                /* V, bench supply */
+  var IN_DF_I = 0.5;                  /* A, do-first lamp circuit current */
+  var IN_DF_L = [0.01, 0.1, 1.0];     /* H, do-first coil tray */
+  var IN_T1_L = [0.001, 0.01, 0.1, 1.0]; /* H, trial 1 coil tray */
+  var IN_T1_I = [0.1, 0.5, 2.0];      /* A, trial 1 current tray */
+  var IN_T1_TOL = 0.25;               /* 25% kick prediction tolerance */
+  var IN_T2_PULLIN = 0.15;            /* A, relay pull-in current */
+  var IN_T2_BUDGET = 0.003;           /* s, pull-in timing window */
+  var IN_T2_L = [0.047, 0.1, 0.22, 0.47]; /* H, trial 2 coil tray */
+  var IN_T2_TOL = 0.15;               /* 15% ramp prediction tolerance */
+  var IN_NEON = 90;                   /* V, neon strike voltage */
+
+  function inKick(l, i) { return l * i / IN_T_OPEN; }
+  function inEnergy(l, i) { return 0.5 * l * i * i; }
+  function inRamp(l) { return l * IN_T2_PULLIN / IN_V_SUP; }
+  function inRampAny(l, i, v) { return l * i / v; }
+
+  function inFmtV(v) {
+    if (v >= 1e6) return (v / 1e6).toFixed(2) + " MV";
+    if (v >= 1e3) return (v / 1e3).toFixed(2) + " kV";
+    if (v >= 100) return v.toFixed(0) + " V";
+    return v.toFixed(1) + " V";
+  }
+  function inFmtMs(t) {
+    var ms = t * 1000;
+    if (ms >= 100) return ms.toFixed(0) + " ms";
+    return ms.toFixed(2) + " ms";
+  }
+  function inFmtL(l) {
+    if (l >= 1) return l.toFixed(l >= 10 ? 0 : 1) + " H";
+    return (l * 1000).toFixed(0) + " mH";
+  }
+  function inFmtI(i) { return (i * 1000).toFixed(0) + " mA"; }
+  function inFmtE(e) {
+    var mj = e * 1000;
+    if (mj >= 1) return mj.toFixed(2) + " mJ";
+    return (mj * 1000).toFixed(1) + " uJ";
+  }
+
+  /* volts parser: "5000", "5k", "5.0 kV", "0.005M" */
+  function inParseVolts(s) {
+    var m = String(s).trim().match(/^([0-9]*\.?[0-9]+)\s*([kKmMgG])?\s*(v|V)?$/);
+    if (!m) return null;
+    var v = parseFloat(m[1]);
+    var suf = (m[2] || "").toLowerCase();
+    if (suf === "k") v *= 1e3;
+    else if (suf === "m") v *= 1e6;
+    else if (suf === "g") v *= 1e9;
+    return v;
+  }
+  /* milliseconds parser: "1.25", "1.25 ms" */
+  function inParseMs(s) {
+    var m = String(s).trim().match(/^([0-9]*\.?[0-9]+)\s*(ms|mS|MS)?$/);
+    if (!m) return null;
+    return parseFloat(m[1]) / 1000;
+  }
+
+  /* trial 1 key: prediction within 25% of truth */
+  function inPredictT1(l, i, pred) {
+    var k = inKick(l, i);
+    return Math.abs(pred - k) <= IN_T1_TOL * k;
+  }
+  /* trial 2 key: prediction within 15% of truth, ramp inside the window */
+  function inPredictT2(l, pred) {
+    var r = inRamp(l);
+    return Math.abs(pred - r) <= IN_T2_TOL * r;
+  }
+  function inT2Key(l) {
+    var r = inRamp(l);
+    var ok = r <= IN_T2_BUDGET;
+    return { ramp: r, ok: ok };
+  }
+
+  /* ---------- trial 3 boards: probes and verdicts ---------- */
+  var IN_T3A = {
+    name: "BOARD A: THE QUIET RELAY",
+    sub: "A relay driver that never clicks. The transistor was replaced twice; both replacements died the same way.",
+    probes: [
+      { id: "coil", label: "COIL", text: "COIL: 120 ohms across the coil. The winding is intact; the coil is not the corpse." },
+      { id: "diode", label: "DIODE PADS", text: "DIODE PADS: empty pads, no diode fitted. The freewheeling path was never installed." },
+      { id: "coll", label: "COLLECTOR", text: "COLLECTOR: 12.0 V with the base driven. The transistor is open; the coil sees the full rail and never energizes." },
+      { id: "base", label: "BASE", text: "BASE: 1.0 mA of drive, exactly the designed value. The transistor is being asked, and it is dead." }
+    ],
+    choices: ["FLYBACK DIODE MISSING", "COIL OPEN", "TRANSISTOR UNDERDRIVEN"],
+    right: "FLYBACK DIODE MISSING",
+    whyRight: "Every opening of the switch made the coil kick, the kick had nowhere to go, and it punched through the transistor until it opened. The 120-ohm coil and the 1.0 mA drive rule out the other two.",
+    whyWrong: {
+      "COIL OPEN": "The coil measures 120 ohms. An open coil would read infinite; this one is intact.",
+      "TRANSISTOR UNDERDRIVEN": "The base sees 1.0 mA, the designed drive. Underdrive would show a weak base; this transistor is simply dead."
+    }
+  };
+  var IN_T3B = {
+    name: "BOARD B: THE HOT CHOKE",
+    sub: "A buck board with huge output ripple and a choke too hot to touch. The winding was suspected; the meter disagrees.",
+    probes: [
+      { id: "wind", label: "WINDING", text: "WINDING: 0.05 ohms cold. The copper is fine; nothing is shorted turn to turn." },
+      { id: "l0", label: "L AT 0 A", text: "L AT 0 A: 10.0 uH on the LCR meter, the full rated inductance. At zero bias the part looks perfect." },
+      { id: "l3", label: "L AT 3 A DC BIAS", text: "L AT 3 A DC BIAS: 1.2 uH. Under load current the inductance has collapsed to a tenth of rated: the core has saturated." },
+      { id: "in", label: "INPUT CURRENT", text: "INPUT CURRENT: 6.2 A into a choke rated for 4 A of saturation current. The current is running away because the inductance is gone." },
+      { id: "cap", label: "OUTPUT CAP", text: "OUTPUT CAP: ESR 12 mohm, capacitance on value. The capacitor is innocent; the ripple is at the switching frequency and tracks the load." }
+    ],
+    choices: ["CHOKE SATURATED", "WINDING SHORTED", "OUTPUT CAP DEAD"],
+    right: "CHOKE SATURATED",
+    whyRight: "Full inductance at zero bias with collapse under bias is the signature of saturation, not damage: the winding is fine cold, the core simply gives up past 4 A, and 6.2 A of runaway current is the proof.",
+    whyWrong: {
+      "WINDING SHORTED": "A shorted winding would read low inductance at zero bias too. This one reads the full 10.0 uH until current flows.",
+      "OUTPUT CAP DEAD": "The cap measures 12 mohm ESR and the ripple tracks the load at the switching frequency. A dead cap would not care about the choke current."
+    }
+  };
+
+  function inT3Probe(board, pid) {
+    var b = board === "a" ? IN_T3A : IN_T3B;
+    for (var i = 0; i < b.probes.length; i++) {
+      if (b.probes[i].id === pid) return b.probes[i].text;
+    }
+    return null;
+  }
+  function inT3Verdict(board, choice) {
+    var b = board === "a" ? IN_T3A : IN_T3B;
+    if (choice === b.right) return { ok: true, note: b.whyRight };
+    return { ok: false, note: b.whyWrong[choice] || "The probes rule that out." };
+  }
+
+  /* ---------- test hooks (harmless in the browser) ---------- */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.IN = {
+      T_OPEN: IN_T_OPEN, V_SUP: IN_V_SUP, DF_I: IN_DF_I, DF_L: IN_DF_L,
+      T1_L: IN_T1_L, T1_I: IN_T1_I, T1_TOL: IN_T1_TOL,
+      T2_L: IN_T2_L, T2_TOL: IN_T2_TOL, PULLIN: IN_T2_PULLIN, BUDGET: IN_T2_BUDGET,
+      NEON: IN_NEON,
+      kick: inKick, energy: inEnergy, ramp: inRamp, rampAny: inRampAny,
+      fmtV: inFmtV, fmtMs: inFmtMs, fmtL: inFmtL, fmtI: inFmtI, fmtE: inFmtE,
+      parseVolts: inParseVolts, parseMs: inParseMs,
+      predictT1: inPredictT1, t2Key: inT2Key, predictT2: inPredictT2,
+      boardA: IN_T3A, boardB: IN_T3B,
+      t3Probe: inT3Probe, t3Verdict: inT3Verdict,
+      introHTML: null /* filled after the copy const below */
+    };
+  }
+
+  /* ---------- intro copy: why first, worked example, failure modes ---------- */
+  var IN_INTRO_HTML = [
+    "<div class=\"tm-card\"><h3>WHY THIS ROOM EXISTS</h3>",
+    "<p class=\"why\">Every relay that clicks, every solenoid that thunks, every motor that spins, and every " +
+    "switch-mode supply that feeds a GPU has a coil of wire at its heart. That coil obeys one stubborn law: " +
+    "the current through an inductor cannot change instantly. V = L times di/dt. Cut the current path and the " +
+    "coil refuses to let go; it manufactures whatever voltage it needs to keep its current moving. That voltage " +
+    "is what kills the transistor driving the coil. It is why every relay driver you will ever repair has a " +
+    "diode sitting across the coil: a <b>freewheeling diode</b>, a quiet path for the dying current, so the " +
+    "kick never reaches the switch. The same law runs in reverse, too: current cannot appear instantly either, " +
+    "it ramps at di/dt = V/L, so a coil takes real time to energize and a relay can miss its moment. And the " +
+    "coil can lie to you: push its iron core past its <b>saturation</b> current and the inductance collapses, " +
+    "so the current runs away and the choke cooks. One mechanism, three faces: the kick, the ramp, the lie.</p>",
+    "<p class=\"why\">Five terms, earned now. An <b>inductor</b> is a coil of wire that stores energy in a " +
+    "magnetic field. <b>di/dt</b> is how fast the current is changing, amps per second. <b>Flyback</b> is the " +
+    "voltage kick the coil makes when its current is interrupted. <b>Saturation</b> is the core giving up past " +
+    "a rated current, so the inductance collapses. A <b>freewheeling diode</b> sits across the coil and catches " +
+    "the dying current, clamping the kick to about 0.7 V instead of kilovolts.</p></div>",
+    "<div class=\"tm-card\"><h3>THE WORKED EXAMPLE</h3>",
+    "<p class=\"why\">A 10 mH relay coil carrying 0.5 A, and the switch opens in 1 microsecond. Check it by " +
+    "hand. The current must fall from 0.5 A to zero in 1 us, so di/dt = 0.5 / 0.000001 = 500,000 A/s. " +
+    "V = L times di/dt = 0.01 x 500,000 = 5,000 V, which is 5.00 kV across a switch that was carrying 12 V " +
+    "a microsecond ago. The energy behind the kick is 1/2 L I^2 = 0.5 x 0.01 x 0.25 = 1.25 mJ: tiny as heat, " +
+    "murderous as voltage. Now the ramp, the same law from the other side. 12 V across a 100 mH coil heading " +
+    "for 150 mA: t = L x I / V = 0.1 x 0.15 / 12 = 0.00125 s = 1.25 ms. The coil reaches pull-in current in " +
+    "1.25 milliseconds. Not instantly. Never instantly.</p></div>",
+    "<div class=\"tm-card tm-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3><ul>",
+    "<li><b>THE KICK WITH NOWHERE TO GO:</b> open a coil circuit with no freewheeling diode and the spike " +
+    "punches through the driving transistor. Trial 1 measures the kick; trial 3 board A is the corpse it " +
+    "left behind.</li>",
+    "<li><b>THE SLOW ARMATURE:</b> fit too much inductance and the current is still ramping when the 3.0 ms " +
+    "pull-in window closes. The relay never moves, and the call you made before power flowed is the proof. " +
+    "Trial 2 races it.</li>",
+    "<li><b>THE SATURATED CORE:</b> run a choke past its saturation current and the inductance collapses, " +
+    "the current runs away, the choke cooks. An LCR meter at zero bias still reads full inductance, which is " +
+    "exactly why trial 3 board B needs the bias probe.</li>",
+    "<li><b>THE MID-RAMP OPEN:</b> open the switch before the current finishes ramping and the kick scales " +
+    "with the current reached so far, not the target. The do-first card lets you feel this for free.</li>",
+    "<li><b>THE WRONG VERDICT:</b> a dead transistor invites you to blame the drive or the coil. The probes " +
+    "rule them out: 120 ohms is an intact coil, 1.0 mA is the designed drive. Read the meter, not the " +
+    "habit.</li></ul></div>"
+  ].join("");
+
+  if (typeof module !== "undefined" && module.exports && module.exports.IN) {
+    module.exports.IN.introHTML = IN_INTRO_HTML;
+  }
+
+  /* ---------- DOM: element helper, CSS, state ---------- */
+  function inEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  var IN_CSS = [
+    ".in-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".in-overlay.open{display:block}",
+    ".in-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".in-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".in-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".in-sub{font-size:14px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.92;margin:0 0 18px;max-width:68ch}",
+    ".in-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".in-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".in-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".in-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".in-card b{color:var(--ember,#ff5a1f)}",
+    ".tm-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".tm-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".tm-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".tm-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".tm-card b{color:var(--ember,#ff5a1f)}",
+    ".tm-fail{border:1px solid var(--ember,#ff5a1f)}",
+    ".tm-fail li{font-size:13px;line-height:1.6;margin:0 0 6px;list-style:none}",
+    ".tm-fail ul{padding:0;margin:0}",
+    ".in-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}",
+    ".in-lab{font-size:12px;letter-spacing:.12em;opacity:.75}",
+    ".in-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
+    ".in-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".in-btn:disabled{opacity:.35;cursor:default}",
+    ".in-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".in-btn.sel{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12)}",
+    ".in-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#101014}",
+    ".in-verdict{font-size:14px;line-height:1.6;margin:10px 0 0;min-height:24px}",
+    ".in-verdict.ok{color:#9fe870}",
+    ".in-verdict.bad{color:#ff5a1f}",
+    ".in-read{font-size:14px;line-height:1.7;margin:8px 0 0;min-height:22px;white-space:pre-line}",
+    ".in-log{font-size:12.5px;line-height:1.7;max-height:280px;overflow-y:auto}",
+    ".in-log div{margin:0 0 4px}",
+    ".in-log .dim{opacity:.6}",
+    ".in-input{font-family:'IBM Plex Mono',monospace;font-size:14px;min-height:48px;padding:10px 14px;background:rgba(8,8,10,.6);color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));width:200px}",
+    ".in-input:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".in-input:disabled{opacity:.35}",
+    ".in-neon{display:inline-block;min-width:120px;text-align:center;padding:10px 14px;border:1px solid var(--line,rgba(242,237,228,.28));font-size:13px;letter-spacing:.1em}",
+    ".in-neon.struck{border-color:var(--ember,#ff5a1f);color:var(--ember,#ff5a1f)}",
+    ".in-bar{height:8px;background:rgba(242,237,228,.08);margin:10px 0;position:relative}",
+    ".in-bar i{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--ember,#ff5a1f)}",
+    ".in-banner{border:1px solid var(--ember,#ff5a1f);padding:18px;margin:18px 0;display:none}",
+    ".in-banner.show{display:block}",
+    ".in-banner h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".in-foot{font-size:12px;letter-spacing:.1em;opacity:.7;margin:14px 0}"
+  ].join("\n");
+
+  var inEls = {};
+  var inSt = null;
+
+  function inNewState() {
+    return {
+      t1: { l: 1, i: 1, called: false, callOk: false, ran: false, pass: false },
+      t2: { l: 1, called: false, callOk: false, ran: false, pass: false },
+      aDone: false, bDone: false,
+      strikes: 0, failed: false, cert: false
+    };
+  }
+
+  function inLog(msg, cls) {
+    if (!inEls.log) return;
+    var d = inEl("div", cls || null, msg);
+    inEls.log.appendChild(d);
+    inEls.log.scrollTop = inEls.log.scrollHeight;
+  }
+
+  function inStrike(note) {
+    inSt.strikes++;
+    inLog("STRIKE " + inSt.strikes + "/3: " + note, "dim");
+    if (inEls.strikes) inEls.strikes.textContent = "STRIKES: " + inSt.strikes + "/3";
+    if (inSt.strikes >= 3 && !inSt.failed) {
+      inSt.failed = true;
+      if (inEls.fail) inEls.fail.style.display = "block";
+      inLog("Three strikes. The room is failed; reset and work it again.", "dim");
+    }
+  }
+
+  function inRevokeTrial(t) {
+    var s = inSt[t];
+    if (s.pass) {
+      s.pass = false; s.called = false; s.callOk = false; s.ran = false;
+      inLog("Trial " + t.slice(1) + " pass revoked: the setup changed after the measurement.", "dim");
+      inHideBanner();
+    }
+  }
+  function inHideBanner() {
+    inSt.cert = false;
+    if (inEls.banner) inEls.banner.classList.remove("show");
+  }
+  function inCheckCert() {
+    if (inSt.cert || inSt.failed) return;
+    if (inSt.t1.pass && inSt.t2.pass && inSt.aDone && inSt.bDone) {
+      inSt.cert = true;
+      if (inEls.certP) inEls.certP.textContent = inCertLine();
+      if (inEls.banner) inEls.banner.classList.add("show");
+      inLog("ROOM CERTIFIED: kick measured, ramp raced, both boards diagnosed.", "dim");
+    }
+  }
+
+  function inCertLine() {
+    var t1 = inSt.t1, t2 = inSt.t2;
+    return "THE INDUCTOR ROOM, BENCH 62, THE PROVING GROUND\n" +
+      "kick " + inFmtV(inKick(IN_T1_L[t1.l], IN_T1_I[t1.i])) + " at " +
+      inFmtL(IN_T1_L[t1.l]) + " / " + inFmtI(IN_T1_I[t1.i]) + ", " +
+      inFmtL(IN_T2_L[t2.l]) + " coil pulled in at " + inFmtMs(inRamp(IN_T2_L[t2.l])) +
+      ", quiet relay and hot choke diagnosed\n" +
+      "V = L di/dt. The current cannot change instantly; the coil makes the voltage it needs.";
+  }
+  function inDownloadCert() {
+    var txt = inCertLine();
+    var blob = new Blob([txt], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "inductor-room-bench62-cert.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  /* ---------- do-first card: the coil refuses ---------- */
+  var inDf = { l: 1, iNow: 0, target: IN_DF_I, timer: null, raf: null };
+  function inDfStop() {
+    if (inDf.timer) { clearInterval(inDf.timer); inDf.timer = null; }
+  }
+  function inDfReadout() {
+    var l = IN_DF_L[inDf.l];
+    var didt = IN_V_SUP / l;
+    var tFull = inRampAny(l, IN_DF_I, IN_V_SUP);
+    return "12.0 V across " + inFmtL(l) + ": current ramps at di/dt = " +
+      (didt >= 1000 ? (didt / 1000).toFixed(1) + " kA/s" : didt.toFixed(0) + " A/s") +
+      ", reaching " + inFmtI(IN_DF_I) + " in " + inFmtMs(tFull) + ".\n" +
+      "Now: " + inFmtI(inDf.iNow) + " through the coil.";
+  }
+  function inDoFirstCard() {
+    var card = inEl("div", "in-card");
+    card.appendChild(inEl("h3", null, "DO FIRST: THE COIL REFUSES"));
+    card.appendChild(inEl("p", "why",
+      "No knobs to get wrong. Close the switch and the lamp ramps up instead of snapping on: the " +
+      "current cannot appear instantly. Open the switch mid-ramp or at full current and the neon tells " +
+      "you what the coil thought of that. Pick a coil, then close and open freely."));
+    var row = inEl("div", "in-row");
+    row.appendChild(inEl("span", "in-lab", "COIL"));
+    IN_DF_L.forEach(function (l, idx) {
+      var b = inEl("button", "in-btn" + (idx === inDf.l ? " sel" : ""), inFmtL(l));
+      b.id = "inDfL_" + idx;
+      b.type = "button";
+      b.addEventListener("click", function () {
+        inDf.l = idx; inDfStop(); inDf.iNow = 0;
+        IN_DF_L.forEach(function (_, j) {
+          var e = document.getElementById("inDfL_" + j);
+          if (e) e.classList.toggle("sel", j === idx);
+        });
+        if (inEls.dfBar) inEls.dfBar.style.width = "0";
+        if (inEls.dfNeon) { inEls.dfNeon.classList.remove("struck"); inEls.dfNeon.textContent = "NEON: DARK"; }
+        if (inEls.dfRead) inEls.dfRead.textContent = inDfReadout();
+        inLog("do-first coil fitted: " + inFmtL(l));
+      });
+      row.appendChild(b);
+    });
+    card.appendChild(row);
+    var row2 = inEl("div", "in-row");
+    var closeB = inEl("button", "in-btn solid", "CLOSE SWITCH");
+    closeB.id = "inDf_close"; closeB.type = "button";
+    var openB = inEl("button", "in-btn", "OPEN SWITCH");
+    openB.id = "inDf_open"; openB.type = "button"; openB.disabled = true;
+    var neon = inEl("span", "in-neon", "NEON: DARK");
+    neon.id = "inDf_neon";
+    neon.setAttribute("aria-live", "polite");
+    row2.appendChild(closeB); row2.appendChild(openB); row2.appendChild(neon);
+    card.appendChild(row2);
+    var bar = inEl("div", "in-bar");
+    var fill = inEl("i", null, null);
+    fill.id = "inDf_bar";
+    bar.appendChild(fill);
+    card.appendChild(bar);
+    inEls.dfBar = fill;
+    var read = inEl("div", "in-read", inDfReadout());
+    read.id = "inDf_read";
+    read.setAttribute("aria-live", "polite");
+    card.appendChild(read);
+    inEls.dfRead = read;
+    inEls.dfNeon = neon;
+    var reduced = (typeof window !== "undefined" && window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    closeB.addEventListener("click", function () {
+      inDfStop();
+      inDf.iNow = 0;
+      neon.classList.remove("struck"); neon.textContent = "NEON: DARK";
+      closeB.disabled = true; openB.disabled = false;
+      var l = IN_DF_L[inDf.l];
+      var tFull = inRampAny(l, IN_DF_I, IN_V_SUP);
+      if (reduced) {
+        inDf.iNow = IN_DF_I;
+        fill.style.width = "100%";
+        read.textContent = inDfReadout() + "\nFull current. Open the switch whenever you like.";
+        inLog("switch closed (reduced motion): coil at full current, " + inFmtMs(tFull) + " ramp skipped.");
+        return;
+      }
+      var shown = Math.min(Math.max(tFull * 40, 0.5), 3); /* time stretched for eyes */
+      var t0 = Date.now();
+      read.textContent = inDfReadout() + "\nTime stretched x40 so your eyes can follow.";
+      inDf.timer = setInterval(function () {
+        var el = (Date.now() - t0) / 1000;
+        var frac = Math.min(el / shown, 1);
+        inDf.iNow = IN_DF_I * frac;
+        fill.style.width = (frac * 100).toFixed(1) + "%";
+        read.textContent = inDfReadout() + "\nTime stretched x40 so your eyes can follow.";
+        if (frac >= 1) {
+          inDfStop();
+          read.textContent = inDfReadout() + "\nFull current. Open the switch whenever you like.";
+          inLog("switch closed: coil at full current after " + inFmtMs(tFull) + ".");
+        }
+      }, 50);
+      inLog("switch closed on " + inFmtL(l) + ".");
+    });
+    openB.addEventListener("click", function () {
+      inDfStop();
+      closeB.disabled = false; openB.disabled = true;
+      var l = IN_DF_L[inDf.l];
+      var iNow = inDf.iNow;
+      fill.style.width = "0";
+      var kick = inKick(l, iNow);
+      inDf.iNow = 0;
+      if (kick >= IN_NEON) {
+        neon.classList.add("struck"); neon.textContent = "NEON: STRUCK";
+      } else {
+        neon.classList.remove("struck"); neon.textContent = "NEON: DARK";
+      }
+      read.textContent = "Switch opened with " + inFmtI(iNow) + " flowing.\n" +
+        "The coil kept it moving for 1 us: kick = " + inFmtV(kick) +
+        (kick >= IN_NEON ? " (the neon struck at 90 V)" : " (too small to strike the 90 V neon)") +
+        ".\nClose the switch and open it earlier to feel the kick shrink with the current.";
+      inLog("switch opened at " + inFmtI(iNow) + ": kick " + inFmtV(kick) + ".");
+    });
+    return card;
+  }
+
+  /* ---------- trial 1: measure the kick ---------- */
+  function inT1Card() {
+    var card = inEl("div", "in-card");
+    card.appendChild(inEl("p", "why",
+      "12 V across the coil, the switch about to open in 1 microsecond, no diode fitted. " +
+      "Fit the coil and the steady current, call the kick in volts before power flows (25% " +
+      "tolerance; type 5000, or 5k, or 0.005M), then open the switch and measure it."));
+    var rowL = inEl("div", "in-row");
+    rowL.appendChild(inEl("span", "in-lab", "COIL"));
+    IN_T1_L.forEach(function (l, idx) {
+      var b = inEl("button", "in-btn" + (idx === inSt.t1.l ? " sel" : ""), inFmtL(l));
+      b.id = "inT1L_" + idx; b.type = "button";
+      b.addEventListener("click", function () {
+        inSt.t1.l = idx; inRevokeTrial("t1");
+        IN_T1_L.forEach(function (_, j) {
+          var e = document.getElementById("inT1L_" + j);
+          if (e) e.classList.toggle("sel", j === idx);
+        });
+        if (inEls.t1verdict) { inEls.t1verdict.className = "in-verdict"; inEls.t1verdict.textContent = ""; }
+        if (inEls.t1read) inEls.t1read.textContent = inT1SetupLine();
+        inLog("t1 coil fitted: " + inFmtL(l));
+      });
+      rowL.appendChild(b);
+    });
+    card.appendChild(rowL);
+    var rowI = inEl("div", "in-row");
+    rowI.appendChild(inEl("span", "in-lab", "CURRENT"));
+    IN_T1_I.forEach(function (i, idx) {
+      var b = inEl("button", "in-btn" + (idx === inSt.t1.i ? " sel" : ""), inFmtI(i));
+      b.id = "inT1I_" + idx; b.type = "button";
+      b.addEventListener("click", function () {
+        inSt.t1.i = idx; inRevokeTrial("t1");
+        IN_T1_I.forEach(function (_, j) {
+          var e = document.getElementById("inT1I_" + j);
+          if (e) e.classList.toggle("sel", j === idx);
+        });
+        if (inEls.t1verdict) { inEls.t1verdict.className = "in-verdict"; inEls.t1verdict.textContent = ""; }
+        if (inEls.t1read) inEls.t1read.textContent = inT1SetupLine();
+        inLog("t1 current fitted: " + inFmtI(i));
+      });
+      rowI.appendChild(b);
+    });
+    card.appendChild(rowI);
+    var read = inEl("div", "in-read", inT1SetupLine());
+    read.id = "inT1_read"; read.setAttribute("aria-live", "polite");
+    card.appendChild(read);
+    inEls.t1read = read;
+    var rowP = inEl("div", "in-row");
+    rowP.appendChild(inEl("span", "in-lab", "CALL THE KICK (V)"));
+    var pred = inEl("input", "in-input", null);
+    pred.id = "inT1_pred"; pred.type = "text"; pred.inputMode = "decimal";
+    pred.setAttribute("aria-label", "Predicted kick in volts");
+    pred.placeholder = "5000, 5k, 0.005M";
+    pred.addEventListener("input", function () {
+      if (inSt.t1.pass) inRevokeTrial("t1");
+    });
+    rowP.appendChild(pred);
+    inEls.t1pred = pred;
+    var callB = inEl("button", "in-btn solid", "CALL IT");
+    callB.id = "inT1_call"; callB.type = "button";
+    rowP.appendChild(callB);
+    var runB = inEl("button", "in-btn", "OPEN THE SWITCH");
+    runB.id = "inT1_run"; runB.type = "button"; runB.disabled = true;
+    rowP.appendChild(runB);
+    card.appendChild(rowP);
+    var verdict = inEl("div", "in-verdict", "");
+    verdict.id = "inT1_verdict"; verdict.setAttribute("aria-live", "polite");
+    card.appendChild(verdict);
+    inEls.t1verdict = verdict; inEls.t1run = runB;
+    callB.addEventListener("click", function () {
+      var p = inParseVolts(pred.value);
+      var l = IN_T1_L[inSt.t1.l], i = IN_T1_I[inSt.t1.i];
+      var k = inKick(l, i);
+      if (p === null) {
+        verdict.className = "in-verdict bad";
+        verdict.textContent = "That is not a voltage. Type a number like 5000, or 5k, or 0.005M.";
+        return;
+      }
+      inSt.t1.called = true;
+      if (inPredictT1(l, i, p)) {
+        inSt.t1.callOk = true;
+        verdict.className = "in-verdict ok";
+        verdict.textContent = "PREDICTION RIGHT: " + inFmtV(p) + " is inside 25% of " + inFmtV(k) +
+          ". The switch is armed: open it and measure the kick.";
+        runB.disabled = false;
+        inLog("t1 call right: " + inFmtV(p) + " vs " + inFmtV(k) + ".");
+      } else {
+        inSt.t1.callOk = false;
+        verdict.className = "in-verdict bad";
+        verdict.textContent = "PREDICTION WRONG: " + inFmtV(p) + " is outside 25% of the truth. " +
+          "di/dt = " + inFmtI(i) + " / 1 us, times " + inFmtL(l) + ". Work it again.";
+        runB.disabled = true;
+        inLog("t1 call wrong: " + inFmtV(p) + " vs " + inFmtV(k) + ".");
+      }
+    });
+    runB.addEventListener("click", function () {
+      var l = IN_T1_L[inSt.t1.l], i = IN_T1_I[inSt.t1.i];
+      var k = inKick(l, i), e = inEnergy(l, i);
+      inSt.t1.ran = true; inSt.t1.pass = inSt.t1.callOk;
+      runB.disabled = true;
+      verdict.className = "in-verdict ok";
+      verdict.textContent = "Measured: the coil kept " + inFmtI(i) + " moving for 1 us and made " +
+        inFmtV(k) + ". Stored energy behind it: " + inFmtE(e) + ".\nTrial 1 passes: the kick is real, and you called it before power flowed.";
+      inLog("t1 measured: kick " + inFmtV(k) + " at " + inFmtL(l) + " / " + inFmtI(i) + ". PASS.");
+      inCheckCert();
+    });
+    return card;
+  }
+  function inT1SetupLine() {
+    var l = IN_T1_L[inSt.t1.l], i = IN_T1_I[inSt.t1.i];
+    return inFmtL(l) + " at " + inFmtI(i) + ", switch opening in 1 us, no diode. " +
+      "Call the kick before opening the switch.";
+  }
+
+  /* ---------- trial 2: beat the pull-in window ---------- */
+  function inT2Card() {
+    var card = inEl("div", "in-card");
+    card.appendChild(inEl("p", "why",
+      "A relay needs " + inFmtI(IN_T2_PULLIN) + " through its coil within " + inFmtMs(IN_T2_BUDGET) +
+      " of power-on, or the armature never moves. Fit a coil, call the ramp time in milliseconds " +
+      "before power flows (15% tolerance), then energize and time it."));
+    var rowL = inEl("div", "in-row");
+    rowL.appendChild(inEl("span", "in-lab", "COIL"));
+    IN_T2_L.forEach(function (l, idx) {
+      var b = inEl("button", "in-btn" + (idx === inSt.t2.l ? " sel" : ""), inFmtL(l));
+      b.id = "inT2L_" + idx; b.type = "button";
+      b.addEventListener("click", function () {
+        inSt.t2.l = idx; inRevokeTrial("t2");
+        IN_T2_L.forEach(function (_, j) {
+          var e = document.getElementById("inT2L_" + j);
+          if (e) e.classList.toggle("sel", j === idx);
+        });
+        if (inEls.t2verdict) { inEls.t2verdict.className = "in-verdict"; inEls.t2verdict.textContent = ""; }
+        if (inEls.t2read) inEls.t2read.textContent = inT2SetupLine();
+        inLog("t2 coil fitted: " + inFmtL(l));
+      });
+      rowL.appendChild(b);
+    });
+    card.appendChild(rowL);
+    var read = inEl("div", "in-read", inT2SetupLine());
+    read.id = "inT2_read"; read.setAttribute("aria-live", "polite");
+    card.appendChild(read);
+    inEls.t2read = read;
+    var rowP = inEl("div", "in-row");
+    rowP.appendChild(inEl("span", "in-lab", "CALL THE RAMP (ms)"));
+    var pred = inEl("input", "in-input", null);
+    pred.id = "inT2_pred"; pred.type = "text"; pred.inputMode = "decimal";
+    pred.setAttribute("aria-label", "Predicted ramp time in milliseconds");
+    pred.placeholder = "1.25";
+    pred.addEventListener("input", function () {
+      if (inSt.t2.pass) inRevokeTrial("t2");
+    });
+    rowP.appendChild(pred);
+    inEls.t2pred = pred;
+    var callB = inEl("button", "in-btn solid", "CALL IT");
+    callB.id = "inT2_call"; callB.type = "button";
+    rowP.appendChild(callB);
+    var runB = inEl("button", "in-btn", "ENERGIZE");
+    runB.id = "inT2_run"; runB.type = "button"; runB.disabled = true;
+    rowP.appendChild(runB);
+    card.appendChild(rowP);
+    var verdict = inEl("div", "in-verdict", "");
+    verdict.id = "inT2_verdict"; verdict.setAttribute("aria-live", "polite");
+    card.appendChild(verdict);
+    inEls.t2verdict = verdict; inEls.t2run = runB;
+    callB.addEventListener("click", function () {
+      var p = inParseMs(pred.value);
+      var l = IN_T2_L[inSt.t2.l];
+      var r = inRamp(l);
+      if (p === null) {
+        verdict.className = "in-verdict bad";
+        verdict.textContent = "That is not a time. Type milliseconds, like 1.25.";
+        return;
+      }
+      inSt.t2.called = true;
+      if (inPredictT2(l, p)) {
+        inSt.t2.callOk = true;
+        verdict.className = "in-verdict ok";
+        verdict.textContent = "PREDICTION RIGHT: " + inFmtMs(p) + " is inside 15% of " + inFmtMs(r) +
+          ". Energize and time the real ramp.";
+        runB.disabled = false;
+        inLog("t2 call right: " + inFmtMs(p) + " vs " + inFmtMs(r) + ".");
+      } else {
+        inSt.t2.callOk = false;
+        verdict.className = "in-verdict bad";
+        verdict.textContent = "PREDICTION WRONG: " + inFmtMs(p) + " is outside 15% of the truth. " +
+          "t = L x I / V = " + inFmtL(l) + " x " + inFmtI(IN_T2_PULLIN) + " / 12 V. Work it again.";
+        runB.disabled = true;
+        inLog("t2 call wrong: " + inFmtMs(p) + " vs " + inFmtMs(r) + ".");
+      }
+    });
+    runB.addEventListener("click", function () {
+      var l = IN_T2_L[inSt.t2.l];
+      var key = inT2Key(l);
+      inSt.t2.ran = true;
+      runB.disabled = true;
+      if (inSt.t2.callOk && key.ok) {
+        inSt.t2.pass = true;
+        verdict.className = "in-verdict ok";
+        verdict.textContent = "Measured: " + inFmtMs(key.ramp) + " to reach " + inFmtI(IN_T2_PULLIN) +
+          ", inside the " + inFmtMs(IN_T2_BUDGET) + " window. The armature moves.\nTrial 2 passes.";
+        inLog("t2 measured: " + inFmtMs(key.ramp) + " at " + inFmtL(l) + ". PASS.");
+      } else if (inSt.t2.callOk) {
+        verdict.className = "in-verdict bad";
+        verdict.textContent = "The call was right and the coil still loses: " + inFmtMs(key.ramp) +
+          " is past the " + inFmtMs(IN_T2_BUDGET) + " window. The armature never moves. Fit a lighter coil.";
+        inLog("t2 measured: " + inFmtMs(key.ramp) + " at " + inFmtL(l) + ". FAIL: past the window.");
+      }
+      inCheckCert();
+    });
+    return card;
+  }
+  function inT2SetupLine() {
+    return inFmtL(IN_T2_L[inSt.t2.l]) + " on 12 V, pull-in at " + inFmtI(IN_T2_PULLIN) +
+      ", window " + inFmtMs(IN_T2_BUDGET) + ". Call the ramp before energizing.";
+  }
+
+  /* ---------- trial 3: two boards the coil killed ---------- */
+  function inT3BoardCard(which) {
+    var b = which === "a" ? IN_T3A : IN_T3B;
+    var doneKey = which === "a" ? "aDone" : "bDone";
+    var card = inEl("div", "in-card");
+    card.appendChild(inEl("h3", null, "TRIAL 3: " + b.name));
+    card.appendChild(inEl("p", "why", b.sub + " Probe it with the bench meter, then commit a verdict. A wrong verdict costs a strike."));
+    var rowP = inEl("div", "in-row");
+    rowP.appendChild(inEl("span", "in-lab", "PROBE"));
+    b.probes.forEach(function (p) {
+      var pb = inEl("button", "in-btn", p.label);
+      pb.id = "inT3" + which + "_p_" + p.id; pb.type = "button";
+      pb.addEventListener("click", function () {
+        var r = document.getElementById("inT3" + which + "_probe");
+        if (r) r.textContent = inT3Probe(which, p.id);
+        inLog("t3" + which + " probe " + p.label + ": " + inT3Probe(which, p.id));
+      });
+      rowP.appendChild(pb);
+    });
+    card.appendChild(rowP);
+    var probe = inEl("div", "in-read", "No probe yet. The meter is waiting.");
+    probe.id = "inT3" + which + "_probe"; probe.setAttribute("aria-live", "polite");
+    card.appendChild(probe);
+    var rowV = inEl("div", "in-row");
+    rowV.appendChild(inEl("span", "in-lab", "VERDICT"));
+    b.choices.forEach(function (c, idx) {
+      var vb = inEl("button", "in-btn solid", c);
+      vb.id = "inT3" + which + "_v_" + idx; vb.type = "button";
+      vb.addEventListener("click", function () {
+        if (inSt[doneKey] || inSt.failed) return;
+        var res = inT3Verdict(which, c);
+        var vline = document.getElementById("inT3" + which + "_verdict");
+        if (res.ok) {
+          inSt[doneKey] = true;
+          b.choices.forEach(function (_, j) {
+            var e = document.getElementById("inT3" + which + "_v_" + j);
+            if (e) e.disabled = true;
+          });
+          if (vline) {
+            vline.className = "in-verdict ok";
+            vline.textContent = "VERDICT RIGHT: " + c + ". " + res.note;
+          }
+          inLog("t3" + which + " verdict RIGHT: " + c + ".");
+          inCheckCert();
+        } else {
+          if (vline) {
+            vline.className = "in-verdict bad";
+            vline.textContent = "VERDICT WRONG: " + res.note;
+          }
+          inStrike("board " + which.toUpperCase() + " wrong verdict (" + c + ").");
+          inLog("t3" + which + " verdict wrong: " + c + ".");
+        }
+      });
+      rowV.appendChild(vb);
+    });
+    card.appendChild(rowV);
+    var vline = inEl("div", "in-verdict", "");
+    vline.id = "inT3" + which + "_verdict"; vline.setAttribute("aria-live", "polite");
+    card.appendChild(vline);
+    return card;
+  }
+
+  /* ---------- close, build ---------- */
+  function inClose() {
+    inDfStop();
+    if (inEls.overlay) inEls.overlay.classList.remove("open");
+  }
+
+  function inBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box) return;
+    if (document.getElementById("inBtn")) return;
+
+    inSt = inNewState();
+
+    var sty = document.createElement("style");
+    sty.textContent = IN_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "inBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Inductor Room";
+    b.addEventListener("click", function () { inEls.overlay.classList.add("open"); });
+    box.appendChild(b);
+
+    var ov = inEl("div", "in-overlay");
+    ov.id = "inOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Inductor Room");
+    var x = inEl("button", "in-btn", "CLOSE");
+    x.id = "inXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Inductor Room");
+    x.addEventListener("click", inClose);
+    ov.appendChild(x);
+    inEls.overlay = ov;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && ov.classList.contains("open")) inClose();
+    });
+
+    var panel = inEl("div", "in-panel");
+    panel.appendChild(inEl("div", "in-kicker", "OLD IRON BENCH 62"));
+    panel.appendChild(inEl("h2", "in-title", "The Inductor Room"));
+    panel.appendChild(inEl("p", "in-sub",
+      "Current through a coil cannot change instantly: V = L di/dt. Open the switch and the coil " +
+      "manufactures whatever voltage it needs to keep its current moving. Measure the kick, race the " +
+      "current ramp against a relay pull-in window, and diagnose two boards the same law killed."));
+
+    var introWrap = inEl("div", "");
+    introWrap.innerHTML = IN_INTRO_HTML;
+    panel.appendChild(introWrap);
+
+    panel.appendChild(inDoFirstCard());
+
+    var t1Head = inEl("div", "in-card");
+    t1Head.appendChild(inEl("h3", null, "TRIAL 1: MEASURE THE KICK"));
+    t1Head.appendChild(inEl("p", "why",
+      "A relay coil on 12 V, the switch about to open in 1 microsecond, no diode fitted. Fit the coil " +
+      "and the current, call the kick before power flows, then open the switch and measure it."));
+    panel.appendChild(t1Head);
+    panel.appendChild(inT1Card());
+
+    var t2Head = inEl("div", "in-card");
+    t2Head.appendChild(inEl("h3", null, "TRIAL 2: BEAT THE PULL-IN WINDOW"));
+    t2Head.appendChild(inEl("p", "why",
+      "The relay needs " + inFmtI(IN_T2_PULLIN) + " through its coil within " + inFmtMs(IN_T2_BUDGET) +
+      " of power-on, or the armature never moves. Fit a coil, call the ramp time, then energize."));
+    panel.appendChild(t2Head);
+    panel.appendChild(inT2Card());
+
+    var t3Head = inEl("div", "in-card");
+    t3Head.appendChild(inEl("h3", null, "TRIAL 3: TWO BOARDS THE COIL KILLED"));
+    t3Head.appendChild(inEl("p", "why",
+      "Two boards, two different diseases, one bench meter. Probe each board, commit a verdict, and " +
+      "name the fault before the board gets a second chance. Three wrong verdicts fail the room."));
+    panel.appendChild(t3Head);
+    panel.appendChild(inT3BoardCard("a"));
+    panel.appendChild(inT3BoardCard("b"));
+
+    var fail = inEl("div", "in-card", null);
+    fail.id = "inFail";
+    fail.style.display = "none";
+    fail.style.borderColor = "var(--ember,#ff5a1f)";
+    fail.appendChild(inEl("h3", null, "ROOM FAILED"));
+    fail.appendChild(inEl("p", "why", "Three strikes. The verdicts were guesses, and the meter deserved better. Reset and work the room again."));
+    var rb = inEl("button", "in-btn solid", "RESET ROOM");
+    rb.id = "inReset"; rb.type = "button";
+    rb.addEventListener("click", function () { inClose(); inBuild && inResetRoom(); });
+    fail.appendChild(rb);
+    panel.appendChild(fail);
+    inEls.fail = fail;
+
+    var banner = inEl("div", "in-banner");
+    banner.id = "inBanner";
+    banner.appendChild(inEl("h3", null, "ROOM CERTIFIED"));
+    var certP = inEl("p", null, inCertLine());
+    certP.id = "inCertP";
+    banner.appendChild(certP);
+    var dl = inEl("button", "in-btn solid", "DOWNLOAD CERTIFICATE");
+    dl.id = "inCertDl";
+    dl.addEventListener("click", inDownloadCert);
+    banner.appendChild(dl);
+    panel.appendChild(banner);
+    inEls.banner = banner;
+    inEls.certP = certP;
+
+    var foot = inEl("div", "in-foot", "STRIKES: 0/3");
+    foot.id = "inStrikes";
+    panel.appendChild(foot);
+    inEls.strikes = foot;
+
+    var logCard = inEl("div", "in-card");
+    logCard.appendChild(inEl("h3", null, "BENCH LOG"));
+    var log = inEl("div", "in-log");
+    log.id = "inLog";
+    log.setAttribute("aria-live", "polite");
+    logCard.appendChild(log);
+    panel.appendChild(logCard);
+    inEls.log = log;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    inLog("bench open. 12 V rail, one coil on a breadboard, the tray holds the parts. Probe freely; the " +
+      "do-first card asks nothing of you.", "dim");
+  }
+
+  function inResetRoom() {
+    if (inEls.overlay && inEls.overlay.parentNode) inEls.overlay.parentNode.removeChild(inEls.overlay);
+    inEls = {};
+    inSt = null;
+    inDf = { l: 1, iNow: 0, target: IN_DF_I, timer: null, raf: null };
+    inBuild();
+    if (inEls.overlay) inEls.overlay.classList.add("open");
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", inBuild);
+  } else {
+    inBuild();
+  }
+})();
