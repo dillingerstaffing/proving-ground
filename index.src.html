@@ -738,7 +738,11 @@ var PG_BENCHES = [
   { section: "oldiron", n: "60", name: "The Op-Amp Room", btn: "opBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "An op-amp's feedback turns wild open-loop gain into a precise closed-loop copy with muscle. Size a gain inside the rails, watch a sleepy sensor collapse under a thirsty load and wire the follower that fixes it, then call CLIP or CLEAN on a fixed 11x amp.",
     how: "Drive the follower free, fit a resistor pair and call the output before the amp runs, call the collapsed reading and wire the follower, then call CLIP or CLEAN for three inputs before applying power.",
-    spec: "GAIN 1+Rf/Rg \u00B7 FOLLOWER \u00B7 3 TRIALS" }
+    spec: "GAIN 1+Rf/Rg \u00B7 FOLLOWER \u00B7 3 TRIALS" },
+  { section: "oldiron", n: "61", name: "The 555 Room", btn: "t5Btn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "The cheapest heartbeat in the drawer: two comparators stare at one capacitor while it ramps between 1/3 and 2/3 of the supply, and three parts turn charge and discharge into a ticking square wave. Size a 2.00 Hz tick, stretch the duty past 90 percent, and diagnose two dead boards by measurement.",
+    how: "Free-run the chip first, fit parts and call the frequency before power flows, stretch the duty past 90 percent, then probe two dead boards and name each fault.",
+    spec: "555 ASTABLE \u00B7 3 TRIALS" }
 ];
 
 var pgFilter = "all";

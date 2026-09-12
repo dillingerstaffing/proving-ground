@@ -43480,3 +43480,819 @@ if (typeof module !== "undefined" && module.exports) {
     opBuild();
   }
 })();
+/* ============================================================
+   BENCH 61: THE 555 ROOM (oldiron)
+   One atomic mechanism: the 555 astable oscillator. Two internal
+   comparators watch one capacitor ramp between 1/3 and 2/3 of the
+   supply: charge through R1+R2 with the output HIGH, discharge
+   through R2 with the output LOW. Resistor-set current into the
+   capacitor becomes a ticking square wave.
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------- the one mechanism, stated as data ---------- */
+  var T5_VCC = 5.0;                 /* V, supply */
+  var T5_VLO = T5_VCC / 3;          /* V, trigger threshold */
+  var T5_VHI = 2 * T5_VCC / 3;      /* V, threshold threshold */
+  var T5_LN2 = 0.69314718056;
+  var T5_T1_TARGET = 2.00;          /* Hz, trial 1 blink rate */
+  var T5_T1_TOL = 0.05;             /* 5% prediction and fit tolerance */
+  var T5_T2_DUTY_MIN = 0.90;        /* trial 2: the long blink */
+  var T5_T2_DUTY_TOL = 0.02;        /* +-2 points on the duty call */
+  var T5_T2_FLO = 0.5, T5_T2_FHI = 2.0; /* Hz, trial 2 speed window */
+
+  var T5_DF_R1 = [1000, 10000, 47000];
+  var T5_DF_R2 = [1000, 10000, 47000, 100000];
+  var T5_DF_C  = [1e-6, 10e-6, 100e-6];
+  var T5_T1_R1 = [1000, 2200, 4700, 10000];
+  var T5_T1_R2 = [6800, 15000, 33000, 68000];
+  var T5_T1_C  = [10e-6, 22e-6, 47e-6];
+  var T5_T2_R1 = [47000, 100000];
+  var T5_T2_R2 = [1000, 4700, 10000];
+  var T5_T2_C  = [10e-6, 22e-6, 47e-6];
+
+  function t5THigh(r1, r2, c) { return T5_LN2 * (r1 + r2) * c; }
+  function t5TLow(r1, r2, c) { return T5_LN2 * r2 * c; }
+  function t5Period(r1, r2, c) { return t5THigh(r1, r2, c) + t5TLow(r1, r2, c); }
+  function t5Freq(r1, r2, c) { return 1 / t5Period(r1, r2, c); }
+  function t5Duty(r1, r2, c) { return t5THigh(r1, r2, c) / t5Period(r1, r2, c); }
+
+  function t5FmtR(r) { return r >= 1000 ? (r / 1000) + "k" : r + ""; }
+  function t5FmtC(c) { return (c * 1e6) + "uF"; }
+  function t5FmtF(f) { return f < 10 ? f.toFixed(2) + " Hz" : f.toFixed(1) + " Hz"; }
+  function t5FmtPct(d) { return (d * 100).toFixed(1) + "%"; }
+  function t5FmtMs(s) { return s < 1 ? (s * 1000).toFixed(1) + " ms" : s.toFixed(2) + " s"; }
+  function t5FmtV(v) { return v.toFixed(2) + " V"; }
+
+  /* trial 1 key: prediction within 5% of truth, truth within 5% of 2.00 Hz */
+  function t5PredictT1(r1, r2, c, pred) {
+    var f = t5Freq(r1, r2, c);
+    return Math.abs(pred - f) <= T5_T1_TOL * f;
+  }
+  function t5T1Key(r1, r2, c) {
+    var f = t5Freq(r1, r2, c);
+    var fit = Math.abs(f - T5_T1_TARGET) <= T5_T1_TOL * T5_T1_TARGET;
+    return { f: f, duty: t5Duty(r1, r2, c), fit: fit, pass: fit };
+  }
+
+  /* trial 2 key: prediction within 2 points of truth, duty >= 90%, 0.5-2.0 Hz */
+  function t5PredictT2(r1, r2, c, predPct) {
+    var d = t5Duty(r1, r2, c);
+    return Math.abs(predPct / 100 - d) <= T5_T2_DUTY_TOL;
+  }
+  function t5T2Key(r1, r2, c) {
+    var d = t5Duty(r1, r2, c), f = t5Freq(r1, r2, c);
+    var dutyOk = d >= T5_T2_DUTY_MIN;
+    var fOk = f >= T5_T2_FLO && f <= T5_T2_FHI;
+    return { duty: d, f: f, dutyOk: dutyOk, fOk: fOk, pass: dutyOk && fOk };
+  }
+
+  /* trial 3: two dead boards, honestly simulated */
+  var T5_T3_BOARDS = {
+    a: { name: "BOARD A", symptom: "LED stuck OFF. The bench meter is on the table.",
+         capNote: "4.90 V, pinned. Not ramping.",
+         outNote: "0.00 V, pinned.",
+         fault: "DISCHARGE TRACE OPEN",
+         why: "The cap charges through R1+R2 but can never discharge: the open discharge trace means the " +
+              "discharge transistor pulls on nothing. The cap parks at the rail, the threshold comparator stays " +
+              "tripped, and the output sits LOW forever. A cap pinned at 5 V with the output at 0 V is the " +
+              "signature of a discharge path that went nowhere." },
+    b: { name: "BOARD B", symptom: "LED stuck ON. The bench meter is on the table.",
+         capNote: "RAMPS 1.67 V to 3.33 V, alive and well.",
+         outNote: "5.00 V, pinned.",
+         fault: "OUTPUT SHORTED TO VCC",
+         why: "The oscillator is innocent: the cap ramps between the 1/3 and 2/3 thresholds exactly as it " +
+              "should, so the chip is switching. But the output pin reads a flat 5 V, which no switching chip " +
+              "produces. The pin is shorted to the rail, so the LED sees 5 V forever while the chip underneath " +
+              "ticks on, unheard." }
+  };
+  var T5_T3_CHOICES = [
+    "DISCHARGE TRACE OPEN",
+    "OUTPUT SHORTED TO VCC",
+    "RESET PIN HELD LOW",
+    "TIMING CAP SHORTED"
+  ];
+  function t5T3Probe(board, what) {
+    var b = T5_T3_BOARDS[board];
+    if (what === "cap") return b.capNote;
+    if (what === "out") return b.outNote;
+    return "";
+  }
+  function t5T3Verdict(board, choice) {
+    var b = T5_T3_BOARDS[board];
+    return { ok: choice === b.fault, why: b.why, fault: b.fault };
+  }
+
+  /* node/jsdom test hooks: assigned before any DOM is touched, so a
+     hostile docStub still gets the exports. */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.T5 = {
+      VCC: T5_VCC, VLO: T5_VLO, VHI: T5_VHI,
+      T1_TARGET: T5_T1_TARGET, T1_TOL: T5_T1_TOL,
+      T2_DUTY_MIN: T5_T2_DUTY_MIN, T2_DUTY_TOL: T5_T2_DUTY_TOL,
+      T2_FLO: T5_T2_FLO, T2_FHI: T5_T2_FHI,
+      DF_R1: T5_DF_R1, DF_R2: T5_DF_R2, DF_C: T5_DF_C,
+      T1_R1: T5_T1_R1, T1_R2: T5_T1_R2, T1_C: T5_T1_C,
+      T2_R1: T5_T2_R1, T2_R2: T5_T2_R2, T2_C: T5_T2_C,
+      tHigh: t5THigh, tLow: t5TLow, period: t5Period, freq: t5Freq, duty: t5Duty,
+      fmtR: t5FmtR, fmtC: t5FmtC, fmtF: t5FmtF, fmtPct: t5FmtPct, fmtMs: t5FmtMs, fmtV: t5FmtV,
+      predictT1: t5PredictT1, t1Key: t5T1Key,
+      predictT2: t5PredictT2, t2Key: t5T2Key,
+      boards: T5_T3_BOARDS, choices: T5_T3_CHOICES,
+      t3Probe: t5T3Probe, t3Verdict: t5T3Verdict,
+      introHTML: null /* filled after the copy const below */
+    };
+  }
+
+  /* ---------- intro copy: why first, worked example, failure modes ---------- */
+  var T5_INTRO_HTML = [
+    "<div class=\"tm-card\"><h3>WHY THIS ROOM EXISTS</h3>",
+    "<p class=\"why\">Every blinking light, buzzing piezo, and pulsing motor driver needs a heartbeat, and you " +
+    "do not always have a microcontroller to spare. The 555 timer is the cheapest heartbeat in the drawer: " +
+    "three parts around one 8-pin chip and it ticks on its own, no code, no clock crystal. The atomic trick " +
+    "inside is almost rude in its simplicity. Two <b>comparators</b> stare at one capacitor. While it charges " +
+    "the output sits HIGH; when it crosses 2/3 of the supply the chip flips, the output goes LOW, and the cap " +
+    "drains until it crosses 1/3 of the supply, when the whole thing flips back. The resistors decide how fast " +
+    "the capacitor fills and empties, so the resistors decide the tempo. Current into a capacitor, turned into " +
+    "a square wave: that is the whole room, and it is the same trick inside every blinking gadget you have " +
+    "ever repaired.</p>",
+    "<p class=\"why\">Four terms, earned now. A <b>comparator</b> compares two voltages and slams its output " +
+    "HIGH or LOW, no in-between. <b>Astable</b> means no stable state: the circuit free-runs forever, it never " +
+    "settles. <b>Duty cycle</b> is the fraction of each cycle the output spends HIGH, written as a percent. " +
+    "The <b>thresholds</b> are 1/3 and 2/3 of the supply, set by three equal resistors inside the chip (that " +
+    "is the 555 in 555: three 5k resistors).</p></div>",
+    "<div class=\"tm-card\"><h3>THE WORKED EXAMPLE</h3>",
+    "<p class=\"why\">R1 = 1k, R2 = 10k, C = 10uF, 5 V supply. Check it by hand. " +
+    "Charge time t_high = 0.693 x (1k + 10k) x 10uF = 76.2 ms. " +
+    "Discharge time t_low = 0.693 x 10k x 10uF = 69.3 ms. " +
+    "Period = 76.2 + 69.3 = 145.5 ms, so f = 1 / 0.1455 = 6.87 Hz. " +
+    "Duty = 76.2 / 145.5 = 52.4%. Multiply it out yourself: the 0.693 is the natural log of 2, the time it " +
+    "takes the RC curve to cross between the two thresholds. Note the charge path always includes R1, so the " +
+    "HIGH half is always the longer one: the basic 555 can never duty below 50%.</p></div>",
+    "<div class=\"tm-card tm-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3><ul>",
+    "<li><b>PARKED AT THE RAIL:</b> cut the discharge trace and the capacitor charges but never drains. It " +
+    "parks at 5 V, the threshold comparator stays tripped, the output sits LOW, and the LED goes dark. " +
+    "Trial 3 board A is that corpse on purpose.</li>",
+    "<li><b>THE LYING LED:</b> short the output pin to the rail and the chip underneath keeps ticking " +
+    "perfectly while the LED burns solid ON. The oscillator is innocent; the wiring lies. " +
+    "Trial 3 board B is that lie on purpose.</li>",
+    "<li><b>DUTY FLOOR:</b> charge always flows through R1, so t_high always beats t_low. Asking the basic " +
+    "circuit for 30% duty is asking for the impossible; long-ON blinks need R1 much bigger than R2, " +
+    "which is trial 2.</li>",
+    "<li><b>RESET HELD LOW:</b> tie pin 4 to ground and everything freezes: output LOW, discharge transistor " +
+    "forced on, capacitor pinned near zero. The chip is not dead, it is being told to stay asleep.</li>",
+    "<li><b>TOO FAST TO SEE:</b> above about 10 Hz the LED is a blur. The scope trace is the instrument " +
+    "then, not your eyes. Trust the numbers, not the glow.</li></ul></div>"
+  ].join("");
+
+  if (typeof module !== "undefined" && module.exports && module.exports.T5) {
+    module.exports.T5.introHTML = T5_INTRO_HTML;
+  }
+
+  /* ---------- DOM: element helper, CSS, state ---------- */
+  function t5El(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  var T5_CSS = [
+    ".t5-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".t5-overlay.open{display:block}",
+    ".t5-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".t5-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".t5-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".t5-sub{font-size:14px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.92;margin:0 0 18px;max-width:68ch}",
+    ".t5-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".t5-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".t5-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".t5-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".t5-card b{color:var(--ember,#ff5a1f)}",
+    ".t5-fail{border:1px solid var(--ember,#ff5a1f)}",
+    ".t5-fail li{font-size:13px;line-height:1.6;margin:0 0 6px;list-style:none}",
+    ".t5-fail ul{padding:0;margin:0}",
+    ".t5-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}",
+    ".t5-lab{font-size:12px;letter-spacing:.12em;opacity:.75}",
+    ".t5-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
+    ".t5-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".t5-btn:disabled{opacity:.35;cursor:default}",
+    ".t5-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".t5-btn.sel{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12)}",
+    ".t5-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#101014}",
+    ".t5-verdict{font-size:14px;line-height:1.6;margin:10px 0 0;min-height:24px}",
+    ".t5-verdict.ok{color:#9fe870}",
+    ".t5-verdict.bad{color:#ff5a1f}",
+    ".t5-read{font-size:14px;line-height:1.7;margin:8px 0 0;min-height:22px;white-space:pre-line}",
+    ".t5-log{font-size:12.5px;line-height:1.7;max-height:280px;overflow-y:auto}",
+    ".t5-log div{margin:0 0 4px}",
+    ".t5-log .dim{opacity:.6}",
+    ".t5-log .ok{color:#9fe870}",
+    ".t5-log .bad{color:#ff5a1f}",
+    ".t5-notes{font-size:13px;line-height:1.7;margin:8px 0 0;min-height:22px;white-space:pre-line}",
+    ".t5-banner{display:none;border:1px solid var(--ember,#ff5a1f);background:rgba(255,90,31,.08);padding:18px;margin:0 0 14px}",
+    ".t5-banner h3{font-family:'Space Grotesk',sans-serif;font-size:18px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".t5-banner p{font-size:13px;line-height:1.65;margin:0 0 12px;max-width:70ch}",
+    ".t5-num{font-family:'IBM Plex Mono',monospace;font-size:14px;min-height:48px;padding:10px 14px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));width:200px}",
+    ".t5-num:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".t5-scope{width:100%;max-width:640px;height:170px;border:1px solid var(--line,rgba(242,237,228,.16));background:#0b0b0e;margin:10px 0}",
+    ".t5-led{width:26px;height:26px;border-radius:50%;border:1px solid var(--line,rgba(242,237,228,.4));background:#2a1410;display:inline-block;vertical-align:middle}",
+    ".t5-led.on{background:var(--ember,#ff5a1f);box-shadow:0 0 14px rgba(255,90,31,.8)}",
+    ".t5-pop{animation:t5Pop 200ms ease-out}",
+    "@keyframes t5Pop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    "@media (prefers-reduced-motion:reduce){.t5-pop{animation:none}}",
+    "@media (max-width:640px){.t5-panel{padding:48px 14px 100px}.t5-num{width:100%}}"
+  ].join("\n");
+
+  var t5Els = { overlay: null, log: null, banner: null };
+  var t5State = {
+    df: { r1: T5_DF_R1[1], r2: T5_DF_R2[1], c: T5_DF_C[1], timer: null },
+    t1: { r1: T5_T1_R1[0], r2: T5_T1_R2[0], c: T5_T1_C[1], predOk: false, pass: false },
+    t2: { r1: T5_T2_R1[0], r2: T5_T2_R2[1], c: T5_T2_C[1], predOk: false, pass: false },
+    t3: { a: { probed: false, pass: false }, b: { probed: false, pass: false }, pass: false }
+  };
+
+  function t5Log(msg, cls) {
+    if (!t5Els.log) return;
+    var d = t5El("div", cls || null, msg);
+    t5Els.log.appendChild(d);
+    t5Els.log.scrollTop = t5Els.log.scrollHeight;
+  }
+
+  function t5ReducedMotion() {
+    return typeof window !== "undefined" && window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  /* scope: capacitor sawtooth between the threshold lines, output square wave */
+  function t5DrawScope(canvasId, r1, r2, c) {
+    var cv = document.getElementById(canvasId);
+    if (!cv || !cv.getContext) return;
+    var g = null;
+    try { g = cv.getContext("2d"); } catch (e) { return; }
+    if (!g) return;
+    var W = cv.width || 640, H = cv.height || 170;
+    g.clearRect(0, 0, W, H);
+    var pad = 8, mid = Math.floor(H * 0.52);
+    var v2y = function (v) { return mid - (v / T5_VCC) * (mid - pad * 2) + pad; };
+    /* threshold lines */
+    g.strokeStyle = "rgba(242,237,228,.28)";
+    g.setLineDash([4, 4]);
+    g.beginPath(); g.moveTo(pad, v2y(T5_VHI)); g.lineTo(W - pad, v2y(T5_VHI)); g.stroke();
+    g.beginPath(); g.moveTo(pad, v2y(T5_VLO)); g.lineTo(W - pad, v2y(T5_VLO)); g.stroke();
+    g.setLineDash([]);
+    g.fillStyle = "rgba(242,237,228,.55)";
+    g.font = "10px 'IBM Plex Mono',monospace";
+    g.fillText("2/3 VCC", W - 64, v2y(T5_VHI) - 4);
+    g.fillText("1/3 VCC", W - 64, v2y(T5_VLO) - 4);
+    /* cap sawtooth: two periods of charge/discharge */
+    var T = t5Period(r1, r2, c);
+    var tH = t5THigh(r1, r2, c), tL = t5TLow(r1, r2, c);
+    var x0 = pad + 8, x1 = W - pad - 8;
+    g.strokeStyle = "#ff5a1f";
+    g.lineWidth = 2;
+    g.beginPath();
+    var first = true;
+    for (var px = x0; px <= x1; px++) {
+      var t = ((px - x0) / (x1 - x0)) * 2 * T % T;
+      var v;
+      if (t < tH) {
+        /* charge: VLO toward VCC through R1+R2 */
+        v = T5_VCC - (T5_VCC - T5_VLO) * Math.exp(-t / ((r1 + r2) * c));
+      } else {
+        /* discharge: VHI toward 0 through R2, ends exactly at VLO */
+        v = T5_VHI * Math.exp(-(t - tH) / (r2 * c));
+        if (v < T5_VLO) v = T5_VLO;
+      }
+      var y = v2y(v);
+      if (first) { g.moveTo(px, y); first = false; } else { g.lineTo(px, y); }
+    }
+    g.stroke();
+    /* output square wave along the bottom */
+    var oy = H - 26;
+    g.strokeStyle = "rgba(159,232,112,.9)";
+    g.lineWidth = 2;
+    g.beginPath();
+    first = true;
+    for (var qx = x0; qx <= x1; qx++) {
+      var qt = ((qx - x0) / (x1 - x0)) * 2 * T % T;
+      var qy = qt < tH ? oy - 16 : oy;
+      if (first) { g.moveTo(qx, qy); first = false; } else { g.lineTo(qx, qy); }
+    }
+    g.stroke();
+    g.fillStyle = "rgba(242,237,228,.55)";
+    g.fillText("OUT", pad, oy - 20);
+  }
+
+  function t5Readout(r1, r2, c) {
+    var th = t5THigh(r1, r2, c), tl = t5TLow(r1, r2, c);
+    return "t_high " + t5FmtMs(th) + "  t_low " + t5FmtMs(tl) +
+      "\nf = " + t5FmtF(t5Freq(r1, r2, c)) + "   duty " + t5FmtPct(t5Duty(r1, r2, c));
+  }
+
+  function t5TrayRow(card, label, values, fmt, group, onPick) {
+    var row = t5El("div", "t5-row");
+    row.appendChild(t5El("span", "t5-lab", label));
+    values.forEach(function (v) {
+      var b = t5El("button", "t5-btn", fmt(v));
+      b.id = "t5" + group + "_" + String(v).replace(/[^0-9a-z]/gi, "");
+      b.setAttribute("aria-label", label + " " + fmt(v));
+      b.addEventListener("click", function () {
+        var sibs = row.querySelectorAll(".t5-btn");
+        for (var i = 0; i < sibs.length; i++) sibs[i].classList.remove("sel");
+        b.classList.add("sel");
+        onPick(v);
+      });
+      if (v === onPick.current) b.classList.add("sel");
+      row.appendChild(b);
+    });
+    card.appendChild(row);
+    return row;
+  }
+
+  function t5RevokeTrial(n) {
+    t5State["t" + n].pass = false;
+    t5State["t" + n].predOk = false;
+    t5Els.banner.style.display = "none";
+  }
+
+  function t5CheckCert() {
+    if (t5State.t1.pass && t5State.t2.pass && t5State.t3.pass) {
+      t5Els.banner.style.display = "block";
+      t5Log("all three trials pass. ROOM CERTIFIED.", "ok");
+    }
+  }
+
+  function t5CertLine() {
+    var k1 = t5T1Key(t5State.t1.r1, t5State.t1.r2, t5State.t1.c);
+    var k2 = t5T2Key(t5State.t2.r1, t5State.t2.r2, t5State.t2.c);
+    return "Bench 61 certified: 2.00 Hz tick at " + t5FmtF(k1.f) +
+      " (" + t5FmtR(t5State.t1.r1) + "/" + t5FmtR(t5State.t1.r2) + "/" + t5FmtC(t5State.t1.c) + "), " +
+      "long blink duty " + t5FmtPct(k2.duty) + " at " + t5FmtF(k2.f) +
+      " (" + t5FmtR(t5State.t2.r1) + "/" + t5FmtR(t5State.t2.r2) + "/" + t5FmtC(t5State.t2.c) + "), " +
+      "two dead boards diagnosed by measurement.";
+  }
+
+  function t5DownloadCert() {
+    var txt = "THE 555 ROOM, BENCH 61, THE PROVING GROUND\n" + t5CertLine() +
+      "\nMechanism: two comparators, one capacitor, 1/3 and 2/3 VCC thresholds.\n";
+    var blob = new Blob([txt], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "555-room-bench61-cert.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    }, 500);
+    t5Log("certificate downloaded.", "dim");
+  }
+
+  /* ---------- DO FIRST: free run ---------- */
+  function t5DoFirstCard() {
+    var card = t5El("div", "t5-card");
+    card.appendChild(t5El("h3", null, "DO FIRST: FREE RUN"));
+    card.appendChild(t5El("p", "why",
+      "No stakes. Pick parts from the tray, power the chip, and watch the capacitor ramp between the " +
+      "two threshold lines while the LED follows the output. This is the whole mechanism, live, before " +
+      "any trial asks anything of you."));
+    var st = t5State.df;
+    var pickR1 = function (v) { st.r1 = v; };
+    pickR1.current = st.r1;
+    var pickR2 = function (v) { st.r2 = v; };
+    pickR2.current = st.r2;
+    var pickC = function (v) { st.c = v; };
+    pickC.current = st.c;
+    t5TrayRow(card, "R1", T5_DF_R1, t5FmtR, "DfR1", pickR1);
+    t5TrayRow(card, "R2", T5_DF_R2, t5FmtR, "DfR2", pickR2);
+    t5TrayRow(card, "C", T5_DF_C, t5FmtC, "DfC", pickC);
+    var row = t5El("div", "t5-row");
+    var run = t5El("button", "t5-btn solid", "POWER THE CHIP");
+    run.id = "t5Df_run";
+    var led = t5El("span", "t5-led");
+    led.id = "t5Df_led";
+    led.setAttribute("aria-label", "output LED");
+    var ledLab = t5El("span", "t5-lab", "LED");
+    ledLab.id = "t5Df_ledLab";
+    row.appendChild(run);
+    row.appendChild(ledLab);
+    row.appendChild(led);
+    card.appendChild(row);
+    var cv = document.createElement("canvas");
+    cv.id = "t5Df_scope";
+    cv.className = "t5-scope";
+    cv.width = 640; cv.height = 170;
+    cv.setAttribute("aria-label", "oscilloscope trace of capacitor voltage and output");
+    card.appendChild(cv);
+    var read = t5El("div", "t5-read");
+    read.id = "t5Df_read";
+    card.appendChild(read);
+    function stopLed() {
+      if (st.timer) { clearInterval(st.timer); clearTimeout(st.timer); st.timer = null; }
+      led.classList.remove("on");
+    }
+    run.addEventListener("click", function () {
+      stopLed();
+      t5DrawScope("t5Df_scope", st.r1, st.r2, st.c);
+      read.textContent = t5Readout(st.r1, st.r2, st.c);
+      var f = t5Freq(st.r1, st.r2, st.c);
+      var T = t5Period(st.r1, st.r2, st.c);
+      var d = t5Duty(st.r1, st.r2, st.c);
+      if (f > 10) {
+        led.classList.add("on");
+        ledLab.textContent = "LED ON (blinking too fast to see)";
+        t5Log("free run: " + t5FmtF(f) + ", duty " + t5FmtPct(d) + ". Too fast for eyes; the scope is the instrument.", "dim");
+      } else if (t5ReducedMotion()) {
+        led.classList.add("on");
+        ledLab.textContent = "LED (motion reduced: shown steady)";
+        t5Log("free run: " + t5FmtF(f) + ", duty " + t5FmtPct(d) + ".", "dim");
+      } else {
+        ledLab.textContent = "LED";
+        var onMs = Math.min(T * d, 4) * 1000, offMs = Math.min(T * (1 - d), 4) * 1000;
+        var tick = function () {
+          led.classList.add("on");
+          st.timer = setTimeout(function () {
+            led.classList.remove("on");
+            st.timer = setTimeout(tick, Math.max(offMs, 30));
+          }, Math.max(onMs, 30));
+        };
+        tick();
+        t5Log("free run: " + t5FmtF(f) + ", duty " + t5FmtPct(d) + ".", "dim");
+      }
+      card.classList.remove("t5-pop");
+      void card.offsetWidth;
+      card.classList.add("t5-pop");
+    });
+    t5Els.stopDf = stopLed;
+    return card;
+  }
+
+  /* ---------- TRIAL 1: size the tick ---------- */
+  function t5T1Card() {
+    var card = t5El("div", "t5-card");
+    card.appendChild(t5El("p", "why",
+      "A metronome blinks at exactly 2.00 Hz. Fit parts from the tray, call the frequency in Hz before " +
+      "power flows, then run. You pass when your call lands within 5% of the truth AND the truth lands " +
+      "within 5% of 2.00 Hz."));
+    var st = t5State.t1;
+    var onChange = function () { t5RevokeTrial(1); verdict.textContent = ""; verdict.className = "t5-verdict"; };
+    var pickR1 = function (v) { st.r1 = v; onChange(); };
+    pickR1.current = st.r1;
+    var pickR2 = function (v) { st.r2 = v; onChange(); };
+    pickR2.current = st.r2;
+    var pickC = function (v) { st.c = v; onChange(); };
+    pickC.current = st.c;
+    t5TrayRow(card, "R1", T5_T1_R1, t5FmtR, "T1R1", pickR1);
+    t5TrayRow(card, "R2", T5_T1_R2, t5FmtR, "T1R2", pickR2);
+    t5TrayRow(card, "C", T5_T1_C, t5FmtC, "T1C", pickC);
+    var row = t5El("div", "t5-row");
+    row.appendChild(t5El("span", "t5-lab", "CALL f (Hz)"));
+    var inp = t5El("input", "t5-num");
+    inp.id = "t5T1_pred";
+    inp.setAttribute("inputmode", "decimal");
+    inp.setAttribute("aria-label", "predicted frequency in hertz");
+    var call = t5El("button", "t5-btn", "CALL IT");
+    call.id = "t5T1_call";
+    var run = t5El("button", "t5-btn solid", "POWER");
+    run.id = "t5T1_run";
+    run.disabled = true;
+    row.appendChild(inp);
+    row.appendChild(call);
+    row.appendChild(run);
+    card.appendChild(row);
+    var cv = document.createElement("canvas");
+    cv.id = "t5T1_scope";
+    cv.className = "t5-scope";
+    cv.width = 640; cv.height = 170;
+    cv.setAttribute("aria-label", "oscilloscope trace of capacitor voltage and output");
+    card.appendChild(cv);
+    var read = t5El("div", "t5-read");
+    read.id = "t5T1_read";
+    card.appendChild(read);
+    var verdict = t5El("div", "t5-verdict");
+    verdict.id = "t5T1_verdict";
+    card.appendChild(verdict);
+    call.addEventListener("click", function () {
+      var p = parseFloat(inp.value);
+      if (!(p > 0)) {
+        verdict.textContent = "CALL IT needs a positive number in Hz.";
+        verdict.className = "t5-verdict bad";
+        return;
+      }
+      if (t5PredictT1(st.r1, st.r2, st.c, p)) {
+        st.predOk = true;
+        run.disabled = false;
+        verdict.textContent = "PREDICTION RIGHT: truth is " + t5FmtF(t5Freq(st.r1, st.r2, st.c)) +
+          ". POWER is armed.";
+        verdict.className = "t5-verdict ok";
+        t5Log("t1 call right: " + p + " Hz against truth " + t5FmtF(t5Freq(st.r1, st.r2, st.c)) + ".", "dim");
+      } else {
+        st.predOk = false;
+        run.disabled = true;
+        verdict.textContent = "PREDICTION WRONG: truth is " + t5FmtF(t5Freq(st.r1, st.r2, st.c)) +
+          ". Work the 1.44/((R1+2R2)C) arithmetic and call again.";
+        verdict.className = "t5-verdict bad";
+        t5Log("t1 call wrong: " + p + " Hz.", "bad");
+      }
+    });
+    run.addEventListener("click", function () {
+      if (!st.predOk) return;
+      var k = t5T1Key(st.r1, st.r2, st.c);
+      t5DrawScope("t5T1_scope", st.r1, st.r2, st.c);
+      read.textContent = t5Readout(st.r1, st.r2, st.c);
+      if (k.pass) {
+        st.pass = true;
+        verdict.textContent = "Trial 1 passes: " + t5FmtF(k.f) + " is inside 5% of 2.00 Hz. The tick is sized.";
+        verdict.className = "t5-verdict ok";
+        t5Log("trial 1 passes at " + t5FmtF(k.f) + ".", "ok");
+        t5CheckCert();
+      } else {
+        verdict.textContent = "FAIL: " + t5FmtF(k.f) + " misses the 2.00 Hz window (1.90 to 2.10). " +
+          "Remember f = 1.44/((R1+2R2)C): bigger parts, slower tick.";
+        verdict.className = "t5-verdict bad";
+        t5Log("trial 1 fails at " + t5FmtF(k.f) + ".", "bad");
+      }
+    });
+    return card;
+  }
+
+  /* ---------- TRIAL 2: the long blink ---------- */
+  function t5T2Card() {
+    var card = t5El("div", "t5-card");
+    card.appendChild(t5El("p", "why",
+      "The basic circuit can never duty below 50%, but it can stretch HIGH almost the whole cycle: charge " +
+      "through a big R1, drain through a small R2. Get duty at or above 90% while the tick stays between " +
+      "0.5 and 2.0 Hz. Call the duty in percent before power flows."));
+    var st = t5State.t2;
+    var onChange = function () { t5RevokeTrial(2); verdict.textContent = ""; verdict.className = "t5-verdict"; };
+    var pickR1 = function (v) { st.r1 = v; onChange(); };
+    pickR1.current = st.r1;
+    var pickR2 = function (v) { st.r2 = v; onChange(); };
+    pickR2.current = st.r2;
+    var pickC = function (v) { st.c = v; onChange(); };
+    pickC.current = st.c;
+    t5TrayRow(card, "R1", T5_T2_R1, t5FmtR, "T2R1", pickR1);
+    t5TrayRow(card, "R2", T5_T2_R2, t5FmtR, "T2R2", pickR2);
+    t5TrayRow(card, "C", T5_T2_C, t5FmtC, "T2C", pickC);
+    var row = t5El("div", "t5-row");
+    row.appendChild(t5El("span", "t5-lab", "CALL DUTY (%)"));
+    var inp = t5El("input", "t5-num");
+    inp.id = "t5T2_pred";
+    inp.setAttribute("inputmode", "decimal");
+    inp.setAttribute("aria-label", "predicted duty cycle in percent");
+    var call = t5El("button", "t5-btn", "CALL IT");
+    call.id = "t5T2_call";
+    var run = t5El("button", "t5-btn solid", "POWER");
+    run.id = "t5T2_run";
+    run.disabled = true;
+    row.appendChild(inp);
+    row.appendChild(call);
+    row.appendChild(run);
+    card.appendChild(row);
+    var cv = document.createElement("canvas");
+    cv.id = "t5T2_scope";
+    cv.className = "t5-scope";
+    cv.width = 640; cv.height = 170;
+    cv.setAttribute("aria-label", "oscilloscope trace of capacitor voltage and output");
+    card.appendChild(cv);
+    var read = t5El("div", "t5-read");
+    read.id = "t5T2_read";
+    card.appendChild(read);
+    var verdict = t5El("div", "t5-verdict");
+    verdict.id = "t5T2_verdict";
+    card.appendChild(verdict);
+    call.addEventListener("click", function () {
+      var p = parseFloat(inp.value);
+      if (!(p > 0 && p <= 100)) {
+        verdict.textContent = "CALL IT needs a duty between 0 and 100 percent.";
+        verdict.className = "t5-verdict bad";
+        return;
+      }
+      if (t5PredictT2(st.r1, st.r2, st.c, p)) {
+        st.predOk = true;
+        run.disabled = false;
+        verdict.textContent = "PREDICTION RIGHT: truth is " + t5FmtPct(t5Duty(st.r1, st.r2, st.c)) +
+          ". POWER is armed.";
+        verdict.className = "t5-verdict ok";
+        t5Log("t2 call right: " + p + "% against truth " + t5FmtPct(t5Duty(st.r1, st.r2, st.c)) + ".", "dim");
+      } else {
+        st.predOk = false;
+        run.disabled = true;
+        verdict.textContent = "PREDICTION WRONG: truth is " + t5FmtPct(t5Duty(st.r1, st.r2, st.c)) +
+          ". Work duty = (R1+R2)/(R1+2R2) and call again.";
+        verdict.className = "t5-verdict bad";
+        t5Log("t2 call wrong: " + p + "%.", "bad");
+      }
+    });
+    run.addEventListener("click", function () {
+      if (!st.predOk) return;
+      var k = t5T2Key(st.r1, st.r2, st.c);
+      t5DrawScope("t5T2_scope", st.r1, st.r2, st.c);
+      read.textContent = t5Readout(st.r1, st.r2, st.c);
+      if (k.pass) {
+        st.pass = true;
+        verdict.textContent = "Trial 2 passes: duty " + t5FmtPct(k.duty) + " at " + t5FmtF(k.f) +
+          ". The LED burns long and blinks short.";
+        verdict.className = "t5-verdict ok";
+        t5Log("trial 2 passes: duty " + t5FmtPct(k.duty) + ", " + t5FmtF(k.f) + ".", "ok");
+        t5CheckCert();
+      } else {
+        var why = !k.dutyOk
+          ? "duty " + t5FmtPct(k.duty) + " is under 90%. The HIGH half needs R1 to dwarf R2: duty = (R1+R2)/(R1+2R2)."
+          : t5FmtF(k.f) + " is outside 0.5 to 2.0 Hz. Right shape, wrong tempo: resize C.";
+        verdict.textContent = "FAIL: " + why;
+        verdict.className = "t5-verdict bad";
+        t5Log("trial 2 fails: " + why, "bad");
+      }
+    });
+    return card;
+  }
+
+  /* ---------- TRIAL 3: two dead boards ---------- */
+  function t5T3BoardCard(key) {
+    var b = T5_T3_BOARDS[key];
+    var st = t5State.t3[key];
+    var card = t5El("div", "t5-card");
+    card.appendChild(t5El("h3", null, b.name + ": " + b.symptom.split(".")[0].toUpperCase()));
+    card.appendChild(t5El("p", "why", b.symptom + " Probe first, verdict second."));
+    var row = t5El("div", "t5-row");
+    var pCap = t5El("button", "t5-btn", "PROBE CAP");
+    pCap.id = "t5T3" + key + "_probeCap";
+    var pOut = t5El("button", "t5-btn", "PROBE OUTPUT");
+    pOut.id = "t5T3" + key + "_probeOut";
+    row.appendChild(pCap);
+    row.appendChild(pOut);
+    card.appendChild(row);
+    var notes = t5El("div", "t5-notes");
+    notes.id = "t5T3" + key + "_notes";
+    card.appendChild(notes);
+    var vrow = t5El("div", "t5-row");
+    var vbtns = [];
+    T5_T3_CHOICES.forEach(function (choice, ix) {
+      var vb = t5El("button", "t5-btn", choice);
+      vb.id = "t5T3" + key + "_v" + ix;
+      vb.disabled = true;
+      vb.addEventListener("click", function () {
+        for (var i = 0; i < vbtns.length; i++) vbtns[i].classList.remove("sel");
+        vb.classList.add("sel");
+        var r = t5T3Verdict(key, choice);
+        if (r.ok) {
+          st.pass = true;
+          verdict.textContent = "VERDICT RIGHT: " + r.fault + ". " + r.why;
+          verdict.className = "t5-verdict ok";
+          t5Log(key.toUpperCase() + " diagnosed: " + r.fault + ".", "ok");
+        } else {
+          st.pass = false;
+          t5Els.banner.style.display = "none";
+          t5State.t3.pass = false;
+          verdict.textContent = "VERDICT WRONG: " + choice + ". Read the probes again: " + r.why;
+          verdict.className = "t5-verdict bad";
+          t5Log(key.toUpperCase() + " misdiagnosed as " + choice + ".", "bad");
+        }
+        t5CheckT3();
+      });
+      vbtns.push(vb);
+      vrow.appendChild(vb);
+    });
+    card.appendChild(vrow);
+    var verdict = t5El("div", "t5-verdict");
+    verdict.id = "t5T3" + key + "_verdict";
+    card.appendChild(verdict);
+    function probe(what) {
+      var note = (what === "cap" ? "CAP: " : "OUTPUT: ") + t5T3Probe(key, what);
+      var cur = notes.textContent;
+      if (cur.indexOf(note) < 0) notes.textContent = cur ? cur + "\n" + note : note;
+      if (!st.probed) {
+        st.probed = true;
+        for (var i = 0; i < vbtns.length; i++) vbtns[i].disabled = false;
+        t5Log(key.toUpperCase() + " probed: " + note, "dim");
+      }
+    }
+    pCap.addEventListener("click", function () { probe("cap"); });
+    pOut.addEventListener("click", function () { probe("out"); });
+    return card;
+  }
+
+  function t5CheckT3() {
+    if (t5State.t3.a.pass && t5State.t3.b.pass) {
+      t5State.t3.pass = true;
+      t5Log("trial 3 passes: both boards diagnosed by measurement.", "ok");
+      t5CheckCert();
+    } else {
+      t5State.t3.pass = false;
+      t5Els.banner.style.display = "none";
+    }
+  }
+
+  /* ---------- build ---------- */
+  function t5Close() {
+    if (t5Els.stopDf) t5Els.stopDf();
+    t5Els.overlay.classList.remove("open");
+  }
+
+  function t5Build() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box) return;
+    if (document.getElementById("t5Btn")) return;
+
+    var sty = document.createElement("style");
+    sty.textContent = T5_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "t5Btn";
+    b.className = "pg-launch";
+    b.textContent = "Open The 555 Room";
+    b.addEventListener("click", function () { t5Els.overlay.classList.add("open"); });
+    box.appendChild(b);
+
+    var ov = t5El("div", "t5-overlay");
+    ov.id = "t5Overlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The 555 Room");
+    var x = t5El("button", "t5-btn", "CLOSE");
+    x.id = "t5XBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The 555 Room");
+    x.addEventListener("click", t5Close);
+    ov.appendChild(x);
+    t5Els.overlay = ov;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && ov.classList.contains("open")) t5Close();
+    });
+
+    var panel = t5El("div", "t5-panel");
+    panel.appendChild(t5El("div", "t5-kicker", "OLD IRON BENCH 61"));
+    panel.appendChild(t5El("h2", "t5-title", "The 555 Room"));
+    panel.appendChild(t5El("p", "t5-sub",
+      "Two comparators stare at one capacitor, and three parts around an 8-pin chip turn charge and " +
+      "discharge into a ticking square wave. Size the tick, stretch the duty, and diagnose two dead " +
+      "boards by measurement. No code, no crystal: the cheapest heartbeat in the drawer."));
+
+    var introWrap = t5El("div", "");
+    introWrap.innerHTML = T5_INTRO_HTML;
+    panel.appendChild(introWrap);
+
+    panel.appendChild(t5DoFirstCard());
+
+    var t1Head = t5El("div", "t5-card");
+    t1Head.appendChild(t5El("h3", null, "TRIAL 1: SIZE THE TICK"));
+    t1Head.appendChild(t5El("p", "why",
+      "A metronome wants exactly 2.00 Hz. Fit parts from the tray, call the frequency before power flows, " +
+      "then run and land inside 5% of the target."));
+    panel.appendChild(t1Head);
+    panel.appendChild(t5T1Card());
+
+    var t2Head = t5El("div", "t5-card");
+    t2Head.appendChild(t5El("h3", null, "TRIAL 2: THE LONG BLINK"));
+    t2Head.appendChild(t5El("p", "why",
+      "HIGH almost the whole cycle, one short blink of dark. Duty at or above 90%, tick between 0.5 and " +
+      "2.0 Hz, duty called before power flows."));
+    panel.appendChild(t2Head);
+    panel.appendChild(t5T2Card());
+
+    var t3Head = t5El("div", "t5-card");
+    t3Head.appendChild(t5El("h3", null, "TRIAL 3: TWO DEAD BOARDS"));
+    t3Head.appendChild(t5El("p", "why",
+      "Two boards, two different diseases, one bench meter. Probe each board, commit a verdict, and name " +
+      "the fault before the chip gets a second chance."));
+    panel.appendChild(t3Head);
+    panel.appendChild(t5T3BoardCard("a"));
+    panel.appendChild(t5T3BoardCard("b"));
+
+    var banner = t5El("div", "t5-banner");
+    banner.id = "t5Banner";
+    banner.appendChild(t5El("h3", null, "ROOM CERTIFIED"));
+    var certP = t5El("p", null, t5CertLine());
+    certP.id = "t5CertP";
+    banner.appendChild(certP);
+    var dl = t5El("button", "t5-btn solid", "DOWNLOAD CERTIFICATE");
+    dl.id = "t5CertDl";
+    dl.addEventListener("click", t5DownloadCert);
+    banner.appendChild(dl);
+    panel.appendChild(banner);
+    t5Els.banner = banner;
+
+    var logCard = t5El("div", "t5-card");
+    logCard.appendChild(t5El("h3", null, "BENCH LOG"));
+    var log = t5El("div", "t5-log");
+    log.id = "t5Log";
+    log.setAttribute("aria-live", "polite");
+    logCard.appendChild(log);
+    panel.appendChild(logCard);
+    t5Els.log = log;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    t5Log("bench open. 5 V rail, one 555 on a breadboard, the tray holds the parts. Probe freely; the " +
+      "do-first card asks nothing of you.", "dim");
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", t5Build);
+  } else {
+    t5Build();
+  }
+})();
