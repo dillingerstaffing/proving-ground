@@ -45172,3 +45172,862 @@ if (typeof module !== "undefined" && module.exports) {
     inBuild();
   }
 })();
+/* ============================================================
+   BENCH 63: THE ARBITER ROOM (silicon)
+   One atomic mechanism: several masters share one bus, and an
+   arbiter grants exactly one winner per cycle. The rule the
+   referee follows decides who waits, who starves, and how fast
+   an urgent request gets through.
+   Trial 1 watches fixed priority starve a lane (0 of 16) and
+   fixes it with round-robin (6/5/5). Trial 2 races an urgent
+   page-walk at cycle 7 through fixed (0-cycle wait) versus
+   round-robin (1-cycle wait). Trial 3 dials weighted round-robin
+   to hold a 2:1:1 bandwidth contract (12/6/6 over 24 cycles).
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------- the one mechanism, stated as data ---------- */
+  var AR_ORDER = ["CPU", "DMA", "GPU"]; /* index 0 = highest fixed priority */
+  var AR_T1 = [];                       /* 16 cycles, all three hammer the bus */
+  for (var _t1 = 0; _t1 < 16; _t1++) AR_T1.push([0, 1, 2]);
+  var AR_T2 = [];                       /* 12 cycles: GPU blits, DMA streams, CPU stalls at cycle 7 */
+  for (var _t2 = 0; _t2 < 12; _t2++) AR_T2.push(_t2 === 7 ? [0, 1, 2] : [1, 2]);
+  var AR_T3 = [];                       /* 24 cycles, all three hammer the bus */
+  for (var _t3 = 0; _t3 < 24; _t3++) AR_T3.push([0, 1, 2]);
+  var AR_T3_TARGET = [12, 6, 6];        /* 2:1:1 of 24 cycles */
+  var AR_T3_TOL = 1;                    /* grants may land within 1 of target */
+
+  function arWrrFrame(weights) {
+    var f = [];
+    for (var i = 0; i < 3; i++) {
+      for (var k = 0; k < weights[i]; k++) f.push(i);
+    }
+    return f;
+  }
+
+  /* one arbitration run. pattern: array of cycles, each an array of
+     arriving requester indexes. policy: "fixed" | "rr" | "wrr".
+     requests persist until granted; a request asserted while already
+     pending stays pending. returns grants, maxWait, timeline. */
+  function arRun(pattern, policy, weights) {
+    var pend = [false, false, false];
+    var first = [0, 0, 0];
+    var grants = [0, 0, 0];
+    var maxWait = [0, 0, 0];
+    var tl = [];
+    var ptr = 0;
+    var frame = arWrrFrame(weights || [1, 1, 1]);
+    var fp = 0;
+    for (var c = 0; c < pattern.length; c++) {
+      var arr = pattern[c];
+      for (var a = 0; a < arr.length; a++) {
+        var ri = arr[a];
+        if (!pend[ri]) { pend[ri] = true; first[ri] = c; }
+      }
+      var win = -1, k, qi;
+      if (policy === "fixed") {
+        for (qi = 0; qi < 3; qi++) { if (pend[qi]) { win = qi; break; } }
+      } else if (policy === "rr") {
+        for (k = 0; k < 3; k++) {
+          qi = (ptr + k) % 3;
+          if (pend[qi]) { win = qi; ptr = (qi + 1) % 3; break; }
+        }
+      } else if (policy === "wrr") {
+        for (k = 0; k < frame.length; k++) {
+          qi = frame[(fp + k) % frame.length];
+          if (pend[qi]) { win = qi; fp = (fp + k + 1) % frame.length; break; }
+        }
+      }
+      if (win >= 0) {
+        var w = c - first[win];
+        if (w > maxWait[win]) maxWait[win] = w;
+        grants[win]++;
+        pend[win] = false;
+      }
+      tl.push(win);
+    }
+    return { grants: grants, maxWait: maxWait, tl: tl };
+  }
+
+  /* prediction keys */
+  function arPredictT1(gpuPred) { return gpuPred === 0; }              /* fixed starves GPU: 0 of 16 */
+  function arPredictT2(choice) { return choice === "fixed"; }          /* fixed serves the urgent core in 0 cycles */
+  function arPredictT3(cpuPred) { return cpuPred === AR_T3_TARGET[0]; } /* 2:1:1 of 24 -> CPU 12 */
+
+  function arT3Pass(weights) {
+    var r = arRun(AR_T3, "wrr", weights);
+    for (var i = 0; i < 3; i++) {
+      if (Math.abs(r.grants[i] - AR_T3_TARGET[i]) > AR_T3_TOL) return false;
+    }
+    return true;
+  }
+
+  function arParseInt(s) {
+    var m = String(s).trim().match(/^[0-9]+$/);
+    return m ? parseInt(m[0], 10) : null;
+  }
+
+  /* ---------- test hooks (harmless in the browser) ---------- */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.AR = {
+      ORDER: AR_ORDER, T1: AR_T1, T2: AR_T2, T3: AR_T3,
+      TARGET: AR_T3_TARGET, TOL: AR_T3_TOL,
+      run: arRun, wrrFrame: arWrrFrame,
+      predictT1: arPredictT1, predictT2: arPredictT2, predictT3: arPredictT3,
+      t3Pass: arT3Pass, parseInt: arParseInt,
+      introHTML: null /* filled after the copy const below */
+    };
+  }
+
+  /* ---------- intro copy: why first, worked example, failure modes ---------- */
+  var AR_INTRO_HTML = [
+    "<div class=\"tm-card\"><h3>WHY THIS ROOM EXISTS</h3>",
+    "<p class=\"why\">Every RISC-V system-on-chip is a traffic jam waiting to happen. The core, the DMA " +
+    "engine, and the display controller all share one memory bus, through an interconnect (TileLink on " +
+    "SiFive parts, AXI elsewhere) that runs exactly the logic in this room every cycle. If two masters " +
+    "drive the bus at once, the bits collide and everyone reads garbage. So a tiny referee, the <b>arbiter</b>, " +
+    "watches the request lines and grants exactly one winner per cycle. The rule the referee follows " +
+    "decides which master waits, which one starves, and how fast an urgent request gets through. Get the " +
+    "rule wrong and the machine locks up or crawls; get it right and three masters share one wire as if " +
+    "they owned it.</p>",
+    "<p class=\"why\">Seven terms, earned now. A <b>request</b> is a master raising its hand: drive me this " +
+    "cycle. A <b>grant</b> is the arbiter's one-per-cycle yes; a raised hand stays raised until it is " +
+    "granted. The <b>arbiter</b> is the referee itself. <b>Fixed priority</b> is a rank order: the top " +
+    "master wins every cycle it asks. <b>Starvation</b> is a master that asks every cycle and never wins. " +
+    "<b>Round-robin</b> takes turns, each winner passing the token to the next master. <b>Weighted " +
+    "round-robin</b> takes turns with different sizes: a 2:1:1 contract means the core wins twice as " +
+    "often as each of the other two.</p></div>",
+    "<div class=\"tm-card\"><h3>THE WORKED EXAMPLE</h3>",
+    "<p class=\"why\">Four cycles, all three masters asking on every cycle. Check it with a finger. " +
+    "<b>Fixed priority</b> (CPU on top): cycle 1 CPU, cycle 2 CPU, cycle 3 CPU, cycle 4 CPU. Grants: CPU 4, " +
+    "DMA 0, GPU 0. The bottom two lanes starve. <b>Round-robin</b>: cycle 1 CPU, cycle 2 DMA, cycle 3 GPU, " +
+    "cycle 4 CPU. Grants: CPU 2, DMA 1, GPU 1. Nobody starves, and the referee never grants two masters " +
+    "in one cycle. The trials scale this exact hand-trace up: 16 cycles, then a 12-cycle race, then a " +
+    "24-cycle contract.</p></div>",
+    "<div class=\"tm-card tm-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3><ul>",
+    "<li><b>CONTENTION:</b> no referee, two masters drive, the bus carries garbage. The storm card shows " +
+    "the honest alternative to arbitration: you would rather pick a rule.</li>",
+    "<li><b>STARVATION:</b> a chatty top priority plus fixed rules, and the bottom lane's grant counter " +
+    "reads exactly 0. Not roughly none. None. Trial 1 measures it on a 16-cycle storm: fixed priority " +
+    "serves 16/0/0, round-robin serves 6/5/5.</li>",
+    "<li><b>THE BLIND BUT FAIR REFEREE:</b> round-robin cannot see urgency. A stalled core waits its turn " +
+    "behind a blitting GPU. Trial 2 races it.</li>",
+    "<li><b>A CONTRACT WITHOUT A METER:</b> weights dialed by feel miss the camera's frame; 1:1:1 is not " +
+    "2:1:1. Trial 3 makes you prove the split to the cycle.</li>",
+    "<li><b>THE GRANT THAT NEVER COMES:</b> a master whose weight is 0 wins no slots in the frame, ever. " +
+    "Zero weight is a polite way to unplug a lane.</li></ul></div>"
+  ].join("");
+
+  if (typeof module !== "undefined" && module.exports && module.exports.AR) {
+    module.exports.AR.introHTML = AR_INTRO_HTML;
+  }
+
+  /* ---------- DOM: element helper, CSS, state ---------- */
+  function arEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  var AR_CSS = [
+    ".ar-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".ar-overlay.open{display:block}",
+    ".ar-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".ar-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".ar-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".ar-sub{font-size:14px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.92;margin:0 0 18px;max-width:68ch}",
+    ".ar-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".ar-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".ar-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".ar-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".ar-card b{color:var(--ember,#ff5a1f)}",
+    ".tm-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".tm-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".tm-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".tm-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".tm-card b{color:var(--ember,#ff5a1f)}",
+    ".tm-fail{border:1px solid var(--ember,#ff5a1f)}",
+    ".tm-fail li{font-size:13px;line-height:1.6;margin:0 0 6px;list-style:none}",
+    ".tm-fail ul{padding:0;margin:0}",
+    ".ar-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}",
+    ".ar-lab{font-size:12px;letter-spacing:.12em;opacity:.75}",
+    ".ar-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
+    ".ar-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".ar-btn:disabled{opacity:.35;cursor:default}",
+    ".ar-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".ar-btn.sel{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12)}",
+    ".ar-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#101014}",
+    ".ar-verdict{font-size:14px;line-height:1.6;margin:10px 0 0;min-height:24px}",
+    ".ar-verdict.ok{color:#9fe870}",
+    ".ar-verdict.bad{color:#ff5a1f}",
+    ".ar-read{font-size:14px;line-height:1.7;margin:8px 0 0;min-height:22px;white-space:pre-line}",
+    ".ar-log{font-size:12.5px;line-height:1.7;max-height:280px;overflow-y:auto}",
+    ".ar-log div{margin:0 0 4px}",
+    ".ar-log .dim{opacity:.6}",
+    ".ar-input{font-family:'IBM Plex Mono',monospace;font-size:14px;min-height:48px;padding:10px 14px;background:rgba(8,8,10,.6);color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));width:160px}",
+    ".ar-input:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".ar-input:disabled{opacity:.35}",
+    ".ar-lane{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line,rgba(242,237,228,.12))}",
+    ".ar-lane:last-child{border-bottom:none}",
+    ".ar-lname{font-size:13px;letter-spacing:.12em;min-width:52px}",
+    ".ar-lamp{display:inline-block;min-width:86px;text-align:center;padding:8px 10px;border:1px solid var(--line,rgba(242,237,228,.28));font-size:11px;letter-spacing:.12em;opacity:.45}",
+    ".ar-lamp.on{border-color:var(--ember,#ff5a1f);color:var(--ember,#ff5a1f);opacity:1}",
+    ".ar-lamp.granted{border-color:#9fe870;color:#9fe870;opacity:1}",
+    ".ar-count{font-size:13px;margin-left:auto;white-space:nowrap}",
+    ".ar-tl{display:flex;flex-wrap:wrap;gap:4px;margin:12px 0}",
+    ".ar-cell{min-width:30px;min-height:30px;display:flex;align-items:center;justify-content:center;border:1px solid var(--line,rgba(242,237,228,.28));font-size:12px;opacity:.35}",
+    ".ar-cell.hit{opacity:1;border-color:var(--ember,#ff5a1f);color:var(--ember,#ff5a1f);animation:ar-pop 200ms ease-out}",
+    "@keyframes ar-pop{0%{transform:scale(.55)}100%{transform:scale(1)}}",
+    "@media(prefers-reduced-motion:reduce){.ar-cell.hit{animation:none}}",
+    ".ar-legend{font-size:11px;letter-spacing:.1em;opacity:.6;margin:4px 0 0}",
+    ".ar-stepper{display:flex;align-items:center;gap:8px}",
+    ".ar-stepper .ar-btn{min-width:48px;padding:12px 0}",
+    ".ar-wval{font-size:16px;min-width:28px;text-align:center}",
+    ".ar-banner{border:1px solid var(--ember,#ff5a1f);padding:18px;margin:18px 0;display:none}",
+    ".ar-banner.show{display:block}",
+    ".ar-banner h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".ar-foot{font-size:12px;letter-spacing:.1em;opacity:.7;margin:14px 0}"
+  ].join("\n");
+
+  var arEls = {};
+  var arSt = null;
+  var arEscBound = false;
+
+  function arNewState() {
+    return {
+      t1: { predicted: false, predOk: false, fixPass: false, pass: false },
+      t2: { predicted: false, predOk: false, pass: false },
+      t3: { predicted: false, predOk: false, weights: [1, 1, 1], pass: false },
+      strikes: 0, failed: false, cert: false
+    };
+  }
+
+  function arLog(msg, cls) {
+    if (!arEls.log) return;
+    var d = arEl("div", cls || null, msg);
+    arEls.log.appendChild(d);
+    arEls.log.scrollTop = arEls.log.scrollHeight;
+  }
+
+  function arStrike(note) {
+    arSt.strikes++;
+    arLog("STRIKE " + arSt.strikes + "/3: " + note, "dim");
+    if (arEls.strikes) arEls.strikes.textContent = "STRIKES: " + arSt.strikes + "/3";
+    if (arSt.strikes >= 3 && !arSt.failed) {
+      arSt.failed = true;
+      if (arEls.fail) arEls.fail.style.display = "block";
+      arLog("Three strikes. The room is failed; reset and work it again.", "dim");
+    }
+  }
+
+  function arRevokeTrial(t) {
+    var s = arSt[t];
+    if (s.pass) {
+      s.pass = false; s.fixPass = false;
+      arLog("Trial " + t.slice(1) + " pass revoked: the setup changed after the measurement.", "dim");
+      arHideBanner();
+    }
+  }
+  function arHideBanner() {
+    arSt.cert = false;
+    if (arEls.banner) arEls.banner.classList.remove("show");
+  }
+  function arCheckCert() {
+    if (arSt.cert || arSt.failed) return;
+    if (arSt.t1.pass && arSt.t2.pass && arSt.t3.pass) {
+      arSt.cert = true;
+      if (arEls.certP) arEls.certP.textContent = arCertLine();
+      if (arEls.banner) arEls.banner.classList.add("show");
+      arLog("ROOM CERTIFIED: the starving lane fixed, the urgent page-walk raced, the 2:1:1 contract held.", "dim");
+    }
+  }
+
+  function arCertLine() {
+    return "THE ARBITER ROOM, BENCH 63, THE PROVING GROUND\n" +
+      "storm: fixed priority starved the GPU 0 of 16, round-robin served 6/5/5\n" +
+      "urgent page-walk: fixed served the core in 0 cycles, round-robin in 1\n" +
+      "contract: weighted 2:1:1 held 12/6/6 over 24 cycles\n" +
+      "One wire, three masters: the referee's rule decides who waits.";
+  }
+  function arDownloadCert() {
+    var txt = arCertLine();
+    var blob = new Blob([txt], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "arbiter-room-bench63-cert.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  /* ---------- shared run-visual: lanes + grant timeline ---------- */
+  var arAnim = { timer: null };
+  function arStopAnim() {
+    if (arAnim.timer) { clearInterval(arAnim.timer); arAnim.timer = null; }
+  }
+
+  /* Build a lane row per requester inside `host`. Returns { lamps, counts } arrays by requester. */
+  function arBuildLanes(host, prefix) {
+    var lamps = [], counts = [];
+    for (var i = 0; i < 3; i++) {
+      (function (i) {
+        var lane = arEl("div", "ar-lane");
+        lane.appendChild(arEl("span", "ar-lname", AR_ORDER[i]));
+        var req = arEl("span", "ar-lamp", "REQ");
+        req.id = prefix + "Req" + i;
+        lane.appendChild(req);
+        var gr = arEl("span", "ar-lamp", "GRANTED");
+        gr.id = prefix + "Gr" + i;
+        lane.appendChild(gr);
+        var cnt = arEl("span", "ar-count", "grants: 0");
+        cnt.id = prefix + "Cnt" + i;
+        lane.appendChild(cnt);
+        host.appendChild(lane);
+        lamps.push({ req: req, gr: gr });
+        counts.push(cnt);
+      })(i);
+    }
+    return { lamps: lamps, counts: counts };
+  }
+
+  /* Animate a run's timeline into `tlHost` with per-cycle lane updates.
+     Honors prefers-reduced-motion by rendering instantly. */
+  function arPlayRun(prefix, res, done) {
+    arStopAnim();
+    var tlHost = document.getElementById(prefix + "Tl");
+    var read = document.getElementById(prefix + "Read");
+    var counts = [0, 0, 0];
+    function setCount(i) {
+      var c = document.getElementById(prefix + "Cnt" + i);
+      if (c) c.textContent = "grants: " + counts[i];
+    }
+    function paintCycle(c) {
+      if (!tlHost) return;
+      var win = res.tl[c];
+      for (var i = 0; i < 3; i++) {
+        var req = document.getElementById(prefix + "Req" + i);
+        var gr = document.getElementById(prefix + "Gr" + i);
+        if (req) req.className = "ar-lamp on";
+        if (gr) gr.className = "ar-lamp" + (win === i ? " granted" : "");
+      }
+      var cell = arEl("span", "ar-cell" + (win >= 0 ? " hit" : ""), win >= 0 ? AR_ORDER[win].charAt(0) : ".");
+      cell.title = "cycle " + (c + 1) + ": " + (win >= 0 ? AR_ORDER[win] + " granted" : "idle");
+      tlHost.appendChild(cell);
+      if (win >= 0) { counts[win]++; setCount(win); }
+    }
+    function finish() {
+      arStopAnim();
+      if (read) {
+        read.textContent = "GRANTS " + res.tl.length + " cycles: CPU " + counts[0] + ", DMA " + counts[1] +
+          ", GPU " + counts[2] + ".";
+      }
+      if (done) done(counts);
+    }
+    if (tlHost) tlHost.innerHTML = "";
+    for (var i = 0; i < 3; i++) setCount(i);
+    var reduced = (typeof window.matchMedia === "function") &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduced) {
+      for (var c = 0; c < res.tl.length; c++) paintCycle(c);
+      finish();
+      return;
+    }
+    var c = 0;
+    arAnim.timer = setInterval(function () {
+      if (c >= res.tl.length) { finish(); return; }
+      paintCycle(c);
+      c++;
+    }, 45);
+  }
+
+  /* ---------- do-first card: the storm, consequence-free ---------- */
+  var arDf = { policy: "fixed", last: null };
+  function arDfCard() {
+    var card = arEl("div", "ar-card");
+    card.appendChild(arEl("h3", null, "DO FIRST: THE STORM, CONSEQUENCE-FREE"));
+    card.appendChild(arEl("p", "why",
+      "Sixteen cycles. All three masters hammer the bus on every cycle. Pick a referee and run it. " +
+      "Watch the GRANTED lamps and the timeline; nothing here can strike you. Ask yourself: under " +
+      "FIXED PRIORITY, how many of the 16 grants does the GPU land?"));
+    var row = arEl("div", "ar-row");
+    row.appendChild(arEl("span", "ar-lab", "REFEREE:"));
+    var bf = arEl("button", "ar-btn sel", "FIXED PRIORITY");
+    bf.id = "arDfFixed"; bf.type = "button";
+    var br = arEl("button", "ar-btn", "ROUND ROBIN");
+    br.id = "arDfRR"; br.type = "button";
+    function sel(which) {
+      arDf.policy = which;
+      bf.className = "ar-btn" + (which === "fixed" ? " sel" : "");
+      br.className = "ar-btn" + (which === "rr" ? " sel" : "");
+    }
+    bf.addEventListener("click", function () { sel("fixed"); });
+    br.addEventListener("click", function () { sel("rr"); });
+    row.appendChild(bf);
+    row.appendChild(br);
+    var run = arEl("button", "ar-btn solid", "RUN THE STORM");
+    run.id = "arDfRun"; run.type = "button";
+    run.addEventListener("click", function () {
+      if (arSt.failed) return;
+      var res = arRun(AR_T1, arDf.policy, [1, 1, 1]);
+      arDf.last = res;
+      arPlayRun("arDf", res, function (counts) {
+        arLog("do-first storm (" + arDf.policy + "): CPU " + counts[0] + ", DMA " + counts[1] +
+          ", GPU " + counts[2] + " of 16.", "dim");
+      });
+    });
+    row.appendChild(run);
+    card.appendChild(row);
+    var lanes = arEl("div", null, null);
+    lanes.id = "arDfLanes";
+    arBuildLanes(lanes, "arDf");
+    card.appendChild(lanes);
+    var tl = arEl("div", "ar-tl");
+    tl.id = "arDfTl";
+    tl.setAttribute("role", "img");
+    tl.setAttribute("aria-label", "Grant timeline: one cell per cycle, lettered by the winning master");
+    card.appendChild(tl);
+    card.appendChild(arEl("p", "ar-legend", "TIMELINE: ONE CELL PER CYCLE, C = CPU, D = DMA, G = GPU."));
+    var read = arEl("div", "ar-read", "");
+    read.id = "arDfRead";
+    read.setAttribute("aria-live", "polite");
+    card.appendChild(read);
+    return card;
+  }
+
+  /* ---------- trial 1: the starving lane ---------- */
+  function arT1Card() {
+    var card = arEl("div", "ar-card");
+    card.appendChild(arEl("h3", null, "TRIAL 1: THE STARVING LANE"));
+    card.appendChild(arEl("p", "why",
+      "Sixteen cycles, all three masters asking every cycle, and the referee is FIXED PRIORITY with " +
+      "the CPU on top. First, call it: how many of the 16 grants does the GPU land? Commit the number, " +
+      "then run the storm. Then fix the room: pick the referee that serves every lane at least 5 times " +
+      "in 16 cycles."));
+    var t = arSt.t1;
+    var row = arEl("div", "ar-row");
+    row.appendChild(arEl("span", "ar-lab", "GPU GRANTS (0-16):"));
+    var inp = arEl("input", "ar-input", null);
+    inp.id = "arT1Pred"; inp.type = "text"; inp.setAttribute("inputmode", "numeric");
+    inp.setAttribute("aria-label", "Predicted GPU grants out of 16 under fixed priority");
+    row.appendChild(inp);
+    var commit = arEl("button", "ar-btn", "COMMIT CALL");
+    commit.id = "arT1Commit"; commit.type = "button";
+    var vline = arEl("div", "ar-verdict", "");
+    vline.id = "arT1PredV"; vline.setAttribute("aria-live", "polite");
+    commit.addEventListener("click", function () {
+      if (arSt.failed || t.predOk) return;
+      var v = arParseInt(inp.value);
+      if (v === null || v > 16) {
+        vline.className = "ar-verdict bad";
+        vline.textContent = "Enter a whole number from 0 to 16.";
+        return;
+      }
+      t.predicted = true;
+      if (arPredictT1(v)) {
+        t.predOk = true;
+        vline.className = "ar-verdict ok";
+        vline.textContent = "CALL RIGHT: under fixed priority the CPU wins every cycle it asks, so the GPU lands 0 of 16. Now fix it.";
+        inp.disabled = true; commit.disabled = true;
+        arLog("t1 prediction RIGHT: GPU 0/16 under fixed.", "dim");
+      } else {
+        vline.className = "ar-verdict bad";
+        vline.textContent = "CALL WRONG: run the storm and read the GPU counter. The top priority never yields.";
+        arStrike("trial 1 call (" + v + " GPU grants).");
+        arLog("t1 prediction wrong: " + v + ".", "dim");
+      }
+    });
+    row.appendChild(commit);
+    card.appendChild(row);
+    card.appendChild(vline);
+
+    var row2 = arEl("div", "ar-row");
+    row2.appendChild(arEl("span", "ar-lab", "STORM REFEREE:"));
+    var bf = arEl("button", "ar-btn sel", "FIXED PRIORITY");
+    bf.id = "arT1Fixed"; bf.type = "button";
+    var br = arEl("button", "ar-btn", "ROUND ROBIN");
+    br.id = "arT1RR"; br.type = "button";
+    var pol = "fixed";
+    function sel(which) {
+      pol = which;
+      bf.className = "ar-btn" + (which === "fixed" ? " sel" : "");
+      br.className = "ar-btn" + (which === "rr" ? " sel" : "");
+      arRevokeTrial("t1");
+      var ts = document.getElementById("arT1Stat");
+      if (ts) ts.textContent = "";
+    }
+    bf.addEventListener("click", function () { sel("fixed"); });
+    br.addEventListener("click", function () { sel("rr"); });
+    row2.appendChild(bf);
+    row2.appendChild(br);
+    var run = arEl("button", "ar-btn solid", "RUN THE FIX");
+    run.id = "arT1Run"; run.type = "button";
+    var stat = arEl("div", "ar-verdict", "");
+    stat.id = "arT1Stat"; stat.setAttribute("aria-live", "polite");
+    run.addEventListener("click", function () {
+      if (arSt.failed || t.pass) return;
+      var res = arRun(AR_T1, pol, [1, 1, 1]);
+      arPlayRun("arT1", res, function (counts) {
+        var mn = Math.min(counts[0], counts[1], counts[2]);
+        arLog("t1 fix run (" + pol + "): CPU " + counts[0] + ", DMA " + counts[1] + ", GPU " + counts[2] + ".", "dim");
+        if (pol === "rr" && mn >= 5) {
+          t.fixPass = true;
+          if (t.predOk) {
+            t.pass = true;
+            stat.className = "ar-verdict ok";
+            stat.textContent = "TRIAL 1 PASS: 6/5/5, every lane served at least 5 times, nobody starves.";
+            arCheckCert();
+          } else {
+            stat.className = "ar-verdict";
+            stat.textContent = "The split is fair now (6/5/5), but the room still wants your call above: commit the GPU grant count first.";
+          }
+        } else {
+          stat.className = "ar-verdict bad";
+          stat.textContent = "STILL STARVING: the GPU lane is dark at " + counts[2] + " of 16. A different referee is needed.";
+          arLog("t1 fix run failed: GPU " + counts[2] + "/16.", "dim");
+        }
+      });
+    });
+    row2.appendChild(run);
+    card.appendChild(row2);
+    var lanes = arEl("div", null, null);
+    arBuildLanes(lanes, "arT1");
+    card.appendChild(lanes);
+    var tl = arEl("div", "ar-tl");
+    tl.id = "arT1Tl";
+    tl.setAttribute("role", "img");
+    tl.setAttribute("aria-label", "Trial 1 grant timeline");
+    card.appendChild(tl);
+    card.appendChild(arEl("p", "ar-legend", "TIMELINE: C = CPU, D = DMA, G = GPU."));
+    var read = arEl("div", "ar-read", "");
+    read.id = "arT1Read"; read.setAttribute("aria-live", "polite");
+    card.appendChild(read);
+    card.appendChild(stat);
+    return card;
+  }
+
+  /* ---------- trial 2: the urgent page-walk ---------- */
+  function arT2Card() {
+    var card = arEl("div", "ar-card");
+    card.appendChild(arEl("h3", null, "TRIAL 2: THE URGENT PAGE-WALK"));
+    card.appendChild(arEl("p", "why",
+      "Twelve cycles. The GPU blits and the DMA streams on every cycle, and at cycle 7 the core stalls " +
+      "on a page-walk: one urgent request, the whole machine waiting on it. Which referee serves the " +
+      "stalled core sooner: FIXED PRIORITY with the CPU on top, or ROUND ROBIN? Commit your call, then " +
+      "run the race. The race runs both referees and reports how many cycles the core waited under each."));
+    var t = arSt.t2;
+    var row = arEl("div", "ar-row");
+    row.appendChild(arEl("span", "ar-lab", "YOUR CALL:"));
+    var bf = arEl("button", "ar-btn", "FIXED SERVES SOONER");
+    bf.id = "arT2Fixed"; bf.type = "button";
+    var br = arEl("button", "ar-btn", "ROUND ROBIN SERVES SOONER");
+    br.id = "arT2RR"; br.type = "button";
+    var vline = arEl("div", "ar-verdict", "");
+    vline.id = "arT2PredV"; vline.setAttribute("aria-live", "polite");
+    function commit(which) {
+      if (arSt.failed || t.pass) return;
+      t.predicted = true;
+      if (arPredictT2(which)) {
+        t.predOk = true;
+        vline.className = "ar-verdict ok";
+        vline.textContent = "CALL RIGHT: fixed priority grants the CPU the very cycle it asks, 0 cycles of wait. Run the race to see it measured.";
+        bf.disabled = true; br.disabled = true;
+        arLog("t2 prediction RIGHT: fixed serves sooner.", "dim");
+      } else {
+        vline.className = "ar-verdict bad";
+        vline.textContent = "CALL WRONG: round-robin is fair, but it cannot see urgency. The token may be elsewhere when the core raises its hand.";
+        arStrike("trial 2 call (round-robin sooner).");
+        arLog("t2 prediction wrong.", "dim");
+      }
+    }
+    bf.addEventListener("click", function () { commit("fixed"); });
+    br.addEventListener("click", function () { commit("rr"); });
+    row.appendChild(bf);
+    row.appendChild(br);
+    var run = arEl("button", "ar-btn solid", "RUN THE RACE");
+    run.id = "arT2Run"; run.type = "button";
+    var stat = arEl("div", "ar-verdict", "");
+    stat.id = "arT2Stat"; stat.setAttribute("aria-live", "polite");
+    run.addEventListener("click", function () {
+      if (arSt.failed || t.pass) return;
+      var rf = arRun(AR_T2, "fixed", [1, 1, 1]);
+      var rr = arRun(AR_T2, "rr", [1, 1, 1]);
+      var wf = rf.maxWait[0], wr = rr.maxWait[0];
+      arLog("t2 race: CPU waited " + wf + " cycles under fixed, " + wr + " cycles under round-robin.", "dim");
+      stat.className = "ar-verdict";
+      stat.textContent = "MEASURED: the stalled core waited " + wf + " cycle" + (wf === 1 ? "" : "s") +
+        " under FIXED, " + wr + " cycle" + (wr === 1 ? "" : "s") + " under ROUND ROBIN.";
+      if (t.predOk) {
+        t.pass = true;
+        stat.className = "ar-verdict ok";
+        stat.textContent += " TRIAL 2 PASS: your call matches the measurement.";
+        run.disabled = true;
+        arCheckCert();
+      } else {
+        stat.textContent += " Commit your call above first.";
+      }
+    });
+    row.appendChild(run);
+    card.appendChild(row);
+    card.appendChild(vline);
+    card.appendChild(stat);
+    return card;
+  }
+
+  /* ---------- trial 3: the 2:1:1 contract ---------- */
+  function arT3Card() {
+    var card = arEl("div", "ar-card");
+    card.appendChild(arEl("h3", null, "TRIAL 3: THE 2:1:1 CONTRACT"));
+    card.appendChild(arEl("p", "why",
+      "Twenty-four cycles, all three masters asking every cycle. The traffic contract says the core gets " +
+      "twice the bandwidth of each of the other two: 2:1:1. First, call it: with weights 2:1:1, how many " +
+      "of the 24 grants does the CPU land? Then dial the weights with the steppers, run the contract, and " +
+      "prove every lane lands within 1 of its target (CPU 12, DMA 6, GPU 6). A weight of 0 unplugs its lane."));
+    var t = arSt.t3;
+    var row = arEl("div", "ar-row");
+    row.appendChild(arEl("span", "ar-lab", "CPU GRANTS OF 24:"));
+    var inp = arEl("input", "ar-input", null);
+    inp.id = "arT3Pred"; inp.type = "text"; inp.setAttribute("inputmode", "numeric");
+    inp.setAttribute("aria-label", "Predicted CPU grants out of 24 with weights 2:1:1");
+    row.appendChild(inp);
+    var commit = arEl("button", "ar-btn", "COMMIT CALL");
+    commit.id = "arT3Commit"; commit.type = "button";
+    var vline = arEl("div", "ar-verdict", "");
+    vline.id = "arT3PredV"; vline.setAttribute("aria-live", "polite");
+    commit.addEventListener("click", function () {
+      if (arSt.failed || t.predOk) return;
+      var v = arParseInt(inp.value);
+      if (v === null || v > 24) {
+        vline.className = "ar-verdict bad";
+        vline.textContent = "Enter a whole number from 0 to 24.";
+        return;
+      }
+      t.predicted = true;
+      if (arPredictT3(v)) {
+        t.predOk = true;
+        vline.className = "ar-verdict ok";
+        vline.textContent = "CALL RIGHT: 2 of every 4 slots belong to the CPU, so 12 of 24. Now dial it and prove it.";
+        inp.disabled = true; commit.disabled = true;
+        arLog("t3 prediction RIGHT: CPU 12/24 at 2:1:1.", "dim");
+      } else {
+        vline.className = "ar-verdict bad";
+        vline.textContent = "CALL WRONG: the frame is 2 + 1 + 1 = 4 slots, and 24 / 4 = 6 frames. Count the CPU slots.";
+        arStrike("trial 3 call (" + v + " CPU grants).");
+        arLog("t3 prediction wrong: " + v + ".", "dim");
+      }
+    });
+    row.appendChild(commit);
+    card.appendChild(row);
+    card.appendChild(vline);
+
+    var wrow = arEl("div", "ar-row");
+    wrow.appendChild(arEl("span", "ar-lab", "WEIGHTS:"));
+    var wvals = [];
+    for (var i = 0; i < 3; i++) {
+      (function (i) {
+        var st = arEl("div", "ar-stepper");
+        st.appendChild(arEl("span", "ar-lab", AR_ORDER[i]));
+        var minus = arEl("button", "ar-btn", "-");
+        minus.type = "button";
+        minus.id = "arT3W" + i + "m";
+        minus.setAttribute("aria-label", "Decrease " + AR_ORDER[i] + " weight");
+        var val = arEl("span", "ar-wval", "1");
+        val.id = "arT3W" + i + "v";
+        var plus = arEl("button", "ar-btn", "+");
+        plus.type = "button";
+        plus.id = "arT3W" + i + "p";
+        plus.setAttribute("aria-label", "Increase " + AR_ORDER[i] + " weight");
+        function paint() { val.textContent = String(t.weights[i]); }
+        minus.addEventListener("click", function () {
+          if (t.weights[i] > 0) { t.weights[i]--; paint(); arRevokeTrial("t3"); wstat.textContent = ""; }
+        });
+        plus.addEventListener("click", function () {
+          if (t.weights[i] < 4) { t.weights[i]++; paint(); arRevokeTrial("t3"); wstat.textContent = ""; }
+        });
+        st.appendChild(minus);
+        st.appendChild(val);
+        st.appendChild(plus);
+        wrow.appendChild(st);
+        wvals.push(val);
+      })(i);
+    }
+    var run = arEl("button", "ar-btn solid", "RUN THE CONTRACT");
+    run.id = "arT3Run"; run.type = "button";
+    wrow.appendChild(run);
+    card.appendChild(wrow);
+    var lanes = arEl("div", null, null);
+    arBuildLanes(lanes, "arT3");
+    card.appendChild(lanes);
+    var tl = arEl("div", "ar-tl");
+    tl.id = "arT3Tl";
+    tl.setAttribute("role", "img");
+    tl.setAttribute("aria-label", "Trial 3 grant timeline");
+    card.appendChild(tl);
+    card.appendChild(arEl("p", "ar-legend", "TIMELINE: C = CPU, D = DMA, G = GPU. TARGETS: CPU 12, DMA 6, GPU 6 (WITHIN 1)."));
+    var read = arEl("div", "ar-read", "");
+    read.id = "arT3Read"; read.setAttribute("aria-live", "polite");
+    card.appendChild(read);
+    var wstat = arEl("div", "ar-verdict", "");
+    wstat.id = "arT3Stat"; wstat.setAttribute("aria-live", "polite");
+    run.addEventListener("click", function () {
+      if (arSt.failed || t.pass) return;
+      var sum = t.weights[0] + t.weights[1] + t.weights[2];
+      if (sum === 0) {
+        wstat.className = "ar-verdict bad";
+        wstat.textContent = "All weights are 0: the frame is empty and nobody wins. Dial at least one weight up.";
+        return;
+      }
+      var res = arRun(AR_T3, "wrr", t.weights);
+      arPlayRun("arT3", res, function (counts) {
+        arLog("t3 contract run (" + t.weights.join(":") + "): CPU " + counts[0] + ", DMA " + counts[1] + ", GPU " + counts[2] + ".", "dim");
+        if (arT3Pass(t.weights)) {
+          if (t.predOk) {
+            t.pass = true;
+            wstat.className = "ar-verdict ok";
+            wstat.textContent = "TRIAL 3 PASS: " + counts[0] + "/" + counts[1] + "/" + counts[2] +
+              " against 12/6/6, every lane inside the contract.";
+            run.disabled = true;
+            arCheckCert();
+          } else {
+            wstat.className = "ar-verdict";
+            wstat.textContent = "The split holds (" + counts[0] + "/" + counts[1] + "/" + counts[2] +
+              "), but the room still wants your call above: commit the CPU grant count first.";
+          }
+        } else {
+          wstat.className = "ar-verdict bad";
+          wstat.textContent = "CONTRACT MISSED: " + counts[0] + "/" + counts[1] + "/" + counts[2] +
+            " against 12/6/6. Re-dial the weights and run again.";
+        }
+      });
+    });
+    card.appendChild(wstat);
+    return card;
+  }
+
+  /* ---------- close, build ---------- */
+  function arClose() {
+    arStopAnim();
+    if (arEls.overlay) arEls.overlay.classList.remove("open");
+  }
+
+  function arBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box) return;
+    if (document.getElementById("arBtn")) return;
+
+    arSt = arNewState();
+
+    var sty = document.createElement("style");
+    sty.id = "arStyle";
+    sty.textContent = AR_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "arBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Arbiter Room";
+    b.addEventListener("click", function () { arEls.overlay.classList.add("open"); });
+    box.appendChild(b);
+
+    var ov = arEl("div", "ar-overlay");
+    ov.id = "arOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Arbiter Room");
+    var x = arEl("button", "ar-btn", "CLOSE");
+    x.id = "arXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Arbiter Room");
+    x.addEventListener("click", arClose);
+    ov.appendChild(x);
+    arEls.overlay = ov;
+    if (!arEscBound) {
+      arEscBound = true;
+      document.addEventListener("keydown", function (ev) {
+        if (ev.key === "Escape" && arEls.overlay && arEls.overlay.classList.contains("open")) arClose();
+      });
+    }
+
+    var panel = arEl("div", "ar-panel");
+    panel.appendChild(arEl("div", "ar-kicker", "SILICON BENCH 63"));
+    panel.appendChild(arEl("h2", "ar-title", "The Arbiter Room"));
+    panel.appendChild(arEl("p", "ar-sub",
+      "Three masters, one memory bus: the arbiter grants exactly one requester per cycle. Watch fixed " +
+      "priority starve a lane at 0 of 16, race an urgent page-walk through two referees, and dial a " +
+      "2:1:1 bandwidth contract to the cycle. The referee's rule decides who waits."));
+
+    var introWrap = arEl("div", "");
+    introWrap.innerHTML = AR_INTRO_HTML;
+    panel.appendChild(introWrap);
+
+    panel.appendChild(arDfCard());
+    panel.appendChild(arT1Card());
+    panel.appendChild(arT2Card());
+    panel.appendChild(arT3Card());
+
+    var fail = arEl("div", "ar-card", null);
+    fail.id = "arFail";
+    fail.style.display = "none";
+    fail.style.borderColor = "var(--ember,#ff5a1f)";
+    fail.appendChild(arEl("h3", null, "ROOM FAILED"));
+    fail.appendChild(arEl("p", "why", "Three strikes. The calls were guesses, and the bus deserved better. Reset and work the room again."));
+    var rb = arEl("button", "ar-btn solid", "RESET ROOM");
+    rb.id = "arReset"; rb.type = "button";
+    rb.addEventListener("click", function () { arClose(); arBuild && arResetRoom(); });
+    fail.appendChild(rb);
+    panel.appendChild(fail);
+    arEls.fail = fail;
+
+    var banner = arEl("div", "ar-banner");
+    banner.id = "arBanner";
+    banner.appendChild(arEl("h3", null, "ROOM CERTIFIED"));
+    var certP = arEl("p", null, arCertLine());
+    certP.id = "arCertP";
+    banner.appendChild(certP);
+    var dl = arEl("button", "ar-btn solid", "DOWNLOAD CERTIFICATE");
+    dl.id = "arCertDl";
+    dl.addEventListener("click", arDownloadCert);
+    banner.appendChild(dl);
+    panel.appendChild(banner);
+    arEls.banner = banner;
+    arEls.certP = certP;
+
+    var foot = arEl("div", "ar-foot", "STRIKES: 0/3");
+    foot.id = "arStrikes";
+    panel.appendChild(foot);
+    arEls.strikes = foot;
+
+    var logCard = arEl("div", "ar-card");
+    logCard.appendChild(arEl("h3", null, "BENCH LOG"));
+    var log = arEl("div", "ar-log");
+    log.id = "arLog";
+    log.setAttribute("aria-live", "polite");
+    logCard.appendChild(log);
+    panel.appendChild(logCard);
+    arEls.log = log;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    arLog("bench open. One bus, three masters, the referee watching the request lines. The do-first card asks nothing of you.", "dim");
+  }
+
+  function arResetRoom() {
+    arStopAnim();
+    var sty = document.getElementById("arStyle");
+    if (sty && sty.parentNode) sty.parentNode.removeChild(sty);
+    var btn = document.getElementById("arBtn");
+    if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
+    if (arEls.overlay && arEls.overlay.parentNode) arEls.overlay.parentNode.removeChild(arEls.overlay);
+    arEls = {};
+    arSt = null;
+    arDf = { policy: "fixed", last: null };
+    arBuild();
+    if (arEls.overlay) arEls.overlay.classList.add("open");
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", arBuild);
+  } else {
+    arBuild();
+  }
+})();
