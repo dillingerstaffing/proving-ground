@@ -44556,6 +44556,7 @@ if (typeof module !== "undefined" && module.exports) {
 
   var inEls = {};
   var inSt = null;
+  var inEscBound = false;
 
   function inNewState() {
     return {
@@ -45037,6 +45038,7 @@ if (typeof module !== "undefined" && module.exports) {
     inSt = inNewState();
 
     var sty = document.createElement("style");
+    sty.id = "inStyle";
     sty.textContent = IN_CSS;
     document.head.appendChild(sty);
 
@@ -45058,9 +45060,12 @@ if (typeof module !== "undefined" && module.exports) {
     x.addEventListener("click", inClose);
     ov.appendChild(x);
     inEls.overlay = ov;
-    document.addEventListener("keydown", function (ev) {
-      if (ev.key === "Escape" && ov.classList.contains("open")) inClose();
-    });
+    if (!inEscBound) {
+      inEscBound = true;
+      document.addEventListener("keydown", function (ev) {
+        if (ev.key === "Escape" && inEls.overlay && inEls.overlay.classList.contains("open")) inClose();
+      });
+    }
 
     var panel = inEl("div", "in-panel");
     panel.appendChild(inEl("div", "in-kicker", "OLD IRON BENCH 62"));
@@ -45149,6 +45154,10 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
   function inResetRoom() {
+    var sty = document.getElementById("inStyle");
+    if (sty && sty.parentNode) sty.parentNode.removeChild(sty);
+    var btn = document.getElementById("inBtn");
+    if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
     if (inEls.overlay && inEls.overlay.parentNode) inEls.overlay.parentNode.removeChild(inEls.overlay);
     inEls = {};
     inSt = null;
