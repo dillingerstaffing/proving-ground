@@ -38116,7 +38116,7 @@ if (typeof module !== "undefined" && module.exports) {
       (rail.inrush ? "INRUSH: " + fsInrushI2t(rail.inrush.i, rail.inrush.t).toFixed(0) + " A\u00B2s " +
         "against melt " + melt.toFixed(0) + " A\u00B2s, rides through. " : "NO INRUSH on this rail. ") +
       "WIRE: " + fsFmtA(rating) + " at or under " + rail.awg + " AWG (" + fsFmtA(amp) + "). " +
-      "FAULT: fuse opens in " + fsFmtT(ft) + ", wire smokes in " + fsFmtT(wt) + ". The weak link wins.";
+      "FAULT: fuse opens in " + fsFmtT(ft) + ", wire would smoke in " + fsFmtT(wt) + ". The weak link wins.";
     return { ok: true, ft: ft, wt: wt, melt: melt,
       why: "IN THE WINDOW (" + speedName + " " + fsFmtA(rating) + "): " + lines };
   }
@@ -38533,7 +38533,7 @@ if (typeof module !== "undefined" && module.exports) {
         st.repaired = true;
         fverdict.textContent = "REPAIRED: " + selR + " A " + FS_SPEEDS[selS].name + " fitted. " +
           (p.rail.inrush ? "Cold start: inrush rides through. " : "") +
-          "Bolted fault: fuse opens in " + fsFmtT(v.ft) + ", wire smokes in " + fsFmtT(v.wt) + ". Panel runs.";
+          "Bolted fault: fuse opens in " + fsFmtT(v.ft) + ", wire would smoke in " + fsFmtT(v.wt) + ". Panel runs.";
         fverdict.className = "fs-verdict ok";
         fsLog("trial 2 " + p.id + ": refit " + selR + " A " + FS_SPEEDS[selS].name + ", panel runs.", "ok");
         rBtns.forEach(function (x) { x.disabled = true; });
@@ -38859,17 +38859,17 @@ if (typeof module !== "undefined" && module.exports) {
   var RL_VCEO = 60;
   var RL_T3_BANDS = ["UNDER 1 V", "1 TO 30 V", "30 TO 60 V", "OVER 60 V"];
   var RL_T3_BAND = 3; /* 90 V: over 60 V */
-  function rlSpike() { return RL_L * RL_I / RL_DT; }
+  function rySpike() { return RL_L * RL_I / RL_DT; }
 
   /* ---------- verdicts ---------- */
-  function rlFmtV(v) { return v + " V"; }
-  function rlVerdictT1(part, volts) {
+  function ryFmtV(v) { return v + " V"; }
+  function ryVerdictT1(part, volts) {
     var need = RL_PULLIN * part.coilV;
     var mA = Math.round(volts / part.coilR * 1000);
     var needmA = Math.round(need / part.coilR * 1000);
     if (volts < need) {
       return { ok: false,
-        why: "SILENT: " + rlFmtV(volts) + " on a " + rlFmtV(part.coilV) + " coil is " +
+        why: "SILENT: " + ryFmtV(volts) + " on a " + ryFmtV(part.coilV) + " coil is " +
           Math.round(volts / part.coilV * 100) + "% of rating, under the " +
           Math.round(RL_PULLIN * 100) + "% pull-in floor. The coil draws " + mA +
           " mA but the armature needs " + needmA + " mA to move. No click. The trap is assuming it switched." };
@@ -38885,8 +38885,8 @@ if (typeof module !== "undefined" && module.exports) {
       why: "CLICK: " + mA + " mA through the coil against a " + needmA + " mA pull-in. " +
         "Contacts move, load switches, coil stays cool. The drive is inside the 75 to 125 percent window." };
   }
-  function rlPredictT3(ix) {
-    var spike = Math.round(rlSpike());
+  function ryPredictT3(ix) {
+    var spike = Math.round(rySpike());
     if (ix === RL_T3_BAND) return { ok: true,
       why: "The coil fights the change: L x di/dt = 0.09 H x 0.1 A / 100 us = " + spike +
         " V, hurled at a transistor rated 60 V. The transistor loses. Predict before you open it, then watch it happen." };
@@ -38900,17 +38900,17 @@ if (typeof module !== "undefined" && module.exports) {
 
   /* node/jsdom test hooks: assigned before any DOM is touched */
   if (typeof module !== "undefined" && module.exports) {
-    module.exports.RL = {
+    module.exports.RY = {
       T1: RL_T1, T2: RL_T2, T3_BANDS: RL_T3_BANDS, T3_BAND: RL_T3_BAND,
       PULLIN: RL_PULLIN, OVER: RL_OVER,
-      spike: rlSpike, verdictT1: rlVerdictT1, predictT3: rlPredictT3,
+      spike: rySpike, verdictT1: ryVerdictT1, predictT3: ryPredictT3,
       introHTML: null /* filled after the copy const below */
     };
   }
 
   /* ---------- intro copy: why first, worked example, failure modes ---------- */
   var RL_INTRO_HTML = [
-    "<div class=\"rl-card\"><h3>WHY THIS ROOM EXISTS</h3>",
+    "<div class=\"ry-card\"><h3>WHY THIS ROOM EXISTS</h3>",
     "<p class=\"why\">A microcontroller pin can source 12 mA. A cooling fan wants 2 A. Nothing in the pin ",
     "can command the fan directly, so a relay does it by magnetism: a small <b>coil</b> (the electromagnet) pulls ",
     "an <b>armature</b>, and the armature moves <b>contacts</b> on a completely separate circuit. The two sides ",
@@ -38923,7 +38923,7 @@ if (typeof module !== "undefined" && module.exports) {
     "control, a ratio above six thousand to one. Pull-in needs 75 percent of rated voltage, so 9 V moves the ",
     "armature and 5 V does nothing. Open the coil with no flyback diode and the field collapse hurls ",
     "0.09 x 0.1 / 0.0001 = 90 V at the driver. Trial 1, part 1, is this exact relay.</p></div>",
-    "<div class=\"rl-card rl-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3>",
+    "<div class=\"ry-card ry-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3>",
     "<ul><li><b>UNDRIVEN COIL:</b> under 75 percent of rated voltage the armature never moves. No click, no smoke, ",
     "no indication at all. It looks wired correctly and does nothing.</li>",
     "<li><b>OVERDRIVEN COIL:</b> over 125 percent clicks perfectly today and cooks over seconds. ",
@@ -38938,132 +38938,132 @@ if (typeof module !== "undefined" && module.exports) {
     "then it does the dangerous thing unattended.</li></ul></div>"
   ].join("");
 
-  if (typeof module !== "undefined" && module.exports && module.exports.RL) {
-    module.exports.RL.introHTML = RL_INTRO_HTML;
+  if (typeof module !== "undefined" && module.exports && module.exports.RY) {
+    module.exports.RY.introHTML = RL_INTRO_HTML;
   }
 
   /* ---------- css ---------- */
   var RL_CSS = [
-    ".rl-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
-    ".rl-overlay.open{display:block}",
-    ".rl-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
-    ".rl-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
-    ".rl-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
-    ".rl-sub{font-size:14px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.92;margin:0 0 18px;max-width:68ch}",
-    ".rl-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
-    ".rl-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.1em;margin:0 0 10px;color:var(--paper,#f2ede4)}",
-    ".rl-fail{border-left:3px solid var(--ember,#ff5a1f)}",
-    ".rl-card .why{font-size:13.5px;line-height:1.7;margin:0 0 10px;color:var(--paper,#f2ede4);opacity:.94}",
-    ".rl-card ul{margin:6px 0 4px;padding-left:20px;font-size:13px;line-height:1.65}",
-    ".rl-card li{margin-bottom:8px}",
-    ".rl-row{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0}",
-    ".rl-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
-    ".rl-btn:hover{border-color:var(--ember,#ff5a1f)}",
-    ".rl-btn:disabled{opacity:.35;cursor:default}",
-    ".rl-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
-    ".rl-btn.sel{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12)}",
-    ".rl-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#101014}",
-    ".rl-verdict{font-size:13px;line-height:1.65;margin:10px 0 0;padding:10px 12px;border-left:3px solid var(--line,rgba(242,237,228,.28))}",
-    ".rl-verdict.ok{border-left-color:#9fe870}",
-    ".rl-verdict.bad{border-left-color:#ff5a1f}",
-    ".rl-read{font-size:13px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.85;margin:8px 0;min-height:20px}",
-    ".rl-parthead{font-size:12px;letter-spacing:.18em;color:var(--ember,#ff5a1f);margin-bottom:6px}",
-    ".rl-spec{font-size:13px;line-height:1.7;margin:0 0 8px}",
-    ".rl-box{font-size:12px;letter-spacing:.12em;border:1px solid var(--line,rgba(242,237,228,.28));padding:10px 14px;margin:10px 0;max-width:360px;text-align:center}",
-    ".rl-box.live{border-color:#9fe870;color:#9fe870}",
-    ".rl-box.dead{border-color:#ff5a1f;color:#ff5a1f}",
-    ".rl-heat{height:10px;border:1px solid var(--line,rgba(242,237,228,.28));margin:8px 0 0;max-width:360px}",
-    ".rl-heat i{display:block;height:100%;background:var(--ember,#ff5a1f);width:0%}",
-    ".rl-log{font-size:12.5px;line-height:1.7;max-height:280px;overflow-y:auto}",
-    ".rl-log div{margin:0 0 6px;padding-bottom:6px;border-bottom:1px dotted var(--line,rgba(242,237,228,.14))}",
-    ".rl-log .ok{color:#9fe870}",
-    ".rl-log .bad{color:#ff5a1f}",
-    ".rl-log .dim{opacity:.6}",
-    ".rl-banner{display:none;border:1px solid var(--ember,#ff5a1f);padding:18px;margin:0 0 14px}",
-    ".rl-banner h3{font-family:'Space Grotesk',sans-serif;letter-spacing:.14em;font-size:16px;color:var(--ember,#ff5a1f);margin:0 0 8px}",
-    ".rl-banner p{font-size:13px;line-height:1.65;margin:0 0 12px}",
-    ".rl-pop{animation:rlPop 200ms ease-out}",
-    "@keyframes rlPop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
-    "@media (prefers-reduced-motion:reduce){.rl-pop{animation:none}}"
+    ".ry-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".ry-overlay.open{display:block}",
+    ".ry-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".ry-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".ry-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".ry-sub{font-size:14px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.92;margin:0 0 18px;max-width:68ch}",
+    ".ry-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".ry-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.1em;margin:0 0 10px;color:var(--paper,#f2ede4)}",
+    ".ry-fail{border-left:3px solid var(--ember,#ff5a1f)}",
+    ".ry-card .why{font-size:13.5px;line-height:1.7;margin:0 0 10px;color:var(--paper,#f2ede4);opacity:.94}",
+    ".ry-card ul{margin:6px 0 4px;padding-left:20px;font-size:13px;line-height:1.65}",
+    ".ry-card li{margin-bottom:8px}",
+    ".ry-row{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0}",
+    ".ry-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
+    ".ry-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".ry-btn:disabled{opacity:.35;cursor:default}",
+    ".ry-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".ry-btn.sel{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12)}",
+    ".ry-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#101014}",
+    ".ry-verdict{font-size:13px;line-height:1.65;margin:10px 0 0;padding:10px 12px;border-left:3px solid var(--line,rgba(242,237,228,.28))}",
+    ".ry-verdict.ok{border-left-color:#9fe870}",
+    ".ry-verdict.bad{border-left-color:#ff5a1f}",
+    ".ry-read{font-size:13px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.85;margin:8px 0;min-height:20px}",
+    ".ry-parthead{font-size:12px;letter-spacing:.18em;color:var(--ember,#ff5a1f);margin-bottom:6px}",
+    ".ry-spec{font-size:13px;line-height:1.7;margin:0 0 8px}",
+    ".ry-box{font-size:12px;letter-spacing:.12em;border:1px solid var(--line,rgba(242,237,228,.28));padding:10px 14px;margin:10px 0;max-width:360px;text-align:center}",
+    ".ry-box.live{border-color:#9fe870;color:#9fe870}",
+    ".ry-box.dead{border-color:#ff5a1f;color:#ff5a1f}",
+    ".ry-heat{height:10px;border:1px solid var(--line,rgba(242,237,228,.28));margin:8px 0 0;max-width:360px}",
+    ".ry-heat i{display:block;height:100%;background:var(--ember,#ff5a1f);width:0%}",
+    ".ry-log{font-size:12.5px;line-height:1.7;max-height:280px;overflow-y:auto}",
+    ".ry-log div{margin:0 0 6px;padding-bottom:6px;border-bottom:1px dotted var(--line,rgba(242,237,228,.14))}",
+    ".ry-log .ok{color:#9fe870}",
+    ".ry-log .bad{color:#ff5a1f}",
+    ".ry-log .dim{opacity:.6}",
+    ".ry-banner{display:none;border:1px solid var(--ember,#ff5a1f);padding:18px;margin:0 0 14px}",
+    ".ry-banner h3{font-family:'Space Grotesk',sans-serif;letter-spacing:.14em;font-size:16px;color:var(--ember,#ff5a1f);margin:0 0 8px}",
+    ".ry-banner p{font-size:13px;line-height:1.65;margin:0 0 12px}",
+    ".ry-pop{animation:ryPop 200ms ease-out}",
+    "@keyframes ryPop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    "@media (prefers-reduced-motion:reduce){.ry-pop{animation:none}}"
   ].join("\n");
 
   /* ---------- tiny DOM helpers (page-local, prefixed) ---------- */
-  var rlEls = null;
-  var rlState = null;
-  function rlEl(tag, cls, text) {
+  var ryEls = null;
+  var ryState = null;
+  function ryEl(tag, cls, text) {
     var e = document.createElement(tag);
     if (cls) e.className = cls;
     if (text !== undefined && text !== null) e.textContent = text;
     return e;
   }
-  function rlLog(msg, cls) {
-    if (!rlEls || !rlEls.log) return;
-    var d = rlEl("div", cls || "", msg);
-    rlEls.log.appendChild(d);
-    rlEls.log.scrollTop = rlEls.log.scrollHeight;
+  function ryLog(msg, cls) {
+    if (!ryEls || !ryEls.log) return;
+    var d = ryEl("div", cls || "", msg);
+    ryEls.log.appendChild(d);
+    ryEls.log.scrollTop = ryEls.log.scrollHeight;
   }
-  function rlPop(card) {
-    card.classList.remove("rl-pop");
+  function ryPop(card) {
+    card.classList.remove("ry-pop");
     void card.offsetWidth;
-    card.classList.add("rl-pop");
+    card.classList.add("ry-pop");
   }
-  function rlCertLine() {
+  function ryCertLine() {
     return "Two coils driven inside their 75 to 125 percent windows, two loads wired so the safe state wins " +
       "when the controller dies, and one coil opened with no flyback diode to meet the 90 V spike. The room remembers.";
   }
-  function rlAllPassed() {
-    var s = rlState;
+  function ryAllPassed() {
+    var s = ryState;
     return s.t1.every(function (x) { return x.passed; }) &&
       s.t2.every(function (x) { return x.passed; }) &&
       s.t3.predicted && s.t3.killed && s.t3.refitted;
   }
-  function rlMaybeCertify() {
-    if (rlEls && rlEls.banner) rlEls.banner.style.display = rlAllPassed() ? "block" : "none";
+  function ryMaybeCertify() {
+    if (ryEls && ryEls.banner) ryEls.banner.style.display = ryAllPassed() ? "block" : "none";
   }
 
   /* ---------- do-first card: consequence-free relay ---------- */
-  function rlDoFirstCard() {
-    var card = rlEl("div", "rl-card");
-    card.appendChild(rlEl("h3", null, "DO FIRST: CLICK IT, FREE"));
-    card.appendChild(rlEl("p", "why",
+  function ryDoFirstCard() {
+    var card = ryEl("div", "ry-card");
+    card.appendChild(ryEl("h3", null, "DO FIRST: CLICK IT, FREE"));
+    card.appendChild(ryEl("p", "why",
       "A 12 V relay on the bench, driven correctly, nothing graded. Energize the coil and the NO contact " +
       "closes; de-energize and the NC contact closes. Crash the controller and watch the resting state take over."));
-    var box = rlEl("div", "rl-box", "COIL: DEAD \u00B7 NO OPEN \u00B7 NC CLOSED \u00B7 LAMP: OFF");
-    box.id = "rlDoFirst_box";
+    var box = ryEl("div", "ry-box", "COIL: DEAD \u00B7 NO OPEN \u00B7 NC CLOSED \u00B7 LAMP: OFF");
+    box.id = "ryDoFirst_box";
     card.appendChild(box);
-    var read = rlEl("p", "rl-read", "The coil is dead. The resting state is NC closed, NO open.");
-    read.id = "rlDoFirst_read";
+    var read = ryEl("p", "ry-read", "The coil is dead. The resting state is NC closed, NO open.");
+    read.id = "ryDoFirst_read";
     card.appendChild(read);
-    var row = rlEl("div", "rl-row");
-    var en = rlEl("button", "rl-btn", "ENERGIZE THE COIL");
-    en.type = "button"; en.id = "rlDoFirst_en";
+    var row = ryEl("div", "ry-row");
+    var en = ryEl("button", "ry-btn", "ENERGIZE THE COIL");
+    en.type = "button"; en.id = "ryDoFirst_en";
     en.setAttribute("aria-label", "Energize the coil, ungraded");
     en.addEventListener("click", function () {
-      box.className = "rl-box live";
+      box.className = "ry-box live";
       box.textContent = "COIL: 12 V, 100 MA \u00B7 NO CLOSED \u00B7 NC OPEN \u00B7 LAMP: ON";
       read.textContent = "CLICK. The armature moved, NO closed, the lamp is on. The control side draws 100 mA; the lamp runs on its own circuit.";
-      rlLog("do-first: coil energized, NO closed, lamp on.", "dim");
-      rlPop(card);
+      ryLog("do-first: coil energized, NO closed, lamp on.", "dim");
+      ryPop(card);
     });
-    var de = rlEl("button", "rl-btn", "DE-ENERGIZE");
-    de.type = "button"; de.id = "rlDoFirst_de";
+    var de = ryEl("button", "ry-btn", "DE-ENERGIZE");
+    de.type = "button"; de.id = "ryDoFirst_de";
     de.setAttribute("aria-label", "De-energize the coil, ungraded");
     de.addEventListener("click", function () {
-      box.className = "rl-box";
+      box.className = "ry-box";
       box.textContent = "COIL: DEAD \u00B7 NO OPEN \u00B7 NC CLOSED \u00B7 LAMP: OFF";
       read.textContent = "The coil is dead. NC closed again: the resting state. Nothing about the lamp's circuit changed except the contact.";
-      rlLog("do-first: coil de-energized, NC closed, resting state.", "dim");
-      rlPop(card);
+      ryLog("do-first: coil de-energized, NC closed, resting state.", "dim");
+      ryPop(card);
     });
-    var crash = rlEl("button", "rl-btn", "CRASH THE CONTROLLER");
-    crash.type = "button"; crash.id = "rlDoFirst_crash";
+    var crash = ryEl("button", "ry-btn", "CRASH THE CONTROLLER");
+    crash.type = "button"; crash.id = "ryDoFirst_crash";
     crash.setAttribute("aria-label", "Crash the controller, ungraded");
     crash.addEventListener("click", function () {
-      box.className = "rl-box dead";
+      box.className = "ry-box dead";
       box.textContent = "CONTROLLER: DEAD \u00B7 COIL: DEAD \u00B7 NC CLOSED";
       read.textContent = "The controller is gone and the relay took its resting state: NC closed. Whatever was wired through NC is on right now, unattended. That is the whole fail-safe rule in one click.";
-      rlLog("do-first: controller crashed, relay at rest, NC closed.", "dim");
-      rlPop(card);
+      ryLog("do-first: controller crashed, relay at rest, NC closed.", "dim");
+      ryPop(card);
     });
     row.appendChild(en); row.appendChild(de); row.appendChild(crash);
     card.appendChild(row);
@@ -39071,22 +39071,22 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
   /* ---------- trial 1 card: drive the coil ---------- */
-  function rlT1Card(part, num) {
-    var st = rlState.t1[num - 1];
-    var card = rlEl("div", "rl-card");
-    card.id = "rlT1_" + part.id;
-    card.appendChild(rlEl("div", "rl-parthead", "TRIAL 1 \u00B7 PART " + num + " OF 2"));
-    card.appendChild(rlEl("p", "rl-spec", part.label + " \u00B7 PULL-IN NEEDS " +
+  function ryT1Card(part, num) {
+    var st = ryState.t1[num - 1];
+    var card = ryEl("div", "ry-card");
+    card.id = "ryT1_" + part.id;
+    card.appendChild(ryEl("div", "ry-parthead", "TRIAL 1 \u00B7 PART " + num + " OF 2"));
+    card.appendChild(ryEl("p", "ry-spec", part.label + " \u00B7 PULL-IN NEEDS " +
       Math.round(RL_PULLIN * part.coilV * 10) / 10 + " V \u00B7 COOKS PAST " +
       Math.round(RL_OVER * part.coilV * 10) / 10 + " V"));
-    card.appendChild(rlEl("p", "why",
+    card.appendChild(ryEl("p", "why",
       "Pick the drive voltage, then COMMIT DRIVE. The window is 75 to 125 percent of the coil rating: under it " +
       "the armature never moves, over it the coil clicks today and cooks in seconds. There is one right answer."));
-    var row = rlEl("div", "rl-row");
+    var row = ryEl("div", "ry-row");
     var selV = null, btns = [];
     part.choices.forEach(function (v) {
-      var b = rlEl("button", "rl-btn", v + " V");
-      b.type = "button"; b.id = "rlT1_" + part.id + "_v" + String(v).replace(".", "p");
+      var b = ryEl("button", "ry-btn", v + " V");
+      b.type = "button"; b.id = "ryT1_" + part.id + "_v" + String(v).replace(".", "p");
       b.setAttribute("aria-label", "Drive the coil with " + v + " volts");
       b.addEventListener("click", function () {
         if (st.passed || st.cooking) return;
@@ -39097,21 +39097,21 @@ if (typeof module !== "undefined" && module.exports) {
       btns.push(b); row.appendChild(b);
     });
     card.appendChild(row);
-    var box = rlEl("div", "rl-box", "COIL: COLD, UNPOWERED");
-    box.id = "rlT1_" + part.id + "_box";
+    var box = ryEl("div", "ry-box", "COIL: COLD, UNPOWERED");
+    box.id = "ryT1_" + part.id + "_box";
     card.appendChild(box);
-    var heat = rlEl("div", "rl-heat", "");
-    heat.id = "rlT1_" + part.id + "_heat";
-    var heatBar = rlEl("i", "");
-    heatBar.id = "rlT1_" + part.id + "_heatbar";
+    var heat = ryEl("div", "ry-heat", "");
+    heat.id = "ryT1_" + part.id + "_heat";
+    var heatBar = ryEl("i", "");
+    heatBar.id = "ryT1_" + part.id + "_heatbar";
     heat.appendChild(heatBar);
     heat.style.display = "none";
     card.appendChild(heat);
-    var read = rlEl("p", "rl-read", "No drive fitted yet.");
-    read.id = "rlT1_" + part.id + "_read";
+    var read = ryEl("p", "ry-read", "No drive fitted yet.");
+    read.id = "ryT1_" + part.id + "_read";
     card.appendChild(read);
-    var verdict = rlEl("p", "rl-verdict", "");
-    verdict.id = "rlT1_" + part.id + "_verdict";
+    var verdict = ryEl("p", "ry-verdict", "");
+    verdict.id = "ryT1_" + part.id + "_verdict";
     card.appendChild(verdict);
 
     var cookTimer = null;
@@ -39123,14 +39123,14 @@ if (typeof module !== "undefined" && module.exports) {
       if (cookPct >= 100) {
         if (cookTimer) { clearInterval(cookTimer); cookTimer = null; }
         st.cooking = false;
-        box.className = "rl-box dead";
+        box.className = "ry-box dead";
         box.textContent = "COIL: OPEN \u00B7 INSULATION COOKED";
         read.textContent = "The coil is dead: open circuit, cooked insulation. Overdrive clicks today and kills over seconds.";
         verdict.textContent = "COOKED: this is what " + selV + " V does to a " + part.coilV + " V coil. Fit a fresh relay and pick again.";
-        verdict.className = "rl-verdict bad";
-        rlLog("trial 1 " + part.id + ": " + selV + " V cooked the " + part.coilV + " V coil in five seconds.", "bad");
-        var fresh = rlEl("button", "rl-btn solid", "FIT A FRESH RELAY");
-        fresh.type = "button"; fresh.id = "rlT1_" + part.id + "_fresh";
+        verdict.className = "ry-verdict bad";
+        ryLog("trial 1 " + part.id + ": " + selV + " V cooked the " + part.coilV + " V coil in five seconds.", "bad");
+        var fresh = ryEl("button", "ry-btn solid", "FIT A FRESH RELAY");
+        fresh.type = "button"; fresh.id = "ryT1_" + part.id + "_fresh";
         fresh.setAttribute("aria-label", "Fit a fresh relay and pick again");
         fresh.addEventListener("click", function () {
           cookPct = 0;
@@ -39139,80 +39139,80 @@ if (typeof module !== "undefined" && module.exports) {
           selV = null;
           btns.forEach(function (x) { x.classList.remove("sel"); x.disabled = false; });
           commit.disabled = false;
-          box.className = "rl-box";
+          box.className = "ry-box";
           box.textContent = "COIL: COLD, UNPOWERED";
           read.textContent = "Fresh relay fitted. Pick the drive voltage again.";
           verdict.textContent = "";
-          verdict.className = "rl-verdict";
+          verdict.className = "ry-verdict";
           fresh.remove();
-          rlPop(card);
+          ryPop(card);
         });
         card.appendChild(fresh);
-        rlPop(card);
+        ryPop(card);
       }
     };
 
-    var commit = rlEl("button", "rl-btn solid", "COMMIT DRIVE");
-    commit.type = "button"; commit.id = "rlT1_" + part.id + "_commit";
+    var commit = ryEl("button", "ry-btn solid", "COMMIT DRIVE");
+    commit.type = "button"; commit.id = "ryT1_" + part.id + "_commit";
     commit.setAttribute("aria-label", "Commit the coil drive voltage");
     commit.addEventListener("click", function () {
       if (st.passed || st.cooking) return;
       if (selV === null) {
         verdict.textContent = "Pick a drive voltage first.";
-        verdict.className = "rl-verdict bad";
+        verdict.className = "ry-verdict bad";
         return;
       }
-      var v = rlVerdictT1(part, selV);
+      var v = ryVerdictT1(part, selV);
       if (v.ok) {
         st.passed = true;
-        box.className = "rl-box live";
+        box.className = "ry-box live";
         box.textContent = "COIL: " + selV + " V \u00B7 ARMATURE PULLED IN \u00B7 LOAD SWITCHING";
         read.textContent = "Click. The contacts are moving under rated power and the coil is cool.";
         verdict.textContent = "PASS: " + v.why;
-        verdict.className = "rl-verdict ok";
-        rlLog("trial 1 " + part.id + ": " + selV + " V drives the " + part.coilV + " V coil, pull-in clean.", "ok");
+        verdict.className = "ry-verdict ok";
+        ryLog("trial 1 " + part.id + ": " + selV + " V drives the " + part.coilV + " V coil, pull-in clean.", "ok");
         btns.forEach(function (x) { x.disabled = true; });
         commit.disabled = true;
       } else if (v.cooks) {
         st.cooking = true;
-        box.className = "rl-box live";
+        box.className = "ry-box live";
         box.textContent = "COIL: " + selV + " V \u00B7 ARMATURE PULLED IN \u00B7 HEATING";
         heat.style.display = "block";
         verdict.textContent = "IT CLICKS: " + v.why;
-        verdict.className = "rl-verdict bad";
-        rlLog("trial 1 " + part.id + ": " + selV + " V overdrive, coil cooking.", "bad");
+        verdict.className = "ry-verdict bad";
+        ryLog("trial 1 " + part.id + ": " + selV + " V overdrive, coil cooking.", "bad");
         btns.forEach(function (x) { x.disabled = true; });
         commit.disabled = true;
         cookTimer = setInterval(cookStep, 500);
       } else {
         read.textContent = "Silence. The coil is powered but the armature never moved.";
         verdict.textContent = "NO CLICK: " + v.why;
-        verdict.className = "rl-verdict bad";
-        rlLog("trial 1 " + part.id + ": " + selV + " V too weak for the " + part.coilV + " V coil, no pull-in.", "bad");
+        verdict.className = "ry-verdict bad";
+        ryLog("trial 1 " + part.id + ": " + selV + " V too weak for the " + part.coilV + " V coil, no pull-in.", "bad");
       }
-      rlMaybeCertify();
-      rlPop(card);
+      ryMaybeCertify();
+      ryPop(card);
     });
     card.appendChild(commit);
     return card;
   }
 
   /* ---------- trial 2 card: wire the contacts fail-safe ---------- */
-  function rlT2Card(part, num) {
-    var st = rlState.t2[num - 1];
-    var card = rlEl("div", "rl-card");
-    card.id = "rlT2_" + part.id;
-    card.appendChild(rlEl("div", "rl-parthead", "TRIAL 2 \u00B7 PART " + num + " OF 2"));
-    card.appendChild(rlEl("p", "rl-spec", "LOAD: " + part.load + " \u00B7 SAFE STATE ON CONTROLLER DEATH: " + part.safeState));
-    card.appendChild(rlEl("p", "why",
+  function ryT2Card(part, num) {
+    var st = ryState.t2[num - 1];
+    var card = ryEl("div", "ry-card");
+    card.id = "ryT2_" + part.id;
+    card.appendChild(ryEl("div", "ry-parthead", "TRIAL 2 \u00B7 PART " + num + " OF 2"));
+    card.appendChild(ryEl("p", "ry-spec", "LOAD: " + part.load + " \u00B7 SAFE STATE ON CONTROLLER DEATH: " + part.safeState));
+    card.appendChild(ryEl("p", "why",
       "Normal operation: the controller is alive and holds the coil energized. On a crash the coil goes dead " +
       "and the relay takes its resting state: NC closed, NO open. Pick the contact that puts the safe state " +
       "there (" + part.whySafe + "), then COMMIT WIRING and CRASH THE CONTROLLER to verify."));
-    var row = rlEl("div", "rl-row");
+    var row = ryEl("div", "ry-row");
     var sel = null, btns = [];
     ["NO", "NC"].forEach(function (k) {
-      var b = rlEl("button", "rl-btn", k + " CONTACT");
-      b.type = "button"; b.id = "rlT2_" + part.id + "_c" + k;
+      var b = ryEl("button", "ry-btn", k + " CONTACT");
+      b.type = "button"; b.id = "ryT2_" + part.id + "_c" + k;
       b.setAttribute("aria-label", "Wire the load through the " + (k === "NO" ? "normally open" : "normally closed") + " contact");
       b.addEventListener("click", function () {
         if (st.passed) return;
@@ -39223,18 +39223,18 @@ if (typeof module !== "undefined" && module.exports) {
       btns.push(b); row.appendChild(b);
     });
     card.appendChild(row);
-    var box = rlEl("div", "rl-box", "CONTROLLER: ALIVE \u00B7 COIL: ENERGIZED \u00B7 LOAD: NOT YET WIRED");
-    box.id = "rlT2_" + part.id + "_box";
+    var box = ryEl("div", "ry-box", "CONTROLLER: ALIVE \u00B7 COIL: ENERGIZED \u00B7 LOAD: NOT YET WIRED");
+    box.id = "ryT2_" + part.id + "_box";
     card.appendChild(box);
-    var read = rlEl("p", "rl-read", "Normal operation, coil energized. Pick the contact.");
-    read.id = "rlT2_" + part.id + "_read";
+    var read = ryEl("p", "ry-read", "Normal operation, coil energized. Pick the contact.");
+    read.id = "ryT2_" + part.id + "_read";
     card.appendChild(read);
-    var verdict = rlEl("p", "rl-verdict", "");
-    verdict.id = "rlT2_" + part.id + "_verdict";
+    var verdict = ryEl("p", "ry-verdict", "");
+    verdict.id = "ryT2_" + part.id + "_verdict";
     card.appendChild(verdict);
 
-    var crash = rlEl("button", "rl-btn", "CRASH THE CONTROLLER");
-    crash.type = "button"; crash.id = "rlT2_" + part.id + "_crash";
+    var crash = ryEl("button", "ry-btn", "CRASH THE CONTROLLER");
+    crash.type = "button"; crash.id = "ryT2_" + part.id + "_crash";
     crash.disabled = true;
     crash.setAttribute("aria-label", "Crash the controller and watch the resting state");
     crash.addEventListener("click", function () {
@@ -39242,15 +39242,15 @@ if (typeof module !== "undefined" && module.exports) {
       st.crashed = true;
       var loadOn = (sel === "NC");
       var loadWord = loadOn ? "ON" : "OFF";
-      box.className = "rl-box dead";
+      box.className = "ry-box dead";
       box.textContent = "CONTROLLER: DEAD \u00B7 COIL: DEAD \u00B7 RESTING STATE: NC CLOSED \u00B7 " + part.load + ": " + loadWord;
       if (sel === part.contact) {
         st.passed = true;
         read.textContent = "The controller died and the load did the safe thing by itself: " + part.load + " is " + part.safeState + ".";
         verdict.textContent = "PASS: the safe state was wired into the resting state. Coil dead, " + part.contact +
           " closed, " + part.load + " " + part.safeState.toLowerCase() + ", unattended and correct.";
-        verdict.className = "rl-verdict ok";
-        rlLog("trial 2 " + part.id + ": " + part.contact + " contact, controller crash left the " + part.load + " " + part.safeState.toLowerCase() + ".", "ok");
+        verdict.className = "ry-verdict ok";
+        ryLog("trial 2 " + part.id + ": " + part.contact + " contact, controller crash left the " + part.load + " " + part.safeState.toLowerCase() + ".", "ok");
         crash.disabled = true;
         commit.disabled = true;
       } else {
@@ -39258,51 +39258,51 @@ if (typeof module !== "undefined" && module.exports) {
           (loadOn ? "ON" : "OFF") + ", the opposite of safe.";
         verdict.textContent = "UNSAFE: " + (sel === "NO" ? "NO opens when the coil dies" : "NC closes when the coil dies") +
           ", so the " + part.load + " went " + (loadOn ? "on" : "off") + " with nobody watching. Rewire it.";
-        verdict.className = "rl-verdict bad";
-        rlLog("trial 2 " + part.id + ": " + sel + " contact, controller crash left the " + part.load + " unsafe.", "bad");
-        var rewire = rlEl("button", "rl-btn solid", "REWIRE IT");
-        rewire.type = "button"; rewire.id = "rlT2_" + part.id + "_rewire";
+        verdict.className = "ry-verdict bad";
+        ryLog("trial 2 " + part.id + ": " + sel + " contact, controller crash left the " + part.load + " unsafe.", "bad");
+        var rewire = ryEl("button", "ry-btn solid", "REWIRE IT");
+        rewire.type = "button"; rewire.id = "ryT2_" + part.id + "_rewire";
         rewire.setAttribute("aria-label", "Rewire the load through the other contact");
         rewire.addEventListener("click", function () {
           st.wired = false; st.crashed = false; sel = null;
           btns.forEach(function (x) { x.classList.remove("sel"); x.disabled = false; });
           commit.disabled = false;
           crash.disabled = true;
-          box.className = "rl-box";
+          box.className = "ry-box";
           box.textContent = "CONTROLLER: ALIVE \u00B7 COIL: ENERGIZED \u00B7 LOAD: NOT YET WIRED";
           read.textContent = "Fresh wiring. The safe state goes on the resting contact: NC closes when the coil is dead.";
           verdict.textContent = "";
-          verdict.className = "rl-verdict";
+          verdict.className = "ry-verdict";
           rewire.remove();
-          rlPop(card);
+          ryPop(card);
         });
         card.appendChild(rewire);
       }
-      rlMaybeCertify();
-      rlPop(card);
+      ryMaybeCertify();
+      ryPop(card);
     });
 
-    var commit = rlEl("button", "rl-btn solid", "COMMIT WIRING");
-    commit.type = "button"; commit.id = "rlT2_" + part.id + "_commit";
+    var commit = ryEl("button", "ry-btn solid", "COMMIT WIRING");
+    commit.type = "button"; commit.id = "ryT2_" + part.id + "_commit";
     commit.setAttribute("aria-label", "Commit the contact wiring");
     commit.addEventListener("click", function () {
       if (st.passed || st.wired) return;
       if (sel === null) {
         verdict.textContent = "Pick a contact first.";
-        verdict.className = "rl-verdict bad";
+        verdict.className = "ry-verdict bad";
         return;
       }
       st.wired = true;
       var loadOnNormal = (sel === "NO");
-      box.className = "rl-box live";
+      box.className = "ry-box live";
       box.textContent = "CONTROLLER: ALIVE \u00B7 COIL: ENERGIZED \u00B7 " + sel + " CONTACT IN USE \u00B7 " + part.load + ": " + (loadOnNormal ? "ON" : "OFF");
       read.textContent = "Wired through " + sel + ". Normal operation: controller alive, coil energized. Now crash it and read the resting state.";
       verdict.textContent = "";
       btns.forEach(function (x) { x.disabled = true; });
       commit.disabled = true;
       crash.disabled = false;
-      rlLog("trial 2 " + part.id + ": wired through " + sel + ", crash armed.", "dim");
-      rlPop(card);
+      ryLog("trial 2 " + part.id + ": wired through " + sel + ", crash armed.", "dim");
+      ryPop(card);
     });
     card.appendChild(commit);
     card.appendChild(crash);
@@ -39310,42 +39310,42 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
   /* ---------- trial 3 card: the no-diode lesson ---------- */
-  function rlT3Card() {
-    var st = rlState.t3;
-    var card = rlEl("div", "rl-card");
-    card.id = "rlT3";
-    card.appendChild(rlEl("div", "rl-parthead", "TRIAL 3 \u00B7 THE NO-DIODE LESSON"));
-    card.appendChild(rlEl("p", "rl-spec",
+  function ryT3Card() {
+    var st = ryState.t3;
+    var card = ryEl("div", "ry-card");
+    card.id = "ryT3";
+    card.appendChild(ryEl("div", "ry-parthead", "TRIAL 3 \u00B7 THE NO-DIODE LESSON"));
+    card.appendChild(ryEl("p", "ry-spec",
       "12 V COIL \u00B7 100 MA \u00B7 90 MH \u00B7 OPENED IN 100 US \u00B7 DRIVER TRANSISTOR RATED 60 V"));
-    card.appendChild(rlEl("p", "why",
+    card.appendChild(ryEl("p", "why",
       "The coil is an inductor: it fights every current change. Open it with no flyback diode and the field " +
       "collapse hurls a voltage spike at the driver transistor. First, call the spike's band, before anything " +
       "moves. Then OPEN THE COIL and watch. The spike math is L x di/dt."));
-    var note = rlEl("p", "rl-verdict", "");
-    note.id = "rlT3_predNote";
-    var row = rlEl("div", "rl-row");
+    var note = ryEl("p", "ry-verdict", "");
+    note.id = "ryT3_predNote";
+    var row = ryEl("div", "ry-row");
     var btns = [];
     RL_T3_BANDS.forEach(function (b, ix) {
-      var btn = rlEl("button", "rl-btn", b);
-      btn.type = "button"; btn.id = "rlT3_p" + ix;
+      var btn = ryEl("button", "ry-btn", b);
+      btn.type = "button"; btn.id = "ryT3_p" + ix;
       btn.setAttribute("aria-label", "Predict the spike is " + b.toLowerCase());
       btn.addEventListener("click", function () {
         if (st.predicted) return;
-        var g = rlPredictT3(ix);
+        var g = ryPredictT3(ix);
         if (g.ok) {
           st.predicted = true;
           note.textContent = "PREDICTION LOGGED: " + g.why;
-          note.className = "rl-verdict ok";
+          note.className = "ry-verdict ok";
           open.disabled = false;
-          rlLog("trial 3: predicted the flyback spike, correct.", "ok");
+          ryLog("trial 3: predicted the flyback spike, correct.", "ok");
           btns.forEach(function (x) { x.disabled = true; });
         } else {
           note.textContent = "MISS: " + g.why;
-          note.className = "rl-verdict bad";
-          rlLog("trial 3: wrong spike prediction.", "bad");
+          note.className = "ry-verdict bad";
+          ryLog("trial 3: wrong spike prediction.", "bad");
         }
-        rlMaybeCertify();
-        rlPop(card);
+        ryMaybeCertify();
+        ryPop(card);
       });
       btns.push(btn);
       row.appendChild(btn);
@@ -39353,17 +39353,17 @@ if (typeof module !== "undefined" && module.exports) {
     card.appendChild(row);
     card.appendChild(note);
 
-    var box = rlEl("div", "rl-box live", "COIL: ENERGIZED, 100 MA \u00B7 DIODE: FITTED");
-    box.id = "rlT3_box";
+    var box = ryEl("div", "ry-box live", "COIL: ENERGIZED, 100 MA \u00B7 DIODE: FITTED");
+    box.id = "ryT3_box";
     card.appendChild(box);
-    var read = rlEl("p", "rl-read", "The coil is energized and the flyback diode is fitted. Predict first.");
-    read.id = "rlT3_read";
+    var read = ryEl("p", "ry-read", "The coil is energized and the flyback diode is fitted. Predict first.");
+    read.id = "ryT3_read";
     card.appendChild(read);
 
-    var dRow = rlEl("div", "rl-row");
+    var dRow = ryEl("div", "ry-row");
     var diodeOn = true;
-    var dBtn = rlEl("button", "rl-btn sel", "DIODE: FITTED");
-    dBtn.type = "button"; dBtn.id = "rlT3_diode";
+    var dBtn = ryEl("button", "ry-btn sel", "DIODE: FITTED");
+    dBtn.type = "button"; dBtn.id = "ryT3_diode";
     dBtn.setAttribute("aria-label", "Toggle the flyback diode");
     dBtn.addEventListener("click", function () {
       if (st.dead && !st.refitted) return;
@@ -39374,61 +39374,61 @@ if (typeof module !== "undefined" && module.exports) {
       read.textContent = diodeOn ?
         "The diode gives the spike a safe loop back through the coil: 0.7 V, clamped." :
         "No diode. The spike has nowhere to go but the driver transistor, rated 60 V.";
-      rlPop(card);
+      ryPop(card);
     });
     dRow.appendChild(dBtn);
     card.appendChild(dRow);
 
-    var open = rlEl("button", "rl-btn solid", "OPEN THE COIL");
-    open.type = "button"; open.id = "rlT3_open";
+    var open = ryEl("button", "ry-btn solid", "OPEN THE COIL");
+    open.type = "button"; open.id = "ryT3_open";
     open.disabled = true;
     open.setAttribute("aria-label", "Open the coil and release the flyback spike");
     open.addEventListener("click", function () {
       if (!st.predicted) return;
       if (diodeOn) {
-        box.className = "rl-box";
+        box.className = "ry-box";
         box.textContent = "COIL: OPEN \u00B7 SPIKE: 0.7 V CLAMPED \u00B7 TRANSISTOR: ALIVE";
         read.textContent = "The coil opened. The diode caught the field collapse and looped it back: 0.7 V across the transistor, nothing to see. This is why the diode is fitted.";
-        rlLog("trial 3: coil opened with the diode fitted, spike clamped at 0.7 V, driver alive.", "ok");
+        ryLog("trial 3: coil opened with the diode fitted, spike clamped at 0.7 V, driver alive.", "ok");
         if (st.killed) {
           st.refitted = true;
           open.disabled = true;
           dBtn.disabled = true;
           read.textContent = "Same coil, same opening, with the diode back in place: 0.7 V, transistor alive. The one-part fix.";
-          rlLog("trial 3: diode refitted, coil opened safely. Lesson complete.", "ok");
+          ryLog("trial 3: diode refitted, coil opened safely. Lesson complete.", "ok");
         }
       } else {
         st.killed = true;
         st.dead = true;
-        box.className = "rl-box dead";
+        box.className = "ry-box dead";
         box.textContent = "COIL: OPEN \u00B7 SPIKE: 90 V \u00B7 TRANSISTOR: DEAD";
         read.textContent = "The field collapsed with nowhere to go: 90 V across a transistor rated 60 V. It worked once, then never again. Refit the diode and open the coil again.";
-        rlLog("trial 3: coil opened with no diode, 90 V spike killed the driver.", "bad");
+        ryLog("trial 3: coil opened with no diode, 90 V spike killed the driver.", "bad");
         open.disabled = true;
         dBtn.disabled = true;
       }
-      rlMaybeCertify();
-      rlPop(card);
+      ryMaybeCertify();
+      ryPop(card);
     });
     card.appendChild(open);
 
-    var refitRow = rlEl("div", "rl-row");
-    refitRow.id = "rlT3_refitRow";
+    var refitRow = ryEl("div", "ry-row");
+    refitRow.id = "ryT3_refitRow";
     refitRow.style.display = "none";
-    var refit = rlEl("button", "rl-btn solid", "REFIT THE DIODE");
-    refit.type = "button"; refit.id = "rlT3_refit";
+    var refit = ryEl("button", "ry-btn solid", "REFIT THE DIODE");
+    refit.type = "button"; refit.id = "ryT3_refit";
     refit.setAttribute("aria-label", "Refit the flyback diode and open the coil again");
     refit.addEventListener("click", function () {
       diodeOn = true;
       dBtn.textContent = "DIODE: FITTED";
       dBtn.classList.add("sel");
-      box.className = "rl-box live";
+      box.className = "ry-box live";
       box.textContent = "COIL: RE-ENERGIZED \u00B7 DIODE: FITTED \u00B7 NEW TRANSISTOR";
       read.textContent = "Fresh transistor, diode fitted, coil re-energized. OPEN THE COIL again and watch the same opening end differently.";
       refitRow.style.display = "none";
       open.disabled = false;
-      rlLog("trial 3: diode refitted, ready for the safe opening.", "dim");
-      rlPop(card);
+      ryLog("trial 3: diode refitted, ready for the safe opening.", "dim");
+      ryPop(card);
     });
     refitRow.appendChild(refit);
     card.appendChild(refitRow);
@@ -39438,12 +39438,12 @@ if (typeof module !== "undefined" && module.exports) {
     var killWatcher = setInterval(function () {
       if (st.killed && refitRow.style.display === "none" && !st.refitted) {
         refitRow.style.display = "flex";
-        var link = rlEl("button", "rl-btn", "SEE THE FIX IN THE DIODE ROOM");
-        link.type = "button"; link.id = "rlT3_diodeLink";
+        var link = ryEl("button", "ry-btn", "SEE THE FIX IN THE DIODE ROOM");
+        link.type = "button"; link.id = "ryT3_diodeLink";
         link.setAttribute("aria-label", "Open The Diode Room to learn the flyback fix");
         link.addEventListener("click", function () {
           clearInterval(killWatcher);
-          rlClose();
+          ryClose();
           var d = document.getElementById("diBtn");
           if (d) d.click();
         });
@@ -39456,112 +39456,112 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
   /* ---------- build + mount ---------- */
-  function rlClose() { if (rlEls) rlEls.overlay.classList.remove("open"); }
-  function rlOpen() { if (rlEls) rlEls.overlay.classList.add("open"); }
+  function ryClose() { if (ryEls) ryEls.overlay.classList.remove("open"); }
+  function ryOpen() { if (ryEls) ryEls.overlay.classList.add("open"); }
 
-  function rlBuild() {
+  function ryBuild() {
     var box = document.querySelector(".dossier .actions");
-    if (!box || document.getElementById("rlBtn")) return;
-    rlState = {
+    if (!box || document.getElementById("ryBtn")) return;
+    ryState = {
       t1: [{ passed: false, cooking: false }, { passed: false, cooking: false }],
       t2: [{ passed: false, wired: false, crashed: false }, { passed: false, wired: false, crashed: false }],
       t3: { predicted: false, killed: false, refitted: false, dead: false }
     };
-    rlEls = { overlay: null, log: null, banner: null };
+    ryEls = { overlay: null, log: null, banner: null };
 
     var sty = document.createElement("style");
     sty.textContent = RL_CSS;
     document.head.appendChild(sty);
 
     var b = document.createElement("button");
-    b.id = "rlBtn";
+    b.id = "ryBtn";
     b.className = "pg-launch";
     b.textContent = "Open The Relay Room";
-    b.addEventListener("click", rlOpen);
+    b.addEventListener("click", ryOpen);
     box.appendChild(b);
 
-    var ov = rlEl("div", "rl-overlay");
-    ov.id = "rlOverlay";
+    var ov = ryEl("div", "ry-overlay");
+    ov.id = "ryOverlay";
     ov.setAttribute("role", "dialog");
     ov.setAttribute("aria-label", "The Relay Room");
-    var x = rlEl("button", "rl-btn", "CLOSE");
-    x.id = "rlXBtn";
+    var x = ryEl("button", "ry-btn", "CLOSE");
+    x.id = "ryXBtn";
     x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
     x.setAttribute("aria-label", "Close The Relay Room");
-    x.addEventListener("click", rlClose);
+    x.addEventListener("click", ryClose);
     ov.appendChild(x);
-    rlEls.overlay = ov;
+    ryEls.overlay = ov;
     document.addEventListener("keydown", function (ev) {
-      if (ev.key === "Escape" && ov.classList.contains("open")) rlClose();
+      if (ev.key === "Escape" && ov.classList.contains("open")) ryClose();
     });
 
-    var panel = rlEl("div", "rl-panel");
-    panel.appendChild(rlEl("div", "rl-kicker", "OLD IRON BENCH 55"));
-    panel.appendChild(rlEl("h2", "rl-title", "The Relay Room"));
-    panel.appendChild(rlEl("p", "rl-sub",
+    var panel = ryEl("div", "ry-panel");
+    panel.appendChild(ryEl("div", "ry-kicker", "OLD IRON BENCH 55"));
+    panel.appendChild(ryEl("h2", "ry-title", "The Relay Room"));
+    panel.appendChild(ryEl("p", "ry-sub",
       "A relay is a switch with two lives: a small electromagnet on the control side, and contacts on a " +
       "completely separate circuit. Drive the coil inside its voltage window, wire the contacts so the safe " +
       "state wins when the controller dies, and open one coil with no flyback diode to meet the spike."));
 
-    var introWrap = rlEl("div", "");
+    var introWrap = ryEl("div", "");
     introWrap.innerHTML = RL_INTRO_HTML;
     panel.appendChild(introWrap);
 
-    panel.appendChild(rlDoFirstCard());
+    panel.appendChild(ryDoFirstCard());
 
-    var t1Head = rlEl("div", "rl-card");
-    t1Head.appendChild(rlEl("h3", null, "TRIAL 1: DRIVE THE COIL"));
-    t1Head.appendChild(rlEl("p", "why",
+    var t1Head = ryEl("div", "ry-card");
+    t1Head.appendChild(ryEl("h3", null, "TRIAL 1: DRIVE THE COIL"));
+    t1Head.appendChild(ryEl("p", "why",
       "Two relays, two coil ratings. For each: pick the drive voltage and COMMIT DRIVE. The window is 75 to " +
       "125 percent of the coil rating. Under it the armature never moves; over it the coil clicks today and " +
       "cooks in seconds, and the bench will let you watch it happen."));
     panel.appendChild(t1Head);
-    RL_T1.forEach(function (part, i) { panel.appendChild(rlT1Card(part, i + 1)); });
+    RL_T1.forEach(function (part, i) { panel.appendChild(ryT1Card(part, i + 1)); });
 
-    var t2Head = rlEl("div", "rl-card");
-    t2Head.appendChild(rlEl("h3", null, "TRIAL 2: WIRE IT FAIL-SAFE"));
-    t2Head.appendChild(rlEl("p", "why",
+    var t2Head = ryEl("div", "ry-card");
+    t2Head.appendChild(ryEl("h3", null, "TRIAL 2: WIRE IT FAIL-SAFE"));
+    t2Head.appendChild(ryEl("p", "why",
       "Two loads, two different safe states. For each: pick the contact, COMMIT WIRING, then CRASH THE " +
       "CONTROLLER. The relay's resting state, coil dead, NC closed, NO open, is the only state you can trust " +
       "when nobody is watching."));
     panel.appendChild(t2Head);
-    RL_T2.forEach(function (p, i) { panel.appendChild(rlT2Card(p, i + 1)); });
+    RL_T2.forEach(function (p, i) { panel.appendChild(ryT2Card(p, i + 1)); });
 
-    var t3Head = rlEl("div", "rl-card");
-    t3Head.appendChild(rlEl("h3", null, "TRIAL 3: THE NO-DIODE LESSON"));
-    t3Head.appendChild(rlEl("p", "why",
+    var t3Head = ryEl("div", "ry-card");
+    t3Head.appendChild(ryEl("h3", null, "TRIAL 3: THE NO-DIODE LESSON"));
+    t3Head.appendChild(ryEl("p", "why",
       "One coil, one inductor, one driver transistor rated 60 V. Call the spike band before anything moves, " +
       "open the coil with the diode removed, then refit the diode and open it again. The fix lives in The Diode Room."));
     panel.appendChild(t3Head);
-    panel.appendChild(rlT3Card());
+    panel.appendChild(ryT3Card());
 
     /* certification banner */
-    var banner = rlEl("div", "rl-banner");
-    banner.id = "rlBanner";
-    banner.appendChild(rlEl("h3", null, "ROOM CERTIFIED"));
-    banner.appendChild(rlEl("p", null, rlCertLine()));
+    var banner = ryEl("div", "ry-banner");
+    banner.id = "ryBanner";
+    banner.appendChild(ryEl("h3", null, "ROOM CERTIFIED"));
+    banner.appendChild(ryEl("p", null, ryCertLine()));
     panel.appendChild(banner);
-    rlEls.banner = banner;
+    ryEls.banner = banner;
 
     /* bench log */
-    var logCard = rlEl("div", "rl-card");
-    logCard.appendChild(rlEl("h3", null, "BENCH LOG"));
-    var log = rlEl("div", "rl-log");
-    log.id = "rlLog";
+    var logCard = ryEl("div", "ry-card");
+    logCard.appendChild(ryEl("h3", null, "BENCH LOG"));
+    var log = ryEl("div", "ry-log");
+    log.id = "ryLog";
     log.setAttribute("aria-live", "polite");
     logCard.appendChild(log);
     panel.appendChild(logCard);
-    rlEls.log = log;
+    ryEls.log = log;
 
     ov.appendChild(panel);
     document.body.appendChild(ov);
-    rlLog("bench open. One 12 V relay on the bench, coil cold, flyback diode fitted.", "dim");
+    ryLog("bench open. One 12 V relay on the bench, coil cold, flyback diode fitted.", "dim");
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", rlBuild);
+    document.addEventListener("DOMContentLoaded", ryBuild);
   } else {
-    rlBuild();
+    ryBuild();
   }
 })();
 /* ============================================================
