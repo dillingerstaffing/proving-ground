@@ -27063,6 +27063,7 @@ if (typeof module !== "undefined" && module.exports) {
       s.addEventListener("change", function () {
         gtState.trials[ti].outs[name] = s.value;
         gtState.trials[ti].passed = false;
+        gtInvalidateRun(ti);
         gtRefresh(ti);
       });
       orow.appendChild(s);
@@ -27197,7 +27198,7 @@ if (typeof module !== "undefined" && module.exports) {
       s1.setAttribute("aria-label", "Trial " + t.n + " gate G" + (gi + 1) + " input 1");
       gtFillSelect(s1, opts, st.gates[gi].i1);
       s1.addEventListener("change", function () {
-        st.gates[gi].i1 = s1.value; st.passed = false; gtRefresh(ti);
+        st.gates[gi].i1 = s1.value; st.passed = false; gtInvalidateRun(ti); gtRefresh(ti);
       });
       row.appendChild(s1);
       row.appendChild(gtEl("span", null, "NAND"));
@@ -27205,7 +27206,7 @@ if (typeof module !== "undefined" && module.exports) {
       s2.setAttribute("aria-label", "Trial " + t.n + " gate G" + (gi + 1) + " input 2");
       gtFillSelect(s2, opts, st.gates[gi].i2);
       s2.addEventListener("change", function () {
-        st.gates[gi].i2 = s2.value; st.passed = false; gtRefresh(ti);
+        st.gates[gi].i2 = s2.value; st.passed = false; gtInvalidateRun(ti); gtRefresh(ti);
       });
       row.appendChild(s2);
       row.appendChild(gtEl("span", null, "->"));
