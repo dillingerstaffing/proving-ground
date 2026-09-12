@@ -41226,3 +41226,722 @@ if (typeof module !== "undefined" && module.exports) {
     xoBuild();
   }
 })();
+
+/* ============================================================
+   BENCH 58: THE SHUNT ROOM (oldiron)
+   One atomic mechanism: a shunt resistor turns current into a
+   readable voltage, but every reading costs burden voltage, and
+   the sense taps must not share load current (Kelvin, 4-wire).
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------- the one mechanism, stated as data ---------- */
+  var SN_RAIL = 5.0;          /* V, the bench rail */
+  var SN_T1_LOAD = 4.0;       /* A, the trial-1 load */
+  var SN_BURDEN_MAX = 0.250;  /* V: the load must still see 4.75 V */
+  var SN_SENSE_MIN = 0.020;   /* V: the meter's honest floor */
+  var SN_ADC_LSB = 0.0005;    /* V: the bench ADC resolves 0.5 mV */
+  var SN_SHUNTS = [
+    { r: 0.001, p: 2,   spec: "1 m\u03A9 \u00B7 2 W" },
+    { r: 0.005, p: 2,   spec: "5 m\u03A9 \u00B7 2 W" },
+    { r: 0.020, p: 1,   spec: "20 m\u03A9 \u00B7 1 W" },
+    { r: 0.100, p: 0.5, spec: "100 m\u03A9 \u00B7 0.5 W" }
+  ];
+  var SN_T2_R = 0.050;         /* ohm, the trial-2 shunt */
+  var SN_T2_I = 2.0;           /* A, the trial-2 load */
+  var SN_T2_CU = 0.005;        /* ohm, trace shared by bench B's taps */
+  var SN_T3_R = 0.025;         /* ohm, the trial-3 shunt */
+  var SN_T3_TRIP = 0.075;      /* V: comparator trips at 75 mV and above */
+  var SN_T3_LOADS = [2.5, 3.0, 3.5];
+
+  function snBurden(r, i) { return i * r; }
+  function snPower(r, i) { return i * i * r; }
+  function snTrip(i) { return i * SN_T3_R >= SN_T3_TRIP - 1e-12; }
+
+  function snFmtMv(v) { return (v * 1000).toFixed(1) + " mV"; }
+  function snFmtV(v) { return v.toFixed(2) + " V"; }
+  function snFmtA(i) { return i.toFixed(2) + " A"; }
+  function snFmtW(p) { return p.toFixed(2) + " W"; }
+
+  /* Three honest checks: burden, sense floor, power rating. */
+  function snSizeCheck(ix, i) {
+    var s = SN_SHUNTS[ix];
+    var burden = snBurden(s.r, i);
+    var power = snPower(s.r, i);
+    var loadV = SN_RAIL - burden;
+    var counts = Math.round(burden / SN_ADC_LSB);
+    var checks = [
+      { key: "BURDEN",
+        ok: burden <= SN_BURDEN_MAX + 1e-12,
+        line: "burden " + snFmtMv(burden) + " " +
+          (burden <= SN_BURDEN_MAX + 1e-12 ? "inside" : "past") +
+          " the 250 mV budget (load sees " + snFmtV(loadV) + ")" },
+      { key: "SENSE",
+        ok: burden >= SN_SENSE_MIN - 1e-12,
+        line: "sense " + snFmtMv(burden) + " " +
+          (burden >= SN_SENSE_MIN - 1e-12 ? "at or above" : "below") +
+          " the 20 mV floor (" + counts + " ADC counts)" },
+      { key: "HEAT",
+        ok: power <= s.p + 1e-12,
+        line: "shunt power " + snFmtW(power) + " " +
+          (power <= s.p + 1e-12 ? "inside" : "past") +
+          " the " + snFmtW(s.p) + " rating" }
+    ];
+    var pass = checks[0].ok && checks[1].ok && checks[2].ok;
+    return { burden: burden, power: power, loadV: loadV, counts: counts,
+             checks: checks, pass: pass };
+  }
+
+  /* Trial 2: the truth the two meters report, and what the probes find. */
+  function snT2Truth() {
+    return { aMv: SN_T2_I * SN_T2_R * 1000,
+             bMv: SN_T2_I * (SN_T2_R + SN_T2_CU) * 1000 };
+  }
+  function snT2Probe(which, fixed) {
+    var t = snT2Truth();
+    if (which === "a") return { mv: t.aMv,
+      note: "A PADS: " + t.aMv.toFixed(1) + " mV. Kelvin taps: the sense wires touch the shunt pads and carry no load current." };
+    if (which === "bpads") return { mv: fixed ? t.aMv : t.aMv,
+      note: (fixed ? "B PADS (re-tapped): " : "B PADS: ") + t.aMv.toFixed(1) + " mV. " +
+        (fixed ? "The taps now touch only the shunt pads, and B agrees with A."
+               : "The shunt is telling the truth. B's taps are not listening to it.") };
+    return { mv: t.bMv,
+      note: "B LOAD COPPER: " + t.bMv.toFixed(1) + " mV. B's sense taps sit outboard of the pads and share " +
+        (SN_T2_CU * 1000).toFixed(0) + " m\u03A9 of copper at " + snFmtA(SN_T2_I) + ". That is the extra " +
+        ((t.bMv - t.aMv)).toFixed(1) + " mV, a phantom " +
+        (((t.bMv - t.aMv) / t.aMv) * 100).toFixed(0) + " percent of current that was never there." };
+  }
+  var SN_T2_VERDICTS = [
+    "SENSE TAPS SHARE LOAD CURRENT (2-WIRE)",
+    "SHUNT OUT OF TOLERANCE",
+    "ADC MISCALIBRATED"
+  ];
+  function snVerdictT2(ix) {
+    if (ix === 0) return { ok: true,
+      why: "Called it. B's taps are two-wire: they span the shunt plus 5 m\u03A9 of copper, so 2.00 A reads as " +
+        "110.0 mV, 2.20 A. MOVE THE TAPS is armed: put them on the shunt pads." };
+    if (ix === 1) return { ok: false,
+      why: "The pads read 100.0 mV on both benches. The shunt is not the liar; the taps are. Probe the copper." };
+    return { ok: false,
+      why: "Both meters read their own taps honestly: A sees 100.0 mV, B sees 110.0 mV. The ADCs agree with their " +
+        "inputs; the inputs disagree with the truth. Probe the copper." };
+  }
+
+  /* node/jsdom test hooks: assigned before any DOM is touched, so a
+     hostile docStub still gets the exports. */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.SN = {
+      RAIL: SN_RAIL, T1_LOAD: SN_T1_LOAD, BURDEN_MAX: SN_BURDEN_MAX,
+      SENSE_MIN: SN_SENSE_MIN, ADC_LSB: SN_ADC_LSB, SHUNTS: SN_SHUNTS,
+      T2_R: SN_T2_R, T2_I: SN_T2_I, T2_CU: SN_T2_CU,
+      T3_R: SN_T3_R, T3_TRIP: SN_T3_TRIP, T3_LOADS: SN_T3_LOADS,
+      T2_VERDICTS: SN_T2_VERDICTS,
+      burden: snBurden, power: snPower, trip: snTrip,
+      sizeCheck: snSizeCheck, t2Truth: snT2Truth, t2Probe: snT2Probe,
+      verdictT2: snVerdictT2,
+      fmtMv: snFmtMv, fmtV: snFmtV, fmtA: snFmtA, fmtW: snFmtW,
+      introHTML: null /* filled after the copy const below */
+    };
+  }
+
+  /* ---------- intro copy: why first, worked example, failure modes ---------- */
+  var SN_INTRO_HTML = [
+    "<div class=\"sn-card\"><h3>WHY THIS ROOM EXISTS</h3>",
+    "<p class=\"why\">Every ammeter lies a little. Current has no pressure gauge: the only way to read it is to put a ",
+    "small resistor in its path and read the voltage the current drops across it. That resistor is the <b>shunt</b>, ",
+    "and the voltage it steals from the rail is the <b>burden</b>. The trick is the whole room: steal enough voltage ",
+    "to read cleanly, not so much that the load starves. And read only the shunt, because any extra copper in the ",
+    "sense path reads as current that was never there. Bench power supplies, GPU VRMs, and server backplanes all ",
+    "measure current this way. The lies are the same everywhere.</p>",
+    "<p class=\"why\">Two more terms, earned now. The <b>sense voltage</b> is the drop across the shunt, the number the ",
+    "meter reads. The bench ADC resolves 0.5 mV, so a 20 mV sense is 40 counts and a clean reading. <b>Kelvin taps</b> ",
+    "(4-wire) means the sense wires touch the shunt pads and carry no load current: the reading spans the shunt and ",
+    "nothing else.</p></div>",
+    "<div class=\"sn-card\"><h3>THE WORKED EXAMPLE</h3>",
+    "<p class=\"why\">The 5 V rail feeds a 4 A load through a 20 m\u03A9 shunt. The burden is 4 x 0.020 = 80 mV, so the ",
+    "load sees 4.92 V, about one-sixtieth of the rail gone. The shunt burns 16 x 0.020 = 0.32 W, a third of its 1 W ",
+    "rating. The sense is 80 mV, which is 160 ADC counts, roughly half a percent per count: a clean reading. Now try ",
+    "the 1 m\u03A9 shunt from the tray: 4 mV of burden, 8 counts, and the reading drowns in noise. That is the whole ",
+    "tradeoff in one row: burden against readability, with heat watching from the side.</p></div>",
+    "<div class=\"sn-card sn-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3><ul>",
+    "<li><b>BURDEN:</b> 100 m\u03A9 at 4 A steals 400 mV. The 5 V rail sags to 4.60 V and the load resets. You will blame ",
+    "the firmware. The meter did it.</li>",
+    "<li><b>DEAF:</b> 1 m\u03A9 at 4 A gives 4 mV, eight ADC counts. The reading is noise with ambition. Trial 1's floor ",
+    "is 20 mV for a reason.</li>",
+    "<li><b>HOT:</b> 1.6 W in a 0.5 W part. Resistance walks with temperature first, then the part smokes. Ratings are ",
+    "promises about heat, not suggestions.</li>",
+    "<li><b>THE LIAR:</b> sense taps that share load current add the copper's resistance to the reading. 5 m\u03A9 of ",
+    "trace at 2 A reads 10 mV high: a phantom 10 percent of current. Trial 2 is that lie on purpose.</li>",
+    "<li><b>THE TRIP:</b> park the overcurrent threshold low and the protector reboots the rail under normal peaks. ",
+    "Park it high and the downstream fuse eats the fault first. The comparator only knows the sense voltage.</li></ul></div>"
+  ].join("");
+  if (typeof module !== "undefined" && module.exports && module.exports.SN) {
+    module.exports.SN.introHTML = SN_INTRO_HTML;
+  }
+
+  /* ---------- css ---------- */
+  var SN_CSS = [
+    ".sn-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".sn-overlay.open{display:block}",
+    ".sn-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".sn-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".sn-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".sn-sub{font-size:14px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.92;margin:0 0 18px;max-width:68ch}",
+    ".sn-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".sn-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".sn-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".sn-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".sn-card b{color:var(--ember,#ff5a1f)}",
+    ".sn-fail{border:1px solid var(--ember,#ff5a1f)}",
+    ".sn-fail li{font-size:13px;line-height:1.6;margin:0 0 6px;list-style:none}",
+    ".sn-fail ul{padding:0;margin:0}",
+    ".sn-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}",
+    ".sn-lab{font-size:12px;letter-spacing:.12em;opacity:.75}",
+    ".sn-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
+    ".sn-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".sn-btn:disabled{opacity:.35;cursor:default}",
+    ".sn-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".sn-btn.sel{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12)}",
+    ".sn-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#101014}",
+    ".sn-verdict{font-size:14px;line-height:1.6;margin:10px 0 0;min-height:24px}",
+    ".sn-verdict.ok{color:#9fe870}",
+    ".sn-verdict.bad{color:#ff5a1f}",
+    ".sn-read{font-size:14px;line-height:1.7;margin:8px 0 0;min-height:22px;white-space:pre-line}",
+    ".sn-log{font-size:12.5px;line-height:1.7;max-height:280px;overflow-y:auto}",
+    ".sn-log div{margin:0 0 4px}",
+    ".sn-log .dim{opacity:.6}",
+    ".sn-log .ok{color:#9fe870}",
+    ".sn-log .bad{color:#ff5a1f}",
+    ".sn-notes{font-size:13px;line-height:1.7;margin:8px 0 0;min-height:22px;white-space:pre-line}",
+    ".sn-banner{display:none;border:1px solid var(--ember,#ff5a1f);background:rgba(255,90,31,.08);padding:18px;margin:0 0 14px}",
+    ".sn-banner h3{font-family:'Space Grotesk',sans-serif;font-size:18px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".sn-banner p{font-size:13px;line-height:1.65;margin:0 0 12px;max-width:70ch}",
+    ".sn-box{font-size:12px;letter-spacing:.12em;border:1px solid var(--line,rgba(242,237,228,.28));padding:10px 14px;margin:10px 0;max-width:520px;text-align:center}",
+    ".sn-num{font-family:'IBM Plex Mono',monospace;font-size:14px;min-height:48px;padding:10px 14px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));width:200px}",
+    ".sn-num:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".sn-pop{animation:snPop 200ms ease-out}",
+    "@keyframes snPop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
+    "@media (prefers-reduced-motion:reduce){.sn-pop{animation:none}}",
+    "@media (max-width:640px){.sn-panel{padding:48px 14px 100px}.sn-num{width:100%}}"
+  ].join("\n");
+
+  /* ---------- dom helpers ---------- */
+  var snState = null, snEls = null;
+
+  function snEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  function snLog(msg, cls) {
+    if (!snEls || !snEls.log) return;
+    var d = snEl("div", cls || "", msg);
+    snEls.log.appendChild(d);
+    snEls.log.scrollTop = snEls.log.scrollHeight;
+  }
+  function snPop(card) {
+    card.classList.remove("sn-pop");
+    void card.offsetWidth;
+    card.classList.add("sn-pop");
+  }
+  function snCertLine() {
+    var s = snState;
+    var sh = s.t1.shunt === null ? "?" : SN_SHUNTS[s.t1.shunt].spec;
+    return "Called the burden before the load stepped, sized the " + sh + " shunt inside the 250 mV budget, " +
+      "found the two-wire liar outboard of the B pads, and parked the overcurrent trip on the 3.0 A line. " +
+      "The room remembers.";
+  }
+  function snAllPassed() {
+    var s = snState;
+    return s.t1.passed && s.t2.passed && s.t3.passed;
+  }
+  function snMaybeCert() { snRefreshCert(); }
+  function snRefreshCert() {
+    if (!snEls || !snEls.banner) return;
+    if (snAllPassed()) {
+      var cp = (typeof document !== "undefined") ? document.getElementById("snCertP") : null;
+      if (cp) cp.textContent = snCertLine();
+      snEls.banner.style.display = "block";
+      snLog("all three trials pass. ROOM CERTIFIED.", "ok");
+    } else {
+      snEls.banner.style.display = "none";
+    }
+  }
+
+  /* ---------- do-first card: meter the rail, free ---------- */
+  function snDoFirstCard() {
+    var card = snEl("div", "sn-card");
+    card.appendChild(snEl("h3", null, "DO FIRST: METER THE RAIL, FREE"));
+    card.appendChild(snEl("p", "why",
+      "The 20 m\u03A9 shunt is already fitted on a 5 V rail. Step the load, press METER, watch the sense " +
+      "voltage follow the current. Nothing here is graded; the trials below are where it counts."));
+    var row = snEl("div", "sn-row");
+    var loadLab = snEl("span", "sn-lab", "LOAD");
+    var st = { load: 4 };
+    var loads = [1, 2, 4], lBtns = [];
+    loads.forEach(function (a) {
+      var b = snEl("button", "sn-btn", a + " A");
+      b.id = "snDoFirst_load_" + a;
+      b.setAttribute("aria-label", "Set load to " + a + " amps");
+      b.addEventListener("click", function () {
+        st.load = a;
+        lBtns.forEach(function (x, i) { x.classList.toggle("sel", loads[i] === a); });
+        loadLab.textContent = "LOAD " + a + " A";
+        snPop(card);
+      });
+      lBtns.push(b);
+      row.appendChild(b);
+    });
+    lBtns[2].classList.add("sel");
+    var run = snEl("button", "sn-btn solid", "METER THE RAIL");
+    run.id = "snDoFirst_run";
+    row.appendChild(run);
+    card.appendChild(row);
+    var read = snEl("div", "sn-read", "LOAD 4 A \u00B7 press METER THE RAIL");
+    read.id = "snDoFirst_read";
+    card.appendChild(read);
+    run.addEventListener("click", function () {
+      var r = 0.020, burden = snBurden(r, st.load), loadV = SN_RAIL - burden;
+      read.textContent = "SENSE " + snFmtMv(burden) + " \u00B7 CURRENT " + snFmtA(burden / r) +
+        "\nBURDEN " + snFmtMv(burden) + " \u00B7 LOAD SEES " + snFmtV(loadV) +
+        "\nThe sense is the burden: the same drop you read is the drop you stole.";
+      snLog("do-first: metered " + st.load + " A through 20 m\u03A9: sense " + snFmtMv(burden) + ".", "dim");
+      snPop(card);
+    });
+    return card;
+  }
+
+  /* ---------- trial 1: size the shunt ---------- */
+  function snT1Card() {
+    var card = snEl("div", "sn-card");
+    card.appendChild(snEl("p", "why",
+      "The 5 V rail feeds a 4 A load. Three checks, all honest: burden at or under 250 mV (the load must still " +
+      "see 4.75 V), sense at or above 20 mV (the meter's floor), shunt power inside its rating. " +
+      "Call the burden in mV before you run."));
+    var row = snEl("div", "sn-row");
+    row.appendChild(snEl("span", "sn-lab", "TRAY"));
+    var shBtns = [];
+    SN_SHUNTS.forEach(function (s, i) {
+      var b = snEl("button", "sn-btn", s.spec);
+      b.id = "snT1_sh" + i;
+      b.setAttribute("aria-label", "Fit the " + s.spec + " shunt");
+      b.addEventListener("click", function () {
+        snState.t1.shunt = i;
+        snState.t1.predicted = false;
+        snState.t1.ran = false;
+        snState.t1.passed = false;
+        snRefreshCert();
+        shBtns.forEach(function (x, j) { x.classList.toggle("sel", j === i); });
+        pred.value = "";
+        verdict.textContent = "Shunt fitted: " + s.spec + ". Call the burden, then run.";
+        verdict.className = "sn-verdict";
+        read.textContent = "";
+        run.disabled = true;
+        snPop(card);
+      });
+      shBtns.push(b);
+      row.appendChild(b);
+    });
+    card.appendChild(row);
+
+    var prow = snEl("div", "sn-row");
+    prow.appendChild(snEl("span", "sn-lab", "PREDICTED BURDEN"));
+    var pred = snEl("input", "sn-num");
+    pred.id = "snT1_pred";
+    pred.type = "number";
+    pred.step = "0.1";
+    pred.min = "0";
+    pred.setAttribute("aria-label", "Predicted burden in millivolts");
+    pred.placeholder = "mV";
+    prow.appendChild(pred);
+    var callBtn = snEl("button", "sn-btn", "CALL THE BURDEN");
+    callBtn.id = "snT1_call";
+    prow.appendChild(callBtn);
+    var run = snEl("button", "sn-btn solid", "RUN LOAD STEP");
+    run.id = "snT1_run";
+    run.disabled = true;
+    prow.appendChild(run);
+    card.appendChild(prow);
+
+    var read = snEl("div", "sn-read", "");
+    read.id = "snT1_read";
+    card.appendChild(read);
+    var verdict = snEl("div", "sn-verdict", "Pick a shunt from the tray.");
+    verdict.id = "snT1_verdict";
+    verdict.setAttribute("aria-live", "polite");
+    card.appendChild(verdict);
+
+    callBtn.addEventListener("click", function () {
+      var ix = snState.t1.shunt;
+      if (ix === null) { verdict.textContent = "Fit a shunt first."; verdict.className = "sn-verdict bad"; return; }
+      var v = parseFloat(pred.value, 10);
+      var truth = snBurden(SN_SHUNTS[ix].r, SN_T1_LOAD) * 1000;
+      if (!isFinite(v) || v < 0) { verdict.textContent = "Type a number in mV."; verdict.className = "sn-verdict bad"; return; }
+      if (Math.abs(v - truth) <= Math.max(0.05 * truth, 0.05)) {
+        snState.t1.predicted = true;
+        run.disabled = false;
+        verdict.textContent = "PREDICTION RIGHT: " + truth.toFixed(1) + " mV. RUN LOAD STEP is armed.";
+        verdict.className = "sn-verdict ok";
+        snLog("t1: predicted burden " + v + " mV for " + SN_SHUNTS[ix].spec + ", true " + truth.toFixed(1) + " mV.", "ok");
+      } else {
+        snState.t1.predicted = false;
+        run.disabled = true;
+        verdict.textContent = "PREDICTION WRONG: the burden is I x R = 4 A x " + SN_SHUNTS[ix].spec.split(" ")[0] +
+          ". Do the multiply, then call it again.";
+        verdict.className = "sn-verdict bad";
+        snLog("t1: wrong burden prediction " + v + " mV (true " + truth.toFixed(1) + " mV).", "bad");
+      }
+      snPop(card);
+    });
+
+    run.addEventListener("click", function () {
+      var ix = snState.t1.shunt;
+      if (ix === null || !snState.t1.predicted) return;
+      var chk = snSizeCheck(ix, SN_T1_LOAD);
+      snState.t1.ran = true;
+      read.textContent = "SENSE " + snFmtMv(chk.burden) + " \u00B7 CURRENT " + snFmtA(SN_T1_LOAD) +
+        "\nBURDEN " + snFmtMv(chk.burden) + " \u00B7 LOAD SEES " + snFmtV(chk.loadV) +
+        " \u00B7 SHUNT POWER " + snFmtW(chk.power);
+      var lines = chk.checks.map(function (c) { return (c.ok ? "PASS" : "FAIL") + ": " + c.line; });
+      if (chk.pass) {
+        snState.t1.passed = true;
+        verdict.textContent = lines.join("\n") + "\nTrial 1 passes: the " + SN_SHUNTS[ix].spec +
+          " shunt reads cleanly and the rail stays alive.";
+        verdict.className = "sn-verdict ok";
+        snLog("t1: " + SN_SHUNTS[ix].spec + " passes all three checks. Trial 1 passes.", "ok");
+        snMaybeCert();
+      } else {
+        verdict.textContent = lines.join("\n") + "\nTrial 1 fails on this shunt. Read the failing check, pick another part.";
+        verdict.className = "sn-verdict bad";
+        snLog("t1: " + SN_SHUNTS[ix].spec + " fails: " +
+          chk.checks.filter(function (c) { return !c.ok; }).map(function (c) { return c.key; }).join(", ") + ".", "bad");
+      }
+      snPop(card);
+    });
+    return card;
+  }
+
+  /* ---------- trial 2: find the liar ---------- */
+  function snT2Card() {
+    var card = snEl("div", "sn-card");
+    card.appendChild(snEl("p", "why",
+      "Both benches drive the same 2.00 A load through a 50 m\u03A9 shunt. Bench A reads 100.0 mV, 2.00 A. " +
+      "Bench B reads 110.0 mV, 2.20 A. One meter is lying. Probe first, verdict second, repair third."));
+    var box = snEl("div", "sn-box",
+      "A: SENSE 100.0 mV \u00B7 2.00 A (Kelvin taps)\nB: SENSE 110.0 mV \u00B7 2.20 A (taps as wired)");
+    box.id = "snT2_box";
+    card.appendChild(box);
+
+    var row = snEl("div", "sn-row");
+    var pA = snEl("button", "sn-btn", "PROBE A PADS");
+    pA.id = "snT2_probeA";
+    pA.setAttribute("aria-label", "Probe bench A shunt pads");
+    var pB = snEl("button", "sn-btn", "PROBE B PADS");
+    pB.id = "snT2_probeB";
+    pB.setAttribute("aria-label", "Probe bench B shunt pads");
+    var pCu = snEl("button", "sn-btn", "PROBE B LOAD COPPER");
+    pCu.id = "snT2_probeCu";
+    pCu.setAttribute("aria-label", "Probe bench B load-side copper");
+    row.appendChild(pA); row.appendChild(pB); row.appendChild(pCu);
+    card.appendChild(row);
+
+    var notes = snEl("div", "sn-notes", "No probes yet. The bench is waiting.");
+    notes.id = "snT2_notes";
+    card.appendChild(notes);
+
+    var vrow = snEl("div", "sn-row");
+    vrow.appendChild(snEl("span", "sn-lab", "VERDICT"));
+    var vBtns = [];
+    SN_T2_VERDICTS.forEach(function (v, i) {
+      var b = snEl("button", "sn-btn", v);
+      b.id = "snT2_v" + i;
+      b.disabled = true;
+      b.addEventListener("click", function () {
+        var r = snVerdictT2(i);
+        if (snState.t2.passed) { snState.t2.passed = false; snRefreshCert(); }
+        if (r.ok) {
+          snState.t2.committed = true;
+          verdict.textContent = "VERDICT RIGHT: " + r.why;
+          verdict.className = "sn-verdict ok";
+          fix.disabled = false;
+          snLog("t2: correct verdict, two-wire taps. Fix armed.", "ok");
+        } else {
+          verdict.textContent = "VERDICT WRONG: " + r.why;
+          verdict.className = "sn-verdict bad";
+          snLog("t2: wrong verdict (" + SN_T2_VERDICTS[i] + ").", "bad");
+        }
+        snPop(card);
+      });
+      vBtns.push(b);
+      vrow.appendChild(b);
+    });
+    card.appendChild(vrow);
+
+    var fix = snEl("button", "sn-btn solid", "MOVE THE TAPS");
+    fix.id = "snT2_fix";
+    fix.disabled = true;
+    var frow = snEl("div", "sn-row");
+    frow.appendChild(fix);
+    card.appendChild(frow);
+
+    var verdict = snEl("div", "sn-verdict", "Probe bench B before committing a verdict.");
+    verdict.id = "snT2_verdict";
+    verdict.setAttribute("aria-live", "polite");
+    card.appendChild(verdict);
+
+    function probe(which) {
+      var r = snT2Probe(which, snState.t2.fixed);
+      if (which === "a") snState.t2.probedA = true;
+      if (which === "bpads") snState.t2.probedB = true;
+      if (which === "bcu") snState.t2.probedCu = true;
+      notes.textContent = (notes.textContent === "No probes yet. The bench is waiting." ? "" : notes.textContent + "\n") + r.note;
+      if (snState.t2.probedB || snState.t2.probedCu) {
+        vBtns.forEach(function (b) { b.disabled = false; });
+        if (verdict.textContent === "Probe bench B before committing a verdict.") verdict.textContent = "";
+      }
+      if (snState.t2.committed && snState.t2.fixed && which === "bpads") {
+        snState.t2.passed = true;
+        verdict.textContent = "B now reads 100.0 mV = 2.00 A, matching A. Kelvin taps read only the shunt. Trial 2 passes.";
+        verdict.className = "sn-verdict ok";
+        snLog("t2: taps moved to pads, B reads 100.0 mV. Trial 2 passes.", "ok");
+        snMaybeCert();
+      }
+      snPop(card);
+    }
+    pA.addEventListener("click", function () { probe("a"); snLog("t2: probed A pads: 100.0 mV.", "dim"); });
+    pB.addEventListener("click", function () { probe("bpads"); snLog("t2: probed B pads.", "dim"); });
+    pCu.addEventListener("click", function () { probe("bcu"); snLog("t2: probed B load copper: 110.0 mV.", "dim"); });
+
+    fix.addEventListener("click", function () {
+      if (!snState.t2.committed) return;
+      snState.t2.fixed = true;
+      box.textContent = "A: SENSE 100.0 mV \u00B7 2.00 A (Kelvin taps)\nB: SENSE 100.0 mV \u00B7 2.00 A (taps moved to pads)";
+      fix.disabled = true;
+      notes.textContent += "\nTAPS MOVED: B's sense wires now touch the shunt pads. Re-probe B to confirm.";
+      verdict.textContent = "Taps moved. PROBE B PADS again to confirm the reading.";
+      verdict.className = "sn-verdict";
+      snLog("t2: taps moved to the pads. Re-probe to confirm.", "dim");
+      snPop(card);
+    });
+    return card;
+  }
+
+  /* ---------- trial 3: park the trip ---------- */
+  function snT3Card() {
+    var card = snEl("div", "sn-card");
+    card.appendChild(snEl("p", "why",
+      "The comparator watches the sense voltage and trips the rail at 75 mV and above. The shunt is 25 m\u03A9. " +
+      "The rail is rated 3 A max: the trip must catch anything past it. Call TRIP or HOLD for 2.5, 3.0, and " +
+      "3.5 A, then apply power. The trip line is inclusive: 75.0 mV trips."));
+    SN_T3_LOADS.forEach(function (a) {
+      var row = snEl("div", "sn-row");
+      var lab = snEl("span", "sn-lab", snFmtA(a) + " LOAD");
+      lab.id = "snT3_lab_" + String(a).replace(".", "p");
+      var t = snEl("button", "sn-btn", "TRIP");
+      t.id = "snT3_" + String(a).replace(".", "p") + "_trip";
+      t.setAttribute("aria-label", "Predict trip at " + a + " amps");
+      var h = snEl("button", "sn-btn", "HOLD");
+      h.id = "snT3_" + String(a).replace(".", "p") + "_hold";
+      h.setAttribute("aria-label", "Predict hold at " + a + " amps");
+      t.addEventListener("click", function () { setPred(a, true, t, h); });
+      h.addEventListener("click", function () { setPred(a, false, t, h); });
+      row.appendChild(lab); row.appendChild(t); row.appendChild(h);
+      card.appendChild(row);
+    });
+    var row = snEl("div", "sn-row");
+    var run = snEl("button", "sn-btn solid", "APPLY POWER");
+    run.id = "snT3_run";
+    run.disabled = true;
+    row.appendChild(run);
+    card.appendChild(row);
+    var read = snEl("div", "sn-read", "");
+    read.id = "snT3_read";
+    card.appendChild(read);
+    var verdict = snEl("div", "sn-verdict", "Call all three loads first.");
+    verdict.id = "snT3_verdict";
+    verdict.setAttribute("aria-live", "polite");
+    card.appendChild(verdict);
+
+    function setPred(a, trip, tb, hb) {
+      snState.t3.pred[a] = trip;
+      if (snState.t3.passed) { snState.t3.passed = false; snRefreshCert(); }
+      tb.classList.toggle("sel", trip);
+      hb.classList.toggle("sel", !trip);
+      var done = SN_T3_LOADS.every(function (x) { return snState.t3.pred[x] !== null; });
+      run.disabled = !done;
+      if (done) verdict.textContent = "All three called. APPLY POWER is armed.";
+      snPop(card);
+    }
+    run.addEventListener("click", function () {
+      var done = SN_T3_LOADS.every(function (x) { return snState.t3.pred[x] !== null; });
+      if (!done) return;
+      var right = 0;
+      var lines = SN_T3_LOADS.map(function (a) {
+        var mv = a * SN_T3_R * 1000;
+        var trips = snTrip(a);
+        var called = snState.t3.pred[a];
+        var ok = called === trips;
+        if (ok) right++;
+        return snFmtA(a) + " -> " + mv.toFixed(1) + " mV " + (trips ? "TRIP" : "HOLD") +
+          " (you called " + (called ? "TRIP" : "HOLD") + ": " + (ok ? "right" : "wrong") + ")";
+      });
+      read.textContent = lines.join("\n");
+      snState.t3.ran = true;
+      if (right === 3) {
+        snState.t3.passed = true;
+        verdict.textContent = "3 of 3 calls right. 75 mV / 25 m\u03A9 = 3.0 A on the nose: the trip parks exactly " +
+          "on the rail's rating, catching anything past it. Trial 3 passes.";
+        verdict.className = "sn-verdict ok";
+        snLog("t3: 3/3 trip calls right. Trial 3 passes.", "ok");
+        snMaybeCert();
+      } else {
+        verdict.textContent = right + " of 3 calls right. The comparator only knows the sense voltage: " +
+          "compare each load's I x R against the 75 mV line, then call them again.";
+        verdict.className = "sn-verdict bad";
+        snLog("t3: " + right + "/3 calls right.", "bad");
+      }
+      snPop(card);
+    });
+    return card;
+  }
+
+  /* ---------- certificate ---------- */
+  function snDownloadCert() {
+    var s = snState;
+    var sh = s.t1.shunt === null ? "?" : SN_SHUNTS[s.t1.shunt].spec;
+    var txt = [
+      "THE PROVING GROUND · BENCH 58 · THE SHUNT ROOM",
+      "OLD IRON BENCH · " + new Date().toISOString(),
+      "",
+      "TRIAL 1 · SIZE THE SHUNT: " + sh + " fitted, burden called before the load stepped,",
+      "  all three checks pass (burden <= 250 mV, sense >= 20 mV, power inside rating).",
+      "TRIAL 2 · FIND THE LIAR: B's two-wire sense taps shared 5 m\u03A9 of copper;",
+      "  taps moved to the shunt pads, B reads 100.0 mV = 2.00 A.",
+      "TRIAL 3 · PARK THE TRIP: comparator at 75 mV on a 25 m\u03A9 shunt;",
+      "  3/3 trip calls right, trip parked on the 3.0 A line.",
+      "",
+      "ROOM CERTIFIED. " + snCertLine()
+    ].join("\n");
+    var blob = new Blob([txt], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = (window.URL || window.webkitURL).createObjectURL(blob);
+    a.download = "shunt-room-bench58-cert.txt";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { (window.URL || window.webkitURL).revokeObjectURL(a.href); }, 4000);
+    snLog("certificate downloaded.", "ok");
+  }
+
+  /* ---------- overlay open/close ---------- */
+  function snOpen() { if (snEls) snEls.overlay.classList.add("open"); }
+  function snClose() { if (snEls) snEls.overlay.classList.remove("open"); }
+
+  function snBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("sntBtn")) return;
+    snState = {
+      t1: { shunt: null, predicted: false, ran: false, passed: false },
+      t2: { probedA: false, probedB: false, probedCu: false, committed: false, fixed: false, passed: false },
+      t3: { pred: { "2.5": null, "3": null, "3.5": null }, ran: false, passed: false }
+    };
+    snEls = { overlay: null, log: null, banner: null };
+
+    var sty = document.createElement("style");
+    sty.textContent = SN_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "sntBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Shunt Room";
+    b.addEventListener("click", snOpen);
+    box.appendChild(b);
+
+    var ov = snEl("div", "sn-overlay");
+    ov.id = "snOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Shunt Room");
+    var x = snEl("button", "sn-btn", "CLOSE");
+    x.id = "snXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Shunt Room");
+    x.addEventListener("click", snClose);
+    ov.appendChild(x);
+    snEls.overlay = ov;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && ov.classList.contains("open")) snClose();
+    });
+
+    var panel = snEl("div", "sn-panel");
+    panel.appendChild(snEl("div", "sn-kicker", "OLD IRON BENCH 58"));
+    panel.appendChild(snEl("h2", "sn-title", "The Shunt Room"));
+    panel.appendChild(snEl("p", "sn-sub",
+      "A shunt resistor turns current into a voltage you can read, but every reading costs burden voltage, " +
+      "and the sense taps must not share load current. Size a shunt inside the burden budget, catch a " +
+      "two-wire liar by measurement, and park an overcurrent trip exactly at the edge."));
+
+    var introWrap = snEl("div", "");
+    introWrap.innerHTML = SN_INTRO_HTML;
+    panel.appendChild(introWrap);
+
+    panel.appendChild(snDoFirstCard());
+
+    var t1Head = snEl("div", "sn-card");
+    t1Head.appendChild(snEl("h3", null, "TRIAL 1: SIZE THE SHUNT"));
+    t1Head.appendChild(snEl("p", "why",
+      "The 5 V rail feeds a 4 A load. Fit a shunt from the tray, call the burden in mV, then run the load " +
+      "step and pass all three checks."));
+    panel.appendChild(t1Head);
+    panel.appendChild(snT1Card());
+
+    var t2Head = snEl("div", "sn-card");
+    t2Head.appendChild(snEl("h3", null, "TRIAL 2: FIND THE LIAR"));
+    t2Head.appendChild(snEl("p", "why",
+      "Two benches, one load, two different currents. Probe first, verdict second, repair third."));
+    panel.appendChild(t2Head);
+    panel.appendChild(snT2Card());
+
+    var t3Head = snEl("div", "sn-card");
+    t3Head.appendChild(snEl("h3", null, "TRIAL 3: PARK THE TRIP"));
+    t3Head.appendChild(snEl("p", "why",
+      "The comparator trips at 75 mV. Call TRIP or HOLD for each load before any power flows, then apply " +
+      "power and face the comparator."));
+    panel.appendChild(t3Head);
+    panel.appendChild(snT3Card());
+
+    /* certification banner */
+    var banner = snEl("div", "sn-banner");
+    banner.id = "snBanner";
+    banner.appendChild(snEl("h3", null, "ROOM CERTIFIED"));
+    var certP = snEl("p", null, snCertLine());
+    certP.id = "snCertP";
+    banner.appendChild(certP);
+    var dl = snEl("button", "sn-btn solid", "DOWNLOAD CERTIFICATE");
+    dl.id = "snCertDl";
+    dl.addEventListener("click", snDownloadCert);
+    banner.appendChild(dl);
+    panel.appendChild(banner);
+    snEls.banner = banner;
+
+    /* bench log */
+    var logCard = snEl("div", "sn-card");
+    logCard.appendChild(snEl("h3", null, "BENCH LOG"));
+    var log = snEl("div", "sn-log");
+    log.id = "snLog";
+    log.setAttribute("aria-live", "polite");
+    logCard.appendChild(log);
+    panel.appendChild(logCard);
+    snEls.log = log;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    snLog("bench open. 5 V rail, 20 m\u03A9 shunt fitted, meter in hand. The tray holds four parts.", "dim");
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", snBuild);
+  } else {
+    snBuild();
+  }
+})();
