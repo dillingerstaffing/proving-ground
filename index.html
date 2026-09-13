@@ -255,7 +255,7 @@ a { color: var(--ember); }
   font-variant-numeric: tabular-nums;
 }
 .brow {
-  display: grid; grid-template-columns: 52px minmax(170px, 1.1fr) 96px minmax(0, 2fr) 72px;
+  display: grid; grid-template-columns: 52px minmax(170px, 1.1fr) 128px minmax(0, 2fr) 72px;
   align-items: center; gap: 16px; width: 100%; min-height: 54px;
   padding: 8px 12px; background: none; border: 0; border-bottom: 1px solid var(--line);
   border-radius: 0; color: var(--paper); font-family: var(--font-d); text-align: left;
@@ -274,6 +274,15 @@ a { color: var(--ember); }
   font-size: 16.5px; font-weight: 600; letter-spacing: -0.01em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* Visit state, after the bench name: SEEN for launched benches, NEXT for
+   the first unlaunched bench in teaching order. One accent, no chrome. */
+.bst {
+  font-family: var(--font-m); font-size: 9px; font-weight: 700;
+  letter-spacing: 0.14em; padding: 2px 6px; margin-left: 10px;
+  border: 1px solid var(--line); color: var(--dim);
+  vertical-align: 2px; white-space: nowrap;
+}
+.bst-next { color: var(--ember); border-color: var(--ember); }
 .bmission {
   font-family: var(--font-m); font-size: 10.5px; font-weight: 600; letter-spacing: 0.12em;
   color: var(--steel); text-transform: uppercase; white-space: nowrap;
@@ -307,6 +316,14 @@ a { color: var(--ember); }
     -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   }
   .bmission { display: none; }
+  /* The domain tag moves inline onto the spec line on small screens. */
+  .bspec::before {
+    content: attr(data-domtag); display: inline-block;
+    font-family: var(--font-m); font-size: 9px; font-weight: 700;
+    letter-spacing: 0.12em; color: var(--steel);
+    border: 1px solid var(--line); border-radius: 3px;
+    padding: 2px 6px; margin-right: 8px; vertical-align: 1px;
+  }
   .blaunch { grid-area: launch; }
   .btitle-meta { margin-left: 0; }
 }
@@ -598,275 +615,347 @@ function toast(msg) {
 /* ============================================================
    BENCH REGISTRY. To add a bench: append its module to features.js,
    then add one entry here with the module's launch button id.
-   The page renders one filterable grid; `section` drives the
-   mission filter and must be one of: silicon, tapeout, oldiron.
+   The page renders one filterable index in teaching order (PG_TEACH_ORDER);
+   `section` drives the domain filter and must be one of: arch, analog, craft.
    Overlay convention for in-app browsers: name the overlay
    element `<name>-overlay` and toggle it with an `open` class
    only; page-level CSS hardens every *-overlay automatically.
    ============================================================ */
 var PG_SECTIONS = [
-  { id: "silicon", label: "Silicon" },
-  { id: "tapeout", label: "TAPEOUT" },
-  { id: "oldiron", label: "Old Iron" }
+  { id: "arch", label: "Architecture", tag: "ARCHITECTURE", full: "Computer architecture" },
+  { id: "analog", label: "Analog and power", tag: "ANALOG \u00B7 POWER", full: "Analog and power electronics" },
+  { id: "craft", label: "Bench craft", tag: "BENCH CRAFT", full: "Bench craft" }
 ];
 var PG_BENCHES = [
-  { section: "silicon", n: "01", name: "The Silicon Anvil", btn: "rvAnvilBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "01", name: "The Silicon Anvil", btn: "rvAnvilBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "A real RV32I core on the bench. Write assembly, assemble to machine code, step the silicon, earn trial certificates.",
     how: "Type RV32I assembly, assemble it, single-step the core through the trials.",
     spec: "RV32I CORE \u00B7 3 TRIALS" },
-  { section: "silicon", n: "02", name: "The Pipeline Hazard Lab", btn: "phBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "02", name: "The Pipeline Hazard Lab", btn: "phBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "A five-stage RV32I pipeline with real forwarding, load-use stalls, and a swappable branch predictor. Beat three cycle budgets.",
     how: "Schedule instructions to dodge stalls and come in under the cycle budget.",
     spec: "5-STAGE PIPE \u00B7 3 BUDGETS" },
-  { section: "silicon", n: "03", name: "The Cache Forge", btn: "cfBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "03", name: "The Cache Forge", btn: "cfBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "A real set-associative L1 data-cache simulator with LRU replacement and live AMAT scoring. Tune under a silicon budget.",
     how: "Pick size, associativity, and block size, then run the access traces.",
     spec: "L1 SIM \u00B7 LIVE AMAT" },
-  { section: "tapeout", n: "04", name: "The Burn-In Chamber", btn: "biBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+  { section: "craft", n: "04", name: "The Burn-In Chamber", btn: "biBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "GPU qualification bench: real thermal physics, hidden card faults, ECC telemetry. Call SHIP or RMA on each card.",
     how: "Design the stress profile, read the telemetry, verdict all three cards.",
     spec: "3 CARDS \u00B7 SHIP / RMA" },
-  { section: "tapeout", n: "05", name: "The Memory Bin Lab", btn: "mbBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+  { section: "arch", n: "05", name: "The Memory Bin Lab", btn: "mbBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "GDDR timing qualification: a real FR-FCFS DRAM command scheduler over 16 banks. Bin each module grade A or B.",
     how: "Tune tCL, tRCD, tRP, tRAS and watch the command-bus trace.",
     spec: "16 BANKS \u00B7 FR-FCFS" },
-  { section: "oldiron", n: "06", name: "The Wipe Station", btn: "wsBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "craft", n: "06", name: "The Wipe Station", btn: "wsBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "NIST 800-88 drive sanitization: choose Clear, Purge, or Destroy per drive. Per-serial wipe certificates.",
     how: "Pick the right method for each drive and survive the audit.",
     spec: "NIST 800-88 \u00B7 PER-SERIAL" },
-  { section: "silicon", n: "07", name: "The Spill Bin", btn: "sbBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "07", name: "The Spill Bin", btn: "sbBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "RV32I register allocation: real liveness analysis, interference graph, and a Chaitin-Briggs solver as your baseline. Spill the cheapest victims, stay inside budget.",
     how: "Color the interference graph, spill the cheapest virtuals, beat the shop solver.",
     spec: "REGALLOC \u00B7 CHAITIN-BRIGGS" },
-  { section: "silicon", n: "08", name: "The RISC-V Playground", btn: "rpBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "08", name: "The RISC-V Playground", btn: "rpBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "The full interactive RISC-V course, as a bench: a real RV32I core in your browser, 10 guided lessons, 8 auto-graded challenges.",
     how: "Work the lessons, beat the challenges, earn the win.",
     spec: "RV32I CORE \u00B7 10 LESSONS \u00B7 8 CHALLENGES" },
-  { section: "silicon", n: "09", name: "The Page Walker", btn: "pwBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "09", name: "The Page Walker", btn: "pwBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "Sv32-style virtual memory on the bench: walk real two-level page tables, decode PTE flags, survive superpages, raise page faults like xv6 does.",
     how: "Read the VPN fields, step through the tables, commit the physical address or raise the fault.",
     spec: "2-LEVEL WALK \u00B7 3 TRIALS" },
-  { section: "silicon", n: "10", name: "The Trap Gate", btn: "tgBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "10", name: "The Trap Gate", btn: "tgBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "RISC-V trap delegation on the bench: a real mcause, medeleg, mideleg, and mtvec dispatch engine. Route interrupts and exceptions between M-mode and S-mode with zero misroutes.",
     how: "Set the delegation bits and the mtvec mode, then run each trap wave.",
     spec: "M/S DELEGATION \u00B7 3 TRIALS" },
-  { section: "tapeout", n: "11", name: "The Link Lab", btn: "llBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+  { section: "arch", n: "11", name: "The Link Lab", btn: "llBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "PCIe link training for GPU bring-up: a real SerDes channel model with hidden lane faults, crosstalk, and EQ presets. Train each card's link and certify only what you can sign.",
     how: "Pick width, speed, and EQ preset, run training, certify the honest link.",
     spec: "SERDES \u00B7 16 LANES \u00B7 3 CARDS" },
-  { section: "silicon", n: "12", name: "The Scheduler Bay", btn: "scbBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "12", name: "The Scheduler Bay", btn: "scbBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "An xv6-style scheduler lab: tune Round Robin, Lottery, and Multi-Level Feedback Queue against three shop workloads, beat the house baseline, ship the certificate.",
     how: "Pick a policy, set the quantum and queues, run the simulation, beat par on all three trials.",
     spec: "3 POLICIES \u00B7 3 WORKLOADS" },
-  { section: "silicon", n: "13", name: "The Boot Bay", btn: "bbBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "13", name: "The Boot Bay", btn: "bbBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "RISC-V secure boot on the bench: verify each stage against its manifest, lay out the memory map, lock the PMP, and bring the hart from reset to login. One image is rotten and one map is a trap.",
     how: "Verify the stage images, set the load addresses, lock the PMP regions, then boot all three boards.",
     spec: "SECURE BOOT \u00B7 3 BOARDS" },
-  { section: "tapeout", n: "14", name: "The Lock Lab", btn: "lkBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+  { section: "analog", n: "14", name: "The Lock Lab", btn: "lkBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "Clock-generator qualification for GPU bring-up: a real discrete charge-pump PLL under the hood. Tune the loop, beat the lock and jitter budgets on three faulty cards, sign the certificate.",
     how: "Set the charge pump, resistor, and capacitor, run the loop, qualify all three cards.",
     spec: "CP-PLL \u00B7 3 CARDS \u00B7 LOCK/JITTER" },
-  { section: "silicon", n: "15", name: "The Wire Room", btn: "wrBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "15", name: "The Wire Room", btn: "wrBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "UART bring-up on the bench: three harts chatter over one wire in real UART frames. Probe the 0x55 sync byte, match the baud, set parity and stop bits, decode every frame with zero errors.",
     how: "Probe the sync byte to measure the bit cell, set the receiver knobs, capture and decode all three harts.",
     spec: "UART \u00B7 3 HARTS \u00B7 ZERO ERRORS" },
-  { section: "tapeout", n: "16", name: "The Power Tree", btn: "ptBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+  { section: "analog", n: "16", name: "The Power Tree", btn: "ptBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "GPU power sequencing on the bench: five rails with real ramp physics, Power-Good windows, sequence violations, and UVLO faults. Order the enables, dial the delay, convict the two faulty boards on the scope, sign off all three.",
     how: "Set the rail order and inter-rail delay, run the sequence, rework exactly what the scope proves is broken, qualify all three boards.",
     spec: "5 RAILS \u00B7 SEQ + UVLO \u00B7 3 BOARDS" },
-  { section: "oldiron", n: "17", name: "The Thermostat", btn: "thBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "craft", n: "17", name: "The Thermostat", btn: "thBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "PID fan-control tuning for a refurbished 1U server: real thermal physics, fan spool lag, a 1.5s BMC sensor delay, and honest workload steps. Hold 65C in band, no trip, inside the noise budget.",
     how: "Tune P, I, and D, run the 90-second workload, and qualify all three racks for refurb.",
     spec: "PID LOOP \u00B7 3 RACKS" },
-  { section: "tapeout", n: "18", name: "The Scrub Bay", btn: "esBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+  { section: "arch", n: "18", name: "The Scrub Bay", btn: "esBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "GDDR ECC qualification for TAPEOUT: a real Hamming(72,64) SECDED code under the hood. Read the syndrome, correct single-bit flips, quarantine doubles and stuck cells, and sign off three VRAM modules.",
     how: "Read the syndrome, make the call on all eight codewords, then call SHIP or RMA on each module.",
     spec: "SECDED ECC \u00B7 3 MODULES" },
-  { section: "tapeout", n: "19", name: "The Reflow Bay", btn: "rfBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+  { section: "craft", n: "19", name: "The Reflow Bay", btn: "rfBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "Reflow-oven qualification for the TAPEOUT bring-up lab: real SAC305 thermal physics, a damp-storage board, and a 4 oz copper sink. Tune the profile, bake what needs baking, ship all three boards.",
     how: "Set ramp, soak, peak, and dwell, run the profile, read the joint traces, and qualify all three boards.",
     spec: "REFLOW PHYSICS \u00B7 3 BOARDS" },
-  { section: "oldiron", n: "20", name: "The Triage Desk", btn: "tdBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "craft", n: "20", name: "The Triage Desk", btn: "tdBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "Refurb intake triage: three dead machines, five disciplined steps each. Identify, theorize, test, resolve, document, then print the service ticket.",
     how: "Inspect each machine, work the five steps in order, and close all three tickets with a passing score.",
     spec: "5-STEP METHOD \u00B7 3 MACHINES" },
-  { section: "oldiron", n: "21", name: "The Crimp Bay", btn: "cbBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "craft", n: "21", name: "The Crimp Bay", btn: "cbBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "Hand-crimped Cat5e for the OLD IRON bench network: seat eight conductors to the T568 standard, read the cable tester, certify three cables at a full gigabit.",
     how: "Seat all eight conductors per the T568 table, run the tester, and certify three cables with zero faults.",
     spec: "T568B/A \u00B7 8P8C \u00B7 3 CABLES" },
-  { section: "oldiron", n: "22", name: "The Rail Room", btn: "rrBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "craft", n: "22", name: "The Rail Room", btn: "rrBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "PSU rail qualification for the OLD IRON refurb line: plug in, power up, and probe the 24-pin ATX connector with a live meter model. Read every rail against the ATX tolerance table and certify three supplies.",
     how: "Set the meter dial, plant both probes on the connector, record all five required rails, and call the verdict on all three PSUs.",
     spec: "ATX 24-PIN \u00B7 DMM \u00B7 3 PSUS" },
-  { section: "oldiron", n: "23", name: "The Switch Room", btn: "swBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "craft", n: "23", name: "The Switch Room", btn: "swBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "IP addressing for the OLD IRON bench network: real CIDR math with a live binary worksheet, then subnet design. Certify all three shop zones with zero addressing errors.",
     how: "Compute each zone's network facts, carve a fitting subnet from the base block, and place the gateway.",
     spec: "CIDR MATH \u00B7 3 ZONES \u00B7 BINARY PROOF" },
-  { section: "oldiron", n: "24", name: "The Static Room", btn: "srBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "craft", n: "24", name: "The Static Room", btn: "srBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "ESD-safe handling for the OLD IRON refurb line: a real triboelectric charge model and RC bleed physics. Test your wrist strap, keep your body voltage below each board's HBM rating, and certify three boards without a single discharge event.",
     how: "Test the strap, walk to the bin, reclip and wait for the meter to clear the board rating, then touch.",
     spec: "ESD PHYSICS \u00B7 3 BOARDS \u00B7 HBM" },
-  { section: "silicon", n: "25", name: "The Fence Line", btn: "flBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "25", name: "The Fence Line", btn: "flBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "Two harts share memory and the silicon may complete their accesses out of order. Place FENCE instructions in each litmus program so the forbidden outcome becomes unreachable. A hands-on lab for the RISC-V weak memory model.",
     how: "Read each litmus program, place fences in the slots, run the outcome explorer, then certify all three trials.",
     spec: "RVWMO \u00B7 3 LITMUS TRIALS" },
-  { section: "silicon", n: "26", name: "The Decode Bench", btn: "dbBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "26", name: "The Decode Bench", btn: "dbBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "A raw 32-bit instruction word off the fetch bus. Split it into its RISC-V fields with the format maps, read the opcode table, and reassemble the sign-extended immediate. Decode all three words with zero field errors.",
     how: "Pick the format from the opcode, fill every field from the word's bit positions, enter the sign-extended immediate, check the decode.",
     spec: "RV32I FIELDS \u00B7 3 WORDS" },
-  { section: "oldiron", n: "27", name: "The DIMM Bay", btn: "dmBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "craft", n: "27", name: "The DIMM Bay", btn: "dmBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "Memory installation for the OLD IRON refurb line: keyed slots that physically refuse the wrong generation, matched pairs for dual channel, retention clips that must both latch. Pick, seat, and POST three machines.",
     how: "Pick matching DDR4 UDIMMs from the tray, seat them in the A2/B2 slots, then power on for POST.",
     spec: "DDR KEYING \u00B7 DUAL CHANNEL \u00B7 3 MACHINES" },
-  { section: "oldiron", n: "28", name: "The POST Room", btn: "prBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "craft", n: "28", name: "The POST Room", btn: "prBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "Three dead intake machines and one piezo speaker each. Read the beep pattern off the timing diagram, match it against the chart, power down before you touch anything, and apply the fix that earns a POST.",
     how: "Power on, read the beeps, match the chart, power off, then apply the matching fix. Three strikes and the bench resets.",
     spec: "BEEP CODES \u00B7 3 MACHINES \u00B7 POST" },
-  { section: "tapeout", n: "29", name: "The Trace Room", btn: "trBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+  { section: "analog", n: "29", name: "The Trace Room", btn: "trBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "Controlled-impedance sizing for the TAPEOUT R&D lab: one copper trace, one fab stackup, one width slider. Size each trace so its whole etch-tolerance band lands inside the target window and qualify all three.",
     how: "Drag the width until the etch band sits inside the target window, then qualify the trace. Three strikes fail the bench.",
     spec: "IMPEDANCE \u00B7 ETCH TOLERANCE \u00B7 3 TRACES" },
-  { section: "silicon", n: "30", name: "The Reservation Bay", btn: "rsBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "30", name: "The Reservation Bay", btn: "rsBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "RISC-V atomicity on the bench: two harts race on one counter under a preemptive scheduler. Watch increments vanish, fix it with LR/SC, then run the token vault where only LR/SC can work.",
     how: "Run the losing race, call the outcome first, pick the fix, and certify all three trials.",
     spec: "LR/SC \u00B7 2 HARTS \u00B7 3 TRIALS" },
-  { section: "silicon", n: "31", name: "The Two-Wire Room", btn: "i2Btn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "31", name: "The Two-Wire Room", btn: "i2Btn", pill: "riscv", pillLabel: "RISC-V",
     desc: "A real bit-level I2C bus on the bench: open-drain SDA/SCL, address bytes, one ACK slot per byte, repeated starts. Scan 112 addresses, read the 16-bit temperature register, set the fan duty and prove it with a readback.",
     how: "Scan the bus, decode the sensor's two bytes, write the fan duty and read it back. Three trials, three strikes.",
     spec: "I2C BUS \u00B7 112 ADDR \u00B7 3 TRIALS" },
-  { section: "tapeout", n: "32", name: "The Decoupling Bay", btn: "dcBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+  { section: "analog", n: "32", name: "The Decoupling Bay", btn: "dcBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "A real lumped-element power-delivery simulation. Place ceramic, tantalum, and bulk capacitors across three mounting zones and hold a 1.0 V core rail inside its 100 mV droop budget through three load steps.",
     how: "Add capacitors to the near, mid, and far zones, predict the droop, then run the load step. Certify all three trials.",
     spec: "PDN SIM \u00B7 3 TRIALS" },
-  { section: "oldiron", n: "33", name: "The Flash Room", btn: "frBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "arch", n: "33", name: "The Flash Room", btn: "frBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "A real NAND-flash FTL on the bench: erase-before-write, stale pages, a sector map, garbage collection including spare-block overprovisioning, and a per-block erase budget. Keep every sector readable and no block over budget.",
     how: "Run the host workload, garbage-collect the stale-heavy blocks, rotate your victims on trial 3, certify all three drives.",
     spec: "ERASE-BEFORE-WRITE \u00B7 3 DRIVES" },
-  { section: "oldiron", n: "34", name: "The Bounce Room", btn: "bnBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "arch", n: "34", name: "The Bounce Room", btn: "bnBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "Switch debounce for the OLD IRON bench: a real contact-bounce model with chattering edges and an unfiltered counter that overcounts. Demand N consecutive steady samples, outlast the worst bounce, stay inside the latency budget, and qualify three keys.",
     how: "Press the raw key and call the count first, tune the filter window against the latency budget, then qualify all three keys.",
     spec: "CONTACT BOUNCE \u00B7 3 TRIALS" },
-  { section: "tapeout", n: "35", name: "The Buck Room", btn: "bkBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+  { section: "analog", n: "35", name: "The Buck Room", btn: "bkBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "GPU VRM qualification: a real discrete-time synchronous buck converter on the bench. Set the duty, tame the ripple, dodge inductor saturation, survive the load step, and hold three rails.",
     how: "Call the duty, set frequency, inductor, and capacitor, run the sim, hold each rail inside its ripple budget.",
     spec: "BUCK VRM \u00B7 3 RAILS" },
-  { section: "silicon", n: "36", name: "The Division Deck", btn: "dvBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "36", name: "The Division Deck", btn: "dvBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "The algorithm real dividers fall back on: a real shift-subtract engine, one quotient bit per cycle. Call every shift across three divisions, do the signed wrapper's job, and meet the two inputs where RISC-V division refuses to trap.",
     how: "Predict each quotient and remainder, call SHIFT or SHIFT-SUBTRACT for every bit, certify all three trials.",
     spec: "DIV HARDWARE \u00B7 3 TRIALS" },
-  { section: "oldiron", n: "37", name: "The Ripple Room", btn: "rlBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "analog", n: "37", name: "The Ripple Room", btn: "rlBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "A real reservoir-capacitor bench for OLD IRON power work: a discrete-time rectifier sim with a scope you can watch. Size the cap from stock, hold the rail above the floor, survive the cold-start inrush, respect the voltage rating, and mind the ESR when the load steps.",
     how: "Pick a capacitor from stock, predict the ripple, power the rail, read the scope, and certify all three rails.",
     spec: "RC RIPPLE \u00B7 3 RAILS" },
-  { section: "tapeout", n: "38", name: "The Scan Room", btn: "jsBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+  { section: "arch", n: "38", name: "The Scan Room", btn: "jsBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "JTAG boundary scan for GPU board bring-up: a real 16-cell scan chain, EXTEST interconnect tests, and three dead boards. Find the open, the short, and the stuck pin.",
     how: "Pick a drive pattern, run the sweep, read the nets, then commit the diagnosis.",
     spec: "JTAG EXTEST \u00B7 16-CELL CHAIN \u00B7 3 BOARDS" },
-  { section: "silicon", n: "39", name: "The Gate Room", btn: "gtBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "39", name: "The Gate Room", btn: "gtBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "The atom of digital hardware: NAND is universal, so every circuit on the bench is built from NAND gates and nothing else. Wire up NOT, AND, XOR, and a half-adder from the one gate, truth table against truth table.",
     how: "Wire NAND gates with the dropdowns, predict one probe row, RUN the full truth table, match every row inside the gate budget.",
     spec: "NAND-ONLY \u00B7 4 TRIALS \u00B7 GATE BUDGETS" },
-  { section: "silicon", n: "40", name: "The Float Room", btn: "ftBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "40", name: "The Float Room", btn: "ftBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "IEEE-754 binary32 as the one atomic mechanism: a live 32-bit word decoder, a decode-the-mystery trial, the hunt for the float closest to 0.1, and the edge cases (subnormal, infinity, NaN, negative zero) plus a predict-then-verify of the 1e10 + 1 absorption.",
     how: "Flip bits in the live decoder, predict the mystery word's value, type the hex of the float closest to 0.1, classify the edge cases, and predict the big addition before you run it.",
     spec: "IEEE-754 BINARY32 \u00B7 3 TRIALS \u00B7 EXACT DECIMAL MATH" },
-  { section: "silicon", n: "41", name: "The Carry Room", btn: "crBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "41", name: "The Carry Room", btn: "crBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "Ripple versus lookahead: 32-bit adders, one clock budget, and the carry that has to travel. Pick the architecture, predict the delay, run the sum, sample it before the carry arrives and watch it fail.",
     how: "Type two hex words, pick the adder architecture, predict the gate delay, then run.",
     spec: "RIPPLE vs CLA \u00B7 3 TRIALS" },
-  { section: "tapeout", n: "42", name: "The SPI Room", btn: "spBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+  { section: "arch", n: "42", name: "The SPI Room", btn: "spBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "SPI bring-up on the bench: a real bit-cell bus model. Match the sampling edge (CPHA), respect the idle level (CPOL) and the rated ceiling, read each chip's JEDEC ID.",
     how: "Read the datasheet, set CPOL, CPHA, and the clock, predict the six hex digits, run the transfer.",
     spec: "SPI MODES \u00B7 3 CHIPS" },
-  { section: "silicon", n: "43", name: "The Borrow Room", btn: "bwBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "43", name: "The Borrow Room", btn: "bwBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "Hardware never subtracts: every SUB adds the inverted operand plus one, and the inverted carry-out is the borrow. Chain borrows across bytes, then read the unsigned less-than bit that every branch is really asking about.",
     how: "Predict the result byte and the borrow, step the lanes to see why, then call every unsigned comparison.",
     spec: "SUB/BORROW \u00B7 3 TRIALS" },
-  { section: "silicon", n: "44", name: "The Watchdog Room", btn: "wdBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "44", name: "The Watchdog Room", btn: "wdBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "A frozen machine never calls for help. Meet the watchdog: the hardware countdown that resets the board when software stops proving it is alive. Size the timeout, place the kick, and set the early edge that catches a runaway.",
     how: "Pet the watchdog, predict the worst-case loop, then survive the hang, the misplaced kick, and the runaway.",
     spec: "WATCHDOG TIMER \u00B7 3 TRIALS" },
-  { section: "silicon", n: "45", name: "The Shift Room", btn: "shBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "45", name: "The Shift Room", btn: "shBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "The cheapest multiply in the machine: slide bits left to multiply by powers of two, slide right to divide, and meet the two honest contracts of the right shift, logical zeros and arithmetic sign fill.",
     how: "Drive the bit lane, call every shifted byte and its fallen bits, split logical from arithmetic on negative values, then build a multiply out of shifts and adds.",
     spec: "SHIFT ALU \u00B7 3 TRIALS" },
-  { section: "oldiron", n: "46", name: "The Paste Room", btn: "psBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "craft", n: "46", name: "The Paste Room", btn: "psBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "Thermal paste has one job: evict the air between the die and the heatsink. Lay down a pattern, choose the amount, set the mount pressure, and call each burn's peak die temperature before you run it.",
     how: "Burn it bare first, then pick a mount on each trial, predict the peak within 6 C, run the burn, and certify all three trials.",
     spec: "THERMAL INTERFACE \u00B7 3 TRIALS" },
-  { section: "oldiron", n: "47", name: "The Cell Room", btn: "clBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "craft", n: "47", name: "The Cell Room", btn: "clBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "A dead coin cell is the difference between a working refurb and e-waste. Predict a CR2032's life from its 220 mAh rating, diagnose a machine that forgets everything at every cold boot, and commit the classic cell mistakes on purpose.",
     how: "Kill the wall first and watch the clock survive on cell power, then call the cell's life in years, hunt the masked dead cell with the wall switch, and certify all three trials.",
     spec: "STANDBY POWER \u00B7 3 TRIALS" },
-  { section: "oldiron", n: "48", name: "The Divider Room", btn: "vdBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "analog", n: "48", name: "The Divider Room", btn: "vdBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "Two resistors, one tap, and the arithmetic everyone gets wrong exactly once. Predict the quiet tap, call the collapse when the ear connects, then size an honest divider under the 10x rule.",
     how: "Step the worked arithmetic by hand, let the ear drink from the tap, call the 3.33 V quiet tap and the 2.00 V collapsed tap before you reveal them, and dial R2 until the 12 V tap holds 3.0 to 3.6 V with a 10x honesty ratio.",
     spec: "VOLTAGE DIVIDERS \u00B7 3 TRIALS" },
-  { section: "oldiron", n: "49", name: "The Pullup Room", btn: "puBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "analog", n: "49", name: "The Pullup Room", btn: "puBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "A CMOS input reads nothing by itself, so one resistor decides its idle state. Tie up a floating pin, call its voltage under a 10 k and a 1 M pull-up, then size the resistor yourself between leakage, power, and noise.",
     how: "Sample the noise on a floating pin, tie it up and watch it hold, call the 3.28 V idle pin and the 1.30 V starved pin before you reveal them, then pick a pull-up that keeps pressed current under 1 mA and the idle pin above 2.4 V.",
     spec: "PULL-UP RESISTORS \u00B7 3 TRIALS" },
-  { section: "silicon", n: "50", name: "The LDO Room", btn: "ldoBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "analog", n: "50", name: "The LDO Room", btn: "ldoBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "A linear regulator burns the voltage it drops as heat, watt for watt. The input rail is a window: high enough to stay out of dropout, low enough to stay under the die's temperature limit.",
     how: "Burn a die at 5 V in a SOT-23, call the 127 C die on a 300 mA load within 6 C, size an input rail that holds a 700 mA load at or under 125 C, then fix the crash that is not heat.",
     spec: "LINEAR REGULATORS \u00B7 3 TRIALS" },
-  { section: "oldiron", n: "51", name: "The Stripe Room", btn: "stripeBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "craft", n: "51", name: "The Stripe Room", btn: "stripeBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "Resistor color codes on the bench: read 4-band and 5-band stripes, survive gold multipliers and the wrong-end trap, verify every part against the bench meter.",
     how: "Read each part's stripes, enter the value in ohms, commit the reading, then the meter verifies.",
     spec: "4+5 BAND \u00B7 8 PARTS" },
-  { section: "oldiron", n: "52", name: "The Diode Room", btn: "diBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "analog", n: "52", name: "The Diode Room", btn: "diBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "The diode conducts one way and charges a fixed forward-voltage toll. Size the resistor for three LEDs, diagnose two dark ones, and call the no-resistor current before it dies.",
     how: "Flip the do-first LED, pick each resistor and commit, probe the dark LEDs in diode mode, then predict the no-resistor current.",
     spec: "1-WAY \u00B7 3 SIZINGS \u00B7 2 FAULTS" },
-  { section: "oldiron", n: "53", name: "The Transistor Room", btn: "tnBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "analog", n: "53", name: "The Transistor Room", btn: "tnBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "One milliamp into the base switches a hundred milliamps through the load: that is the transistor's whole trick. Size the base resistor for three loads, diagnose two dead benches by measurement, and predict what a base with no resistor does to a GPIO pin.",
     how: "Toggle the do-first base drive, pick each base resistor and commit, measure Vce on the two dead benches and commit a verdict, then predict the no-resistor current.",
     spec: "BETA 100 \u00B7 3 SIZINGS \u00B7 2 FAULTS" },
-  { section: "oldiron", n: "54", name: "The Fuse Room", btn: "fsBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "analog", n: "54", name: "The Fuse Room", btn: "fsBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "A fuse is a deliberate weak link: it dies so the wire lives. Size the rating to the load, survive the inrush, never rate it above the wire, then diagnose two dead panels and bolt one fuse-less rail.",
     how: "Call each fuse's verdict before you commit: size three rails, diagnose two panels, predict the smoke time.",
     spec: "FUSE SIZING \u00B7 3 RAILS \u00B7 2 PANELS" },
-  { section: "oldiron", n: "55", name: "The Relay Room", btn: "ryBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "analog", n: "55", name: "The Relay Room", btn: "ryBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "A relay lets a tiny current switch a big current through magnetic isolation. Drive two coils inside their voltage windows, wire a fan and a heater fail-safe, then predict the flyback spike before opening a coil with no diode.",
     how: "Call every outcome before you act: size two coil drives, wire two loads fail-safe, predict the spike band.",
     spec: "COIL DRIVE \u00B7 FAIL-SAFE CONTACTS \u00B7 FLYBACK SPIKE" },
-  { section: "oldiron", n: "56", name: "The MOSFET Room", btn: "mfBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "analog", n: "56", name: "The MOSFET Room", btn: "mfBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "The MOSFET switches amps with volts: clear the gate threshold with margin, budget the on-resistance heat, and respect the gate as a capacitor at PWM rates. Pick parts from the tray, diagnose two dead benches by measurement, and park one gate at the threshold to watch it cook.",
     how: "Flip the do-first gate, pick each part and commit, probe the dead benches and commit a verdict, then predict the threshold-park outcome before applying power.",
     spec: "GATE VOLTAGE \u00B7 RDS(ON) \u00B7 3 TRIALS" },
-  { section: "tapeout", n: "57", name: "The Crystal Room", btn: "xoBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+  { section: "arch", n: "57", name: "The Crystal Room", btn: "xoBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "UART has no shared clock: each byte re-times from its start bit, so both ends must agree within 2 percent. Fit load caps to hold a 16 MHz crystal inside its ppm budget, watch the RC oscillator drift a link dead in a hot chamber, and diagnose a firmware clock lie by measurement.",
     how: "Run the free link test, predict the hot-chamber result before running it, size the load caps at the counter, then diagnose a dead link.",
     spec: "PPM BUDGET \u00B7 LOAD CAPS \u00B7 3 TRIALS" },
-  { section: "oldiron", n: "58", name: "The Shunt Room", btn: "sntBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "analog", n: "58", name: "The Shunt Room", btn: "sntBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "The ammeter always lies a little: a shunt resistor turns current into a readable voltage, but every reading costs burden voltage and the sense taps must not share load current. Size a shunt inside the burden budget, catch a two-wire liar by measurement, and park an overcurrent trip exactly at the edge.",
     how: "Meter the rail free, predict the burden of your picked shunt, probe the lying sense taps, then call trip or hold for three loads before applying power.",
     spec: "BURDEN BUDGET \u00B7 KELVIN TAPS \u00B7 3 TRIALS" },
-  { section: "oldiron", n: "59", name: "The Zener Room", btn: "znBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "analog", n: "59", name: "The Zener Room", btn: "znBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "A regulator in two parts: a resistor feeds current and a Zener diode drinks whatever the load does not, holding the rail at its breakdown voltage. Size the feed, starve one rail and cook another by measurement, then call each rail's fate before power flows.",
     how: "Meter the holding rail free, fit a feed that keeps the Zener above its 2 mA knee, probe the two sick rails and commit a verdict, then call HOLD, POP, or SAG for three rails before applying power.",
     spec: "SHUNT REGULATION \u00B7 3 TRIALS" },
-  { section: "oldiron", n: "60", name: "The Op-Amp Room", btn: "opBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "analog", n: "60", name: "The Op-Amp Room", btn: "opBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "An op-amp's feedback turns wild open-loop gain into a precise closed-loop copy with muscle. Size a gain inside the rails, watch a sleepy sensor collapse under a thirsty load and wire the follower that fixes it, then call CLIP or CLEAN on a fixed 11x amp.",
     how: "Drive the follower free, fit a resistor pair and call the output before the amp runs, call the collapsed reading and wire the follower, then call CLIP or CLEAN for three inputs before applying power.",
     spec: "GAIN 1+Rf/Rg \u00B7 FOLLOWER \u00B7 3 TRIALS" },
-  { section: "oldiron", n: "61", name: "The 555 Room", btn: "t5Btn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "analog", n: "61", name: "The 555 Room", btn: "t5Btn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "The cheapest heartbeat in the drawer: two comparators stare at one capacitor while it ramps between 1/3 and 2/3 of the supply, and three parts turn charge and discharge into a ticking square wave. Size a 2.00 Hz tick, stretch the duty past 90 percent, and diagnose two dead boards by measurement.",
     how: "Free-run the chip first, fit parts and call the frequency before power flows, stretch the duty past 90 percent, then probe two dead boards and name each fault.",
     spec: "555 ASTABLE \u00B7 3 TRIALS" },
-  { section: "oldiron", n: "62", name: "The Inductor Room", btn: "inBtn", pill: "oldiron", pillLabel: "OLD IRON",
+  { section: "analog", n: "62", name: "The Inductor Room", btn: "inBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "Current through a coil cannot change instantly: V = L di/dt. Open the switch and the coil makes whatever voltage it needs to keep its current moving, 5.00 kV from 10 mH at half an amp. Measure the kick, race the current ramp against a relay pull-in window, and diagnose two boards the same law killed.",
     how: "Free-run the coil first, call each kick and each ramp time before power flows, then probe two dead boards and name the fault the coil caused.",
     spec: "V = L di/dt \u00B7 FLYBACK \u00B7 SATURATION" },
-  { section: "silicon", n: "63", name: "The Arbiter Room", btn: "arBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "63", name: "The Arbiter Room", btn: "arBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "Three masters, one memory bus: the arbiter grants exactly one requester per cycle. Watch fixed priority starve a lane at 0 of 16, race an urgent page-walk through two referees, and dial a 2:1:1 bandwidth contract to the cycle.",
     how: "Predict the grant counts, run the storm, fix the starving lane, then prove a 2:1:1 traffic contract.",
     spec: "FIXED / RR / WRR \u00B7 3 TRIALS" },
-  { section: "silicon", n: "64", name: "The Endian Room", btn: "enBtn", pill: "riscv", pillLabel: "RISC-V",
+  { section: "arch", n: "64", name: "The Endian Room", btn: "enBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "Byte order on the bench: the one rule that turns a 32-bit word into four bytes in memory, and back. Lay out 0xDEADBEEF at 0x1000 by hand, call what a little-endian load reads, and un-garble a big-endian wire frame.",
     how: "Lay out a word byte by byte, predict the load and the store, then fix the big-endian frame.",
     spec: "BYTE ORDER \u00B7 3 TRIALS" }
  ];
+/* Teaching order: the sequence a newcomer should take the benches in.
+   The index renders this list top to bottom; the number on each row is its
+   position here (01..64), never the bench's creation number. Bench `n`
+   stays the stable ID for deep links (#bench=08). New benches are
+   inserted at their teaching position, never appended at the end. */
+var PG_TEACH_ORDER = [
+  "39",
+  "45",
+  "41",
+  "43",
+  "36",
+  "40",
+  "26",
+  "64",
+  "01",
+  "08",
+  "34",
+  "10",
+  "44",
+  "57",
+  "15",
+  "42",
+  "31",
+  "25",
+  "30",
+  "02",
+  "63",
+  "03",
+  "07",
+  "05",
+  "18",
+  "33",
+  "09",
+  "11",
+  "38",
+  "13",
+  "12",
+  "51",
+  "48",
+  "49",
+  "58",
+  "52",
+  "59",
+  "54",
+  "53",
+  "56",
+  "55",
+  "60",
+  "61",
+  "62",
+  "37",
+  "50",
+  "35",
+  "32",
+  "16",
+  "29",
+  "14",
+  "24",
+  "20",
+  "28",
+  "06",
+  "27",
+  "46",
+  "47",
+  "22",
+  "21",
+  "23",
+  "19",
+  "04",
+  "17"
+];
+
 
 var pgFilter = "all";
 var pgLastPoint = null;
@@ -875,14 +964,62 @@ var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
    the precision-terminal redesign pass. */
 var PG_REV = "2026-09-10";
 
-function pgMissionLabel(id) {
+function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
-    if (PG_SECTIONS[i].id === id) return PG_SECTIONS[i].label;
+    if (PG_SECTIONS[i].id === id) return PG_SECTIONS[i];
   }
-  return id;
+  return { label: id, tag: id, full: id };
+}
+function pgDomainTag(id) { return pgDomainDef(id).tag; }
+function pgDomainFull(id) { return pgDomainDef(id).full; }
+
+/* Visit state: which benches this browser has launched, and the next
+   unlaunched bench in teaching order. localStorage only, never leaves
+   the device. Launching marks SEEN; the first unlaunched bench in
+   teaching order carries NEXT. */
+function pgSeenGet() {
+  try { return JSON.parse(localStorage.getItem("pg.seen.v1") || "{}"); }
+  catch (e) { return {}; }
+}
+function pgNextN() {
+  var seen = pgSeenGet();
+  for (var i = 0; i < PG_TEACH_ORDER.length; i++) {
+    if (!seen[PG_TEACH_ORDER[i]]) return PG_TEACH_ORDER[i];
+  }
+  return null;
+}
+function pgSeenMark(n) {
+  var seen = pgSeenGet();
+  seen[n] = 1;
+  try { localStorage.setItem("pg.seen.v1", JSON.stringify(seen)); } catch (e) {}
+  pgPaintStates();
+}
+function pgPaintStates() {
+  var seen = pgSeenGet();
+  var next = pgNextN();
+  var rows = document.querySelectorAll(".brow");
+  for (var i = 0; i < rows.length; i++) {
+    var n = rows[i].getAttribute("data-n");
+    var tag = rows[i].querySelector(".bst");
+    if (!tag) continue;
+    if (seen[n]) {
+      tag.className = "bst bst-seen";
+      tag.textContent = "SEEN";
+      tag.style.display = "";
+    } else if (n === next) {
+      tag.className = "bst bst-next";
+      tag.textContent = "NEXT";
+      tag.style.display = "";
+    } else {
+      tag.className = "bst";
+      tag.textContent = "";
+      tag.style.display = "none";
+    }
+  }
 }
 
 function pgLaunch(b, card) {
+  pgSeenMark(b.n);
   var r = card ? card.getBoundingClientRect() : null;
   pgLastPoint = r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 }
                   : { x: window.innerWidth / 2, y: window.innerHeight / 2 };
@@ -989,16 +1126,10 @@ function pgApplyFilter(first) {
   var visCount = 0;
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i];
-    var show = pgFilter === "all" || r.getAttribute("data-section") === pgFilter;
+    var show = pgFilter === "all" || r.getAttribute("data-dom") === pgFilter;
     r.classList.toggle("hide", !show);
     r.style.display = show ? "" : "none";
     if (show) visCount++;
-  }
-  var groups = document.querySelectorAll(".bgroup");
-  for (var g = 0; g < groups.length; g++) {
-    var any = groups[g].querySelector(".brow:not(.hide)") !== null;
-    groups[g].classList.toggle("hide", !any);
-    groups[g].style.display = any ? "" : "none";
   }
   var dc = $("deckCount");
   if (dc) {
@@ -1020,7 +1151,7 @@ function pgRender() {
   var deck = el("div", "deck");
   var filters = el("div", "filters");
   filters.setAttribute("role", "group");
-  filters.setAttribute("aria-label", "Filter benches by mission");
+  filters.setAttribute("aria-label", "Filter benches by domain");
   filters.appendChild(el("span", "findicator"));
   var defs = [{ id: "all", label: "All" }].concat(PG_SECTIONS);
   defs.forEach(function (d) {
@@ -1052,40 +1183,33 @@ function pgRender() {
     '<span>REV ' + PG_REV + '</span></div>';
   main.appendChild(title);
 
-  /* Dense precision rows, grouped by mission under hairline subheads. */
+  /* Dense precision rows in teaching order: one list, numbered 01..64 by
+     position in PG_TEACH_ORDER. The number is a promise about sequence;
+     the domain rides along as a tag, never as the sort. */
   var index = el("div", "bindex");
-  PG_SECTIONS.forEach(function (s) {
-    var group = el("section", "bgroup");
-    group.setAttribute("data-section", s.id);
-    group.setAttribute("aria-label", s.label + " benches");
-    var inGroup = 0;
-    for (var k = 0; k < PG_BENCHES.length; k++) {
-      if (PG_BENCHES[k].section === s.id) inGroup++;
-    }
-    var gnn = inGroup < 10 ? "0" + inGroup : inGroup;
-    var head = el("h2", "bgroup-head");
-    head.innerHTML = s.label + '<span class="cnt">' + gnn + '</span>';
-    group.appendChild(head);
-    PG_BENCHES.forEach(function (b) {
-      if (b.section !== s.id) return;
-      var row = el("button", "brow");
-      row.type = "button";
-      row.setAttribute("data-section", b.section);
-      row.setAttribute("data-n", b.n);
-      row.setAttribute("tabindex", "-1");
-      row.setAttribute("aria-label", "Bench " + b.n + ", " + b.name + ". " + b.desc + " Press Enter to launch.");
-      row.innerHTML =
-        '<span class="bnum">' + b.n + '</span>' +
-        '<span class="bname">' + b.name + '</span>' +
-        '<span class="bmission">' + pgMissionLabel(b.section) + '</span>' +
-        '<span class="bspec">' + b.desc + '</span>' +
-        '<span class="blaunch" aria-hidden="true"><span class="benter">ENTER</span><span class="barrow">&rarr;</span></span>';
-      (function (bench, r) {
-        r.addEventListener("click", function () { pgLaunch(bench, r); });
-      })(b, row);
-      group.appendChild(row);
-    });
-    index.appendChild(group);
+  var byN = {};
+  PG_BENCHES.forEach(function (b) { byN[b.n] = b; });
+  PG_TEACH_ORDER.forEach(function (n, i) {
+    var b = byN[n];
+    if (!b) return;
+    var seq = i + 1;
+    var sq = seq < 10 ? "0" + seq : "" + seq;
+    var row = el("button", "brow");
+    row.type = "button";
+    row.setAttribute("data-dom", b.section);
+    row.setAttribute("data-n", b.n);
+    row.setAttribute("tabindex", "-1");
+    row.setAttribute("aria-label", "Bench " + sq + ", " + b.name + ", " + pgDomainFull(b.section) + ". " + b.desc + " Press Enter to launch.");
+    row.innerHTML =
+      '<span class="bnum">' + sq + '</span>' +
+      '<span class="bname">' + b.name + '<span class="bst" aria-hidden="true"></span></span>' +
+      '<span class="bmission">' + pgDomainTag(b.section) + '</span>' +
+      '<span class="bspec" data-domtag="' + pgDomainTag(b.section) + '">' + b.desc + '</span>' +
+      '<span class="blaunch" aria-hidden="true"><span class="benter">ENTER</span><span class="barrow">&rarr;</span></span>';
+    (function (bench, r) {
+      r.addEventListener("click", function () { pgLaunch(bench, r); });
+    })(b, row);
+    index.appendChild(row);
   });
   main.appendChild(index);
 
@@ -1093,13 +1217,14 @@ function pgRender() {
   pgSlashKey();
   pgMoveIndicator();
   pgApplyFilter(true);
+  pgPaintStates();
   window.addEventListener("resize", pgMoveIndicator);
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready.then(pgMoveIndicator);
   }
 }
 
-/* "/" focuses the mission filter. Never steals keystrokes from inputs,
+/* "/" focuses the domain filter. Never steals keystrokes from inputs,
    editors, or open benches. */
 function pgSlashKey() {
   if (pgSlashKey._on) return;
