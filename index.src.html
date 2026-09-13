@@ -199,6 +199,19 @@ a { color: var(--ember); }
   overflow-x: auto; scrollbar-width: none;
 }
 .filters::-webkit-scrollbar { display: none; }
+/* Edge fades: the only hint a clipped pill row scrolls. JS flips can-l/can-r. */
+.filters.can-r:not(.can-l) {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 30px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 30px), transparent);
+}
+.filters.can-l:not(.can-r) {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 30px);
+  mask-image: linear-gradient(to right, transparent, #000 30px);
+}
+.filters.can-l.can-r {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 30px, #000 calc(100% - 30px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 30px, #000 calc(100% - 30px), transparent);
+}
 .findicator {
   position: absolute; top: 4px; left: 4px; height: calc(100% - 8px); width: 0;
   border-radius: 999px; background: var(--ember);
@@ -543,27 +556,22 @@ body.pg-any-open div[class*="-overlay"].open {
         <span class="vsub">PICK A WORKSTREAM INSIDE &middot; FIRMWARE &middot; KERNEL &middot; HARDWARE</span></span>
         <span class="vext" aria-hidden="true">&rarr;</span>
       </button>
-      <a class="vrow" href="https://dillingerstaffing.github.io/portfolio/#contact">
-        <span class="grow"><span class="vname">Full portfolio and hire page</span>
-        <span class="vsub">dillingerstaffing.github.io/portfolio/#contact</span></span>
-        <span class="vext" aria-hidden="true">&nearr;</span>
-      </a>
     </section>
     <section class="elsewhere" aria-label="Other sites">
       <p class="kicker">ELSEWHERE</p>
       <a class="vrow" href="https://dillingerstaffing.github.io/portfolio/">
         <span class="grow"><span class="vname">Portfolio</span>
-        <span class="vsub">dillingerstaffing.github.io/portfolio/</span></span>
+        <span class="vsub">CHRIS DILLINGER &middot; C &middot; RISC-V &middot; OS KERNELS &middot; dillingerstaffing.github.io/portfolio/</span></span>
         <span class="vext" aria-hidden="true">&nearr;</span>
       </a>
       <a class="vrow" href="https://dillingerstaffing.github.io/tapeout/">
         <span class="grow"><span class="vname">TAPEOUT</span>
-        <span class="vsub">dillingerstaffing.github.io/tapeout/</span></span>
+        <span class="vsub">LEAN GRAPHICS HARDWARE &middot; dillingerstaffing.github.io/tapeout/</span></span>
         <span class="vext" aria-hidden="true">&nearr;</span>
       </a>
       <a class="vrow" href="https://dillingerstaffing.github.io/old-iron/">
         <span class="grow"><span class="vname">OLD IRON</span>
-        <span class="vsub">dillingerstaffing.github.io/old-iron/</span></span>
+        <span class="vsub">HARDWARE DONATION &middot; dillingerstaffing.github.io/old-iron/</span></span>
         <span class="vext" aria-hidden="true">&nearr;</span>
       </a>
     </section>
@@ -1075,6 +1083,9 @@ function pgSetFilter(f) {
     btns[i].setAttribute("aria-pressed", on ? "true" : "false");
   }
   pgMoveIndicator();
+  var active = document.querySelector(".filter.is-on");
+  pgRevealFilter(active);
+  pgFilterEdges();
   pgApplyFilter(false);
 }
 
@@ -1086,6 +1097,25 @@ function pgMoveIndicator() {
   if (!on || !ind) return;
   ind.style.width = on.offsetWidth + "px";
   ind.style.transform = "translateX(" + (on.offsetLeft - 4) + "px)";
+}
+
+function pgRevealFilter(btn) {
+  var wrap = document.querySelector(".filters");
+  if (!wrap || !btn) return;
+  var pad = 8;
+  var left = btn.offsetLeft - pad;
+  var right = btn.offsetLeft + btn.offsetWidth + pad;
+  if (left < wrap.scrollLeft) wrap.scrollLeft = left;
+  else if (right > wrap.scrollLeft + wrap.clientWidth) wrap.scrollLeft = right - wrap.clientWidth;
+}
+
+/* Edge fades: the only hint a clipped pill row scrolls. Classes flip on scroll/resize. */
+function pgFilterEdges() {
+  var wrap = document.querySelector(".filters");
+  if (!wrap) return;
+  var max = wrap.scrollWidth - wrap.clientWidth;
+  wrap.classList.toggle("can-l", wrap.scrollLeft > 4);
+  wrap.classList.toggle("can-r", max > 4 && wrap.scrollLeft < max - 4);
 }
 
 function pgVisibleRows() {
@@ -1172,6 +1202,10 @@ function pgRender() {
     filters.appendChild(b);
   });
   deck.appendChild(filters);
+  filters.addEventListener("scroll", pgFilterEdges, { passive: true });
+  window.addEventListener("resize", pgFilterEdges);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(pgFilterEdges);
+  pgFilterEdges();
   var count = el("p", "deck-count");
   count.id = "deckCount";
   deck.appendChild(count);
