@@ -1102,11 +1102,16 @@ function pgMoveIndicator() {
 function pgRevealFilter(btn) {
   var wrap = document.querySelector(".filters");
   if (!wrap || !btn) return;
+  var max = wrap.scrollWidth - wrap.clientWidth;
+  if (max <= 0) return;
+  /* Nudge the strip on every tap: the shift itself hints that more chips exist. */
+  wrap.scrollLeft = Math.min(max, wrap.scrollLeft + 48);
   var pad = 8;
   var left = btn.offsetLeft - pad;
   var right = btn.offsetLeft + btn.offsetWidth + pad;
-  if (left < wrap.scrollLeft) wrap.scrollLeft = left;
-  else if (right > wrap.scrollLeft + wrap.clientWidth) wrap.scrollLeft = right - wrap.clientWidth;
+  if (left < wrap.scrollLeft) wrap.scrollLeft = Math.max(0, left);
+  else if (right > wrap.scrollLeft + wrap.clientWidth) wrap.scrollLeft = Math.min(max, right - wrap.clientWidth);
+  pgFilterEdges();
 }
 
 /* Edge fades: the only hint a clipped pill row scrolls. Classes flip on scroll/resize. */
