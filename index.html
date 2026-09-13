@@ -136,6 +136,7 @@ a { color: var(--ember); }
   position: relative; display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 30px; animation: rise 0.6s var(--ease-out) both;
 }
+.head-group { display: flex; align-items: center; gap: 18px; flex: none; }
 .sigil { width: 46px; height: 46px; flex: none; }
 /* Boot sequence: the sigil draws itself, then the core ignites. */
 .sigil .draw-ring {
@@ -333,6 +334,81 @@ a { color: var(--ember); }
 .fineprint a { color: var(--steel); }
 
 /* ---------- Toast ---------- */
+/* ---------- Hire: revenue funnel chrome (header button, standline, work section, chooser) ---------- */
+.hire-btn {
+  border: 1px solid var(--ember); background: none; color: var(--ember);
+  font-family: var(--font-m); font-size: 12px; font-weight: 700; letter-spacing: 0.16em;
+  padding: 11px 16px; border-radius: 3px; cursor: pointer; white-space: nowrap;
+  transition: background 0.18s var(--ease-out), color 0.18s var(--ease-out), transform 0.12s ease-out;
+  -webkit-tap-highlight-color: transparent;
+}
+.hire-btn:hover, .hire-btn:focus-visible { background: var(--ember); color: #0a0c0e; outline: none; }
+.hire-btn:active { transform: scale(0.94); }
+.hire-btn:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+.standline {
+  margin: 26px 0 0; padding: 16px 2px 0; border-top: 1px solid var(--line);
+  font-family: var(--font-m); font-size: 12.5px; line-height: 1.7; color: var(--dim);
+  letter-spacing: 0.02em; animation: rise 0.6s var(--ease-out) 0.5s both;
+}
+.standline b { color: var(--paper); font-weight: 500; }
+.hire-link {
+  background: none; border: 0; padding: 0; margin-left: 10px; cursor: pointer;
+  font-family: var(--font-m); font-size: 12.5px; font-weight: 700; letter-spacing: 0.12em;
+  color: var(--ember); border-bottom: 1px solid var(--ember);
+  -webkit-tap-highlight-color: transparent;
+}
+.hire-link:hover { color: var(--paper); border-bottom-color: var(--paper); }
+.hire-link:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+.work { margin: 64px 0 0; }
+.work .kicker {
+  font-family: var(--font-m); font-size: 12px; font-weight: 600;
+  letter-spacing: 0.22em; color: var(--ember); margin: 0 0 6px;
+}
+.work-lede {
+  margin: 0 0 6px; max-width: 60ch; font-size: 16px; color: var(--steel);
+}
+button.vrow {
+  width: 100%; background: none; font: inherit; text-align: left; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+button.vrow .vname { font-weight: 600; }
+.pg-chooser {
+  border: 1px solid var(--line); border-radius: 4px; background: var(--panel);
+  color: var(--paper); padding: 0; width: min(480px, calc(100vw - 32px)); max-width: 480px;
+  font-family: var(--font-d);
+}
+.pg-chooser::backdrop { background: rgba(4, 6, 8, 0.76); }
+.ch-head {
+  display: flex; align-items: start; justify-content: space-between; gap: 18px;
+  padding: 20px 20px 16px; border-bottom: 1px solid var(--line);
+}
+.ch-head h2 { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }
+.ch-head p { margin: 8px 0 0; color: var(--dim); font-family: var(--font-m); font-size: 11.5px; letter-spacing: 0.04em; }
+.ch-close {
+  flex: 0 0 auto; border: 0; background: none; color: var(--dim); cursor: pointer;
+  font-family: var(--font-m); font-size: 22px; line-height: 1; padding: 2px 6px;
+  -webkit-tap-highlight-color: transparent;
+}
+.ch-close:hover, .ch-close:focus-visible { color: var(--ember); outline: none; }
+.ch-close:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+.ch-opts { display: grid; gap: 10px; padding: 18px 20px 20px; }
+.ch-opt {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 16px; border: 1px solid var(--line); border-radius: 3px;
+  color: var(--paper); text-decoration: none; background: none; width: 100%;
+  font-family: var(--font-m); font-size: 13.5px; font-weight: 600; letter-spacing: 0.06em;
+  cursor: pointer; transition: border-color 0.15s ease-out, color 0.15s ease-out;
+  -webkit-tap-highlight-color: transparent;
+}
+.ch-opt:hover, .ch-opt:focus-visible { border-color: var(--ember); color: var(--ember); outline: none; }
+.ch-opt:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+.ch-opt span:last-child { color: var(--dim); font-size: 16px; }
+.ch-opt:hover span:last-child, .ch-opt:focus-visible span:last-child { color: var(--ember); }
+.ch-status { margin: 2px 0 0; font-family: var(--font-m); font-size: 12px; color: var(--mint); min-height: 18px; }
+@media (max-width: 560px) {
+  .head-group { gap: 12px; }
+  .hire-btn { padding: 9px 12px; font-size: 11px; }
+}
 #pgToast {
   position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); z-index: 300;
   transform: translate(-50%, 16px); opacity: 0; pointer-events: none;
@@ -432,14 +508,42 @@ body.pg-any-open div[class*="-overlay"].open {
         <path class="draw-core" d="M24 10 L29 24 L24 38 L19 24 Z" fill="#ff5a1f"/>
         <circle class="draw-core" cx="24" cy="24" r="2.6" fill="#0a0c0e"/>
       </svg>
-      <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">09</b>&nbsp;BENCHES&nbsp;&middot;&nbsp;ALL&nbsp;SYSTEMS&nbsp;NOMINAL</span></div>
+      <div class="head-group">
+        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">09</b>&nbsp;BENCHES&nbsp;&middot;&nbsp;ALL&nbsp;SYSTEMS&nbsp;NOMINAL</span></div>
+        <button class="hire-btn" type="button" data-brief="general">HIRE CHRIS</button>
+      </div>
     </div>
     <h1 class="wordmark"><span class="wl"><span>The Proving</span></span><span class="wl"><span class="outline">Ground</span></span></h1>
+    <p class="standline"><b>Every bench on this page is a real, working system.</b> I build and fix this kind of hardware and firmware for clients. The brief is pre-filled; pick how to send it.<button class="hire-link" type="button" data-brief="general">HIRE CHRIS &nbsp;&#8599;</button></p>
   </header>
 
   <main id="benches" aria-label="Engineering benches"></main>
 
   <footer class="site-foot">
+    <section class="work" aria-label="Work with Chris">
+      <p class="kicker">WORK WITH CHRIS</p>
+      <p class="work-lede">The benches above are the resume. Pick a workstream and the project brief comes pre-filled. No forms, no accounts, no tracking.</p>
+      <button class="vrow" type="button" data-brief="firmware">
+        <span class="grow"><span class="vname">Embedded firmware, RISC-V bring-up</span>
+        <span class="vsub">BARE-METAL C &middot; BOOT CODE &middot; DRIVERS &middot; SILICON BRING-UP</span></span>
+        <span class="vext" aria-hidden="true">&nearr;</span>
+      </button>
+      <button class="vrow" type="button" data-brief="kernel">
+        <span class="grow"><span class="vname">Kernel and systems work</span>
+        <span class="vsub">XV6 &middot; LINUX &middot; DRIVERS &middot; BUG TRIAGE AND FIXES</span></span>
+        <span class="vext" aria-hidden="true">&nearr;</span>
+      </button>
+      <button class="vrow" type="button" data-brief="hardware">
+        <span class="grow"><span class="vname">Hardware retirement and sanitization</span>
+        <span class="vsub">SECURE WIPE &middot; CERTIFIED DESTRUCTION &middot; INSURED LOGISTICS</span></span>
+        <span class="vext" aria-hidden="true">&nearr;</span>
+      </button>
+      <a class="vrow" href="https://dillingerstaffing.github.io/portfolio/#contact">
+        <span class="grow"><span class="vname">Full portfolio and hire page</span>
+        <span class="vsub">CASE STUDIES &middot; RATES &middot; CONTACT</span></span>
+        <span class="vext" aria-hidden="true">&nearr;</span>
+      </a>
+    </section>
     <section class="elsewhere" aria-label="Other sites">
       <p class="kicker">ELSEWHERE</p>
       <a class="vrow" href="https://dillingerstaffing.github.io/portfolio/">
@@ -464,6 +568,27 @@ body.pg-any-open div[class*="-overlay"].open {
 <!-- Staging: feature modules inject their launch buttons here; bench cards trigger them. -->
 <div class="dossier" aria-hidden="true"><div class="actions"></div></div>
 <div id="pgToast" role="status" aria-live="polite"></div>
+<dialog class="pg-chooser" id="pgChooser" aria-labelledby="pgChooserTitle" aria-describedby="pgChooserDesc">
+  <div class="ch-head">
+    <div>
+      <h2 id="pgChooserTitle">Choose how to get in touch</h2>
+      <p id="pgChooserDesc">The project brief is filled in for you. Send it by whichever route suits you.</p>
+    </div>
+    <button class="ch-close" type="button" aria-label="Close contact options">&#215;</button>
+  </div>
+  <div class="ch-opts">
+    <a class="ch-opt" id="pgMailGmail" href="#" target="_blank" rel="noopener">
+      <span>Compose in Gmail</span><span aria-hidden="true">&#8599;</span>
+    </a>
+    <a class="ch-opt" id="pgMailNative" href="#">
+      <span>Use my email app</span><span aria-hidden="true">&#8599;</span>
+    </a>
+    <button class="ch-opt" id="pgMailCopy" type="button">
+      <span>Copy email address</span><span aria-hidden="true">+</span>
+    </button>
+    <p class="ch-status" id="pgCopyStatus" role="status" aria-live="polite"></p>
+  </div>
+</dialog>
 <noscript><div style="max-width:720px;margin:40px auto;padding:24px;font-family:sans-serif;color:#f2ede3;background:#10141a;border:1px solid rgba(242,237,227,.2);border-radius:12px"><h1>The Proving Ground</h1><p>Real working engineering benches in your browser. This page needs JavaScript to run the benches. Enable it and come back.</p></div></noscript>
 
 <script>
@@ -1166,9 +1291,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=663e9a0ccf" defer></script>
-<script src="rvdata.js?v=663e9a0ccf" defer></script>
-<script src="riscv-lab.js?v=663e9a0ccf" defer></script>
-<script src="features.js?v=663e9a0ccf" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=da4dd7cd95" defer></script>
+<script src="rvdata.js?v=da4dd7cd95" defer></script>
+<script src="riscv-lab.js?v=da4dd7cd95" defer></script>
+<script src="features.js?v=da4dd7cd95" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

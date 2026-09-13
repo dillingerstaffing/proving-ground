@@ -46709,3 +46709,98 @@ if (typeof module !== "undefined" && module.exports) {
     enBuild();
   }
 })();
+
+/* ============================================================
+   MODULE: hire-chooser (2026-09-13, revenue sprint).
+   Revenue funnel chrome only: the 3-way email chooser for hire
+   CTAs. No backend, no tracking, no POSTs, all client-side.
+   Briefs keyed by data-brief on any [data-brief] trigger.
+   ============================================================ */
+(function () {
+  "use strict";
+  var EMAIL = "shipthisgroup@gmail.com";
+  var BRIEFS = {
+    general: {
+      subject: "Consulting project scope",
+      body: "What needs building or fixing:\n\nChip, board, or system:\n\nTimeline:\n\nBudget range (optional):\n"
+    },
+    firmware: {
+      subject: "RISC-V firmware / bring-up project",
+      body: "What needs building or fixing:\n\nChip or board:\n\nToolchain or SDK:\n\nTimeline:\n\nBudget range (optional):\n"
+    },
+    kernel: {
+      subject: "Kernel / systems work inquiry",
+      body: "What needs building or fixing:\n\nKernel version or target system:\n\nTimeline:\n\nBudget range (optional):\n"
+    },
+    hardware: {
+      subject: "Hardware retirement / sanitization project",
+      body: "What needs retiring:\n\nApproximate volume:\n\nLocation (pickup logistics):\n\nTimeline:\n\nData handling requirements:\n"
+    }
+  };
+
+  var chooser, gmailA, nativeA, copyBtn, copyStatus, closeBtn, lastTrigger = null;
+
+  function build() {
+    chooser = document.getElementById("pgChooser");
+    if (!chooser || typeof chooser.showModal !== "function") return;
+    gmailA = document.getElementById("pgMailGmail");
+    nativeA = document.getElementById("pgMailNative");
+    copyBtn = document.getElementById("pgMailCopy");
+    copyStatus = document.getElementById("pgCopyStatus");
+    closeBtn = chooser.querySelector(".ch-close");
+    closeBtn.addEventListener("click", function () { chooser.close(); });
+    chooser.addEventListener("close", function () {
+      if (copyStatus) copyStatus.textContent = "";
+      if (lastTrigger && document.contains(lastTrigger)) lastTrigger.focus();
+      lastTrigger = null;
+    });
+    chooser.addEventListener("click", function (e) {
+      if (e.target === chooser) chooser.close();
+    });
+    copyBtn.addEventListener("click", function () { copyEmail(copyStatus); });
+    var triggers = document.querySelectorAll("[data-brief]");
+    for (var i = 0; i < triggers.length; i++) {
+      triggers[i].addEventListener("click", function () { openChooser(this.getAttribute("data-brief")); });
+    }
+  }
+
+  function openChooser(key) {
+    if (!chooser) return;
+    var b = BRIEFS[key] || BRIEFS.general;
+    var su = encodeURIComponent(b.subject);
+    var bd = encodeURIComponent(b.body);
+    gmailA.setAttribute("href", "https://mail.google.com/mail/?view=cm&fs=1&to=" +
+      encodeURIComponent(EMAIL) + "&su=" + su + "&body=" + bd);
+    nativeA.setAttribute("href", "mailto:" + EMAIL + "?subject=" + su + "&body=" + bd);
+    lastTrigger = document.activeElement;
+    chooser.showModal();
+  }
+
+  function copyEmail(statusEl) {
+    function done(msg) { if (statusEl) statusEl.textContent = msg; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(EMAIL).then(
+        function () { done("Copied: " + EMAIL); },
+        function () { fallbackCopy(done); });
+    } else {
+      fallbackCopy(done);
+    }
+  }
+  function fallbackCopy(done) {
+    var ta = document.createElement("textarea");
+    ta.value = EMAIL;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); done("Copied: " + EMAIL); }
+    catch (e) { done(EMAIL); }
+    document.body.removeChild(ta);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", build);
+  } else {
+    build();
+  }
+})();
