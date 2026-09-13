@@ -46820,3 +46820,893 @@ if (typeof module !== "undefined" && module.exports) {
     build();
   }
 })();
+/* The Call Room: bench 65.
+   One atomic mechanism: the RISC-V function call. jal ra, target writes
+   the return address (pc+4) into ra and jumps; jalr x0, 0(ra), spelled
+   ret, jumps back to it. A function that calls another parks ra on the
+   stack first, because the inner call overwrites it. Step the call, name
+   the stack pointer mid-nest, diagnose the forgotten save.
+   Self-contained IIFE: only the page-provided globals (document, window)
+   are touched; every helper is ca-prefixed. */
+(function () {
+  "use strict";
+
+  /* ---------- pure logic (exported for tests, no DOM) ---------- */
+  function caFmt(w) {
+    var s = (w >>> 0).toString(16).toUpperCase();
+    return "0x" + ("00000000" + s).slice(-8);
+  }
+  function caNewState() {
+    return { pc: 0x1000, ra: 0, sp: 0x7FFFFFF0, a0: 21, mem: {},
+             steps: 0, seen: {}, done: false, loop: false, loopAt: 0 };
+  }
+  function caSnap(s, addr, asm, note) {
+    return { addr: addr >>> 0, asm: asm, pc: s.pc >>> 0, ra: s.ra >>> 0,
+             sp: s.sp >>> 0, a0: s.a0 >>> 0, note: note,
+             saved: (s.mem[s.sp] !== undefined) ? (s.mem[s.sp] >>> 0) : null };
+  }
+  function caJal(tgt) {
+    var f = function (s) {
+      var ret = (s.pc + 4) >>> 0;
+      s.ra = ret;
+      s.pc = tgt >>> 0;
+      return "jal wrote the return address " + caFmt(ret) + " into ra, jumped to " + caFmt(tgt);
+    };
+    f.jumps = true;
+    return f;
+  }
+  function caRet() {
+    var f = function (s) {
+      s.pc = s.ra >>> 0;
+      return "ret jumped to ra = " + caFmt(s.pc);
+    };
+    f.jumps = true;
+    return f;
+  }
+  function caAddiSp(d) {
+    return function (s) {
+      s.sp = (s.sp + d) >>> 0;
+      return "sp " + (d < 0 ? "down" : "up") + " to " + caFmt(s.sp);
+    };
+  }
+  function caSwRa() {
+    return function (s) {
+      s.mem[s.sp] = s.ra >>> 0;
+      return "parked ra = " + caFmt(s.ra) + " at " + caFmt(s.sp);
+    };
+  }
+  function caLwRa() {
+    return function (s) {
+      var v = (s.mem[s.sp] === undefined) ? 0 : s.mem[s.sp];
+      s.ra = v >>> 0;
+      return "restored ra = " + caFmt(s.ra) + " from " + caFmt(s.sp);
+    };
+  }
+  function caSlliA0(sh) {
+    return function (s) {
+      s.a0 = (s.a0 << sh) >>> 0;
+      return "a0 doubled to " + s.a0;
+    };
+  }
+  function caAddiA0(imm) {
+    return function (s) {
+      s.a0 = (s.a0 + imm) >>> 0;
+      return "a0 now " + s.a0;
+    };
+  }
+  function caNop() {
+    return function () { return "landing pad: nothing to do, we are home"; };
+  }
+
+  /* The leaf call: main -> double -> back. */
+  var CA_PROG_LEAF = [
+    { addr: 0x1000, asm: "jal  ra, 0x2000", tag: "main calls double", fn: caJal(0x2000) },
+    { addr: 0x1004, asm: "addi a0, a0, 0",  tag: "back in main",     fn: caNop() },
+    { addr: 0x2000, asm: "slli a0, a0, 1",  tag: "double the arg",   fn: caSlliA0(1) },
+    { addr: 0x2004, asm: "jalr x0, 0(ra)",  tag: "ret",              fn: caRet() }
+  ];
+  /* The nested call: outer parks ra on the stack before calling inner. */
+  var CA_PROG_NEST = [
+    { addr: 0x1000, asm: "jal  ra, 0x2000", tag: "main calls outer",      fn: caJal(0x2000) },
+    { addr: 0x1004, asm: "addi a0, a0, 0",  tag: "back in main",          fn: caNop() },
+    { addr: 0x2000, asm: "addi sp, sp, -4", tag: "prologue: make room",   fn: caAddiSp(-4) },
+    { addr: 0x2004, asm: "sw   ra, 0(sp)",  tag: "prologue: park ra",     fn: caSwRa() },
+    { addr: 0x2008, asm: "jal  ra, 0x3000", tag: "outer calls inner",     fn: caJal(0x3000) },
+    { addr: 0x200C, asm: "lw   ra, 0(sp)",  tag: "epilogue: restore ra",  fn: caLwRa() },
+    { addr: 0x2010, asm: "addi sp, sp, 4",  tag: "epilogue: give it back", fn: caAddiSp(4) },
+    { addr: 0x2014, asm: "jalr x0, 0(ra)",  tag: "ret to main",           fn: caRet() },
+    { addr: 0x3000, asm: "addi a0, a0, 1",  tag: "inner",                 fn: caAddiA0(1) },
+    { addr: 0x3004, asm: "jalr x0, 0(ra)",  tag: "ret to outer",          fn: caRet() }
+  ];
+  /* The bug: outer2 calls inner without parking ra. The inner call
+     overwrites ra, and outer2's ret jumps to its own call site. */
+  var CA_PROG_BUG = [
+    { addr: 0x1000, asm: "jal  ra, 0x2000", tag: "main calls outer2",          fn: caJal(0x2000) },
+    { addr: 0x1004, asm: "addi a0, a0, 0",  tag: "back in main (never reached)", fn: caNop() },
+    { addr: 0x2000, asm: "jal  ra, 0x3000", tag: "outer2 calls inner, ra NOT saved", fn: caJal(0x3000) },
+    { addr: 0x2004, asm: "jalr x0, 0(ra)",  tag: "ret: ra now points here",    fn: caRet() },
+    { addr: 0x3000, asm: "addi a0, a0, 1",  tag: "inner",                      fn: caAddiA0(1) },
+    { addr: 0x3004, asm: "jalr x0, 0(ra)",  tag: "ret to outer2",              fn: caRet() }
+  ];
+
+  function caStep(s, prog) {
+    if (s.done) return null;
+    var ins = null;
+    for (var i = 0; i < prog.length; i++) {
+      if (prog[i].addr === (s.pc >>> 0)) { ins = prog[i]; break; }
+    }
+    if (!ins) {
+      s.done = true;
+      return caSnap(s, s.pc, "(none)", "halt: no instruction at " + caFmt(s.pc) + ", the run is over");
+    }
+    s.seen[ins.addr] = (s.seen[ins.addr] || 0) + 1;
+    if (s.seen[ins.addr] > 1) {
+      s.done = true; s.loop = true; s.loopAt = ins.addr;
+      return caSnap(s, ins.addr, ins.asm,
+        "LOOP: pc came back to " + caFmt(ins.addr) + ". A return address got clobbered.");
+    }
+    var note = ins.fn(s);
+    s.steps++;
+    if (!ins.fn.jumps) s.pc = (s.pc + 4) >>> 0;
+    return caSnap(s, ins.addr, ins.asm, note);
+  }
+  function caRun(prog, maxSteps) {
+    var s = caNewState();
+    var trace = [];
+    var guard = maxSteps || 24;
+    while (!s.done && trace.length < guard) {
+      var snap = caStep(s, prog);
+      if (snap) trace.push(snap); else break;
+    }
+    return { trace: trace, loop: s.loop, loopAt: s.loopAt >>> 0, state: s };
+  }
+  function caTraceFind(run, addr) {
+    for (var i = 0; i < run.trace.length; i++) {
+      if (run.trace[i].addr === (addr >>> 0)) return run.trace[i];
+    }
+    return null;
+  }
+  function caVerifyT1(run) {
+    var ret = caTraceFind(run, 0x2004);
+    var last = run.trace[run.trace.length - 1];
+    return !!ret && ret.pc === 0x1004 && !!last &&
+      last.a0 === 42 && last.pc === 0x1008 && !run.loop;
+  }
+  function caVerifyT2(run) {
+    var swd = caTraceFind(run, 0x2004);
+    var innerFirst = caTraceFind(run, 0x3000);
+    var restored = caTraceFind(run, 0x200C);
+    var last = run.trace[run.trace.length - 1];
+    return !!swd && swd.saved === 0x1004 &&
+      !!innerFirst && innerFirst.sp === 0x7FFFFFEC &&
+      !!restored && restored.ra === 0x1004 &&
+      !!last && last.sp === 0x7FFFFFF0 && !run.loop;
+  }
+  function caVerifyT3(run) {
+    var clobber = caTraceFind(run, 0x2000);
+    return run.loop && run.loopAt === 0x2004 && !!clobber && clobber.ra === 0x2004;
+  }
+
+  /* ---------- test hooks (harmless in the browser) ---------- */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.CA = {
+      fmt: caFmt, newState: caNewState, step: caStep, run: caRun,
+      traceFind: caTraceFind, verifyT1: caVerifyT1, verifyT2: caVerifyT2,
+      verifyT3: caVerifyT3,
+      PROG_LEAF: CA_PROG_LEAF, PROG_NEST: CA_PROG_NEST, PROG_BUG: CA_PROG_BUG,
+      introHTML: null /* filled after the copy const below */
+    };
+  }
+
+  /* ---------- intro copy: why first, worked example, failure modes ---------- */
+  var CA_INTRO_HTML = [
+    "<div class=\"tm-card\"><h3>WHY THIS ROOM EXISTS</h3>",
+    "<p class=\"why\">Every program you have ever run is made of function calls, and on RISC-V " +
+    "every call rides two instructions. <b>jal ra, target</b> writes the return address, the " +
+    "address of the instruction right after the call, into register ra, and jumps to the " +
+    "target. <b>jalr x0, 0(ra)</b>, spelled <b>ret</b>, jumps back to whatever ra holds. That " +
+    "is the whole contract, and it is why nested calls need the stack: a second call " +
+    "overwrites ra, so a function that calls another function parks its return address in " +
+    "memory first and restores it after. Get this wrong and nothing traps, nothing warns, " +
+    "the machine simply goes somewhere else. This room is one mechanism, the call, taught " +
+    "three ways: step a leaf call by hand, name the stack pointer in the middle of a nested " +
+    "call, and diagnose a routine that forgot the save.</p>",
+    "<p class=\"why\">Seven terms, earned now. A <b>register</b> is a named 32-bit slot inside " +
+    "the core, the fastest storage a program has. <b>ra</b> (x1) is the return-address " +
+    "register: calls write it, returns read it. <b>sp</b> (x2) is the stack pointer: it names " +
+    "the top of the <b>stack</b>, a region of memory the program uses as scratch space that " +
+    "grows toward lower addresses. <b>jal</b> (jump and link) writes pc+4 into a register " +
+    "and jumps. <b>jalr</b> jumps to an address held in a register; with x0 as the destination " +
+    "the link is discarded, and that spelling is called <b>ret</b>. The <b>prologue</b> parks " +
+    "ra on the stack before a nested call; the <b>epilogue</b> restores it after.</p></div>",
+    "<div class=\"tm-card\"><h3>THE WORKED EXAMPLE</h3>",
+    "<p class=\"why\">main sits at 0x1000 and calls double at 0x2000, with a0 = 21. Check it " +
+    "with a finger: jal writes ra = 0x1004 (the instruction after the call) and jumps to " +
+    "0x2000. double shifts a0 left by 1: 42. ret jumps to ra, 0x1004, back in main, one " +
+    "instruction past the call. The trials scale this exact hand-trace up: a leaf call " +
+    "whose return you call in advance, a nested call where you name sp mid-flight, and a " +
+    "routine that skipped the save and never comes home.</p></div>",
+    "<div class=\"tm-card tm-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3><ul>",
+    "<li><b>THE CLOBBERED RA:</b> a function that calls another without parking ra first " +
+    "loses its way home. The inner call overwrites the return address, and the outer ret " +
+    "jumps to the inner call site instead of the caller. Trial 3 is this bug, running.</li>",
+    "<li><b>THE UNBALANCED STACK:</b> every addi sp, sp, -4 needs its addi sp, sp, +4. Park " +
+    "without restoring and the stack drifts downward forever; restore without parking and " +
+    "you load garbage into ra.</li>",
+    "<li><b>THE SILENT MISRETURN:</b> ret jumps to whatever ra holds. If ra was overwritten, " +
+    "the landing is wrong and nothing traps. The only evidence is the trace, which is why " +
+    "this room prints one.</li>",
+    "<li><b>THE NEEDLESS SAVE:</b> a leaf function, one that calls nothing, needs no " +
+    "prologue. Saving ra anyway is harmless but wasteful. The rule is: save ra if and only " +
+    "if you call.</li></ul></div>"
+  ].join("");
+
+  if (typeof module !== "undefined" && module.exports && module.exports.CA) {
+    module.exports.CA.introHTML = CA_INTRO_HTML;
+  }
+
+  /* ---------- DOM: element helper, CSS, state ---------- */
+  function caEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  var CA_CSS = [
+    ".ca-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".ca-overlay.open{display:block}",
+    ".ca-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".ca-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".ca-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".ca-sub{font-size:14px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.92;margin:0 0 18px;max-width:68ch}",
+    ".ca-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".ca-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".ca-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".ca-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".ca-card b{color:var(--ember,#ff5a1f)}",
+    ".tm-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".tm-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".tm-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".tm-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".tm-card b{color:var(--ember,#ff5a1f)}",
+    ".tm-fail{border:1px solid var(--ember,#ff5a1f)}",
+    ".tm-fail li{font-size:13px;line-height:1.6;margin:0 0 6px;list-style:none}",
+    ".tm-fail ul{padding:0;margin:0}",
+    ".ca-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}",
+    ".ca-lab{font-size:12px;letter-spacing:.12em;opacity:.75}",
+    ".ca-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
+    ".ca-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".ca-btn:disabled{opacity:.35;cursor:default}",
+    ".ca-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".ca-btn.sel{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12)}",
+    ".ca-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#101014}",
+    ".ca-verdict{font-size:14px;line-height:1.6;margin:10px 0 0;min-height:24px}",
+    ".ca-verdict.ok{color:#9fe870}",
+    ".ca-verdict.bad{color:#ff5a1f}",
+    ".ca-read{font-size:14px;line-height:1.7;margin:8px 0 0;min-height:22px;white-space:pre-line}",
+    ".ca-log{font-size:12.5px;line-height:1.7;max-height:280px;overflow-y:auto}",
+    ".ca-log div{margin:0 0 4px}",
+    ".ca-log .dim{opacity:.6}",
+    ".ca-regs{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}",
+    ".ca-reg{border:1px solid var(--line,rgba(242,237,228,.28));min-width:110px;padding:8px 10px}",
+    ".ca-reg .ca-rlab{font-size:11px;letter-spacing:.1em;opacity:.6;margin-bottom:6px}",
+    ".ca-reg .ca-rval{font-size:17px;letter-spacing:.06em}",
+    ".ca-reg.hot{border-color:var(--ember,#ff5a1f);animation:ca-pop 200ms ease-out}",
+    ".ca-reg.hot .ca-rval{color:var(--ember,#ff5a1f)}",
+    "@keyframes ca-pop{0%{transform:scale(.55)}100%{transform:scale(1)}}",
+    "@media(prefers-reduced-motion:reduce){.ca-reg.hot{animation:none}}",
+    ".ca-prog{font-size:13px;line-height:1.9;margin:12px 0;border:1px solid var(--line,rgba(242,237,228,.16));padding:10px 14px}",
+    ".ca-prog .ca-ins{white-space:pre}",
+    ".ca-prog .ca-ins.cur{color:var(--ember,#ff5a1f)}",
+    ".ca-prog .ca-ins.done{opacity:.45}",
+    ".ca-trace{font-size:12.5px;line-height:1.8;margin:12px 0;max-height:260px;overflow-y:auto;border:1px solid var(--line,rgba(242,237,228,.16));padding:10px 14px;white-space:pre-line}",
+    ".ca-trace .ca-tloop{color:var(--ember,#ff5a1f)}",
+    ".ca-stack{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}",
+    ".ca-slot{border:1px solid var(--line,rgba(242,237,228,.28));min-width:130px;padding:8px 10px}",
+    ".ca-slot .ca-slab{font-size:11px;letter-spacing:.1em;opacity:.6;margin-bottom:6px}",
+    ".ca-slot .ca-sval{font-size:17px;letter-spacing:.06em}",
+    ".ca-slot.sp{border-color:var(--ember,#ff5a1f)}",
+    ".ca-legend{font-size:11px;letter-spacing:.1em;opacity:.6;margin:4px 0 0}",
+    ".ca-banner{border:1px solid var(--ember,#ff5a1f);padding:18px;margin:18px 0;display:none}",
+    ".ca-banner.show{display:block}",
+    ".ca-banner h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".ca-cert{white-space:pre-line;font-size:13px;line-height:1.7;margin:10px 0}",
+    ".ca-strikes{font-size:12px;letter-spacing:.14em;color:var(--ember,#ff5a1f);margin:0 0 14px}",
+    ".ca-foot{font-size:12px;letter-spacing:.1em;opacity:.7;margin:14px 0}"
+  ].join("\n");
+
+  var caEls = {};
+  var caSt = null;
+  var caEscBound = false;
+
+  function caNewBenchState() {
+    return {
+      t1: { predOk: false, pass: false },
+      t2: { predOk: false, pass: false },
+      t3: { predOk: false, diagOk: false, traceShown: false, pass: false },
+      strikes: 0, failed: false, cert: false
+    };
+  }
+  function caLog(msg, cls) {
+    if (!caEls.log) return;
+    var d = document.createElement("div");
+    if (cls) d.className = cls;
+    d.textContent = msg;
+    caEls.log.appendChild(d);
+    caEls.log.scrollTop = caEls.log.scrollHeight;
+  }
+  function caStrike(note) {
+    if (caSt.failed || caSt.cert) return;
+    caSt.strikes++;
+    if (caEls.strikes) caEls.strikes.textContent = "STRIKES: " + caSt.strikes + "/3";
+    caLog("STRIKE " + caSt.strikes + "/3: " + note, "dim");
+    if (caSt.strikes >= 3) caFail();
+  }
+  function caFail() {
+    caSt.failed = true;
+    if (caEls.failCard) caEls.failCard.style.display = "block";
+    caLog("ROOM FAILED: three strikes. Reset and run it again: save ra if and only if you call.", "dim");
+  }
+
+  /* ---------- shared: register strip + stack slots ---------- */
+  function caBuildRegs(host, prefix) {
+    var wrap = caEl("div", "ca-regs");
+    var refs = {};
+    [["PC", "pc"], ["RA", "ra"], ["SP", "sp"], ["A0", "a0"]].forEach(function (pair) {
+      var cell = caEl("div", "ca-reg");
+      cell.appendChild(caEl("div", "ca-rlab", pair[0]));
+      var v = caEl("div", "ca-rval", "--");
+      v.id = prefix + "R" + pair[1];
+      cell.appendChild(v);
+      wrap.appendChild(cell);
+      refs[pair[1]] = { cell: cell, val: v, last: null };
+    });
+    host.appendChild(wrap);
+    return refs;
+  }
+  function caRenderRegs(refs, s) {
+    [["pc", s.pc], ["ra", s.ra], ["sp", s.sp]].forEach(function (pair) {
+      var r = refs[pair[0]];
+      var txt = caFmt(pair[1]);
+      r.val.textContent = txt;
+      if (r.last !== txt) { r.cell.classList.remove("hot"); void r.cell.offsetWidth; r.cell.classList.add("hot"); }
+      r.last = txt;
+    });
+    refs.a0.val.textContent = String(s.a0 >>> 0);
+    if (refs.a0.last !== String(s.a0 >>> 0)) {
+      refs.a0.cell.classList.remove("hot"); void refs.a0.cell.offsetWidth; refs.a0.cell.classList.add("hot");
+    }
+    refs.a0.last = String(s.a0 >>> 0);
+  }
+  function caBuildStack(host, prefix) {
+    var wrap = caEl("div", "ca-stack");
+    var refs = {};
+    [0x7FFFFFEC, 0x7FFFFFF0].forEach(function (a) {
+      var cell = caEl("div", "ca-slot");
+      cell.appendChild(caEl("div", "ca-slab", caFmt(a)));
+      var v = caEl("div", "ca-sval", "--");
+      v.id = prefix + "S" + a.toString(16).toUpperCase();
+      cell.appendChild(v);
+      wrap.appendChild(cell);
+      refs[a] = { cell: cell, val: v };
+    });
+    host.appendChild(wrap);
+    host.appendChild(caEl("p", "ca-legend", "THE STACK. SP NAMES THE TOP. EMBER OUTLINE MARKS WHERE SP POINTS."));
+    return refs;
+  }
+  function caRenderStack(refs, s) {
+    Object.keys(refs).forEach(function (k) {
+      var a = parseInt(k, 10);
+      var r = refs[a];
+      r.val.textContent = (s.mem[a] === undefined) ? "--" : caFmt(s.mem[a]);
+      r.cell.classList.toggle("sp", (s.sp >>> 0) === (a >>> 0));
+    });
+  }
+  function caBuildProg(host, prog, prefix) {
+    var box = caEl("div", "ca-prog");
+    var rows = prog.map(function (ins, i) {
+      var d = caEl("div", "ca-ins", caFmt(ins.addr) + "  " + ins.asm + "   ; " + ins.tag);
+      d.id = prefix + "P" + i;
+      box.appendChild(d);
+      return d;
+    });
+    host.appendChild(box);
+    return { box: box, rows: rows };
+  }
+  function caRenderProg(ui, prog, s) {
+    prog.forEach(function (ins, i) {
+      var d = ui.rows[i];
+      d.classList.toggle("cur", (s.pc >>> 0) === (ins.addr >>> 0) && !s.done);
+      d.classList.toggle("done", (s.seen[ins.addr] || 0) > 0);
+    });
+  }
+  function caRenderTrace(host, run) {
+    host.innerHTML = "";
+    run.trace.forEach(function (t) {
+      var d = caEl("div", (run.loop && t.addr === run.loopAt) ? "ca-tloop" : "",
+        caFmt(t.addr) + "  " + t.asm + "\n      -> " + t.note);
+      host.appendChild(d);
+    });
+    var f = caEl("div", "",
+      "FINAL: PC=" + caFmt(run.state.pc) + " RA=" + caFmt(run.state.ra) +
+      " SP=" + caFmt(run.state.sp) + " A0=" + (run.state.a0 >>> 0) +
+      (run.loop ? "  LOOP DETECTED at " + caFmt(run.loopAt) : "  HALTED CLEANLY"));
+    host.appendChild(f);
+  }
+  function caPickRow(host, id, options, onPick) {
+    var row = caEl("div", "ca-row");
+    var btns = options.map(function (o) {
+      var b = caEl("button", "ca-btn", o.label);
+      b.id = id + "-" + o.val;
+      b.setAttribute("aria-pressed", "false");
+      b.setAttribute("aria-label", "Choose " + o.label);
+      b.addEventListener("click", function () {
+        btns.forEach(function (x) { x.classList.remove("sel"); x.setAttribute("aria-pressed", "false"); });
+        b.classList.add("sel"); b.setAttribute("aria-pressed", "true");
+        onPick(o.val, o.label);
+      });
+      row.appendChild(b);
+      return b;
+    });
+    host.appendChild(row);
+    return row;
+  }
+
+  /* ---------- do-first card: step the leaf call ---------- */
+  function caBuildDoFirst(panel) {
+    var card = caEl("div", "ca-card");
+    card.appendChild(caEl("h3", "", "DO FIRST: STEP THE CALL"));
+    card.appendChild(caEl("p", "why",
+      "No wrong answers on this card. Press STEP and watch one call happen: main at 0x1000 " +
+      "calls double at 0x2000 with a0 = 21. Watch ra catch the return address, watch the " +
+      "jump, watch ret land one instruction past the call."));
+    var regs = caBuildRegs(card, "caDf");
+    var stack = caBuildStack(card, "caDf");
+    var progUi = caBuildProg(card, CA_PROG_LEAF, "caDf");
+    var row = caEl("div", "ca-row");
+    var step = caEl("button", "ca-btn solid", "STEP");
+    step.id = "caDfStep";
+    var reset = caEl("button", "ca-btn", "RESET");
+    reset.id = "caDfReset";
+    row.appendChild(step); row.appendChild(reset);
+    card.appendChild(row);
+    var out = caEl("div", "ca-read", "");
+    out.id = "caDfOut"; out.setAttribute("aria-live", "polite");
+    card.appendChild(out);
+    var s = caNewState();
+    function render(note) {
+      caRenderRegs(regs, s); caRenderStack(stack, s); caRenderProg(progUi, CA_PROG_LEAF, s);
+      if (note) out.textContent = note;
+    }
+    render("Press STEP to run the first instruction.");
+    step.addEventListener("click", function () {
+      if (s.done) { out.textContent = "The run is over. Press RESET to walk it again."; return; }
+      var snap = caStep(s, CA_PROG_LEAF);
+      render(snap ? (caFmt(snap.addr) + "  " + snap.asm + "\n" + snap.note) : "done");
+      caLog("do-first: step " + s.steps + ".", "dim");
+    });
+    reset.addEventListener("click", function () {
+      s = caNewState();
+      render("Press STEP to run the first instruction.");
+      caLog("do-first: reset.", "dim");
+    });
+    panel.appendChild(card);
+  }
+
+  /* ---------- trial 1: THE LEAF CALL (predict the return) ---------- */
+  function caBuildT1(panel) {
+    var t = caSt.t1;
+    var card = caEl("div", "ca-card");
+    card.appendChild(caEl("h3", "", "TRIAL 1: THE LEAF CALL"));
+    card.appendChild(caEl("p", "why",
+      "main calls double, double calls nothing. Call it before the run: after double " +
+      "executes ret, what is the PC? Pick, COMMIT THE CALL, then RUN THE CALL to verify."));
+    var pick = { val: null, label: null };
+    caPickRow(card, "caT1", [
+      { val: "0x1004", label: "0x1004" },
+      { val: "0x2000", label: "0x2000" },
+      { val: "0x2008", label: "0x2008" }
+    ], function (v, l) { pick.val = v; pick.label = l; });
+    var row = caEl("div", "ca-row");
+    var commit = caEl("button", "ca-btn", "COMMIT CALL");
+    commit.id = "caT1Commit";
+    var run = caEl("button", "ca-btn solid", "RUN THE CALL");
+    run.id = "caT1Run";
+    row.appendChild(commit); row.appendChild(run);
+    card.appendChild(row);
+    var trace = caEl("div", "ca-trace", "");
+    trace.id = "caT1Trace";
+    trace.style.display = "none";
+    card.appendChild(trace);
+    var stat = caEl("div", "ca-verdict", "");
+    stat.id = "caT1Stat"; stat.setAttribute("aria-live", "polite");
+    card.appendChild(stat);
+    commit.addEventListener("click", function () {
+      if (caSt.failed || t.pass) return;
+      if (!pick.val) { stat.className = "ca-verdict"; stat.textContent = "Pick a PC first; the call needs a value."; return; }
+      if (pick.val === "0x1004") {
+        t.predOk = true;
+        stat.className = "ca-verdict";
+        stat.textContent = "CALL RIGHT: ret jumps to ra, and jal wrote 0x1004 into ra. RUN THE CALL and watch it land.";
+        caLog("t1 call right: 0x1004.", "dim");
+        commit.disabled = true;
+      } else {
+        stat.className = "ca-verdict bad";
+        stat.textContent = "CALL WRONG. jal wrote pc+4 into ra: the call sat at 0x1000, so ra = 0x1004. " +
+          (pick.val === "0x2000"
+            ? "0x2000 is where the call went, not where it comes back to."
+            : "0x2008 skips an instruction; ret lands exactly one past the call, not two.");
+        caStrike("t1 call " + pick.label + " against 0x1004");
+      }
+    });
+    run.addEventListener("click", function () {
+      if (caSt.failed || t.pass) return;
+      if (!t.predOk) {
+        stat.className = "ca-verdict";
+        stat.textContent = "The room wants your call first: pick a PC and commit it above.";
+        return;
+      }
+      var r = caRun(CA_PROG_LEAF);
+      trace.style.display = "block";
+      caRenderTrace(trace, r);
+      if (caVerifyT1(r)) {
+        t.pass = true;
+        stat.className = "ca-verdict ok";
+        stat.textContent = "TRIAL 1 PASS: ret landed at 0x1004, a0 doubled 21 to 42. The call contract held.";
+        caLog("t1 pass.", "dim");
+        run.disabled = true;
+        caCheckCert();
+      } else {
+        stat.className = "ca-verdict bad";
+        stat.textContent = "The trace disagrees with the model. That is a room bug, not your bug: it is logged.";
+        caLog("t1 verify failed unexpectedly.", "dim");
+      }
+    });
+    panel.appendChild(card);
+  }
+
+  /* ---------- trial 2: THE NESTED CALL (name the stack pointer) ---------- */
+  function caBuildT2(panel) {
+    var t = caSt.t2;
+    var card = caEl("div", "ca-card");
+    card.appendChild(caEl("h3", "", "TRIAL 2: THE NESTED CALL"));
+    card.appendChild(caEl("p", "why",
+      "outer calls inner, so outer parks ra on the stack first: addi sp, sp, -4, then " +
+      "sw ra, 0(sp). sp starts at 0x7FFFFFF0. Call it: while inner runs, what is sp? Pick, " +
+      "COMMIT THE CALL, then RUN THE NEST to verify."));
+    var pick = { val: null, label: null };
+    caPickRow(card, "caT2", [
+      { val: "0x7FFFFFEC", label: "0x7FFFFFEC" },
+      { val: "0x7FFFFFF0", label: "0x7FFFFFF0" },
+      { val: "0x7FFFFFE8", label: "0x7FFFFFE8" }
+    ], function (v, l) { pick.val = v; pick.label = l; });
+    var row = caEl("div", "ca-row");
+    var commit = caEl("button", "ca-btn", "COMMIT CALL");
+    commit.id = "caT2Commit";
+    var run = caEl("button", "ca-btn solid", "RUN THE NEST");
+    run.id = "caT2Run";
+    row.appendChild(commit); row.appendChild(run);
+    card.appendChild(row);
+    var trace = caEl("div", "ca-trace", "");
+    trace.id = "caT2Trace";
+    trace.style.display = "none";
+    card.appendChild(trace);
+    var stat = caEl("div", "ca-verdict", "");
+    stat.id = "caT2Stat"; stat.setAttribute("aria-live", "polite");
+    card.appendChild(stat);
+    commit.addEventListener("click", function () {
+      if (caSt.failed || t.pass) return;
+      if (!pick.val) { stat.className = "ca-verdict"; stat.textContent = "Pick an sp value first; the call needs a value."; return; }
+      if (pick.val === "0x7FFFFFEC") {
+        t.predOk = true;
+        stat.className = "ca-verdict";
+        stat.textContent = "CALL RIGHT: -4 from 0x7FFFFFF0 is 0x7FFFFFEC, and ra = 0x1004 is parked there. RUN THE NEST and watch the epilogue give it all back.";
+        caLog("t2 call right: 0x7FFFFFEC.", "dim");
+        commit.disabled = true;
+      } else {
+        stat.className = "ca-verdict bad";
+        stat.textContent = "CALL WRONG. The prologue ran once before inner: one addi sp, sp, -4, one sw. " +
+          (pick.val === "0x7FFFFFF0"
+            ? "0x7FFFFFF0 is sp before the prologue; inner runs after the park."
+            : "0x7FFFFFE8 would be two parks deep; outer parked exactly once.");
+        caStrike("t2 call " + pick.label + " against 0x7FFFFFEC");
+      }
+    });
+    run.addEventListener("click", function () {
+      if (caSt.failed || t.pass) return;
+      if (!t.predOk) {
+        stat.className = "ca-verdict";
+        stat.textContent = "The room wants your call first: pick an sp value and commit it above.";
+        return;
+      }
+      var r = caRun(CA_PROG_NEST);
+      trace.style.display = "block";
+      caRenderTrace(trace, r);
+      if (caVerifyT2(r)) {
+        t.pass = true;
+        stat.className = "ca-verdict ok";
+        stat.textContent = "TRIAL 2 PASS: ra = 0x1004 parked at 0x7FFFFFEC while inner ran, restored after, sp back to 0x7FFFFFF0. Balanced, to the word.";
+        caLog("t2 pass.", "dim");
+        run.disabled = true;
+        caCheckCert();
+      } else {
+        stat.className = "ca-verdict bad";
+        stat.textContent = "The trace disagrees with the model. That is a room bug, not your bug: it is logged.";
+        caLog("t2 verify failed unexpectedly.", "dim");
+      }
+    });
+    panel.appendChild(card);
+  }
+
+  /* ---------- trial 3: THE CLOBBERED RETURN (diagnosis) ---------- */
+  function caBuildT3(panel) {
+    var t = caSt.t3;
+    var card = caEl("div", "ca-card");
+    card.appendChild(caEl("h3", "", "TRIAL 3: THE CLOBBERED RETURN"));
+    card.appendChild(caEl("p", "why",
+      "outer2 calls inner but skips the prologue: no addi sp, no sw ra. Call it first: " +
+      "when outer2 executes its ret, where does control land? Pick and COMMIT THE CALL, " +
+      "then RUN THE BUG, then name the root cause and COMMIT THE DIAGNOSIS."));
+    var pick = { val: null, label: null };
+    caPickRow(card, "caT3", [
+      { val: "0x1004", label: "0x1004" },
+      { val: "0x2004", label: "0x2004" },
+      { val: "0x3000", label: "0x3000" }
+    ], function (v, l) { pick.val = v; pick.label = l; });
+    var row = caEl("div", "ca-row");
+    var commit = caEl("button", "ca-btn", "COMMIT CALL");
+    commit.id = "caT3Commit";
+    var run = caEl("button", "ca-btn solid", "RUN THE BUG");
+    run.id = "caT3Run";
+    row.appendChild(commit); row.appendChild(run);
+    card.appendChild(row);
+    var trace = caEl("div", "ca-trace", "");
+    trace.id = "caT3Trace";
+    trace.style.display = "none";
+    card.appendChild(trace);
+    card.appendChild(caEl("p", "why", "The trace is in. What is the one-line root cause?"));
+    var diag = { val: null, label: null };
+    caPickRow(card, "caT3D", [
+      { val: "nosave", label: "outer2 never saved ra, so inner's call overwrote the return to main" },
+      { val: "sp", label: "sp was never adjusted, so the stack corrupted ra" },
+      { val: "inner", label: "inner wrote a bad value into ra" }
+    ], function (v, l) { diag.val = v; diag.label = l; });
+    var row2 = caEl("div", "ca-row");
+    var dcommit = caEl("button", "ca-btn solid", "COMMIT DIAGNOSIS");
+    dcommit.id = "caT3DiagCommit";
+    row2.appendChild(dcommit);
+    card.appendChild(row2);
+    var stat = caEl("div", "ca-verdict", "");
+    stat.id = "caT3Stat"; stat.setAttribute("aria-live", "polite");
+    card.appendChild(stat);
+    function maybePass(r) {
+      if (t.predOk && t.diagOk && t.traceShown && !t.pass && caVerifyT3(r)) {
+        t.pass = true;
+        stat.className = "ca-verdict ok";
+        stat.textContent = "TRIAL 3 PASS: the inner jal overwrote ra 0x1004 with 0x2004, and the ret looped on its own call site. Save ra if and only if you call.";
+        caLog("t3 pass.", "dim");
+        run.disabled = true; dcommit.disabled = true;
+        caCheckCert();
+      }
+    }
+    var lastRun = null;
+    commit.addEventListener("click", function () {
+      if (caSt.failed || t.pass) return;
+      if (!pick.val) { stat.className = "ca-verdict"; stat.textContent = "Pick a landing PC first; the call needs a value."; return; }
+      if (pick.val === "0x2004") {
+        t.predOk = true;
+        stat.className = "ca-verdict";
+        stat.textContent = "CALL RIGHT: 0x2004 is outer2's own ret. RUN THE BUG and watch the loop form.";
+        caLog("t3 call right: 0x2004.", "dim");
+        commit.disabled = true;
+      } else {
+        stat.className = "ca-verdict bad";
+        stat.textContent = "CALL WRONG. ret jumps to ra, and by the time outer2 returns, ra no longer " +
+          "holds 0x1004. " +
+          (pick.val === "0x1004"
+            ? "0x1004 is where ra pointed before inner's call overwrote it."
+            : "0x3000 is where the call went; the damage is in ra, not in the jump target.");
+        caStrike("t3 call " + pick.label + " against 0x2004");
+      }
+    });
+    run.addEventListener("click", function () {
+      if (caSt.failed || t.pass) return;
+      if (!t.predOk) {
+        stat.className = "ca-verdict";
+        stat.textContent = "The room wants your call first: pick a landing PC and commit it above.";
+        return;
+      }
+      lastRun = caRun(CA_PROG_BUG);
+      t.traceShown = true;
+      trace.style.display = "block";
+      caRenderTrace(trace, lastRun);
+      stat.className = "ca-verdict";
+      stat.textContent = "The bug is on the trace: read it, then commit the diagnosis.";
+      caLog("t3 bug run: loop at " + caFmt(lastRun.loopAt) + ".", "dim");
+      maybePass(lastRun);
+    });
+    dcommit.addEventListener("click", function () {
+      if (caSt.failed || t.pass) return;
+      if (!t.traceShown) {
+        stat.className = "ca-verdict";
+        stat.textContent = "Run the bug first: the diagnosis has to come from the trace, not from memory.";
+        return;
+      }
+      if (!diag.val) { stat.className = "ca-verdict"; stat.textContent = "Pick a root cause first."; return; }
+      if (diag.val === "nosave") {
+        t.diagOk = true;
+        stat.className = "ca-verdict";
+        stat.textContent = "DIAGNOSIS RIGHT: no prologue, so the inner jal overwrote ra. The fix is the save-and-restore pair from Trial 2.";
+        caLog("t3 diagnosis right.", "dim");
+        maybePass(lastRun);
+      } else {
+        stat.className = "ca-verdict bad";
+        stat.textContent = "DIAGNOSIS WRONG. " +
+          (diag.val === "sp"
+            ? "sp never moved in this routine, so the stack cannot be the culprit. Read the trace: ra changed at 0x2000."
+            : "inner never wrote ra directly; the jal that called inner did. The overwrite happened at the call, 0x2000.");
+        caStrike("t3 diagnosis: " + diag.label);
+      }
+    });
+    panel.appendChild(card);
+  }
+
+  /* ---------- cert, download ---------- */
+  function caCheckCert() {
+    if (caSt.cert || caSt.failed) return;
+    if (caSt.t1.pass && caSt.t2.pass && caSt.t3.pass) {
+      caSt.cert = true;
+      var lines = [
+        "THE CALL ROOM: CERTIFIED",
+        "jal ra, target writes pc+4 into ra and jumps.",
+        "jalr x0, 0(ra) jumps back to it.",
+        "Trial 1: ret landed at 0x1004, a0 doubled 21 to 42.",
+        "Trial 2: ra = 0x1004 parked at 0x7FFFFFEC while inner ran, sp balanced.",
+        "Trial 3: the forgotten save looped at 0x2004; the fix is save-and-restore.",
+        "Rule: save ra if and only if you call.",
+        "Strikes: " + caSt.strikes + "/3"
+      ];
+      if (caEls.certP) caEls.certP.textContent = lines.join("\n");
+      if (caEls.banner) caEls.banner.classList.add("show");
+      caLog("ROOM CERTIFIED. The call contract held, three ways.", "dim");
+    }
+  }
+  function caDownloadCert() {
+    var txt = caEls.certP ? caEls.certP.textContent : "";
+    var blob = new Blob(["The Call Room qualification record\n\n" + txt + "\n"], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "call-room-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  /* ---------- close, build ---------- */
+  function caClose() {
+    if (caEls.overlay) caEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+  function caOpen() {
+    if (caEls.overlay) { caEls.overlay.classList.add("open"); document.body.style.overflow = "hidden"; }
+  }
+
+  function caBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box) return;
+    if (document.getElementById("caBtn")) return;
+
+    caSt = caNewBenchState();
+
+    var sty = document.createElement("style");
+    sty.id = "caStyle";
+    sty.textContent = CA_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "caBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Call Room";
+    b.addEventListener("click", caOpen);
+    box.appendChild(b);
+
+    var ov = caEl("div", "ca-overlay");
+    ov.id = "caOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Call Room");
+    var x = caEl("button", "ca-btn", "CLOSE");
+    x.id = "caXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Call Room");
+    x.addEventListener("click", caClose);
+    ov.appendChild(x);
+    caEls.overlay = ov;
+    if (!caEscBound) {
+      caEscBound = true;
+      document.addEventListener("keydown", function (ev) {
+        if (ev.key === "Escape" && caEls.overlay && caEls.overlay.classList.contains("open")) caClose();
+      });
+    }
+
+    var panel = caEl("div", "ca-panel");
+    panel.appendChild(caEl("div", "ca-kicker", "SILICON BENCH 65"));
+    panel.appendChild(caEl("h2", "ca-title", "The Call Room"));
+    panel.appendChild(caEl("p", "ca-sub",
+      "One contract runs every function call on every RISC-V machine: jal writes where to " +
+      "come back to, ret jumps back to it, and a function that calls another parks ra on " +
+      "the stack first. Step the call, name the stack pointer mid-nest, and diagnose the " +
+      "routine that forgot the save. Three strikes and the room resets."));
+    var introWrap = caEl("div", "");
+    introWrap.innerHTML = CA_INTRO_HTML;
+    panel.appendChild(introWrap);
+
+    var strikes = caEl("p", "ca-strikes", "STRIKES: 0/3");
+    strikes.id = "caStrikes";
+    strikes.setAttribute("aria-live", "polite");
+    caEls.strikes = strikes;
+    panel.appendChild(strikes);
+
+    caBuildDoFirst(panel);
+    caBuildT1(panel);
+    caBuildT2(panel);
+    caBuildT3(panel);
+
+    var fail = caEl("div", "ca-card", "");
+    fail.id = "caFailCard";
+    fail.style.display = "none";
+    fail.appendChild(caEl("h3", "", "THREE STRIKES"));
+    fail.appendChild(caEl("p", "why",
+      "The room failed. The machine does not care about your confidence. Reset and run it " +
+      "again: jal writes the way home, and a caller parks ra before it calls."));
+    var reset = caEl("button", "ca-btn solid", "RESET ROOM");
+    reset.id = "caResetBtn";
+    reset.addEventListener("click", caResetRoom);
+    fail.appendChild(reset);
+    caEls.failCard = fail;
+    panel.appendChild(fail);
+
+    var banner = caEl("div", "ca-banner");
+    banner.id = "caBanner";
+    banner.appendChild(caEl("h3", "", "ROOM CERTIFIED"));
+    var certP = caEl("div", "ca-cert", "");
+    certP.id = "caCertLine";
+    banner.appendChild(certP);
+    var dl = caEl("button", "ca-btn", "DOWNLOAD CERTIFICATE");
+    dl.id = "caCertDl";
+    dl.addEventListener("click", caDownloadCert);
+    banner.appendChild(dl);
+    caEls.banner = banner; caEls.certP = certP;
+    panel.appendChild(banner);
+
+    var logCard = caEl("div", "ca-card");
+    logCard.appendChild(caEl("h3", "", "BENCH LOG"));
+    var log = caEl("div", "ca-log", "");
+    log.id = "caLog";
+    log.setAttribute("aria-live", "polite");
+    logCard.appendChild(log);
+    panel.appendChild(logCard);
+    caEls.log = log;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    caLog("bench open. One contract: jal writes the way home, ret walks it. The do-first card asks nothing of you.", "dim");
+  }
+
+  function caResetRoom() {
+    var sty = document.getElementById("caStyle");
+    if (sty && sty.parentNode) sty.parentNode.removeChild(sty);
+    var btn = document.getElementById("caBtn");
+    if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
+    if (caEls.overlay && caEls.overlay.parentNode) caEls.overlay.parentNode.removeChild(caEls.overlay);
+    caEls = {};
+    caSt = null;
+    caBuild();
+    caOpen();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", caBuild);
+  } else {
+    caBuild();
+  }
+})();
