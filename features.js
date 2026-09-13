@@ -8853,9 +8853,12 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(body);
 
     var sub = lkEl("p", "lk-sub", "");
-    sub.innerHTML = "<b>HOW IT WORKS</b> Every chip on the GPU marches to one clock, and that clock is a PLL: " +
+    sub.innerHTML = "<b>HOW IT WORKS</b> A clock that never locks is a card that never boots; " +
+      "a clock that locks but jitters is data errors under load. " +
+      "Card B makes it concrete: its oscillator runs hot and noisy, jitter over budget, " +
+      "and the fix is widening the loop to quiet it. " +
+      "That loop is a PLL, a phase-locked loop: " +
       "a loop that steers a jittery oscillator until it locks onto the reference frequency. " +
-      "A clock that never locks is a card that never boots; a clock that locks but jitters is data errors under load. " +
       "Your three knobs are the loop filter: charge pump current (how hard each correction pushes), " +
       "resistor and capacitor (how wide and fast the loop responds). " +
       "Card B makes it concrete: its VCO runs hot and noisy, jitter over budget, and the fix is widening the loop to quiet it. " +
