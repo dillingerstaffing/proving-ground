@@ -334,7 +334,7 @@ a { color: var(--ember); }
 .fineprint a { color: var(--steel); }
 
 /* ---------- Toast ---------- */
-/* ---------- Hire: revenue funnel chrome (header button, standline, work section, chooser) ---------- */
+/* ---------- Hire: header button, standline, work section, chooser ---------- */
 .hire-btn {
   border: 1px solid var(--ember); background: none; color: var(--ember);
   font-family: var(--font-m); font-size: 12px; font-weight: 700; letter-spacing: 0.16em;
@@ -408,6 +408,7 @@ button.vrow .vname { font-weight: 600; }
 @media (max-width: 560px) {
   .head-group { gap: 12px; }
   .hire-btn { padding: 9px 12px; font-size: 11px; }
+  .sysstat-tail { display: none; }
 }
 #pgToast {
   position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); z-index: 300;
@@ -509,12 +510,12 @@ body.pg-any-open div[class*="-overlay"].open {
         <circle class="draw-core" cx="24" cy="24" r="2.6" fill="#0a0c0e"/>
       </svg>
       <div class="head-group">
-        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">09</b>&nbsp;BENCHES&nbsp;&middot;&nbsp;ALL&nbsp;SYSTEMS&nbsp;NOMINAL</span></div>
+        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">09</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;ALL&nbsp;SYSTEMS&nbsp;NOMINAL</span></span></div>
         <button class="hire-btn" type="button" data-brief="general">HIRE CHRIS</button>
       </div>
     </div>
     <h1 class="wordmark"><span class="wl"><span>The Proving</span></span><span class="wl"><span class="outline">Ground</span></span></h1>
-    <p class="standline"><b>Every bench on this page is a real, working system.</b> I build and fix this kind of hardware and firmware for clients. The brief is pre-filled; pick how to send it.<button class="hire-link" type="button" data-brief="general">HIRE CHRIS &nbsp;&#8599;</button></p>
+    <p class="standline"><b>Every bench on this page runs.</b> If your hardware or firmware doesn't, that's the job.<button class="hire-link" type="button" data-brief="general">HIRE CHRIS &nbsp;&#8599;</button></p>
   </header>
 
   <main id="benches" aria-label="Engineering benches"></main>
@@ -522,7 +523,7 @@ body.pg-any-open div[class*="-overlay"].open {
   <footer class="site-foot">
     <section class="work" aria-label="Work with Chris">
       <p class="kicker">WORK WITH CHRIS</p>
-      <p class="work-lede">The benches above are the resume. Pick a workstream and the project brief comes pre-filled. No forms, no accounts, no tracking.</p>
+      <p class="work-lede">The benches above are the resume. Pick a workstream and the brief comes pre-filled.</p>
       <button class="vrow" type="button" data-brief="firmware">
         <span class="grow"><span class="vname">Embedded firmware, RISC-V bring-up</span>
         <span class="vsub">BARE-METAL C &middot; BOOT CODE &middot; DRIVERS &middot; SILICON BRING-UP</span></span>

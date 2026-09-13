@@ -46711,9 +46711,9 @@ if (typeof module !== "undefined" && module.exports) {
 })();
 
 /* ============================================================
-   MODULE: hire-chooser (2026-09-13, revenue sprint).
-   Revenue funnel chrome only: the 3-way email chooser for hire
-   CTAs. No backend, no tracking, no POSTs, all client-side.
+   MODULE: hire-chooser.
+   The 3-way email chooser for hire CTAs. No backend, no
+   tracking, no POSTs, all client-side.
    Briefs keyed by data-brief on any [data-brief] trigger.
    ============================================================ */
 (function () {
