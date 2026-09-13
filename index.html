@@ -1104,13 +1104,26 @@ function pgRevealFilter(btn) {
   if (!wrap || !btn) return;
   var max = wrap.scrollWidth - wrap.clientWidth;
   if (max <= 0) return;
-  /* Nudge the strip on every tap: the shift itself hints that more chips exist. */
-  wrap.scrollLeft = Math.min(max, wrap.scrollLeft + 48);
+  /* Position the active chip so neighbors peek in on both sides: the peeks
+     themselves are the hint that the strip scrolls left and right. */
+  var peek = 44;
   var pad = 8;
+  var vw = wrap.clientWidth;
   var left = btn.offsetLeft - pad;
   var right = btn.offsetLeft + btn.offsetWidth + pad;
-  if (left < wrap.scrollLeft) wrap.scrollLeft = Math.max(0, left);
-  else if (right > wrap.scrollLeft + wrap.clientWidth) wrap.scrollLeft = Math.min(max, right - wrap.clientWidth);
+  var prev = btn.previousElementSibling;
+  var next = btn.nextElementSibling;
+  var hasPrev = !!(prev && prev.classList && prev.classList.contains("filter"));
+  var hasNext = !!(next && next.classList && next.classList.contains("filter"));
+  var s;
+  if (hasPrev && hasNext) s = (left + right) / 2 - vw / 2;
+  else if (hasPrev) s = left - peek;
+  else if (hasNext) s = Math.max(0, right + peek - vw);
+  else s = wrap.scrollLeft;
+  /* Keep the active chip fully on screen. */
+  if (s > left) s = left;
+  if (s < right - vw) s = right - vw;
+  wrap.scrollLeft = Math.max(0, Math.min(max, s));
   pgFilterEdges();
 }
 
