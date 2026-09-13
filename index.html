@@ -408,6 +408,18 @@ button.vrow .vname { font-weight: 600; }
 .ch-opt span:last-child { color: var(--dim); font-size: 16px; }
 .ch-opt:hover span:last-child, .ch-opt:focus-visible span:last-child { color: var(--ember); }
 .ch-status { margin: 2px 0 0; font-family: var(--font-m); font-size: 12px; color: var(--mint); min-height: 18px; }
+.ch-brief { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 4px; }
+.ch-wb {
+  font-family: var(--font-m); font-size: 11px; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--dim); background: none;
+  border: 1px solid var(--line); border-radius: 999px; padding: 8px 14px; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: border-color 0.15s ease-out, color 0.15s ease-out;
+}
+.ch-wb:hover { color: var(--paper); border-color: var(--dim); }
+.ch-wb.is-on { color: var(--ember); border-color: var(--ember); }
+.ch-wb:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+button.vrow:hover .vext { transform: translate(3px, 0); }
 @media (max-width: 560px) {
   .head-group { gap: 12px; }
   .hire-btn { padding: 9px 12px; font-size: 11px; }
@@ -525,25 +537,15 @@ body.pg-any-open div[class*="-overlay"].open {
   <footer class="site-foot">
     <section class="work" aria-label="Work with Chris">
       <p class="kicker">WORK WITH CHRIS</p>
-      <p class="work-lede">Pick a workstream and the brief comes pre-filled.</p>
-      <button class="vrow" type="button" data-brief="firmware">
-        <span class="grow"><span class="vname">Embedded firmware, RISC-V bring-up</span>
-        <span class="vsub">BARE-METAL C &middot; BOOT CODE &middot; DRIVERS &middot; SILICON BRING-UP</span></span>
-        <span class="vext" aria-hidden="true">&nearr;</span>
-      </button>
-      <button class="vrow" type="button" data-brief="kernel">
-        <span class="grow"><span class="vname">Kernel and systems work</span>
-        <span class="vsub">XV6 &middot; LINUX &middot; DRIVERS &middot; BUG TRIAGE AND FIXES</span></span>
-        <span class="vext" aria-hidden="true">&nearr;</span>
-      </button>
-      <button class="vrow" type="button" data-brief="hardware">
-        <span class="grow"><span class="vname">Hardware retirement and sanitization</span>
-        <span class="vsub">SECURE WIPE &middot; CERTIFIED DESTRUCTION &middot; INSURED LOGISTICS</span></span>
-        <span class="vext" aria-hidden="true">&nearr;</span>
+      <p class="work-lede">One email. The project brief comes pre-filled.</p>
+      <button class="vrow" type="button" data-brief="general">
+        <span class="grow"><span class="vname">Contact Chris</span>
+        <span class="vsub">PICK A WORKSTREAM INSIDE &middot; FIRMWARE &middot; KERNEL &middot; HARDWARE</span></span>
+        <span class="vext" aria-hidden="true">&rarr;</span>
       </button>
       <a class="vrow" href="https://dillingerstaffing.github.io/portfolio/#contact">
         <span class="grow"><span class="vname">Full portfolio and hire page</span>
-        <span class="vsub">CASE STUDIES &middot; RATES &middot; CONTACT</span></span>
+        <span class="vsub">dillingerstaffing.github.io/portfolio/#contact</span></span>
         <span class="vext" aria-hidden="true">&nearr;</span>
       </a>
     </section>
@@ -551,17 +553,17 @@ body.pg-any-open div[class*="-overlay"].open {
       <p class="kicker">ELSEWHERE</p>
       <a class="vrow" href="https://dillingerstaffing.github.io/portfolio/">
         <span class="grow"><span class="vname">Portfolio</span>
-        <span class="vsub">CHRIS DILLINGER &middot; C &middot; RISC-V &middot; OS KERNELS</span></span>
+        <span class="vsub">dillingerstaffing.github.io/portfolio/</span></span>
         <span class="vext" aria-hidden="true">&nearr;</span>
       </a>
       <a class="vrow" href="https://dillingerstaffing.github.io/tapeout/">
         <span class="grow"><span class="vname">TAPEOUT</span>
-        <span class="vsub">LEAN GRAPHICS HARDWARE</span></span>
+        <span class="vsub">dillingerstaffing.github.io/tapeout/</span></span>
         <span class="vext" aria-hidden="true">&nearr;</span>
       </a>
       <a class="vrow" href="https://dillingerstaffing.github.io/old-iron/">
         <span class="grow"><span class="vname">OLD IRON</span>
-        <span class="vsub">HARDWARE DONATION</span></span>
+        <span class="vsub">dillingerstaffing.github.io/old-iron/</span></span>
         <span class="vext" aria-hidden="true">&nearr;</span>
       </a>
     </section>
@@ -575,11 +577,17 @@ body.pg-any-open div[class*="-overlay"].open {
   <div class="ch-head">
     <div>
       <h2 id="pgChooserTitle">Choose how to get in touch</h2>
-      <p id="pgChooserDesc">The project brief is filled in for you. Send it by whichever route suits you.</p>
+      <p id="pgChooserDesc">Pick a workstream and the brief fills in. Send it by whichever route suits you.</p>
     </div>
     <button class="ch-close" type="button" aria-label="Close contact options">&#215;</button>
   </div>
   <div class="ch-opts">
+    <div class="ch-brief" role="group" aria-label="Workstream">
+      <button class="ch-wb is-on" type="button" data-wb="general">General</button>
+      <button class="ch-wb" type="button" data-wb="firmware">Firmware</button>
+      <button class="ch-wb" type="button" data-wb="kernel">Kernel</button>
+      <button class="ch-wb" type="button" data-wb="hardware">Hardware</button>
+    </div>
     <a class="ch-opt" id="pgMailGmail" href="#" target="_blank" rel="noopener">
       <span>Compose in Gmail</span><span aria-hidden="true">&#8599;</span>
     </a>
@@ -1402,9 +1410,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=ad435b773d" defer></script>
-<script src="rvdata.js?v=ad435b773d" defer></script>
-<script src="riscv-lab.js?v=ad435b773d" defer></script>
-<script src="features.js?v=ad435b773d" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=9146ffbf10" defer></script>
+<script src="rvdata.js?v=9146ffbf10" defer></script>
+<script src="riscv-lab.js?v=9146ffbf10" defer></script>
+<script src="features.js?v=9146ffbf10" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

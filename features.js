@@ -46714,7 +46714,9 @@ if (typeof module !== "undefined" && module.exports) {
    MODULE: hire-chooser.
    The 3-way email chooser for hire CTAs. No backend, no
    tracking, no POSTs, all client-side.
-   Briefs keyed by data-brief on any [data-brief] trigger.
+   Briefs keyed by data-brief on any [data-brief] trigger;
+   the workstream picker inside the dialog switches the
+   pre-filled brief without reopening.
    ============================================================ */
 (function () {
   "use strict";
@@ -46738,7 +46740,7 @@ if (typeof module !== "undefined" && module.exports) {
     }
   };
 
-  var chooser, gmailA, nativeA, copyBtn, copyStatus, closeBtn, lastTrigger = null;
+  var chooser, gmailA, nativeA, copyBtn, copyStatus, closeBtn, wbBtns = null, currentBrief = "general", lastTrigger = null;
 
   function build() {
     chooser = document.getElementById("pgChooser");
@@ -46762,16 +46764,30 @@ if (typeof module !== "undefined" && module.exports) {
     for (var i = 0; i < triggers.length; i++) {
       triggers[i].addEventListener("click", function () { openChooser(this.getAttribute("data-brief")); });
     }
+    wbBtns = chooser.querySelectorAll(".ch-wb");
+    for (var j = 0; j < wbBtns.length; j++) {
+      wbBtns[j].addEventListener("click", function () { applyBrief(this.getAttribute("data-wb")); });
+    }
   }
 
-  function openChooser(key) {
-    if (!chooser) return;
+  function applyBrief(key) {
     var b = BRIEFS[key] || BRIEFS.general;
+    currentBrief = BRIEFS[key] ? key : "general";
     var su = encodeURIComponent(b.subject);
     var bd = encodeURIComponent(b.body);
     gmailA.setAttribute("href", "https://mail.google.com/mail/?view=cm&fs=1&to=" +
       encodeURIComponent(EMAIL) + "&su=" + su + "&body=" + bd);
     nativeA.setAttribute("href", "mailto:" + EMAIL + "?subject=" + su + "&body=" + bd);
+    if (wbBtns) {
+      for (var i = 0; i < wbBtns.length; i++) {
+        wbBtns[i].classList.toggle("is-on", wbBtns[i].getAttribute("data-wb") === currentBrief);
+      }
+    }
+  }
+
+  function openChooser(key) {
+    if (!chooser) return;
+    applyBrief(key);
     lastTrigger = document.activeElement;
     chooser.showModal();
   }
