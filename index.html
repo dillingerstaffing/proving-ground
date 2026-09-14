@@ -917,7 +917,11 @@ var PG_BENCHES = [
   { section: "arch", n: "65", name: "The Call Room", btn: "caBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "The RISC-V call contract on the bench: jal writes the return address into ra, ret jumps back, and a function that calls another parks ra on the stack first. Step a leaf call by hand, name sp in the middle of a nested call, and diagnose the routine that forgot the save.",
     how: "Predict the return address and the stack pointer, run the traces, then find the clobbered return.",
-    spec: "CALL / RETURN \u00B7 3 TRIALS" }
+    spec: "CALL / RETURN \u00B7 3 TRIALS" },
+  { section: "analog", n: "66", name: "The Termination Room", btn: "tmBtn", pill: "tapeout", pillLabel: "TAPEOUT",
+    desc: "A fast edge that meets a mismatch comes back: fire a step down a 50 ohm line and read the echo on the scope. Call the echo time, call its sign, size the one resistor that kills it, and find a cracked joint by its echo time.",
+    how: "Predict the echo time and polarity, FIRE to verify on the scope, size the parallel resistor to 50 ohms, then locate the fault by its round trip.",
+    spec: "TDR SCOPE \u00B7 GAMMA MATH \u00B7 4 TRIALS" }
  ];
 /* Teaching order: the sequence a newcomer should take the benches in.
    The index renders this list top to bottom; the number on each row is its
@@ -1482,9 +1486,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=1043d87fc8" defer></script>
-<script src="rvdata.js?v=1043d87fc8" defer></script>
-<script src="riscv-lab.js?v=1043d87fc8" defer></script>
-<script src="features.js?v=1043d87fc8" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=5c25eb3020" defer></script>
+<script src="rvdata.js?v=5c25eb3020" defer></script>
+<script src="riscv-lab.js?v=5c25eb3020" defer></script>
+<script src="features.js?v=5c25eb3020" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

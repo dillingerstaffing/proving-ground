@@ -47725,3 +47725,688 @@ if (typeof module !== "undefined" && module.exports) {
     caBuild();
   }
 })();
+/* ============================================================================
+ * BENCH 66: THE TERMINATION ROOM (tapeout)
+ * Time-domain reflectometry on the bench: a fast edge meets a mismatch and
+ * part of it comes back. See the echo, measure its time and size, name the
+ * fault, kill it with one resistor. Pure client-side, no network.
+ * ========================================================================== */
+(function () {
+  "use strict";
+
+  /* ---------- pure physics (testable, no DOM) ---------- */
+  var TM_Z0 = 50;      /* line characteristic impedance, ohms */
+  var TM_V = 15;       /* propagation speed, cm per ns (FR4 microstrip) */
+  var TM_VD = 2.0;     /* driver open-circuit step, volts */
+  var TM_RS = 50;      /* driver source resistance, ohms (matched) */
+
+  function tmGamma(zl, z0) {
+    if (!isFinite(zl)) return 1; /* open end reflects everything, same sign */
+    return (zl - z0) / (zl + z0);
+  }
+  function tmPar(r1, r2) { return (r1 * r2) / (r1 + r2); }
+  function tmTau(Lcm, v) { return Lcm / v; }          /* one-way delay, ns */
+  function tmRoundTrip(Lcm, v) { return 2 * Lcm / v; } /* echo delay, ns */
+  function tmLaunch(vd, rs, z0) { return vd * z0 / (rs + z0); }
+  function tmFaultZ(gamma, z0) { return z0 * (1 + gamma) / (1 - gamma); }
+
+  /* Driver-node voltage at time t (ns). Matched source, so the lattice ends
+     after one round trip: launch step at 0, echo step at 2*tau. */
+  function tmWaveAt(t, P) {
+    var vl = tmLaunch(P.vd, P.rs, P.z0);
+    var g = tmGamma(P.zl, P.z0);
+    var v = 0;
+    if (t >= 0) v += vl;
+    if (t >= tmRoundTrip(P.L, P.v)) v += vl * g;
+    return v;
+  }
+  /* Step segments for the scope: [[t,v],...] with vertical jumps. */
+  function tmSteps(P, tMax) {
+    var vl = tmLaunch(P.vd, P.rs, P.z0);
+    var g = tmGamma(P.zl, P.z0);
+    var rt = tmRoundTrip(P.L, P.v);
+    var pts = [[0, 0], [0, vl]];
+    if (rt > 0 && rt < tMax) pts.push([rt, vl], [rt, vl + vl * g]);
+    pts.push([tMax, vl + vl * g]);
+    return { pts: pts, vl: vl, gamma: g, rt: rt };
+  }
+
+  /* Trial programs: the honest configs the room actually simulates. */
+  var TM_PROG_DO = { vd: TM_VD, rs: TM_RS, z0: TM_Z0, zl: Infinity, L: 30, v: TM_V };
+  var TM_PROG_T1 = { vd: TM_VD, rs: TM_RS, z0: TM_Z0, zl: Infinity, L: 45, v: TM_V };
+  var TM_PROG_T2 = { vd: TM_VD, rs: TM_RS, z0: TM_Z0, zl: 0,        L: 30, v: TM_V };
+  var TM_PROG_T4 = { vd: TM_VD, rs: TM_RS, z0: TM_Z0, zl: 150,      L: 30, v: TM_V };
+
+  function tmVerifyT1(choiceNs) { return choiceNs === 6; }
+  function tmVerifyT2(choice) { return choice === "inverted"; }
+  function tmVerifyT3(rtOhms) {
+    return Math.abs(tmGamma(tmPar(150, rtOhms), TM_Z0)) <= 0.02;
+  }
+  function tmVerifyT4(distCm, culprit) {
+    return distCm === 30 && culprit === "joint";
+  }
+
+  /* ---------- test hooks (harmless in the browser) ---------- */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.TM = {
+      Z0: TM_Z0, V: TM_V, gamma: tmGamma, par: tmPar, tau: tmTau,
+      roundTrip: tmRoundTrip, launch: tmLaunch, waveAt: tmWaveAt,
+      steps: tmSteps, faultZ: tmFaultZ,
+      verifyT1: tmVerifyT1, verifyT2: tmVerifyT2,
+      verifyT3: tmVerifyT3, verifyT4: tmVerifyT4,
+      PROG_DO: TM_PROG_DO, PROG_T1: TM_PROG_T1,
+      PROG_T2: TM_PROG_T2, PROG_T4: TM_PROG_T4,
+      introHTML: null /* filled after the copy const below */
+    };
+  }
+
+  /* ---------- intro copy: why first, worked example, failure modes ---------- */
+  var TM_INTRO_HTML = [
+    "<div class=\"tm-card\"><h3>WHY THIS ROOM EXISTS</h3>",
+    "<p class=\"why\">Every fast edge on a GPU board travels. A copper trace is not a wire, " +
+    "it is a transmission line, and when the edge reaches a mismatch, a connector, a via " +
+    "stub, a receiver with the wrong input impedance, part of the edge turns around and " +
+    "comes back. That echo rings the line. A ringing clock double-clocks the receiver, a " +
+    "ringing data line eats the noise margin, and the board passes on your bench and fails " +
+    "in the customer's machine. Termination is the one-resistor fix. This room teaches the " +
+    "whole skill: see the echo, measure its time and size, name what caused it, and kill " +
+    "it with the right resistor. One mechanism, four trials.</p>",
+    "<p class=\"why\">Six terms, earned now. A <b>transmission line</b> is a conductor long " +
+    "enough that a signal needs measurable time to cross it: at 15 cm/ns, a 30 cm trace " +
+    "takes 2 ns, long enough to matter for nanosecond edges. <b>Z0</b>, the characteristic " +
+    "impedance, is the impedance the line shows a traveling edge, set by the trace geometry; " +
+    "this bench uses 50 ohms, the most common value on real boards. <b>Gamma</b>, the " +
+    "reflection coefficient, is the fraction of the edge that comes back: " +
+    "<b>(ZL - Z0) / (ZL + Z0)</b>, where ZL is whatever sits at the far end. " +
+    "<b>Termination</b> is a resistor chosen so ZL equals Z0, making gamma zero so nothing " +
+    "returns. <b>TDR</b>, time-domain reflectometry, is the instrument technique this room " +
+    "imitates: fire a step, watch the echo, read the distance from its time and the fault " +
+    "from its size. The <b>round trip</b> is there and back: twice the one-way time.</p></div>",
+    "<div class=\"tm-card\"><h3>THE WORKED EXAMPLE</h3>",
+    "<p class=\"why\">Driver open-circuit 2 V, source 50 ohms, line 50 ohms, far end open, " +
+    "length 30 cm, speed 15 cm/ns. Check it with a finger. The launch divides across source " +
+    "and line: 2 V times 50/(50+50) = 1 V into the line. One-way time is 30/15 = 2 ns. The " +
+    "open end reflects everything: gamma = +1. At 4 ns the echo reaches the driver and the " +
+    "node steps from 1 V to 2 V. At the open end itself the voltage doubled to 2 V at 2 ns, " +
+    "because the arriving 1 V and its +1 V reflection add. Nothing was lost. It all came " +
+    "back. The trials scale this exact hand-check up: call an echo time, call an echo's " +
+    "sign, size the kill resistor, and find a fault by its echo.</p></div>",
+    "<div class=\"tm-card tm-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3><ul>",
+    "<li><b>THE RING:</b> an unterminated clock line rings past the receiver threshold " +
+    "twice per edge, and the counter counts two. Nothing flags it. The symptom is wrong " +
+    "data, far from the cause.</li>",
+    "<li><b>THE SILENT OVERSHOOT:</b> at an open end the voltage doubles. A 3.3 V driver " +
+    "makes 6.6 V at the pin, past absolute-maximum ratings, and the chip dies quietly " +
+    "over weeks. No error bit is ever set.</li>",
+    "<li><b>THE GREEDY TERMINATION:</b> too small a resistor loads the driver and burns " +
+    "power; too large leaves an echo. The resistor must equal Z0, not roughly, not " +
+    "bigger to be safe. Trial 3 grades this to 2 percent.</li>",
+    "<li><b>THE HIDDEN STUB:</b> a via stub or a half-seated connector is a mismatch " +
+    "inside the board. You cannot see it, but its echo arrives at exactly twice its " +
+    "distance divided by the speed. TDR finds it by time, which is Trial 4.</li></ul></div>"
+  ].join("");
+
+  if (typeof module !== "undefined" && module.exports && module.exports.TM) {
+    module.exports.TM.introHTML = TM_INTRO_HTML;
+  }
+
+  /* ---------- DOM: element helper, CSS, state ---------- */
+  function tmEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  var TM_CSS = [
+    ".tm-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".tm-overlay.open{display:block}",
+    ".tm-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
+    ".tm-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
+    ".tm-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 8px;color:var(--paper,#f2ede4)}",
+    ".tm-sub{font-size:14px;line-height:1.6;color:var(--paper,#f2ede4);opacity:.92;margin:0 0 18px;max-width:68ch}",
+    ".tm-card{border:1px solid var(--line,rgba(242,237,228,.16));background:var(--panel,rgba(20,20,24,.72));padding:18px;margin:0 0 14px}",
+    ".tm-card h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".tm-card p{font-size:13px;line-height:1.65;margin:0 0 10px;max-width:70ch}",
+    ".tm-card p.why{color:var(--paper,#f2ede4);opacity:.85}",
+    ".tm-card b{color:var(--ember,#ff5a1f)}",
+    ".tm-fail{border:1px solid var(--ember,#ff5a1f)}",
+    ".tm-fail li{font-size:13px;line-height:1.6;margin:0 0 6px;list-style:none}",
+    ".tm-fail ul{padding:0;margin:0}",
+    ".tm-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}",
+    ".tm-lab{font-size:12px;letter-spacing:.12em;opacity:.75}",
+    ".tm-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
+    ".tm-btn:hover{border-color:var(--ember,#ff5a1f)}",
+    ".tm-btn:disabled{opacity:.35;cursor:default}",
+    ".tm-btn:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".tm-seg{font-family:'IBM Plex Mono',monospace;font-size:13px;min-height:48px;min-width:64px;padding:12px 16px;background:transparent;color:var(--paper,#f2ede4);border:1px solid var(--line,rgba(242,237,228,.28));cursor:pointer}",
+    ".tm-seg:hover{border-color:var(--ember,#ff5a1f)}",
+    ".tm-seg:disabled{opacity:.35;cursor:default}",
+    ".tm-seg:focus-visible{outline:2px solid var(--ember,#ff5a1f);outline-offset:2px}",
+    ".tm-seg.sel{border-color:var(--ember,#ff5a1f);background:rgba(255,90,31,.12);color:var(--ember,#ff5a1f)}",
+    ".tm-btn.solid{background:var(--ember,#ff5a1f);border-color:var(--ember,#ff5a1f);color:#101014}",
+    ".tm-verdict{font-size:14px;line-height:1.6;margin:10px 0 0;min-height:24px;max-width:70ch}",
+    ".tm-verdict.ok{color:#9fe870}",
+    ".tm-verdict.bad{color:#ff5a1f}",
+    ".tm-scope{width:100%;height:190px;display:block;border:1px solid var(--line,rgba(242,237,228,.16));background:rgba(10,10,14,.6);margin:10px 0 4px}",
+    ".tm-cap{font-size:11.5px;letter-spacing:.06em;opacity:.65;margin:0 0 6px}",
+    ".tm-log{font-size:12.5px;line-height:1.7;max-height:280px;overflow-y:auto}",
+    ".tm-log div{margin:0 0 4px}",
+    ".tm-log .dim{opacity:.6}",
+    ".tm-strikes{font-size:13px;letter-spacing:.14em;color:var(--ember,#ff5a1f);margin:0 0 14px}",
+    ".tm-banner{border:1px solid var(--ember,#ff5a1f);padding:18px;margin:0 0 14px;display:none}",
+    ".tm-banner.show{display:block;animation:tm-pop 200ms ease-out}",
+    ".tm-banner h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,#ff5a1f)}",
+    ".tm-cert{font-size:13px;line-height:1.7;white-space:pre-line;margin:0 0 10px}",
+    "@keyframes tm-pop{from{transform:scale(.985)}to{transform:scale(1)}}",
+    "@media (prefers-reduced-motion: reduce){.tm-banner.show{animation:none}}"
+  ].join("\n");
+
+  var tmSt = null, tmEls = {}, tmEscBound = false;
+
+  function tmNewBenchState() {
+    return {
+      t1: { choice: null, pass: false }, t2: { choice: null, pass: false },
+      t3: { choice: null, pass: false },
+      t4: { dist: null, culprit: null, pass: false },
+      strikes: 0, cert: false, failed: false
+    };
+  }
+  function tmLog(msg, cls) {
+    if (!tmEls.log) return;
+    var d = tmEl("div", cls || "", msg);
+    tmEls.log.appendChild(d);
+    tmEls.log.scrollTop = tmEls.log.scrollHeight;
+  }
+  function tmStrike(msg) {
+    if (tmSt.failed || tmSt.cert) return;
+    tmSt.strikes += 1;
+    if (tmEls.strikes) tmEls.strikes.textContent = "STRIKES: " + tmSt.strikes + "/3";
+    tmLog("STRIKE " + tmSt.strikes + "/3: " + msg, "dim");
+    if (tmSt.strikes >= 3) {
+      tmSt.failed = true;
+      if (tmEls.failCard) tmEls.failCard.style.display = "block";
+      tmLog("ROOM FAILED. Three strikes. Reset and run it again: the echo always tells the truth.", "dim");
+    }
+  }
+
+  /* ---------- the scope ---------- */
+  function tmFitCanvas(cv) {
+    var dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+    var w = (cv.clientWidth || 320), h = 190;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    return { w: w, h: h, dpr: dpr };
+  }
+  /* Draw the driver-node waveform. opts: {cursorNs, cursorLabel, note} */
+  function tmDraw(cv, P, opts) {
+    var ctx = cv.getContext("2d");
+    if (!ctx) return;
+    var fit = tmFitCanvas(cv), W = fit.w, H = fit.h;
+    ctx.setTransform(fit.dpr, 0, 0, fit.dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    var tMax = 12, vMin = -0.5, vMax = 2.5;
+    function X(t) { return 34 + (t / tMax) * (W - 44); }
+    function Y(v) { return H - 24 - ((v - vMin) / (vMax - vMin)) * (H - 44); }
+    var paper = "#f2ede4", ember = "#ff5a1f", hair = "rgba(242,237,228,.14)";
+    ctx.lineWidth = 1;
+    /* grid */
+    ctx.strokeStyle = hair; ctx.fillStyle = "rgba(242,237,228,.55)";
+    ctx.font = "10px 'IBM Plex Mono',monospace"; ctx.textAlign = "center";
+    for (var t = 0; t <= tMax; t += 2) {
+      ctx.beginPath(); ctx.moveTo(X(t), 8); ctx.lineTo(X(t), H - 24); ctx.stroke();
+      ctx.fillText(t + "", X(t), H - 10);
+    }
+    ctx.textAlign = "right";
+    for (var v = 0; v <= 2; v += 1) {
+      ctx.beginPath(); ctx.moveTo(34, Y(v)); ctx.lineTo(W - 10, Y(v)); ctx.stroke();
+      ctx.fillText(v + "V", 30, Y(v) + 3);
+    }
+    ctx.textAlign = "right"; ctx.fillText("ns", W - 10, H - 10);
+    /* waveform */
+    var s = tmSteps(P, tMax), pts = s.pts;
+    ctx.lineWidth = 2;
+    for (var i = 1; i < pts.length; i++) {
+      var echoSeg = (pts[i][0] >= s.rt && s.rt > 0 && s.rt < tMax);
+      ctx.strokeStyle = echoSeg ? ember : paper;
+      ctx.beginPath(); ctx.moveTo(X(pts[i - 1][0]), Y(pts[i - 1][1]));
+      ctx.lineTo(X(pts[i][0]), Y(pts[i][1])); ctx.stroke();
+    }
+    /* labels */
+    ctx.font = "11px 'IBM Plex Mono',monospace"; ctx.textAlign = "left";
+    ctx.fillStyle = paper;
+    ctx.fillText("LAUNCH " + s.vl.toFixed(1) + " V", X(0.3), Y(s.vl) - 8);
+    if (s.rt > 0 && s.rt < tMax) {
+      ctx.fillStyle = ember;
+      var ev = s.vl + s.vl * s.gamma;
+      var elab = (s.gamma >= 0 ? "+" : "") + (s.vl * s.gamma).toFixed(1) + " V @ " + s.rt.toFixed(1) + " ns";
+      ctx.fillText("ECHO " + elab, X(s.rt) + 6, Y(ev) - 8);
+    }
+    /* prediction cursor */
+    if (opts && opts.cursorNs != null) {
+      ctx.strokeStyle = ember; ctx.setLineDash([4, 4]); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(X(opts.cursorNs), 8); ctx.lineTo(X(opts.cursorNs), H - 24); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = ember; ctx.textAlign = "center";
+      ctx.fillText(opts.cursorLabel || (opts.cursorNs.toFixed(1) + " ns"), X(opts.cursorNs), 18);
+    }
+    if (opts && opts.note) {
+      ctx.fillStyle = "rgba(242,237,228,.55)"; ctx.textAlign = "left";
+      ctx.fillText(opts.note, 34, 18);
+    }
+  }
+
+  /* ---------- trial cards ---------- */
+  function tmSegRow(ids) {
+    /* ids: [[key,label,domId],...]; returns {row, set(key), get(), lock()} */
+    var row = tmEl("div", "tm-row");
+    row.setAttribute("role", "group");
+    var cur = null, btns = {};
+    ids.forEach(function (spec) {
+      var b = tmEl("button", "tm-seg", spec[1]);
+      b.id = spec[2];
+      b.setAttribute("aria-pressed", "false");
+      b.addEventListener("click", function () {
+        if (b.disabled) return;
+        cur = spec[0];
+        Object.keys(btns).forEach(function (k) {
+          btns[k].classList.remove("sel");
+          btns[k].setAttribute("aria-pressed", "false");
+        });
+        b.classList.add("sel");
+        b.setAttribute("aria-pressed", "true");
+      });
+      btns[spec[0]] = b;
+      row.appendChild(b);
+    });
+    return {
+      row: row,
+      get: function () { return cur; },
+      lock: function () {
+        Object.keys(btns).forEach(function (k) { btns[k].disabled = true; });
+      }
+    };
+  }
+  function tmVerdict(id) {
+    var v = tmEl("p", "tm-verdict", "");
+    v.id = id;
+    v.setAttribute("aria-live", "polite");
+    return v;
+  }
+  function tmSay(vEl, ok, text) {
+    vEl.textContent = text;
+    vEl.classList.remove("ok", "bad");
+    vEl.classList.add(ok ? "ok" : "bad");
+  }
+  function tmScope(id) {
+    var cv = document.createElement("canvas");
+    cv.className = "tm-scope";
+    cv.id = id;
+    cv.setAttribute("role", "img");
+    return cv;
+  }
+
+  function tmBuildDoFirst(panel) {
+    var card = tmEl("div", "tm-card");
+    card.appendChild(tmEl("h3", "", "DO FIRST: FIRE THE PULSE"));
+    card.appendChild(tmEl("p", "why",
+      "Press FIRE. The scope shows the driver node of a 50 ohm line, 30 cm long, " +
+      "open at the far end. The second step is your pulse coming back. Nothing to " +
+      "predict yet: just watch it arrive at 4.0 ns, twice the 2 ns one-way time."));
+    var cv = tmScope("tmDfScope");
+    cv.setAttribute("aria-label", "Scope: 1 volt launch step, echo step to 2 volts at 4 nanoseconds");
+    card.appendChild(cv);
+    card.appendChild(tmEl("p", "tm-cap", "DRIVER NODE vs TIME. PAPER = LAUNCH, EMBER = ECHO."));
+    var row = tmEl("div", "tm-row");
+    var fire = tmEl("button", "tm-btn solid", "FIRE THE PULSE");
+    fire.id = "tmDfFire";
+    fire.addEventListener("click", function () {
+      tmDraw(cv, TM_PROG_DO, { note: "OPEN END: GAMMA = +1, EVERYTHING RETURNS" });
+      tmLog("do-first: fired into the open line. Echo at 4.0 ns, +1.0 V. The far end sent it all back.", "dim");
+    });
+    row.appendChild(fire);
+    card.appendChild(row);
+    panel.appendChild(card);
+  }
+
+  function tmBuildT1(panel) {
+    var card = tmEl("div", "tm-card");
+    card.appendChild(tmEl("h3", "", "TRIAL 1: CALL THE ECHO TIME"));
+    card.appendChild(tmEl("p", "why",
+      "The line is now 45 cm, still open at the far end, speed still 15 cm/ns. " +
+      "Predict the round-trip echo time, then FIRE to verify. One-way is 45/15 = 3 ns. " +
+      "The echo must travel there and back."));
+    var seg = tmSegRow([[3, "3 ns", "tmT1-3"], [6, "6 ns", "tmT1-6"], [12, "12 ns", "tmT1-12"]]);
+    seg.row.setAttribute("aria-label", "Predicted echo time");
+    card.appendChild(seg.row);
+    var cv = tmScope("tmT1Scope");
+    cv.setAttribute("aria-label", "Scope for trial 1");
+    card.appendChild(cv);
+    card.appendChild(tmEl("p", "tm-cap", "PREDICT FIRST. FIRE SHOWS THE TRUTH."));
+    var verdict = tmVerdict("tmT1Stat");
+    var row = tmEl("div", "tm-row");
+    var fire = tmEl("button", "tm-btn solid", "FIRE AND VERIFY");
+    fire.id = "tmT1Fire";
+    fire.addEventListener("click", function () {
+      if (tmSt.t1.pass || tmSt.failed) return;
+      var c = seg.get();
+      if (c == null) { tmSay(verdict, false, "Pick a time first, then fire."); return; }
+      var truth = tmRoundTrip(TM_PROG_T1.L, TM_PROG_T1.v);
+      tmDraw(cv, TM_PROG_T1, { cursorNs: c, cursorLabel: "CALLED " + c + " ns", note: "45 cm OPEN, SPEED 15 cm/ns" });
+      if (tmVerifyT1(c)) {
+        tmSt.t1.pass = true; seg.lock(); fire.disabled = true;
+        tmSay(verdict, true, "TRIAL 1 PASS. The echo landed at 6.0 ns, exactly 2 x 45/15. Time is distance.");
+        tmLog("trial 1 pass: called 6 ns, echo at 6.0 ns.", "dim");
+        tmCheckCert();
+      } else {
+        tmSay(verdict, false, "ECHO WRONG. It landed at " + truth.toFixed(1) + " ns: there and back, 2 x 45/15 = 6 ns. The scope does not negotiate.");
+        tmStrike("trial 1: called " + c + " ns, echo was at 6.0 ns.");
+      }
+    });
+    row.appendChild(fire);
+    card.appendChild(row); card.appendChild(verdict);
+    panel.appendChild(card);
+  }
+
+  function tmBuildT2(panel) {
+    var card = tmEl("div", "tm-card");
+    card.appendChild(tmEl("h3", "", "TRIAL 2: CALL THE ECHO'S SIGN"));
+    card.appendChild(tmEl("p", "why",
+      "The far end is now a dead short to ground: 0 ohms. Gamma = (0-50)/(0+50) = -1. " +
+      "Predict what the echo looks like, then FIRE to verify. The short cannot sustain " +
+      "voltage, so the reflection must cancel the arrival."));
+    var seg = tmSegRow([
+      ["upright", "UPRIGHT (+1 V)", "tmT2-up"],
+      ["inverted", "INVERTED (-1 V)", "tmT2-inv"],
+      ["absent", "ABSENT (no echo)", "tmT2-none"]
+    ]);
+    seg.row.setAttribute("aria-label", "Predicted echo shape");
+    card.appendChild(seg.row);
+    var cv = tmScope("tmT2Scope");
+    cv.setAttribute("aria-label", "Scope for trial 2");
+    card.appendChild(cv);
+    card.appendChild(tmEl("p", "tm-cap", "PREDICT FIRST. FIRE SHOWS THE TRUTH."));
+    var verdict = tmVerdict("tmT2Stat");
+    var row = tmEl("div", "tm-row");
+    var fire = tmEl("button", "tm-btn solid", "FIRE AND VERIFY");
+    fire.id = "tmT2Fire";
+    fire.addEventListener("click", function () {
+      if (tmSt.t2.pass || tmSt.failed) return;
+      var c = seg.get();
+      if (c == null) { tmSay(verdict, false, "Pick a shape first, then fire."); return; }
+      tmDraw(cv, TM_PROG_T2, { note: "SHORTED END: GAMMA = -1, ECHO CANCELS" });
+      if (tmVerifyT2(c)) {
+        tmSt.t2.pass = true; seg.lock(); fire.disabled = true;
+        tmSay(verdict, true, "TRIAL 2 PASS. The node fell from 1 V to 0 V at 4.0 ns: the -1 V echo arrived and cancelled the launch. A short inverts.");
+        tmLog("trial 2 pass: called inverted, echo -1.0 V at 4.0 ns.", "dim");
+        tmCheckCert();
+      } else {
+        var truth = c === "upright"
+          ? "An open end returns upright; a short returns inverted."
+          : "A short still reflects, gamma = -1 is a full reflection, upside down.";
+        tmSay(verdict, false, "ECHO WRONG. The scope shows the node dropping to 0 V at 4.0 ns. " + truth);
+        tmStrike("trial 2: called " + c + ", echo was inverted.");
+      }
+    });
+    row.appendChild(fire);
+    card.appendChild(row); card.appendChild(verdict);
+    panel.appendChild(card);
+  }
+
+  function tmBuildT3(panel) {
+    var card = tmEl("div", "tm-card");
+    card.appendChild(tmEl("h3", "", "TRIAL 3: SIZE THE KILL RESISTOR"));
+    card.appendChild(tmEl("p", "why",
+      "The receiver at the far end is 150 ohms, too high: gamma = (150-50)/(150+50) = +0.5, " +
+      "so half your edge comes back. One resistor in parallel with the receiver, right at " +
+      "the far end, can make the pair look like exactly 50 ohms. Pick the resistor, then " +
+      "FIRE. Pass bar: the echo smaller than 2% of the launch. Close does not count."));
+    var seg = tmSegRow([
+      [68, "68 \u03A9", "tmT3-68"], [75, "75 \u03A9", "tmT3-75"],
+      [82, "82 \u03A9", "tmT3-82"], [100, "100 \u03A9", "tmT3-100"]
+    ]);
+    seg.row.setAttribute("aria-label", "Parallel termination resistor");
+    card.appendChild(seg.row);
+    var cv = tmScope("tmT3Scope");
+    cv.setAttribute("aria-label", "Scope for trial 3");
+    card.appendChild(cv);
+    card.appendChild(tmEl("p", "tm-cap", "RESISTOR SITS ACROSS THE 150 OHM RECEIVER, AT THE FAR END."));
+    var verdict = tmVerdict("tmT3Stat");
+    var row = tmEl("div", "tm-row");
+    var fire = tmEl("button", "tm-btn solid", "FIRE AND VERIFY");
+    fire.id = "tmT3Fire";
+    fire.addEventListener("click", function () {
+      if (tmSt.t3.pass || tmSt.failed) return;
+      var c = seg.get();
+      if (c == null) { tmSay(verdict, false, "Pick a resistor first, then fire."); return; }
+      var zp = tmPar(150, c), g = tmGamma(zp, TM_Z0);
+      var P = { vd: TM_VD, rs: TM_RS, z0: TM_Z0, zl: zp, L: 30, v: TM_V };
+      tmDraw(cv, P, { note: "150 \u03A9 || " + c + " \u03A9 = " + zp.toFixed(1) + " \u03A9" });
+      var echoPct = Math.abs(g) * 100;
+      if (tmVerifyT3(c)) {
+        tmSt.t3.pass = true; seg.lock(); fire.disabled = true;
+        tmSay(verdict, true, "TRIAL 3 PASS. 150 || 75 = 50.0 ohms, gamma = 0, the echo is gone. Termination is arithmetic, not luck.");
+        tmLog("trial 3 pass: 75 ohm, Zpar 50.0, echo 0%.", "dim");
+        tmCheckCert();
+      } else {
+        tmSay(verdict, false, "ECHO SURVIVES. 150 || " + c + " = " + zp.toFixed(1) + " ohms, gamma = " +
+          (g >= 0 ? "+" : "") + g.toFixed(3) + ", a " + echoPct.toFixed(1) + "% echo. The bar is 2%. Solve 1/150 + 1/R = 1/50.");
+        tmStrike("trial 3: " + c + " ohm gave " + zp.toFixed(1) + " ohm (" + echoPct.toFixed(1) + "% echo).");
+      }
+    });
+    row.appendChild(fire);
+    card.appendChild(row); card.appendChild(verdict);
+    panel.appendChild(card);
+  }
+
+  function tmBuildT4(panel) {
+    var card = tmEl("div", "tm-card");
+    card.appendChild(tmEl("h3", "", "TRIAL 4: FIND THE FAULT"));
+    card.appendChild(tmEl("p", "why",
+      "A built board fails: its link double-clocks. The TDR below already fired into the " +
+      "suspect net and caught an echo at 4.0 ns, +0.5 V against a 1.0 V launch. Name the " +
+      "distance from the driver and the culprit, then COMMIT the diagnosis."));
+    var cv = tmScope("tmT4Scope");
+    cv.setAttribute("aria-label", "TDR capture: echo plus 0.5 volts at 4 nanoseconds");
+    card.appendChild(cv);
+    card.appendChild(tmEl("p", "tm-cap", "MEASURED: ECHO +0.5 V AT 4.0 NS. LAUNCH 1.0 V, LINE 50 OHM."));
+    card.appendChild(tmEl("p", "tm-lab", "DISTANCE FROM THE DRIVER"));
+    var dseg = tmSegRow([[15, "15 cm", "tmT4-15"], [30, "30 cm", "tmT4-30"], [60, "60 cm", "tmT4-60"]]);
+    dseg.row.setAttribute("aria-label", "Fault distance");
+    card.appendChild(dseg.row);
+    card.appendChild(tmEl("p", "tm-lab", "CULPRIT"));
+    var cseg = tmSegRow([
+      ["joint", "CRACKED JOINT (HIGH-Z)", "tmT4-joint"],
+      ["bridge", "SOLDER BRIDGE (SHORT)", "tmT4-bridge"],
+      ["matched", "PROPERLY TERMINATED", "tmT4-matched"]
+    ]);
+    cseg.row.setAttribute("aria-label", "Fault culprit");
+    card.appendChild(cseg.row);
+    var verdict = tmVerdict("tmT4Stat");
+    var row = tmEl("div", "tm-row");
+    var commit = tmEl("button", "tm-btn solid", "COMMIT DIAGNOSIS");
+    commit.id = "tmT4Commit";
+    commit.addEventListener("click", function () {
+      if (tmSt.t4.pass || tmSt.failed) return;
+      var d = dseg.get(), c = cseg.get();
+      if (d == null || c == null) { tmSay(verdict, false, "Name both the distance and the culprit, then commit."); return; }
+      tmDraw(cv, TM_PROG_T4, { cursorNs: d / TM_V * 2, cursorLabel: "CALLED " + d + " cm", note: "ECHO +0.5 V AT 4.0 ns" });
+      if (tmVerifyT4(d, c)) {
+        tmSt.t4.pass = true; dseg.lock(); cseg.lock(); commit.disabled = true;
+        tmSay(verdict, true, "TRIAL 4 PASS. One-way 2.0 ns x 15 cm/ns = 30 cm out; gamma +0.5 means ZL = 150 ohms, a cracked joint, not a bridge. The echo told you where and what.");
+        tmLog("trial 4 pass: 30 cm, cracked joint.", "dim");
+        tmCheckCert();
+      } else {
+        var why = "";
+        if (d !== 30) why += "Distance: one-way is half the round trip, 2.0 ns x 15 cm/ns = 30 cm. ";
+        if (c !== "joint") why += "Culprit: +0.5 V on a 1.0 V launch is gamma +0.5, ZL = 150 ohms. A bridge would invert; matched would show nothing.";
+        tmSay(verdict, false, "DIAGNOSIS WRONG. " + why);
+        tmStrike("trial 4: " + d + " cm, " + c + ".");
+      }
+    });
+    row.appendChild(commit);
+    card.appendChild(row); card.appendChild(verdict);
+    panel.appendChild(card);
+    /* draw the measured capture up front: the evidence is the input */
+    tmDraw(cv, TM_PROG_T4, { note: "ECHO +0.5 V AT 4.0 ns" });
+  }
+
+  /* ---------- cert, download ---------- */
+  function tmCheckCert() {
+    if (tmSt.cert || tmSt.failed) return;
+    if (tmSt.t1.pass && tmSt.t2.pass && tmSt.t3.pass && tmSt.t4.pass) {
+      tmSt.cert = true;
+      var lines = [
+        "THE TERMINATION ROOM: CERTIFIED",
+        "A mismatch reflects: gamma = (ZL - Z0) / (ZL + Z0).",
+        "Trial 1: 45 cm at 15 cm/ns calls a 6.0 ns round trip.",
+        "Trial 2: a short inverts the echo, gamma = -1.",
+        "Trial 3: 75 ohms across the 150 ohm receiver makes 50.0 ohms, echo killed.",
+        "Trial 4: the +0.5 echo at 4.0 ns sat 30 cm out, a cracked joint.",
+        "Rule: terminate the line, or the line terminates your board.",
+        "Strikes: " + tmSt.strikes + "/3"
+      ];
+      if (tmEls.certP) tmEls.certP.textContent = lines.join("\n");
+      if (tmEls.banner) tmEls.banner.classList.add("show");
+      tmLog("ROOM CERTIFIED. Four echoes read, one resistor placed, one fault found.", "dim");
+    }
+  }
+  function tmDownloadCert() {
+    var txt = tmEls.certP ? tmEls.certP.textContent : "";
+    var blob = new Blob(["The Termination Room qualification record\n\n" + txt + "\n"], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "termination-room-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  /* ---------- close, build ---------- */
+  function tmClose() {
+    if (tmEls.overlay) tmEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+  function tmOpen() {
+    if (tmEls.overlay) { tmEls.overlay.classList.add("open"); document.body.style.overflow = "hidden"; }
+  }
+
+  function tmBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box) return;
+    if (document.getElementById("tmBtn")) return;
+
+    tmSt = tmNewBenchState();
+
+    var sty = document.createElement("style");
+    sty.id = "tmStyle";
+    sty.textContent = TM_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "tmBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Termination Room";
+    b.addEventListener("click", tmOpen);
+    box.appendChild(b);
+
+    var ov = tmEl("div", "tm-overlay");
+    ov.id = "tmOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Termination Room");
+    var x = tmEl("button", "tm-btn", "CLOSE");
+    x.id = "tmXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Termination Room");
+    x.addEventListener("click", tmClose);
+    ov.appendChild(x);
+    tmEls.overlay = ov;
+    if (!tmEscBound) {
+      tmEscBound = true;
+      document.addEventListener("keydown", function (ev) {
+        if (ev.key === "Escape" && tmEls.overlay && tmEls.overlay.classList.contains("open")) tmClose();
+      });
+    }
+
+    var panel = tmEl("div", "tm-panel");
+    panel.appendChild(tmEl("div", "tm-kicker", "TAPEOUT BENCH 66"));
+    panel.appendChild(tmEl("h2", "tm-title", "The Termination Room"));
+    panel.appendChild(tmEl("p", "tm-sub",
+      "A fast edge that meets a mismatch comes back. Fire a step down a 50 ohm line, " +
+      "read the echo's time and size on the scope, and kill it with one resistor. Four " +
+      "trials: call the echo time, call its sign, size the termination, find the fault. " +
+      "Three strikes and the room resets."));
+    var introWrap = tmEl("div", "");
+    introWrap.innerHTML = TM_INTRO_HTML;
+    panel.appendChild(introWrap);
+
+    var strikes = tmEl("p", "tm-strikes", "STRIKES: 0/3");
+    strikes.id = "tmStrikes";
+    strikes.setAttribute("aria-live", "polite");
+    tmEls.strikes = strikes;
+    panel.appendChild(strikes);
+
+    tmBuildDoFirst(panel);
+    tmBuildT1(panel);
+    tmBuildT2(panel);
+    tmBuildT3(panel);
+    tmBuildT4(panel);
+
+    var fail = tmEl("div", "tm-card", "");
+    fail.id = "tmFailCard";
+    fail.style.display = "none";
+    fail.appendChild(tmEl("h3", "", "THREE STRIKES"));
+    fail.appendChild(tmEl("p", "why",
+      "The room failed. The machine does not care about your confidence. Reset and run " +
+      "it again: the echo arrives at twice the distance over the speed, and its sign " +
+      "names the mismatch."));
+    var reset = tmEl("button", "tm-btn solid", "RESET ROOM");
+    reset.id = "tmResetBtn";
+    reset.addEventListener("click", tmResetRoom);
+    fail.appendChild(reset);
+    tmEls.failCard = fail;
+    panel.appendChild(fail);
+
+    var banner = tmEl("div", "tm-banner");
+    banner.id = "tmBanner";
+    banner.appendChild(tmEl("h3", "", "ROOM CERTIFIED"));
+    var certP = tmEl("div", "tm-cert", "");
+    certP.id = "tmCertLine";
+    banner.appendChild(certP);
+    var dl = tmEl("button", "tm-btn", "DOWNLOAD CERTIFICATE");
+    dl.id = "tmCertDl";
+    dl.addEventListener("click", tmDownloadCert);
+    banner.appendChild(dl);
+    tmEls.banner = banner; tmEls.certP = certP;
+    panel.appendChild(banner);
+
+    var logCard = tmEl("div", "tm-card");
+    logCard.appendChild(tmEl("h3", "", "BENCH LOG"));
+    var log = tmEl("div", "tm-log", "");
+    log.id = "tmLog";
+    log.setAttribute("aria-live", "polite");
+    logCard.appendChild(log);
+    panel.appendChild(logCard);
+    tmEls.log = log;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    tmLog("bench open. Fire the pulse: the echo always tells the truth. The do-first card asks nothing of you.", "dim");
+  }
+
+  function tmResetRoom() {
+    var sty = document.getElementById("tmStyle");
+    if (sty && sty.parentNode) sty.parentNode.removeChild(sty);
+    var btn = document.getElementById("tmBtn");
+    if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
+    if (tmEls.overlay && tmEls.overlay.parentNode) tmEls.overlay.parentNode.removeChild(tmEls.overlay);
+    tmEls = {};
+    tmSt = null;
+    tmBuild();
+    tmOpen();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", tmBuild);
+  } else {
+    tmBuild();
+  }
+})();
