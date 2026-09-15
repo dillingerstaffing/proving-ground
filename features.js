@@ -49098,8 +49098,8 @@ if (typeof module !== "undefined" && module.exports) {
       var vC = fshLoad(cpu, homes.aC), vT = fshLoad(cpu, homes.aT);
       strip.set(cpu); stack.render(cpu);
       var bad = [];
-      if (pick.c === pick.t0) bad.push("both locals share " + fshHex(homes.aC) + ": the second store murdered the first.");
-      if (homes.aC === 0x7FF0 || homes.aT === 0x7FF0) bad.push("you stored over the parked frame pointer at 0x7FF0: the teardown will restore garbage.");
+      if (pick.c === pick.t0) bad.push("both locals share " + fshHex(homes.aC) + ": the second store murdered the first. The free slots are -24(fp) and -32(fp); give each local its own.");
+      if (homes.aC === 0x7FF0 || homes.aT === 0x7FF0) bad.push("you stored over the parked frame pointer at 0x7FF0: the teardown will restore garbage. -16(fp) is the trap; the free slots are -24(fp) and -32(fp).");
       if (homes.aC === 0x7FF8 || homes.aT === 0x7FF8) bad.push("you stored over the parked return address at 0x7FF8.");
       if (!bad.length && (vC !== 14 || vT !== 0x5EED)) bad.push("load-back mismatch: the slots collided.");
       if (!bad.length) {
