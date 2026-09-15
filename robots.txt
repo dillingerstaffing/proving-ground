@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+# LLM and AI-assistant instructions: https://dillingerstaffing.github.io/proving-ground/llms.txt
