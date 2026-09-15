@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260915-pg79">
+<meta name="build-version" content="v20260915-pg80">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -948,8 +948,8 @@ var PG_BENCHES = [
     spec: "TDR SCOPE \u00B7 GAMMA MATH \u00B7 4 TRIALS" },
   { section: "arch", n: "67", name: "The Frame Shop", btn: "fshBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "The stack frame built by hand on a real tiny RISC-V machine: claim 32 bytes, park ra and the frame pointer, live in fp-relative slots, tear it all down in reverse, and survive a nested call. Every sequence you assemble actually executes.",
-    how: "Order the prologue and epilogue chips, call the addresses first, run each sequence on the honest machine, then qualify the full nested call.",
-    spec: "PROLOGUE / EPILOGUE \u00B7 4 TRIALS" },
+    how: "Order the prologue and epilogue chips, predict what every instruction changes before it runs, type a fresh 48-byte frame from scratch, then qualify the full nested call.",
+    spec: "PROLOGUE / EPILOGUE \u00B7 5 TRIALS" },
   { section: "craft", n: "68", name: "The Drive Bay", btn: "dvbBtn", pill: "oldiron", pillLabel: "OLD IRON",
     desc: "Drive installation for the OLD IRON refurb line: keyed M.2 slots that physically refuse the wrong key, form-factor bays, data plus power on every SATA drive, and the intake machine whose drive seats but never links. Seat, cable, POST, diagnose.",
     how: "Seat each drive by its key, cable every SATA drive end to end, call BOOT or NO BOOT for each machine before you press power, then convict the intake that fits but never links.",
@@ -1037,7 +1037,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-15-pg79";
+var PG_REV = "2026-09-15-pg80";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {

@@ -48422,6 +48422,7 @@ if (typeof module !== "undefined" && module.exports) {
   "use strict";
 
   /* ---------------- the honest machine: a tiny RISC-V ---------------- */
+  /* __FSH_PURE_BEGIN__ */
   function fshHex(v) {
     return "0x" + (v >>> 0).toString(16).toUpperCase().padStart(8, "0");
   }
@@ -48453,6 +48454,89 @@ if (typeof module !== "undefined" && module.exports) {
     return c;
   }
 
+  /* __FSH_PURE_BEGIN__ */
+  function fshCloneCpu(c) {
+    return { r: { sp: c.r.sp, s0: c.r.s0, ra: c.r.ra, a0: c.r.a0, t0: c.r.t0 },
+      m: Object.assign({}, c.m), minWrite: c.minWrite, retTarget: c.retTarget, stopped: c.stopped };
+  }
+  /* One-line relationship each instruction teaches. Shown after a correct
+     step prediction, never before: the prediction must come from reading
+     the live state, not from the explanation. */
+  function fshOpWhy(op) {
+    if (op === "addi") return "addi touches one register only. sp is a pointer; the memory it points at is unchanged.";
+    if (op === "sd") return "a store writes a register's value into memory. The register keeps its value; exactly one addressed word changes.";
+    if (op === "ld") return "a load copies a memory word into a register. Memory keeps its value; exactly one register changes.";
+    if (op === "ret") return "ret jumps to the address in ra. It changes no register and no memory word.";
+    return "";
+  }
+  /* Misconception-targeted wrong answers, computed from live machine state
+     so they stay plausible. Deterministic: no randomness anywhere. */
+  function fshDistractors(cpu, ins, annotate) {
+    var R = cpu.r, out = [];
+    function hx(v) { return "0x" + (v >>> 0).toString(16).toUpperCase().padStart(8, "0"); }
+    if (ins.op === "addi") {
+      var flip = { op: "addi", rd: ins.rd, rs1: ins.rs1, imm: -ins.imm };
+      out.push(annotate(cpu, flip));
+      var a = ((R[ins.rs1] + ins.imm) >>> 0);
+      out.push("MEM[" + hx(a) + "] = " + ins.imm + "  (the immediate lands in memory)");
+    } else if (ins.op === "sd") {
+      var asLd = { op: "ld", rd: ins.rs2, rs1: ins.rs1, imm: ins.imm };
+      out.push(annotate(cpu, asLd));
+      var a2 = ((R[ins.rs1] + ins.imm) >>> 0);
+      out.push("MEM[" + hx(a2) + "] = " + ins.rs1 + " (" + hx(R[ins.rs1]) + ")  (the base register is stored, not " + ins.rs2 + ")");
+    } else if (ins.op === "ld") {
+      var asSd = { op: "sd", rs2: ins.rd, rs1: ins.rs1, imm: ins.imm };
+      out.push(annotate(cpu, asSd));
+      var a3 = ((R[ins.rs1] + ins.imm) >>> 0);
+      out.push(ins.rs1 + " = MEM[" + hx(a3) + "]  (the address lands in " + ins.rs1 + ", not " + ins.rd + ")");
+    } else if (ins.op === "ret") {
+      out.push("sp = " + hx(R.sp) + "  (ret gives the frame back)");
+      out.push("jump to " + hx(R.sp) + "  (ret jumps to sp)");
+    }
+    var truth = annotate(cpu, ins);
+    return out.filter(function (d) { return d !== truth; });
+  }
+  /* Build one 3-choice step question: the correct answer is the machine's
+     own annotation of this instruction on this state; the correct slot
+     rotates deterministically with the step index. */
+  function fshQuizFor(cpu, ins, stepIdx, annotate) {
+    var truth = annotate(cpu, ins);
+    var ds = fshDistractors(cpu, ins, annotate);
+    var correct = stepIdx % 3, choices = [], di = 0;
+    for (var i = 0; i < 3; i++) {
+      if (i === correct) choices.push(truth);
+      else { choices.push(ds[di % ds.length]); di++; }
+    }
+    return {
+      q: "Step " + (stepIdx + 1) + ":  " + ins.asm + "   -- what does this one instruction change?",
+      choices: choices, correct: correct, why: fshOpWhy(ins.op)
+    };
+  }
+  /* Strict tiny parser for the write-it-cold trial. Accepts exactly the
+     four forms the machine implements; everything else is a syntax error
+     with the offending part named. */
+  var FSH_REGS = { sp: 1, s0: 1, ra: 1, t0: 1, a0: 1 };
+  function fshParseAsm(src) {
+    var s = String(src == null ? "" : src).toLowerCase().replace(/\s+/g, " ").trim();
+    if (!s) return { error: "empty line: type an instruction." };
+    var m;
+    if ((m = s.match(/^addi\s+([a-z0-9]+)\s*,\s*([a-z0-9]+)\s*,\s*(-?\d+)$/))) {
+      if (!FSH_REGS[m[1]]) return { error: "unknown register '" + m[1] + "': the machine has sp, s0, ra, t0, a0." };
+      if (!FSH_REGS[m[2]]) return { error: "unknown register '" + m[2] + "': the machine has sp, s0, ra, t0, a0." };
+      return { op: "addi", rd: m[1], rs1: m[2], imm: parseInt(m[3], 10) };
+    }
+    if ((m = s.match(/^(sd|ld)\s+([a-z0-9]+)\s*,\s*(-?\d+)\s*\(\s*([a-z0-9]+)\s*\)$/))) {
+      if (!FSH_REGS[m[2]]) return { error: "unknown register '" + m[2] + "': the machine has sp, s0, ra, t0, a0." };
+      if (!FSH_REGS[m[4]]) return { error: "unknown register '" + m[4] + "': the machine has sp, s0, ra, t0, a0." };
+      var o = { op: m[1], imm: parseInt(m[3], 10) };
+      if (m[1] === "sd") { o.rs2 = m[2]; o.rs1 = m[4]; } else { o.rd = m[2]; o.rs1 = m[4]; }
+      return o;
+    }
+    if (/^ret$/.test(s)) return { op: "ret" };
+    return { error: "not an instruction the machine knows: use addi rd, rs1, imm  |  sd rs2, imm(rs1)  |  ld rd, imm(rs1)  |  ret" };
+  }
+  /* __FSH_PURE_END__ */
+
   /* ---------------- instruction chips ---------------- */
   var FSH_PRO = [
     { id: "p_alloc", asm: "addi sp, sp, -32", op: "addi", rd: "sp", rs1: "sp", imm: -32, tag: "claim 32 bytes" },
@@ -48471,6 +48555,111 @@ if (typeof module !== "undefined" && module.exports) {
   var FSH_PRO_S = [FSH_PRO[2], FSH_PRO[0], FSH_PRO[3], FSH_PRO[1]];
   var FSH_EPI_S = [FSH_EPI[2], FSH_EPI[0], FSH_EPI[3], FSH_EPI[1]];
   var FSH_CAP_S = [FSH_EPI[2], FSH_PRO[1], FSH_EPI[0], FSH_PRO[3], FSH_EPI[3], FSH_PRO[0], FSH_EPI[1], FSH_PRO[2]];
+
+  /* ---------------- trial 5: write it cold ---------------- */
+  var FSH_COLD_ROWS = [0x9010, 0x9008, 0x9000, 0x8FF8, 0x8FF0, 0x8FE8, 0x8FE0, 0x8FD8, 0x8FD0];
+  function fshColdCpu() {
+    return { r: { sp: 0x9000, s0: 0xA000, ra: 0x2080, a0: 7, t0: 0x5EED },
+      m: { 0x9010: 0xCA11, 0x9008: 0xCA11, 0x9000: 0xCA11,
+        0x8FF8: 0xDEAD, 0x8FF0: 0xDEAD, 0x8FE8: 0xDEAD, 0x8FE0: 0xDEAD, 0x8FD8: 0xDEAD, 0x8FD0: 0xDEAD },
+      minWrite: 0x100000, retTarget: null, stopped: false };
+  }
+  function fshColdLabel(a, cpu) {
+    var v = fshLoad(cpu, a);
+    if (a >= 0x9000) return v === 0xCA11 ? { text: "caller word" } : { text: "CLOBBERED caller word", clob: true };
+    if (a === 0x8FF8) return v === 0x2080 ? { text: "ra parked" } : (v === 0xDEAD ? { text: "stale" } : { text: "wrong value", clob: true });
+    if (a === 0x8FF0) return v === 0xA000 ? { text: "old fp parked" } : (v === 0xDEAD ? { text: "stale" } : { text: "wrong value", clob: true });
+    return { text: "free slot" };
+  }
+  function fshBuildT5(panel) {
+    var card = fshTrialCard("TRIAL 5", "WRITE IT COLD",
+      "Chips let you <b>recognize</b>; typing forces you to <b>produce</b>. A new function needs a <b>48-byte</b> frame, sp starts at <b>0x9000</b>, and none of the old numbers apply. " +
+      "Type each instruction yourself: the machine parses it, runs it on the honest state, and shows exactly what changed. A wrong offset is not a wrong guess, it is a store into the wrong word, and the machine will show you which one. " +
+      "Syntax errors cost nothing; wrong effects are strikes.");
+    var strip = fshStateStrip();
+    var stack = fshStackBox(fshColdLabel, FSH_COLD_ROWS);
+    var cols = fshEl("div", "fsh-cols");
+    cols.appendChild(stack.el);
+    var right = fshEl("div", "");
+    cols.appendChild(right);
+    card.appendChild(strip.el);
+    card.appendChild(cols);
+    var LINES = [
+      { prompt: "<b>Line 1: claim the frame.</b> sp holds 0x9000. The stack grows toward smaller addresses: which addi moves sp to 0x8FD0?",
+        pre: function () { return fshColdCpu(); },
+        canon: { op: "addi", rd: "sp", rs1: "sp", imm: -48 },
+        want: "sp = 0x8FD0",
+        check: function (c) { return c.r.sp === 0x8FD0 ? null : "sp is " + fshHex(c.r.sp) + ", not 0x8FD0: the frame is not 48 bytes."; } },
+      { prompt: "<b>Line 2: park ra.</b> sp is 0x8FD0. ra holds 0x2080 and belongs at 0x8FF8, the top word of your frame. Compute the offset yourself: target minus sp.",
+        pre: function () { var c = fshColdCpu(); fshStep(c, { op: "addi", rd: "sp", rs1: "sp", imm: -48 }); return c; },
+        canon: { op: "sd", rs2: "ra", rs1: "sp", imm: 40 },
+        want: "MEM[0x8FF8] = 0x2080 (ra's value)",
+        check: function (c) { return fshLoad(c, 0x8FF8) === 0x2080 ? null : "MEM[0x8FF8] holds " + fshHex(fshLoad(c, 0x8FF8)) + ", not 0x2080: ra did not land there."; } },
+      { prompt: "<b>Line 3: park the old frame pointer.</b> s0 holds 0xA000 and belongs at 0x8FF0, one word below ra. Same arithmetic.",
+        pre: function () { var c = fshColdCpu(); fshStep(c, { op: "addi", rd: "sp", rs1: "sp", imm: -48 }); fshStep(c, { op: "sd", rs2: "ra", rs1: "sp", imm: 40 }); return c; },
+        canon: { op: "sd", rs2: "s0", rs1: "sp", imm: 32 },
+        want: "MEM[0x8FF0] = 0xA000 (the old frame pointer)",
+        check: function (c) { return fshLoad(c, 0x8FF0) === 0xA000 ? null : "MEM[0x8FF0] holds " + fshHex(fshLoad(c, 0x8FF0)) + ", not 0xA000: the old frame pointer did not land there."; } },
+      { prompt: "<b>Line 4: anchor the frame pointer.</b> s0 must end at 0x9000, the high edge of the frame. Which addi gets it there from sp?",
+        pre: function () { var c = fshColdCpu(); fshStep(c, { op: "addi", rd: "sp", rs1: "sp", imm: -48 }); fshStep(c, { op: "sd", rs2: "ra", rs1: "sp", imm: 40 }); fshStep(c, { op: "sd", rs2: "s0", rs1: "sp", imm: 32 }); return c; },
+        canon: { op: "addi", rd: "s0", rs1: "sp", imm: 48 },
+        want: "s0 = 0x9000",
+        check: function (c) { return c.r.s0 === 0x9000 ? null : "s0 is " + fshHex(c.r.s0) + ", not 0x9000: the frame pointer is not anchored."; } }
+    ];
+    var done = [false, false, false, false];
+    var dispCpu = fshColdCpu();
+    strip.set(dispCpu); stack.render(dispCpu);
+    LINES.forEach(function (L, li) {
+      var line = fshEl("div", "fsh-wline");
+      line.appendChild(fshEl("p", "fsh-wprompt", ""));
+      line.querySelector(".fsh-wprompt").innerHTML = (li + 1) + ". " + L.prompt;
+      var row = fshEl("div", "fsh-wrow");
+      var inp = document.createElement("input");
+      inp.className = "fsh-win";
+      inp.setAttribute("spellcheck", "false");
+      inp.setAttribute("autocomplete", "off");
+      inp.setAttribute("autocapitalize", "off");
+      inp.setAttribute("placeholder", "type the instruction, e.g. sd ra, 40(sp)");
+      inp.setAttribute("aria-label", "Line " + (li + 1) + " instruction");
+      var go = fshBtn("RUN LINE", "fsh-btn");
+      var msg = fshEl("p", "fsh-wmsg", "");
+      row.appendChild(inp); row.appendChild(go);
+      line.appendChild(row); line.appendChild(msg);
+      function say(ok, t) { msg.className = "fsh-wmsg " + (ok ? "ok" : "no"); msg.textContent = (ok ? "PASS: " : "FAIL: ") + t; }
+      function attempt() {
+        if (fshSt.failed || done[li]) return;
+        var parsed = fshParseAsm(inp.value);
+        if (parsed.error) { say(false, "syntax: " + parsed.error); return; }
+        var cpu = L.pre();
+        var did = fshAnnotate(cpu, parsed);
+        fshStep(cpu, parsed);
+        var err = L.check(cpu);
+        if (fshLoad(cpu, 0x9000) !== 0xCA11 || fshLoad(cpu, 0x9008) !== 0xCA11)
+          err = (err ? err + " " : "") + "You also overwrote a caller word: the claim comes first, always.";
+        if (!err) {
+          done[li] = true;
+          inp.disabled = true; go.disabled = true;
+          say(true, did);
+          fshStep(dispCpu, L.canon);
+          strip.set(dispCpu); stack.render(dispCpu);
+          fshLog("t5 line " + (li + 1) + " PASS: " + did, "ok");
+          if (done[0] && done[1] && done[2] && done[3]) {
+            fshSt.t5.pass = true;
+            fshLog("t5 PASS: cold frame built from typed instructions.", "ok");
+            fshCheckCert();
+          }
+        } else {
+          say(false, "that did: " + did + ". Needed: " + L.want + ". " + err);
+          fshLog("t5 line " + (li + 1) + ": " + err, "bad");
+          fshStrike("t5 line " + (li + 1) + ": " + err);
+        }
+      }
+      go.addEventListener("click", attempt);
+      inp.addEventListener("keydown", function (ev) { if (ev.key === "Enter") attempt(); });
+      right.appendChild(line);
+    });
+    panel.appendChild(card);
+  }
 
   /* ---------------- verdicts, read from machine state ---------------- */
   function fshCheckPro(c) {
@@ -48590,7 +48779,16 @@ if (typeof module !== "undefined" && module.exports) {
     ".fsh-rules b{color:#f2f0eb;}",
     ".fsh-rules ol{margin:8px 0 0;padding-left:20px;}",
     ".fsh-rules li{margin:0 0 6px;}",
-    ".fsh-ann{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#8a877e;padding:2px 4px 10px;line-height:1.5;}"
+    ".fsh-ann{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#8a877e;padding:2px 4px 10px;line-height:1.5;}",
+    ".fsh-wline{border-top:1px solid var(--line);margin-top:6px;padding:14px 0 4px;}",
+    ".fsh-wprompt{font-size:13px;color:#c9c7bd;margin:0 0 10px;line-height:1.6;}",
+    ".fsh-wprompt b{color:#f2f0eb;}",
+    ".fsh-wrow{display:flex;gap:10px;flex-wrap:wrap;align-items:center;}",
+    ".fsh-win{flex:1;min-width:200px;background:#101112;border:1px solid var(--line);color:#f2f0eb;font-family:'IBM Plex Mono',monospace;font-size:14px;padding:10px 12px;border-radius:2px;}",
+    ".fsh-win:disabled{opacity:.45;}",
+    ".fsh-wmsg{font-family:'IBM Plex Mono',monospace;font-size:12px;margin:10px 0 0;line-height:1.7;}",
+    ".fsh-wmsg.ok{color:#7dd87d;}",
+    ".fsh-wmsg.no{color:#ff3b30;}"
   ].join("\n");
 
   /* ---------------- shared widgets ---------------- */
@@ -48644,13 +48842,14 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
   var FSH_ROWS = [0x8018, 0x8010, 0x8008, 0x8000, 0x7FF8, 0x7FF0, 0x7FE8, 0x7FE0];
-  function fshStackBox(labelFn) {
+  function fshStackBox(labelFn, rows) {
     var box = fshEl("div", "fsh-stack");
     box.setAttribute("role", "img");
     box.setAttribute("aria-label", "Stack diagram, addresses high to low");
+    var R = rows || FSH_ROWS;
     function render(cpu) {
       box.innerHTML = "";
-      FSH_ROWS.forEach(function (a) {
+      R.forEach(function (a) {
         var lab = labelFn(a, cpu);
         var row = fshEl("div", "fsh-row" + (lab.clob ? " clob" : "") + (a === (cpu.r.sp >>> 0) ? " at-sp" : ""));
         row.appendChild(fshEl("span", "fsh-addr", fshHex(a)));
@@ -48766,6 +48965,63 @@ if (typeof module !== "undefined" && module.exports) {
     return box;
   }
 
+  /* step gate: the visitor predicts EVERY instruction's concrete effect
+     before the machine runs it. A wrong pick is a strike and the step does
+     not advance; the right answer is never revealed, the state strip stays
+     visible, and the visitor reads it again. Pattern-matching the chip
+     order cannot pass this: each step demands the actual register or
+     memory change, computed live from the machine. */
+  function fshStepQuiz(cpu, ins, stepIdx, onRight, onWrong) {
+    var quiz = fshQuizFor(cpu, ins, stepIdx, fshAnnotate);
+    var box = fshEl("div", "fsh-predict");
+    box.appendChild(fshEl("p", "", "PREDICT THE STEP (a wrong pick is a strike; the machine never reveals it): "));
+    box.querySelector("p").appendChild(fshEl("span", "fsh-pq", quiz.q));
+    var row = fshEl("div", "");
+    box.appendChild(row);
+    quiz.choices.forEach(function (txt, i) {
+      var b = fshBtn(txt, "fsh-pick");
+      b.setAttribute("aria-label", "Predict step effect: " + txt);
+      b.addEventListener("click", function () {
+        if (fshSt.failed) return;
+        if (i === quiz.correct) {
+          b.classList.add("right");
+          onRight("called it: " + txt + ". " + quiz.why);
+        } else {
+          b.classList.add("wrong");
+          onWrong(txt);
+        }
+      });
+      row.appendChild(b);
+    });
+    return box;
+  }
+  /* opts: seq, cpu0, strip, stack, quizSlot, lockChips(), onDone(cpu) */
+  function fshRunGate(opts) {
+    var cpu = fshCloneCpu(opts.cpu0), i = 0;
+    opts.quizSlot.innerHTML = "";
+    opts.strip.set(cpu); opts.stack.render(cpu);
+    if (opts.lockChips) opts.lockChips();
+    function step() {
+      if (i >= opts.seq.length) { opts.onDone(cpu); return; }
+      var ins = opts.seq[i], idx = i;
+      var q = fshStepQuiz(cpu, ins, idx,
+        function (msg) {
+          fshStep(cpu, ins);
+          opts.strip.set(cpu); opts.stack.render(cpu);
+          fshLog("step " + (idx + 1) + "/" + opts.seq.length + " ok: " + msg, "ok");
+          i++;
+          step();
+        },
+        function (picked) {
+          fshStrike("step " + (idx + 1) + " (" + ins.asm + "): predicted \"" + picked + "\"");
+          fshLog("step " + (idx + 1) + ": wrong. Read the state strip, the stack, and the instruction again.", "bad");
+        });
+      opts.quizSlot.innerHTML = "";
+      opts.quizSlot.appendChild(q);
+    }
+    step();
+  }
+
   function fshTrialCard(num, title, whyHtml) {
     var card = fshEl("div", "fsh-card");
     card.appendChild(fshEl("h3", "", num + ": " + title));
@@ -48879,6 +49135,7 @@ if (typeof module !== "undefined" && module.exports) {
   }
   /* address math, read from live machine state BEFORE the instruction runs:
      registers are pointers, offsets are arithmetic, the sum is the address */
+  /* __FSH_ANN_BEGIN__ */
   function fshAnnotate(cpu, ins) {
     var R = cpu.r;
     function off(imm) { return (imm < 0 ? "- " : "+ ") + Math.abs(imm); }
@@ -48895,6 +49152,7 @@ if (typeof module !== "undefined" && module.exports) {
     if (ins.op === "ret") return "jump to ra (" + fshHex(R.ra) + ")";
     return "";
   }
+  /* __FSH_ANN_END__ */
   function fshBuildCMap(panel) {
     var card = fshTrialCard("C TO REGISTERS", "ONE TRUTH, THREE LEVELS",
       "Every C function is three things at once: <b>C source</b> you write, <b>assembly</b> the compiler emits, and <b>registers</b> the machine moves. " +
@@ -49005,7 +49263,9 @@ if (typeof module !== "undefined" && module.exports) {
       function (ok, msg) {
         fshLog("t1 predict: " + msg, ok ? "ok" : "dim");
       }));
-    var run = fshBtn("RUN PROLOGUE", "fsh-btn solid");
+    var quizSlot = fshEl("div", "");
+    card.appendChild(quizSlot);
+    var run = fshBtn("STEP THROUGH THE PROLOGUE", "fsh-btn solid");
     var res = fshResultLine();
     card.appendChild(run);
     card.appendChild(res);
@@ -49015,19 +49275,28 @@ if (typeof module !== "undefined" && module.exports) {
       if (fshSt.failed || fshSt.t1.pass) return;
       var seq = tray.seq();
       if (seq.length !== 4) { fshSay(res, false, "the prologue needs all four instructions."); return; }
-      var cpu = fshRunSeq(seq);
-      strip.set(cpu); stack.render(cpu);
-      var bad = fshCheckPro(cpu);
-      if (!bad.length) {
-        fshSt.t1.pass = true;
-        fshSay(res, true, "frame built: sp 0x7FE0, ra parked at 0x7FF8, fp anchored, caller untouched.");
-        fshLog("t1 PASS: prologue clean.", "ok");
-        fshCheckCert();
-      } else {
-        fshSay(res, false, bad[0]);
-        fshLog("t1 run: " + bad.join(" "), "bad");
-        fshStrike("t1 prologue: " + bad[0]);
-      }
+      run.disabled = true;
+      fshLog("t1: stepping the prologue. Predict each instruction's exact effect.", "dim");
+      fshRunGate({
+        seq: seq, cpu0: fshCpu(), strip: strip, stack: stack, quizSlot: quizSlot,
+        lockChips: function () { tray.el.style.pointerEvents = "none"; tray.el.style.opacity = "0.45"; },
+        onDone: function (cpu) {
+          quizSlot.innerHTML = "";
+          var bad = fshCheckPro(cpu);
+          if (!bad.length) {
+            fshSt.t1.pass = true;
+            fshSay(res, true, "frame built: sp 0x7FE0, ra parked at 0x7FF8, fp anchored, caller untouched.");
+            fshLog("t1 PASS: prologue clean.", "ok");
+            fshCheckCert();
+          } else {
+            fshSay(res, false, bad[0]);
+            fshLog("t1 run: " + bad.join(" "), "bad");
+            fshStrike("t1 prologue: " + bad[0]);
+            run.disabled = false;
+            tray.el.style.pointerEvents = ""; tray.el.style.opacity = "";
+          }
+        }
+      });
     });
     panel.appendChild(card);
   }
@@ -49139,32 +49408,45 @@ if (typeof module !== "undefined" && module.exports) {
       function (ok, msg) {
         fshLog("t3 predict: " + msg, ok ? "ok" : "dim");
       }));
-    var run = fshBtn("RUN EPILOGUE", "fsh-btn solid");
+    var quizSlot3 = fshEl("div", "");
+    card.appendChild(quizSlot3);
+    var run = fshBtn("STEP THROUGH THE EPILOGUE", "fsh-btn solid");
     var res = fshResultLine();
     card.appendChild(run);
     card.appendChild(res);
-    var cpu0 = fshCpu();
-    FSH_PRO.forEach(function (ins) { fshStep(cpu0, ins); });
+    function fshT3Base() {
+      var c = fshCpu();
+      FSH_PRO.forEach(function (ins) { fshStep(c, ins); });
+      return c;
+    }
+    var cpu0 = fshT3Base();
     strip.set(cpu0); stack.render(cpu0);
     run.addEventListener("click", function () {
       if (fshSt.failed || fshSt.t3.pass) return;
       var seq = tray.seq();
       if (seq.length !== 4) { fshSay(res, false, "the epilogue needs all four instructions."); return; }
-      var cpu = fshCpu();
-      FSH_PRO.forEach(function (ins) { fshStep(cpu, ins); });
-      seq.forEach(function (ins) { fshStep(cpu, ins); });
-      strip.set(cpu); stack.render(cpu);
-      var bad = fshCheckEpi(cpu);
-      if (!bad.length) {
-        fshSt.t3.pass = true;
-        fshSay(res, true, "teardown clean: ra 0x1040 restored, sp back at 0x8000, ret landed at 0x1040.");
-        fshLog("t3 PASS: epilogue clean.", "ok");
-        fshCheckCert();
-      } else {
-        fshSay(res, false, bad[0]);
-        fshLog("t3 run: " + bad.join(" "), "bad");
-        fshStrike("t3 epilogue: " + bad[0]);
-      }
+      run.disabled = true;
+      fshLog("t3: stepping the epilogue. Predict each instruction's exact effect.", "dim");
+      fshRunGate({
+        seq: seq, cpu0: fshT3Base(), strip: strip, stack: stack, quizSlot: quizSlot3,
+        lockChips: function () { tray.el.style.pointerEvents = "none"; tray.el.style.opacity = "0.45"; },
+        onDone: function (cpu) {
+          quizSlot3.innerHTML = "";
+          var bad = fshCheckEpi(cpu);
+          if (!bad.length) {
+            fshSt.t3.pass = true;
+            fshSay(res, true, "teardown clean: ra 0x1040 restored, sp back at 0x8000, ret landed at 0x1040.");
+            fshLog("t3 PASS: epilogue clean.", "ok");
+            fshCheckCert();
+          } else {
+            fshSay(res, false, bad[0]);
+            fshLog("t3 run: " + bad.join(" "), "bad");
+            fshStrike("t3 epilogue: " + bad[0]);
+            run.disabled = false;
+            tray.el.style.pointerEvents = ""; tray.el.style.opacity = "";
+          }
+        }
+      });
     });
     panel.appendChild(card);
   }
@@ -49275,7 +49557,7 @@ if (typeof module !== "undefined" && module.exports) {
   /* ---------------- cert, download ---------------- */
   function fshCheckCert() {
     if (fshSt.cert || fshSt.failed) return;
-    if (fshSt.t1.pass && fshSt.t2.pass && fshSt.t3.pass && fshSt.t4.pass) {
+    if (fshSt.t1.pass && fshSt.t2.pass && fshSt.t3.pass && fshSt.t4.pass && fshSt.t5.pass) {
       fshSt.cert = true;
       var lines = [
         "THE FRAME SHOP: CERTIFIED",
@@ -49283,6 +49565,7 @@ if (typeof module !== "undefined" && module.exports) {
         "Body lives at fp-relative offsets: one owner per slot, both values load back.",
         "Epilogue restores in reverse: ra 0x1040 back, sp 0x8000, ret lands 0x1040.",
         "Nested call survived: inner overwrote ra and the frame gave it back.",
+        "Cold write: a 48-byte frame built from typed instructions, offsets computed by hand.",
         "Rule: build before you work, tear down in reverse, leave no trace.",
         "Strikes: " + fshSt.strikes + "/3"
       ];
@@ -49312,7 +49595,7 @@ if (typeof module !== "undefined" && module.exports) {
   }
   function fshNewBenchState() {
     return { strikes: 0, failed: false, cert: false,
-      t1: { pass: false }, t2: { pass: false }, t3: { pass: false }, t4: { pass: false } };
+      t1: { pass: false }, t2: { pass: false }, t3: { pass: false }, t4: { pass: false }, t5: { pass: false } };
   }
   function fshBuild() {
     var box = document.querySelector(".dossier .actions");
@@ -49375,6 +49658,7 @@ if (typeof module !== "undefined" && module.exports) {
     fshBuildT2(panel);
     fshBuildT3(panel);
     fshBuildT4(panel);
+    fshBuildT5(panel);
 
     var fail = fshEl("div", "fsh-card", "");
     fail.id = "fshFailCard";
