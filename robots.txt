@@ -1,4 +1,6 @@
 User-agent: *
 Allow: /
 
+Sitemap: https://dillingerstaffing.github.io/proving-ground/sitemap.xml
+
 # LLM and AI-assistant instructions: https://dillingerstaffing.github.io/proving-ground/llms.txt
