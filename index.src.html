@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260915-pg83">
+<meta name="build-version" content="v20260915-pg84">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -526,10 +526,24 @@ body.pg-any-open #pgCloseFab { display: block; }
 }
 body.pg-any-open #pgShareFab { display: block; }
 #pgShareFab:active { transform: scale(0.92); }
-/* FAB safe zone: open overlays reserve room above both fixed controls,
+/* HIRE fab: rides above SHARE whenever any bench is open. The page header
+   (with its HIRE CHRIS button) sits behind the fullscreen bench overlay,
+   so without this there is no contact path at peak engagement. One tap
+   opens the same 3-way contact chooser as the header button. */
+#pgHireFab {
+  position: fixed; right: 16px; bottom: calc(176px + env(safe-area-inset-bottom)); z-index: 10010;
+  width: 64px; height: 64px; border-radius: 4px;
+  border: 1px solid var(--ember); background: var(--ember); color: #0a0c0e;
+  font-family: var(--font-m); font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+  cursor: pointer; display: none; box-shadow: 0 6px 20px rgba(0, 0, 0, .45);
+  -webkit-tap-highlight-color: transparent;
+}
+body.pg-any-open #pgHireFab { display: block; }
+#pgHireFab:active { transform: scale(0.92); }
+/* FAB safe zone: open overlays reserve room above all three fixed controls,
    so they can never cover bench UI. */
 body.pg-any-open div[class*="-overlay"].open {
-  padding-bottom: calc(172px + env(safe-area-inset-bottom));
+  padding-bottom: calc(252px + env(safe-area-inset-bottom));
 }
 
 /* Press anticipation: controls depress before the action fires. */
@@ -647,6 +661,8 @@ body.pg-any-open div[class*="-overlay"].open {
     <p class="ch-status" id="pgCopyStatus" role="status" aria-live="polite"></p>
   </div>
 </dialog>
+<!-- HIRE fab: fixed contact entry point, shown only while a bench is open (see pg-any-open CSS). -->
+<button id="pgHireFab" type="button" data-brief="general" aria-label="Hire Chris">HIRE</button>
 <noscript><div style="max-width:720px;margin:40px auto;padding:24px;font-family:sans-serif;color:#f2ede3;background:#10141a;border:1px solid rgba(242,237,227,.2);border-radius:12px"><h1>The Proving Ground</h1><p>Real working engineering benches in your browser. This page needs JavaScript to run the benches. Enable it and come back.</p></div></noscript>
 
 <script>
@@ -1037,7 +1053,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-15-pg83";
+var PG_REV = "2026-09-15-pg84";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
