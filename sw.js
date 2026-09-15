@@ -1,5 +1,8 @@
-// Auto-generated: updates on every deploy to force SW refresh
-const VERSION = 'v20260910-1315';
+// Proving Ground service worker.
+// Bump VERSION whenever this file changes: the browser only installs a new
+// worker when the bytes differ, and the page reloads itself on
+// controllerchange, which is how stuck clients get unstuck automatically.
+const VERSION = 'v20260915-1055';
 const CACHE = 'proving-ground-' + VERSION;
 const OFFLINE_URL = 'index.html';
 
@@ -19,10 +22,19 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
   if (request.method !== 'GET' || url.origin !== location.origin) return;
-  
+
+  // Version probes must always reach the network. A cached answer makes the
+  // page's update check compare stale-to-stale and never reload.
+  if (url.searchParams.has('vcheck')) {
+    event.respondWith(fetch(request, { cache: 'no-store' }));
+    return;
+  }
+
   if (request.mode === 'navigate') {
     event.respondWith(
-      fetch(request)
+      // cache:'reload' skips the HTTP cache so a fresh launch always gets the
+      // latest page instead of an up-to-10-minute-old copy.
+      fetch(new Request(request, { cache: 'reload' }))
         .then((response) => {
           const copy = response.clone();
           caches.open(CACHE).then((cache) => cache.put(request, copy));
@@ -32,7 +44,7 @@ self.addEventListener('fetch', (event) => {
     );
     return;
   }
-  
+
   event.respondWith(
     caches.match(request).then((cached) => {
       const network = fetch(request).then((response) => {
