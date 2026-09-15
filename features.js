@@ -48613,7 +48613,10 @@ if (typeof module !== "undefined" && module.exports) {
     fshLog("STRIKE " + fshSt.strikes + "/3: " + why, "bad");
     if (fshSt.strikes >= 3) {
       fshSt.failed = true;
-      if (fshEls.failCard) fshEls.failCard.style.display = "";
+      if (fshEls.failCard) {
+        fshEls.failCard.style.display = "";
+        if (fshEls.failCard.scrollIntoView) fshEls.failCard.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
       fshLog("ROOM FAILED. The machine does not negotiate. Reset and run it again.", "bad");
     }
   }
