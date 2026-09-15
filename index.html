@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260915-pg73">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="build-version" content="v20260915-pg74">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
 <meta name="description" content="The Proving Ground: real working engineering benches that prove the capabilities behind freelance silicon work, TAPEOUT graphics hardware, and OLD IRON hardware donation. Free, no account, runs entirely on your device.">
@@ -29,6 +29,10 @@
  "applicationCategory":"BrowserApplication","operatingSystem":"Any modern web browser",
  "isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
+  <script src="rvcore.js?v=7973c2919f" defer></script>
+  <script src="rvdata.js?v=7973c2919f" defer></script>
+  <script src="riscv-lab.js?v=7973c2919f" defer></script>
+  <script src="features.js?v=7973c2919f" defer onerror="pgBundleFailed()"></script>
 <script>
 /* Storage shim: if native localStorage throws (locked-down WebViews, private mode),
    swap in a memory-backed replacement so benches keep working. */
@@ -105,6 +109,7 @@
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
+  overflow-x: clip;
   background: var(--ink);
   color: var(--paper);
   font-family: var(--font-d);
@@ -1606,9 +1611,5 @@ if ('serviceWorker' in navigator) {
   setTimeout(checkVersion, 2500);
 })();
 </script>
-<script src="rvcore.js?v=7973c2919f" defer></script>
-<script src="rvdata.js?v=7973c2919f" defer></script>
-<script src="riscv-lab.js?v=7973c2919f" defer></script>
-<script src="features.js?v=7973c2919f" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
