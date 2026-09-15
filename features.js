@@ -48582,7 +48582,15 @@ if (typeof module !== "undefined" && module.exports) {
     ".fsh-slotrow .fsh-who{font-size:13px;color:#f2f0eb;min-width:120px;}",
     ".fsh-pop{animation:fshpop .2s ease-out;}",
     "@keyframes fshpop{0%{transform:scale(.96);}100%{transform:scale(1);}}",
-    "@media (prefers-reduced-motion:reduce){.fsh-pop{animation:none;}}"
+    "@media (prefers-reduced-motion:reduce){.fsh-pop{animation:none;}}",
+    ".fsh-code{font-family:'IBM Plex Mono',monospace;font-size:13px;line-height:2;background:#0c0c0e;border:1px solid var(--line);padding:12px 14px;margin:0 0 12px;overflow-x:auto;}",
+    ".fsh-code div{color:#8a877e;white-space:pre;}",
+    ".fsh-code div.on{color:#ff5a1f;}",
+    ".fsh-rules{font-size:13px;line-height:1.7;color:#b9b6ae;margin:14px 0 0;max-width:70ch;}",
+    ".fsh-rules b{color:#f2f0eb;}",
+    ".fsh-rules ol{margin:8px 0 0;padding-left:20px;}",
+    ".fsh-rules li{margin:0 0 6px;}",
+    ".fsh-ann{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#8a877e;padding:2px 4px 10px;line-height:1.5;}"
   ].join("\n");
 
   /* ---------------- shared widgets ---------------- */
@@ -48831,6 +48839,146 @@ if (typeof module !== "undefined" && module.exports) {
         setTimeout(tick, 450);
       })();
     });
+    panel.appendChild(card);
+  }
+
+  /* -------- C to registers: one truth, three levels (free walk) -------- */
+  /* the C -> asm -> register walk for next(7), on the same honest machine */
+  var FSH_CSTEPS = [
+    { line: -1, title: "THE CALL (invisible in C)",
+      asms: [],
+      note: "main calls next(7). The call itself has no C syntax: x = 7 arrives in <b>a0</b>, the way home (0x1040) arrives in <b>ra</b>. Watch both registers; everything after this is the function keeping its promises." },
+    { line: 0, title: "C: {",
+      asms: FSH_PRO,
+      note: "The opening brace becomes the <b>prologue</b>: sp 0x8000 to 0x7FE0 (32 bytes claimed), ra parked at 0x7FF8, the old frame pointer parked at 0x7FF0, s0 anchored at 0x8000. Four instructions, and C never shows you any of them." },
+    { line: 1, title: "C: int y = x + 1",
+      asms: [
+        { asm: "addi t0, a0, 1", op: "addi", rd: "t0", rs1: "a0", imm: 1 },
+        { asm: "sd t0, -24(s0)", op: "sd", rs2: "t0", rs1: "s0", imm: -24 }
+      ],
+      note: "x lived in <b>a0</b>. The sum lives one heartbeat in <b>t0</b>, then y takes its frame slot: -24(s0) = 0x7FE8. The stack diagram labels it the moment it lands." },
+    { line: 2, title: "C: return y",
+      asms: [
+        { asm: "ld a0, -24(s0)", op: "ld", rd: "a0", rs1: "s0", imm: -24 }
+      ],
+      note: "The return value travels home in <b>a0</b>: 8. One load. Whatever the caller kept in a0 is gone; the convention owns that register from here." },
+    { line: 3, title: "C: }",
+      asms: FSH_EPI,
+      note: "The closing brace becomes the <b>epilogue</b>, the prologue in reverse: ra restored to 0x1040, s0 back to 0x9000, sp back to 0x8000, ret jumps home. Compare the strip to the start: identical, except a0 now carries the answer." }
+  ];
+  function fshCMapLabel(a, cpu) {
+    if (a === 0x7FE8) {
+      if ((cpu.r.sp >>> 0) <= 0x7FE8) {
+        return { text: fshLoad(cpu, a) === 8 ? "y = 8 lives here" : "y's slot" };
+      }
+      return { text: "stale" };
+    }
+    return fshFrameLabel(a, cpu);
+  }
+  /* address math, read from live machine state BEFORE the instruction runs:
+     registers are pointers, offsets are arithmetic, the sum is the address */
+  function fshAnnotate(cpu, ins) {
+    var R = cpu.r;
+    function off(imm) { return (imm < 0 ? "- " : "+ ") + Math.abs(imm); }
+    if (ins.op === "addi") {
+      var nv = ((R[ins.rs1] + ins.imm) >>> 0);
+      return ins.rd + " = " + ins.rs1 + " (" + fshHex(R[ins.rs1]) + ") " + off(ins.imm) + " = " + fshHex(nv);
+    }
+    if (ins.op === "sd" || ins.op === "ld") {
+      var a = ((R[ins.rs1] + ins.imm) >>> 0);
+      var base = ins.rs1 + " (" + fshHex(R[ins.rs1]) + ") " + off(ins.imm) + " = " + fshHex(a);
+      if (ins.op === "sd") return base + "  ->  MEM[" + fshHex(a) + "] = " + ins.rs2 + " (" + fshHex(R[ins.rs2]) + ")";
+      return ins.rd + " = MEM[" + base + "]";
+    }
+    if (ins.op === "ret") return "jump to ra (" + fshHex(R.ra) + ")";
+    return "";
+  }
+  function fshBuildCMap(panel) {
+    var card = fshTrialCard("C TO REGISTERS", "ONE TRUTH, THREE LEVELS",
+      "Every C function is three things at once: <b>C source</b> you write, <b>assembly</b> the compiler emits, and <b>registers</b> the machine moves. " +
+      "Step through one real call, <b>next(7)</b>, and watch all three stay in lockstep on the same honest machine. " +
+      "The one idea underneath it all: a register like sp is a <b>pointer</b>, it holds a memory address. <b>24(sp)</b> means take the address in sp, add 24, and read or write there. " +
+      "The stack grows down, toward smaller addresses, so claiming space means subtracting from sp. Every instruction below is annotated with its address math, computed live from the machine. Free walk, no strikes.");
+    var code = fshEl("div", "fsh-code", "");
+    code.setAttribute("role", "img");
+    code.setAttribute("aria-label", "C source for next");
+    var lineEls = ["int next(int x) {", "    int y = x + 1;", "    return y;", "}"].map(function (t) {
+      var d = fshEl("div", "", t);
+      code.appendChild(d);
+      return d;
+    });
+    card.appendChild(code);
+    var strip = fshStateStrip();
+    var stack = fshStackBox(fshCMapLabel);
+    var cols = fshEl("div", "fsh-cols");
+    cols.appendChild(stack.el);
+    var right = fshEl("div", "");
+    var ctrls = fshEl("div", "fsh-traybtns");
+    var stepBtn = fshBtn("STEP THROUGH THE CALL", "fsh-btn solid");
+    var resetBtn = fshBtn("RESET", "");
+    ctrls.appendChild(stepBtn);
+    ctrls.appendChild(resetBtn);
+    right.appendChild(ctrls);
+    var asmBox = fshEl("div", "fsh-seq");
+    right.appendChild(asmBox);
+    var note = fshEl("p", "fsh-why", "Press STEP: main calls next(7). a0 already holds 7, ra already holds 0x1040, exactly as a real call site leaves them.");
+    right.appendChild(note);
+    cols.appendChild(right);
+    card.appendChild(strip.el);
+    card.appendChild(cols);
+    var rules = fshEl("div", "fsh-rules", "");
+    rules.innerHTML = "<b>THE THREE RELATIONSHIPS, EXACTLY:</b><ol>" +
+      "<li><b>C parameters and return values are registers.</b> Arguments arrive in a0-a7, the return value leaves in a0. The calling convention decides; your C never names them.</li>" +
+      "<li><b>C's { and } are the prologue and epilogue.</b> Every function claims its frame before it works and tears it down in reverse. There is no function without this tax.</li>" +
+      "<li><b>A C local is either a register or a frame slot.</b> If nothing takes its address it may live its whole life in a register and never touch memory. Write &y and the compiler must park it in the frame at a fixed fp offset.</li></ol>";
+    card.appendChild(rules);
+    card.appendChild(fshPredict("C's closing } becomes:",
+      ["the epilogue: restore ra, restore fp, free the frame, ret", "a single ret", "nothing; the compiler erases it"], 0,
+      function (ok, msg) { fshLog("cmap predict: " + msg, ok ? "ok" : "dim"); }));
+    var cpu = fshCpu();
+    var si = 0;
+    function paint() {
+      strip.set(cpu);
+      stack.render(cpu);
+    }
+    function showStep(st, anns) {
+      lineEls.forEach(function (el, i) { el.classList.toggle("on", i === st.line); });
+      asmBox.innerHTML = "";
+      if (!st.asms.length) asmBox.appendChild(fshEl("span", "fsh-empty", "no instructions: the call already happened"));
+      st.asms.forEach(function (ch, i) {
+        asmBox.appendChild(fshEl("span", "fsh-step", (i + 1) + ". " + ch.asm));
+        if (anns && anns[i]) asmBox.appendChild(fshEl("div", "fsh-ann", anns[i]));
+      });
+      note.innerHTML = "<b>" + st.title + ".</b> " + st.note;
+      paint();
+    }
+    stepBtn.addEventListener("click", function () {
+      if (si >= FSH_CSTEPS.length) return;
+      var st = FSH_CSTEPS[si];
+      var anns = st.asms.map(function (ch) {
+        var a = fshAnnotate(cpu, ch);
+        fshStep(cpu, ch);
+        return a;
+      });
+      showStep(st, anns);
+      si++;
+      if (si >= FSH_CSTEPS.length) {
+        stepBtn.disabled = true;
+        stepBtn.textContent = "CALL COMPLETE: a0 = 8, sp = 0x8000";
+        fshLog("cmap complete: C, assembly, and registers stayed in lockstep.", "ok");
+      }
+    });
+    resetBtn.addEventListener("click", function () {
+      cpu = fshCpu();
+      si = 0;
+      stepBtn.disabled = false;
+      stepBtn.textContent = "STEP THROUGH THE CALL";
+      lineEls.forEach(function (el) { el.classList.remove("on"); });
+      asmBox.innerHTML = "";
+      note.textContent = "Press STEP: main calls next(7). a0 already holds 7, ra already holds 0x1040, exactly as a real call site leaves them.";
+      paint();
+    });
+    paint();
     panel.appendChild(card);
   }
 
@@ -49213,6 +49361,7 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(strikes);
 
     fshBuildDoFirst(panel);
+    fshBuildCMap(panel);
     fshBuildT1(panel);
     fshBuildT2(panel);
     fshBuildT3(panel);
