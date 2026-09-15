@@ -49035,7 +49035,7 @@ if (typeof module !== "undefined" && module.exports) {
   /* ---------------- trial 2: body ---------------- */
   function fshBuildT2(panel) {
     var card = fshTrialCard("TRIAL 2", "LIVE IN THE FRAME",
-      "The <b>body</b> is where the function works, and its locals live at fixed negative offsets from the frame pointer, so their addresses never move even when sp does. Each slot has exactly one owner. A <b>spill</b> is a register value parked in the frame when the allocator runs out of registers. Two live values in one slot, and the second store murders the first. (The prologue already ran correctly below: fp is 0x8000, ra sleeps at 0x7FF8.)");
+      "The <b>body</b> is where the function works. Its locals live at fixed negative offsets from the frame pointer, so their addresses never move even when sp does, and each slot has exactly one owner. <b>t0</b> is one of RISC-V's temporary registers, scratch space for a value being computed. When the function has more live values than registers to hold them, it <b>spills</b>: it parks a register's value in a frame slot for a while and loads it back later. Two live values in one slot, and the second store murders the first. One of the three slots below is a <b>trap</b>: it already holds the parked frame pointer, so storing your local there overwrites it and the epilogue will restore garbage into s0. (The prologue already ran correctly below: fp is 0x8000, ra sleeps at 0x7FF8.)");
     var strip = fshStateStrip();
     var homes = { aC: null, aT: null };
     function label2(a, cpu) {
@@ -49072,7 +49072,7 @@ if (typeof module !== "undefined" && module.exports) {
       return row;
     }
     right.appendChild(slotSeg("c", "local c (int = 14)"));
-    right.appendChild(slotSeg("t0", "spilled t0"));
+    right.appendChild(slotSeg("t0", "spilled t0 (temp register)"));
     cols.appendChild(right);
     card.appendChild(strip.el);
     card.appendChild(cols);
