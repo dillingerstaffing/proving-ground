@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260915-pg68">
+<meta name="build-version" content="v20260915-pg69">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -930,11 +930,15 @@ var PG_BENCHES = [
   { section: "arch", n: "67", name: "The Frame Shop", btn: "fshBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "The stack frame built by hand on a real tiny RISC-V machine: claim 32 bytes, park ra and the frame pointer, live in fp-relative slots, tear it all down in reverse, and survive a nested call. Every sequence you assemble actually executes.",
     how: "Order the prologue and epilogue chips, call the addresses first, run each sequence on the honest machine, then qualify the full nested call.",
-    spec: "PROLOGUE / EPILOGUE \u00B7 4 TRIALS" }
+    spec: "PROLOGUE / EPILOGUE \u00B7 4 TRIALS" },
+  { section: "craft", n: "68", name: "The Drive Bay", btn: "dvbBtn", pill: "oldiron", pillLabel: "OLD IRON",
+    desc: "Drive installation for the OLD IRON refurb line: keyed M.2 slots that physically refuse the wrong key, form-factor bays, data plus power on every SATA drive, and the intake machine whose drive seats but never links. Seat, cable, POST, diagnose.",
+    how: "Seat each drive by its key, cable every SATA drive end to end, call BOOT or NO BOOT for each machine before you press power, then convict the intake that fits but never links.",
+    spec: "M.2 KEYING \u00B7 SATA CABLES \u00B7 3 TRIALS" }
  ];
 /* Teaching order: the sequence a newcomer should take the benches in.
    The index renders this list top to bottom; the number on each row is its
-   position here (01..64), never the bench's creation number. Bench `n`
+   position here (01..68), never the bench's creation number. Bench `n`
    stays the stable ID for deep links (#bench=08). New benches are
    inserted at their teaching position, never appended at the end. */
 var PG_TEACH_ORDER = [
@@ -990,12 +994,14 @@ var PG_TEACH_ORDER = [
   "32",
   "16",
   "29",
+  "66",
   "14",
   "24",
   "20",
   "28",
   "06",
   "27",
+  "68",
   "46",
   "47",
   "22",
@@ -1503,9 +1509,9 @@ if ('serviceWorker' in navigator) {
   setTimeout(checkVersion, 2500);
 })();
 </script>
-<script src="rvcore.js?v=bf94652522" defer></script>
-<script src="rvdata.js?v=bf94652522" defer></script>
-<script src="riscv-lab.js?v=bf94652522" defer></script>
-<script src="features.js?v=bf94652522" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=b3682a5d1c" defer></script>
+<script src="rvdata.js?v=b3682a5d1c" defer></script>
+<script src="riscv-lab.js?v=b3682a5d1c" defer></script>
+<script src="features.js?v=b3682a5d1c" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

@@ -49275,3 +49275,778 @@ if (typeof module !== "undefined" && module.exports) {
     fshBuild();
   }
 })();
+/* ============================================================================
+ * BENCH 68: THE DRIVE BAY (oldiron)
+ * Drive installation from first principles for the OLD IRON refurb line:
+ * M.2 keying (the notch decides fit), form-factor bays, SATA data plus
+ * power seated end to end, and the protocol lesson: a key that fits is
+ * still not a link. Pure client-side, no network.
+ * ========================================================================== */
+(function () {
+  "use strict";
+
+  /* ---------------- the hardware ---------------- */
+  var DVB_DRIVES = [
+    { id: "nvme", name: "NVME-1", form: "m2", size: "2280", keys: [74], proto: "pcie",
+      tag: "M.2 2280, M-key, NVMe (PCIe)" },
+    { id: "satam2", name: "SATA-M2", form: "m2", size: "2242", keys: [12, 74], proto: "sata",
+      tag: "M.2 2242, B+M-key, SATA" },
+    { id: "ssd25", name: "SSD-25", form: "2.5", size: "", keys: [], proto: "sata",
+      tag: "2.5 in SATA SSD" },
+    { id: "hdd35", name: "HDD-35", form: "3.5", size: "", keys: [], proto: "sata",
+      tag: "3.5 in SATA HDD" }
+  ];
+  var DVB_SLOTS = [
+    { id: "mkey", name: "M-KEY SLOT", kind: "m2", keys: [74], proto: "pcie",
+      note: "PCIe x4 only" },
+    { id: "bkey", name: "B-KEY SLOT", kind: "m2", keys: [12], proto: "sata",
+      note: "SATA only" },
+    { id: "bay25", name: "2.5 IN BAY", kind: "bay", form: "2.5", note: "2.5 in rails" },
+    { id: "bay35", name: "3.5 IN BAY", kind: "bay", form: "3.5", note: "3.5 in rails" }
+  ];
+  /* working home: fits physically AND the slot speaks the drive's protocol */
+  var DVB_HOME = { nvme: "mkey", satam2: "bkey", ssd25: "bay25", hdd35: "bay35" };
+
+  function dvbDrive(id) {
+    for (var i = 0; i < DVB_DRIVES.length; i++) if (DVB_DRIVES[i].id === id) return DVB_DRIVES[i];
+    return null;
+  }
+  function dvbSlot(id) {
+    for (var i = 0; i < DVB_SLOTS.length; i++) if (DVB_SLOTS[i].id === id) return DVB_SLOTS[i];
+    return null;
+  }
+  /* the key decides fit: every tab in the slot must clear a notch in the drive.
+     Extra notches on the drive are fine (B+M seats in either single-key slot). */
+  function dvbFit(d, s) {
+    if (s.kind === "m2") {
+      if (d.form !== "m2") return false;
+      for (var i = 0; i < s.keys.length; i++) if (d.keys.indexOf(s.keys[i]) < 0) return false;
+      return true;
+    }
+    return d.form === s.form;
+  }
+  /* the protocol decides the link: fit is necessary, not sufficient */
+  function dvbLink(d, s) {
+    if (s.kind === "m2") return d.proto === s.proto;
+    return true;
+  }
+  function dvbProtoName(p) { return p === "pcie" ? "PCIe" : "SATA"; }
+
+  /* ---------------- trial 2 machines ---------------- */
+  var DVB_MACHINES = [
+    { id: "A", drive: "SSD-25, 2.5 in SATA SSD",
+      rows: [["DATA CABLE, DRIVE END", "SEATED"], ["DATA CABLE, BOARD END", "LOOSE"],
+             ["POWER CABLE", "SEATED"]],
+      truth: "NO BOOT",
+      why: "the data cable is seated at the drive end and hanging loose at the board end" },
+    { id: "B", drive: "HDD-35, 3.5 in SATA HDD",
+      rows: [["DATA CABLE, DRIVE END", "SEATED"], ["DATA CABLE, BOARD END", "SEATED"],
+             ["POWER CABLE", "SEATED"]],
+      truth: "BOOT",
+      why: "data and power are seated end to end" },
+    { id: "C", drive: "SATA-M2, M.2 2242 SATA, in the M-KEY SLOT",
+      rows: [["EDGE LINK", "M-KEY SLOT (PCIe x4 only)"], ["CABLES", "none: M.2 draws power from the slot"]],
+      truth: "NO BOOT",
+      why: "the key fits, but the slot speaks PCIe and the drive speaks SATA: no link" }
+  ];
+
+  /* ---------------- trial 3 inspections ---------------- */
+  var DVB_INSPECT = [
+    { id: "drive", label: "INSPECT DRIVE",
+      text: "SATA-M2: M.2 2242, B+M key, SATA 6Gb/s. Known good: it booted in the test rig yesterday." },
+    { id: "seating", label: "INSPECT SEATING",
+      text: "Fully inserted, standoff screw fastened. M.2 needs no cables." },
+    { id: "slot", label: "INSPECT SLOT",
+      text: "M-KEY SLOT, PCIe x4 only. The B+M key seats in it fine." },
+    { id: "controller", label: "INSPECT CONTROLLER",
+      text: "The board wires its M-key slot to the PCIe controller only. Nothing on this slot speaks SATA." }
+  ];
+  var DVB_DIAGNOSES = [
+    { id: "unseated", text: "The drive is not seated." },
+    { id: "dead", text: "The drive is dead." },
+    { id: "nolink", text: "The key fits, but the slot speaks PCIe and the drive speaks SATA: no link." },
+    { id: "screw", text: "The M.2 screw is missing." }
+  ];
+
+  /* ---------------- state ---------------- */
+  var dvbSt = null, dvbEls = {}, dvbEscBound = false;
+  function dvbNewState() {
+    return {
+      strikes: 0, failed: false,
+      held: null, seat: {},
+      t1done: false, t2done: false, t3done: false,
+      calls: {}, powered: {},
+      inspected: {}, diag: null, fixed: false
+    };
+  }
+
+  /* ---------------- dom helpers ---------------- */
+  function dvbEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== "") e.textContent = text;
+    return e;
+  }
+  function dvbBtn(label, cls) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = cls || "dvb-btn";
+    b.textContent = label;
+    return b;
+  }
+
+  var DVB_CSS = [
+    ".dvb-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.92);display:none;overflow-y:auto;}",
+    ".dvb-overlay.open{display:block;}",
+    ".dvb-panel{max-width:860px;margin:0 auto;padding:28px 18px 60px;color:var(--paper);}",
+    ".dvb-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);}",
+    ".dvb-title{font-family:'Space Grotesk',sans-serif;font-size:34px;margin:6px 0 10px;color:#f2f0eb;}",
+    ".dvb-sub{font-size:14px;line-height:1.65;color:#b9b6ae;max-width:68ch;margin:0 0 18px;}",
+    ".dvb-sub b{color:#f2f0eb;}",
+    ".dvb-strikes{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.14em;color:#f2f0eb;margin:0 0 16px;}",
+    ".dvb-card{border:1px solid var(--line);background:var(--panel);padding:18px;margin:0 0 16px;}",
+    ".dvb-card h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:#f2f0eb;margin:0 0 8px;}",
+    ".dvb-why{font-size:13px;line-height:1.6;color:#b9b6ae;margin:0 0 14px;max-width:72ch;}",
+    ".dvb-why b{color:#f2f0eb;}",
+    ".dvb-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0 0 12px;}",
+    "@media (max-width:640px){.dvb-grid{grid-template-columns:1fr;}}",
+    ".dvb-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.06em;background:transparent;color:var(--paper);border:1px solid var(--line);padding:12px 14px;min-height:48px;cursor:pointer;text-align:left;}",
+    ".dvb-btn:hover{border-color:var(--ember);}",
+    ".dvb-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".dvb-btn:disabled{opacity:.38;cursor:not-allowed;}",
+    ".dvb-btn.solid{background:var(--ember);border-color:var(--ember);color:#0a0a0c;font-weight:700;}",
+    ".dvb-btn.held{border-color:var(--ember);box-shadow:inset 0 0 0 1px var(--ember);}",
+    ".dvb-btn.picked{border-color:var(--ember);color:var(--ember);}",
+    ".dvb-btn .tag{display:block;font-size:11px;color:#8f8c85;letter-spacing:.04em;margin-top:4px;}",
+    ".dvb-btn .state{display:block;font-size:11px;letter-spacing:.14em;margin-top:6px;}",
+    ".dvb-state-ok{color:#7fd67f;}",
+    ".dvb-state-bad{color:var(--ember);}",
+    ".dvb-state-dim{color:#8f8c85;}",
+    ".dvb-readout{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:#cfccc4;background:#0b0d0e;border:1px solid var(--line);padding:12px 14px;margin:0 0 12px;min-height:44px;white-space:pre-wrap;}",
+    ".dvb-status{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.1em;color:#cfccc4;margin:0 0 12px;}",
+    ".dvb-actions{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 4px;}",
+    ".dvb-actions .dvb-btn{text-align:center;min-width:180px;}",
+    ".dvb-notch{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#cfccc4;margin:2px 0 8px;overflow-x:auto;white-space:pre;}",
+    ".dvb-machine{border:1px solid var(--line);padding:14px;margin:0 0 12px;}",
+    ".dvb-machine h4{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.14em;color:#f2f0eb;margin:0 0 6px;}",
+    ".dvb-mrow{display:flex;justify-content:space-between;gap:12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b9b6ae;padding:5px 0;border-top:1px solid var(--line);}",
+    ".dvb-mrow .v{color:#f2f0eb;}",
+    ".dvb-post{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:#cfccc4;margin:10px 0 0;min-height:20px;}",
+    ".dvb-banner{border:1px solid var(--ember);padding:18px;margin:0 0 16px;display:none;}",
+    ".dvb-banner.show{display:block;}",
+    ".dvb-banner h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--ember);margin:0 0 8px;}",
+    ".dvb-cert{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:#cfccc4;margin:0 0 12px;white-space:pre-wrap;}",
+    ".dvb-log{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.75;color:#8f8c85;max-height:220px;overflow-y:auto;}",
+    ".dvb-log .t{color:#5b5955;}",
+    ".dvb-log .bad{color:var(--ember);}",
+    ".dvb-log .good{color:#7fd67f;}"
+  ].join("\n");
+
+  /* ---------------- log and strikes ---------------- */
+  function dvbLog(msg, cls) {
+    if (!dvbEls.log) return;
+    var line = dvbEl("div", cls || "", "");
+    var t = new Date();
+    var hh = String(t.getHours()).padStart(2, "0"), mm = String(t.getMinutes()).padStart(2, "0"),
+        ss = String(t.getSeconds()).padStart(2, "0");
+    line.appendChild(dvbEl("span", "t", "[" + hh + ":" + mm + ":" + ss + "] "));
+    line.appendChild(document.createTextNode(msg));
+    dvbEls.log.appendChild(line);
+    dvbEls.log.scrollTop = dvbEls.log.scrollHeight;
+  }
+  function dvbSetStrikes() {
+    if (dvbEls.strikes) dvbEls.strikes.textContent = "STRIKES: " + dvbSt.strikes + "/3";
+  }
+  function dvbStrike(msg) {
+    if (dvbSt.failed) return;
+    dvbSt.strikes++;
+    dvbSetStrikes();
+    dvbLog("STRIKE " + dvbSt.strikes + "/3: " + msg, "bad");
+    if (dvbSt.strikes >= 3) {
+      dvbSt.failed = true;
+      dvbEls.failCard.style.display = "block";
+      dvbLog("three strikes. The room failed.", "bad");
+      if (dvbEls.overlay) dvbEls.failCard.scrollIntoView({ block: "center" });
+    }
+  }
+
+  /* ---------------- notch diagrams ---------------- */
+  function dvbNotchLine(keys, mark) {
+    var n = 36, cells = [];
+    for (var i = 0; i < n; i++) cells.push("=");
+    for (var j = 0; j < keys.length; j++) {
+      var p = Math.round(keys[j] / 100 * (n - 1));
+      cells[p] = mark;
+    }
+    return cells.join("");
+  }
+  function dvbDriveNotch(d) {
+    if (d.form !== "m2") return "FORM " + d.form.toUpperCase() + " IN: rails decide fit, no key notch";
+    return "EDGE [" + dvbNotchLine(d.keys, " ") + "]  KEY " + d.keys.join("+");
+  }
+  function dvbSlotNotch(s) {
+    if (s.kind !== "m2") return "BAY: " + s.form.toUpperCase() + " IN rails, " + s.note;
+    return "SLOT [" + dvbNotchLine(s.keys, "^") + "]  TAB " + s.keys.join("+") + "  (" + s.note + ")";
+  }
+
+  /* ---------------- trial 1: seat by the key ---------------- */
+  function dvbBuildT1(panel) {
+    var card = dvbEl("div", "dvb-card", "");
+    card.id = "dvbT1";
+    card.appendChild(dvbEl("h3", "", "TRIAL 1: SEAT BY THE KEY"));
+    card.appendChild(dvbEl("p", "dvb-why",
+      "The drive seats only when its key agrees with the slot's tab. NVME-1 carries an M-key notch at " +
+      "position 74, and the M-KEY SLOT has its tab at 74: they agree, so it seats. The B-KEY SLOT has its " +
+      "tab at 12: try it and the drive bounces back, the tab and the notch never line up. SATA-M2 is keyed " +
+      "B+M (notches at 12 and 74), so it seats in either M.2 slot, but only the B-KEY SLOT speaks SATA. " +
+      "Pick up a drive, then pick its slot. Click a seated drive with empty hands to unseat it. " +
+      "Seat all four drives in their working homes, then commit."));
+    var status = dvbEl("p", "dvb-status", "");
+    status.id = "dvbT1Status";
+    card.appendChild(status);
+    var trayWrap = dvbEl("div", "", "");
+    trayWrap.appendChild(dvbEl("h3", "", "TRAY"));
+    var tray = dvbEl("div", "dvb-grid", "");
+    tray.id = "dvbTray";
+    trayWrap.appendChild(tray);
+    card.appendChild(trayWrap);
+    var slotWrap = dvbEl("div", "", "");
+    slotWrap.appendChild(dvbEl("h3", "", "BOARD"));
+    var slots = dvbEl("div", "dvb-grid", "");
+    slots.id = "dvbSlots";
+    slotWrap.appendChild(slots);
+    card.appendChild(slotWrap);
+    var read = dvbEl("div", "dvb-readout", "Pick up a drive from the tray.");
+    read.id = "dvbT1Read";
+    read.setAttribute("aria-live", "polite");
+    card.appendChild(read);
+    var notch = dvbEl("div", "dvb-notch", "");
+    notch.id = "dvbT1Notch";
+    card.appendChild(notch);
+    var acts = dvbEl("div", "dvb-actions", "");
+    var commit = dvbBtn("COMMIT TRIAL 1", "dvb-btn solid");
+    commit.id = "dvbT1Commit";
+    commit.addEventListener("click", dvbCommitT1);
+    acts.appendChild(commit);
+    card.appendChild(acts);
+    panel.appendChild(card);
+    dvbEls.t1card = card; dvbEls.t1status = status; dvbEls.t1read = read; dvbEls.t1notch = notch;
+    dvbEls.t1tray = tray; dvbEls.t1slots = slots;
+    dvbRenderT1();
+  }
+  function dvbSeatedIn(slotId) {
+    for (var id in dvbSt.seat) if (dvbSt.seat[id] === slotId) return id;
+    return null;
+  }
+  function dvbRenderT1() {
+    var tray = dvbEls.t1tray || document.getElementById("dvbTray");
+    var slots = dvbEls.t1slots || document.getElementById("dvbSlots");
+    if (!tray || !slots) return;
+    tray.innerHTML = ""; slots.innerHTML = "";
+    var seated = 0, linked = 0;
+    var i, d, b;
+    for (i = 0; i < DVB_DRIVES.length; i++) {
+      d = DVB_DRIVES[i];
+      if (dvbSt.seat[d.id]) { seated++; if (dvbLink(d, dvbSlot(dvbSt.seat[d.id]))) linked++; continue; }
+      b = dvbBtn(d.name, "dvb-btn" + (dvbSt.held === d.id ? " held" : ""));
+      b.appendChild(dvbEl("span", "tag", d.tag));
+      b.setAttribute("data-drive", d.id);
+      (function (id) {
+        b.addEventListener("click", function () { dvbPickUp(id); });
+      })(d.id);
+      tray.appendChild(b);
+    }
+    if (!tray.children.length) tray.appendChild(dvbEl("p", "dvb-state-dim", "Tray is empty. Every drive is on the board."));
+    for (i = 0; i < DVB_SLOTS.length; i++) {
+      (function (s) {
+        var sb = dvbBtn(s.name, "dvb-btn");
+        sb.appendChild(dvbEl("span", "tag", s.note));
+        var occ = dvbSeatedIn(s.id);
+        var st = dvbEl("span", "state", "");
+        if (occ) {
+          var dd = dvbDrive(occ);
+          var lk = dvbLink(dd, s);
+          st.textContent = dd.name + (lk ? " SEATED, LINKED" : " SEATED, NO LINK");
+          st.className = "state " + (lk ? "dvb-state-ok" : "dvb-state-bad");
+        } else {
+          st.textContent = "EMPTY";
+          st.className = "state dvb-state-dim";
+        }
+        sb.appendChild(st);
+        sb.addEventListener("click", function () { dvbSlotClick(s.id); });
+        slots.appendChild(sb);
+      })(DVB_SLOTS[i]);
+    }
+    dvbEls.t1status.textContent = "SEATED " + seated + "/4 - LINKED " + linked + "/4" +
+      (dvbSt.held ? " - HOLDING " + dvbDrive(dvbSt.held).name : "");
+  }
+  function dvbPickUp(id) {
+    if (dvbSt.failed || dvbSt.t1done) return;
+    var d = dvbDrive(id);
+    if (dvbSt.held === id) {
+      dvbSt.held = null;
+      dvbEls.t1read.textContent = "Put " + d.name + " back down.";
+      dvbEls.t1notch.textContent = "";
+    } else {
+      dvbSt.held = id;
+      dvbEls.t1read.textContent = "Holding " + d.name + " (" + d.tag + "). Pick a slot.";
+      dvbEls.t1notch.textContent = dvbDriveNotch(d);
+      dvbLog("picked up " + d.name + " (" + d.tag + ").");
+    }
+    dvbRenderT1();
+  }
+  function dvbSlotClick(slotId) {
+    if (dvbSt.failed || dvbSt.t1done) return;
+    var s = dvbSlot(slotId);
+    var occ = dvbSeatedIn(slotId);
+    if (!dvbSt.held) {
+      if (occ) {
+        var od = dvbDrive(occ);
+        delete dvbSt.seat[occ];
+        dvbEls.t1read.textContent = "Unseated " + od.name + " back to the tray.";
+        dvbEls.t1notch.textContent = "";
+        dvbLog("unseated " + od.name + " from " + s.name + ".");
+      } else {
+        dvbEls.t1read.textContent = s.name + " is empty. Pick up a drive first.";
+        dvbEls.t1notch.textContent = dvbSlotNotch(s);
+      }
+      dvbRenderT1();
+      return;
+    }
+    var d = dvbDrive(dvbSt.held);
+    if (occ) {
+      dvbEls.t1read.textContent = s.name + " already holds " + dvbDrive(occ).name + ". Unseat it first (click the slot with empty hands).";
+      dvbEls.t1notch.textContent = dvbSlotNotch(s);
+      dvbRenderT1();
+      return;
+    }
+    if (!dvbFit(d, s)) {
+      var why = s.kind === "m2"
+        ? d.name + " carries key " + d.keys.join("+") + ", the slot's tab is at " + s.keys.join("+") + ": REFUSED. The tab and the notch never line up."
+        : d.name + " is a " + d.form + " in drive, the bay's rails are " + s.form + " in apart: REFUSED. It has nothing to screw to.";
+      dvbEls.t1read.textContent = why;
+      dvbEls.t1notch.textContent = dvbDriveNotch(d) + "\n" + dvbSlotNotch(s);
+      dvbLog("REFUSED: " + d.name + " into " + s.name + ".", "bad");
+      dvbRenderT1();
+      return;
+    }
+    dvbSt.seat[d.id] = slotId;
+    dvbSt.held = null;
+    var lk = dvbLink(d, s);
+    dvbEls.t1read.textContent = lk
+      ? d.name + " clicked into " + s.name + ": key agrees, link up."
+      : d.name + " seats in " + s.name + ", but the slot speaks " + dvbProtoName(s.proto) +
+        " and the drive speaks " + dvbProtoName(d.proto) + ": SEATED, NO LINK.";
+    dvbEls.t1notch.textContent = dvbDriveNotch(d) + "\n" + dvbSlotNotch(s);
+    dvbLog(d.name + " seated in " + s.name + (lk ? " (linked)." : " (NO LINK: protocol mismatch)."), lk ? "" : "bad");
+    dvbRenderT1();
+  }
+  function dvbCommitT1() {
+    if (dvbSt.failed || dvbSt.t1done) return;
+    var problems = [];
+    for (var i = 0; i < DVB_DRIVES.length; i++) {
+      var d = DVB_DRIVES[i];
+      var sid = dvbSt.seat[d.id];
+      if (!sid) { problems.push(d.name + " is still on the tray."); continue; }
+      var s = dvbSlot(sid);
+      if (!dvbLink(d, s)) {
+        problems.push(d.name + " seats in " + s.name + " but the slot speaks " +
+          dvbProtoName(s.proto) + " and the drive speaks " + dvbProtoName(d.proto) + ": no link.");
+      } else if (sid !== DVB_HOME[d.id]) {
+        problems.push(d.name + " is in " + s.name + ", not its working home.");
+      }
+    }
+    if (problems.length) {
+      dvbStrike(problems[0] + (problems.length > 1 ? " (plus " + (problems.length - 1) + " more)" : ""));
+      return;
+    }
+    dvbSt.t1done = true;
+    dvbLog("TRIAL 1 PASS: all four drives seated by key and linked.", "good");
+    dvbEls.t1read.textContent = "TRIAL 1 PASS: every drive sits in its working home.";
+    document.getElementById("dvbT1Commit").disabled = true;
+    dvbBuildT2(dvbEls.panel);
+  }
+
+  /* ---------------- trial 2: cable it end to end ---------------- */
+  function dvbBuildT2(panel) {
+    var card = dvbEl("div", "dvb-card", "");
+    card.id = "dvbT2";
+    card.appendChild(dvbEl("h3", "", "TRIAL 2: CABLE IT END TO END"));
+    card.appendChild(dvbEl("p", "dvb-why",
+      "A SATA drive needs two things from the machine: power and a voice. Power comes down the wide " +
+      "cable, the voice goes up the thin data cable, and the data cable has two ends. Seated at the drive " +
+      "end and hanging loose at the board end is the same as unplugged: the machine cannot hear a drive " +
+      "it is not connected to. Call BOOT or NO BOOT for each machine, then press its power. " +
+      "You must call before you power: the POST only counts as verification of a prediction."));
+    var wrap = dvbEl("div", "", "");
+    wrap.id = "dvbMachines";
+    card.appendChild(wrap);
+    var acts = dvbEl("div", "dvb-actions", "");
+    var commit = dvbBtn("COMMIT TRIAL 2", "dvb-btn solid");
+    commit.id = "dvbT2Commit";
+    commit.disabled = true;
+    commit.addEventListener("click", dvbCommitT2);
+    acts.appendChild(commit);
+    card.appendChild(acts);
+    panel.appendChild(card);
+    dvbEls.t2card = card;
+    for (var i = 0; i < DVB_MACHINES.length; i++) dvbRenderMachine(wrap, DVB_MACHINES[i]);
+    dvbLog("trial 2 open: three machines, three predictions, three power buttons.");
+  }
+  function dvbRenderMachine(wrap, m) {
+    var box = dvbEl("div", "dvb-machine", "");
+    box.id = "dvbM" + m.id;
+    box.appendChild(dvbEl("h4", "", "MACHINE " + m.id));
+    box.appendChild(dvbEl("p", "dvb-why", "Drive: " + m.drive + "."));
+    for (var i = 0; i < m.rows.length; i++) {
+      var r = dvbEl("div", "dvb-mrow", "");
+      r.appendChild(dvbEl("span", "", m.rows[i][0]));
+      var v = dvbEl("span", "v", m.rows[i][1]);
+      if (m.rows[i][1] === "LOOSE") v.style.color = "var(--ember)";
+      r.appendChild(v);
+      box.appendChild(r);
+    }
+    var callRow = dvbEl("div", "dvb-actions", "");
+    var bBoot = dvbBtn("CALL BOOT", "dvb-btn");
+    var bNo = dvbBtn("CALL NO BOOT", "dvb-btn");
+    bBoot.id = "dvbCall" + m.id + "Boot";
+    bNo.id = "dvbCall" + m.id + "No";
+    bBoot.addEventListener("click", function () { dvbCall(m.id, "BOOT"); });
+    bNo.addEventListener("click", function () { dvbCall(m.id, "NO BOOT"); });
+    callRow.appendChild(bBoot); callRow.appendChild(bNo);
+    box.appendChild(callRow);
+    var pow = dvbBtn("POWER ON", "dvb-btn solid");
+    pow.id = "dvbPow" + m.id;
+    pow.disabled = true;
+    pow.addEventListener("click", function () { dvbPower(m.id); });
+    box.appendChild(pow);
+    var post = dvbEl("p", "dvb-post", "");
+    post.id = "dvbPost" + m.id;
+    post.setAttribute("aria-live", "polite");
+    box.appendChild(post);
+    wrap.appendChild(box);
+  }
+  function dvbCall(mid, call) {
+    if (dvbSt.failed || dvbSt.t2done) return;
+    dvbSt.calls[mid] = call;
+    var bB = document.getElementById("dvbCall" + mid + "Boot");
+    var bN = document.getElementById("dvbCall" + mid + "No");
+    if (bB) bB.className = "dvb-btn" + (call === "BOOT" ? " picked" : "");
+    if (bN) bN.className = "dvb-btn" + (call === "NO BOOT" ? " picked" : "");
+    var pow = document.getElementById("dvbPow" + mid);
+    if (pow && !dvbSt.powered[mid]) pow.disabled = false;
+    dvbLog("machine " + mid + ": called " + call + ".");
+  }
+  function dvbPower(mid) {
+    if (dvbSt.failed || dvbSt.t2done || dvbSt.powered[mid]) return;
+    if (!dvbSt.calls[mid]) return;
+    var m = null;
+    for (var i = 0; i < DVB_MACHINES.length; i++) if (DVB_MACHINES[i].id === mid) m = DVB_MACHINES[i];
+    if (!m) return;
+    dvbSt.powered[mid] = true;
+    var post = document.getElementById("dvbPost" + mid);
+    var ok = m.truth === "BOOT";
+    post.textContent = "POST: memory ok ... probing storage ... " +
+      (ok ? "BOOT OK (" + m.drive.split(",")[0] + ")" : "NO BOOT DEVICE") +
+      ". Reason: " + m.why + ".";
+    post.style.color = ok ? "#7fd67f" : "var(--ember)";
+    document.getElementById("dvbPow" + mid).disabled = true;
+    dvbLog("machine " + mid + " POST: " + m.truth + " (" + m.why + ").", ok ? "good" : "bad");
+    var all = true;
+    for (var j = 0; j < DVB_MACHINES.length; j++) if (!dvbSt.powered[DVB_MACHINES[j].id]) all = false;
+    if (all) document.getElementById("dvbT2Commit").disabled = false;
+  }
+  function dvbCommitT2() {
+    if (dvbSt.failed || dvbSt.t2done) return;
+    var wrong = [];
+    for (var i = 0; i < DVB_MACHINES.length; i++) {
+      var m = DVB_MACHINES[i];
+      if (dvbSt.calls[m.id] !== m.truth) wrong.push("machine " + m.id);
+    }
+    if (wrong.length) {
+      dvbStrike("miscalled " + wrong.join(", ") + ": the POST disagrees with the prediction.");
+      return;
+    }
+    dvbSt.t2done = true;
+    dvbLog("TRIAL 2 PASS: three predictions, three honest POSTs.", "good");
+    document.getElementById("dvbT2Commit").disabled = true;
+    dvbBuildT3(dvbEls.panel);
+  }
+
+  /* ---------------- trial 3: the intake that fits but never links ---------------- */
+  function dvbBuildT3(panel) {
+    var card = dvbEl("div", "dvb-card", "");
+    card.id = "dvbT3";
+    card.appendChild(dvbEl("h3", "", "TRIAL 3: THE INTAKE THAT FITS BUT NEVER LINKS"));
+    card.appendChild(dvbEl("p", "dvb-why",
+      "One intake machine, one symptom: NO BOOT DEVICE. The drive is known good and everything looks " +
+      "plugged in. Inspect the four things that decide a boot: the drive, its seating, the slot, and the " +
+      "controller behind the slot. Then commit the diagnosis, apply the fix, and power it on. " +
+      "A wrong diagnosis costs a strike, same as a wrong guess anywhere else in this room."));
+    var sym = dvbEl("p", "dvb-status", "SYMPTOM: NO BOOT DEVICE");
+    card.appendChild(sym);
+    var insp = dvbEl("div", "dvb-actions", "");
+    insp.id = "dvbInspectRow";
+    for (var i = 0; i < DVB_INSPECT.length; i++) {
+      (function (it) {
+        var b = dvbBtn(it.label, "dvb-btn");
+        b.id = "dvbInsp" + it.id;
+        b.addEventListener("click", function () { dvbInspect(it.id); });
+        insp.appendChild(b);
+      })(DVB_INSPECT[i]);
+    }
+    card.appendChild(insp);
+    var findings = dvbEl("div", "", "");
+    findings.id = "dvbFindings";
+    card.appendChild(findings);
+    var dg = dvbEl("div", "", "");
+    dg.appendChild(dvbEl("h3", "", "DIAGNOSIS"));
+    var opts = dvbEl("div", "dvb-grid", "");
+    opts.id = "dvbDiagOpts";
+    for (var j = 0; j < DVB_DIAGNOSES.length; j++) {
+      (function (dg2) {
+        var b = dvbBtn(dg2.text, "dvb-btn");
+        b.id = "dvbDiag" + dg2.id;
+        b.addEventListener("click", function () { dvbDiagnose(dg2.id); });
+        opts.appendChild(b);
+      })(DVB_DIAGNOSES[j]);
+    }
+    dg.appendChild(opts);
+    card.appendChild(dg);
+    var acts = dvbEl("div", "dvb-actions", "");
+    var commit = dvbBtn("COMMIT DIAGNOSIS", "dvb-btn solid");
+    commit.id = "dvbT3Commit";
+    commit.disabled = true;
+    commit.addEventListener("click", dvbCommitT3);
+    acts.appendChild(commit);
+    card.appendChild(acts);
+    var fixRow = dvbEl("div", "dvb-actions", "");
+    fixRow.id = "dvbFixRow";
+    fixRow.style.display = "none";
+    var fix = dvbBtn("APPLY THE FIX: MOVE SATA-M2 TO THE B-KEY SLOT", "dvb-btn solid");
+    fix.id = "dvbFixBtn";
+    fix.addEventListener("click", dvbApplyFix);
+    fixRow.appendChild(fix);
+    card.appendChild(fixRow);
+    var powRow = dvbEl("div", "dvb-actions", "");
+    powRow.id = "dvbT3PowRow";
+    powRow.style.display = "none";
+    var pow = dvbBtn("POWER ON", "dvb-btn solid");
+    pow.id = "dvbT3Pow";
+    pow.addEventListener("click", dvbT3Power);
+    powRow.appendChild(pow);
+    card.appendChild(powRow);
+    var post = dvbEl("p", "dvb-post", "");
+    post.id = "dvbT3Post";
+    post.setAttribute("aria-live", "polite");
+    card.appendChild(post);
+    panel.appendChild(card);
+    dvbEls.t3card = card;
+    dvbLog("trial 3 open: one dead intake, four inspections, one diagnosis.");
+  }
+  function dvbInspect(id) {
+    if (dvbSt.failed || dvbSt.t3done) return;
+    if (dvbSt.inspected[id]) return;
+    dvbSt.inspected[id] = true;
+    var it = null;
+    for (var i = 0; i < DVB_INSPECT.length; i++) if (DVB_INSPECT[i].id === id) it = DVB_INSPECT[i];
+    var f = dvbEl("div", "dvb-mrow", "");
+    f.appendChild(dvbEl("span", "", it.label.replace("INSPECT ", "")));
+    f.appendChild(dvbEl("span", "v", it.text));
+    document.getElementById("dvbFindings").appendChild(f);
+    document.getElementById("dvbInsp" + id).disabled = true;
+    dvbLog("inspected " + id + ": " + it.text);
+  }
+  function dvbDiagnose(id) {
+    if (dvbSt.failed || dvbSt.t3done) return;
+    dvbSt.diag = id;
+    for (var i = 0; i < DVB_DIAGNOSES.length; i++) {
+      var b = document.getElementById("dvbDiag" + DVB_DIAGNOSES[i].id);
+      if (b) b.className = "dvb-btn" + (DVB_DIAGNOSES[i].id === id ? " picked" : "");
+    }
+    document.getElementById("dvbT3Commit").disabled = false;
+    var t = null;
+    for (var j = 0; j < DVB_DIAGNOSES.length; j++) if (DVB_DIAGNOSES[j].id === id) t = DVB_DIAGNOSES[j].text;
+    dvbLog("diagnosis drafted: " + t);
+  }
+  function dvbCommitT3() {
+    if (dvbSt.failed || dvbSt.t3done || !dvbSt.diag) return;
+    if (dvbSt.diag !== "nolink") {
+      var t = "";
+      for (var i = 0; i < DVB_DIAGNOSES.length; i++) if (DVB_DIAGNOSES[i].id === dvbSt.diag) t = DVB_DIAGNOSES[i].text;
+      dvbStrike("wrong diagnosis (" + t + "): the inspections already rule it out.");
+      return;
+    }
+    document.getElementById("dvbT3Commit").disabled = true;
+    document.getElementById("dvbFixRow").style.display = "flex";
+    dvbLog("diagnosis committed: the key fits, but the slot speaks PCIe and the drive speaks SATA. Apply the fix.", "good");
+  }
+  function dvbApplyFix() {
+    if (dvbSt.failed || dvbSt.t3done || dvbSt.fixed) return;
+    dvbSt.fixed = true;
+    document.getElementById("dvbFixBtn").disabled = true;
+    document.getElementById("dvbT3PowRow").style.display = "flex";
+    dvbLog("fix applied: SATA-M2 moved from the M-KEY SLOT to the B-KEY SLOT. The key agrees and the slot speaks SATA.");
+  }
+  function dvbT3Power() {
+    if (dvbSt.failed || dvbSt.t3done || !dvbSt.fixed) return;
+    dvbSt.t3done = true;
+    var post = document.getElementById("dvbT3Post");
+    post.textContent = "POST: memory ok ... probing storage ... BOOT OK (SATA-M2). The intake lives.";
+    post.style.color = "#7fd67f";
+    document.getElementById("dvbT3Pow").disabled = true;
+    dvbLog("TRIAL 3 PASS: the intake boots. Fits is necessary, not sufficient.", "good");
+    dvbCertify();
+  }
+
+  /* ---------------- certification ---------------- */
+  function dvbCertify() {
+    var line = "THE DRIVE BAY: QUALIFIED\n" +
+      "Seated 4/4 drives by key and protocol. Cabled 3/3 machines end to end.\n" +
+      "Diagnosed the no-link intake: B+M SATA drive in a PCIe-only M-key slot.\n" +
+      "Strikes: " + dvbSt.strikes + "/3.";
+    dvbEls.certP.textContent = line;
+    dvbEls.banner.classList.add("show");
+    dvbLog("ROOM CERTIFIED.", "good");
+    dvbEls.banner.scrollIntoView({ block: "center" });
+  }
+  function dvbDownloadCert() {
+    var txt = dvbEls.certP.textContent;
+    var blob = new Blob(["The Drive Bay qualification record\n\n" + txt + "\n"], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "drive-bay-qualification.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      if (a.parentNode) a.parentNode.removeChild(a);
+      URL.revokeObjectURL(a.href);
+    }, 500);
+  }
+
+  /* ---------------- open / close / build ---------------- */
+  function dvbOpen() {
+    if (dvbEls.overlay) dvbEls.overlay.classList.add("open");
+  }
+  function dvbClose() {
+    if (dvbEls.overlay) dvbEls.overlay.classList.remove("open");
+  }
+  function dvbBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box) return;
+    if (document.getElementById("dvbBtn")) return;
+    dvbSt = dvbNewState();
+
+    var sty = document.createElement("style");
+    sty.id = "dvbStyle";
+    sty.textContent = DVB_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "dvbBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Drive Bay";
+    b.addEventListener("click", dvbOpen);
+    box.appendChild(b);
+
+    var ov = dvbEl("div", "dvb-overlay");
+    ov.id = "dvbOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Drive Bay");
+    var x = dvbBtn("CLOSE", "dvb-btn");
+    x.id = "dvbXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Drive Bay");
+    x.addEventListener("click", dvbClose);
+    ov.appendChild(x);
+    dvbEls.overlay = ov;
+    if (!dvbEscBound) {
+      dvbEscBound = true;
+      document.addEventListener("keydown", function (ev) {
+        if (ev.key === "Escape" && dvbEls.overlay && dvbEls.overlay.classList.contains("open")) dvbClose();
+      });
+    }
+
+    var panel = dvbEl("div", "dvb-panel");
+    dvbEls.panel = panel;
+    panel.appendChild(dvbEl("div", "dvb-kicker", "OLD IRON BENCH 68"));
+    panel.appendChild(dvbEl("h2", "dvb-title", "The Drive Bay"));
+    var sub = dvbEl("p", "dvb-sub", "");
+    sub.innerHTML = "<b>HOW IT WORKS</b> Three intake machines arrived dead this morning and every drive " +
+      "inside them was fine. Each one failed for the same dumb reason: a connector that never belonged, " +
+      "or a cable that was never finished. An M.2 drive has a notch in its edge, the key; the slot has a " +
+      "matching tab. The drive seats only when the two agree (try NVME-1 in the B-KEY SLOT below and watch " +
+      "it bounce). But a key that fits is still not a link: this board's M-KEY SLOT speaks PCIe and its " +
+      "B-KEY SLOT speaks SATA, and the SATA-M2 drive will seat in either one. SATA drives add a second " +
+      "contract: the machine has to power the drive and hear it, so the data cable must be seated at the " +
+      "drive end <b>and</b> at the board end. Seat four drives by their keys, cable three machines end to " +
+      "end, call each POST before you press power, then convict the intake machine whose drive seats but " +
+      "never links. Three strikes and the room resets.";
+    panel.appendChild(sub);
+
+    var strikes = dvbEl("p", "dvb-strikes", "STRIKES: 0/3");
+    strikes.id = "dvbStrikes";
+    strikes.setAttribute("aria-live", "polite");
+    dvbEls.strikes = strikes;
+    panel.appendChild(strikes);
+
+    dvbBuildT1(panel);
+
+    var fail = dvbEl("div", "dvb-card", "");
+    fail.id = "dvbFailCard";
+    fail.style.display = "none";
+    fail.appendChild(dvbEl("h3", "", "THREE STRIKES"));
+    fail.appendChild(dvbEl("p", "dvb-why",
+      "The room failed. The machine does not negotiate. Reset and run it again: the key decides fit, " +
+      "both cable ends decide detection, and the controller has to speak the drive's protocol."));
+    var reset = dvbBtn("RESET ROOM", "dvb-btn solid");
+    reset.id = "dvbResetBtn";
+    reset.addEventListener("click", dvbResetRoom);
+    fail.appendChild(reset);
+    dvbEls.failCard = fail;
+    panel.appendChild(fail);
+
+    var banner = dvbEl("div", "dvb-banner");
+    banner.id = "dvbBanner";
+    banner.appendChild(dvbEl("h3", "", "ROOM CERTIFIED"));
+    var certP = dvbEl("div", "dvb-cert", "");
+    certP.id = "dvbCertLine";
+    banner.appendChild(certP);
+    var dl = dvbBtn("DOWNLOAD CERTIFICATE", "dvb-btn");
+    dl.id = "dvbCertDl";
+    dl.addEventListener("click", dvbDownloadCert);
+    banner.appendChild(dl);
+    dvbEls.banner = banner; dvbEls.certP = certP;
+    panel.appendChild(banner);
+
+    var logCard = dvbEl("div", "dvb-card");
+    logCard.appendChild(dvbEl("h3", "", "BENCH LOG"));
+    var log = dvbEl("div", "dvb-log", "");
+    log.id = "dvbLog";
+    log.setAttribute("aria-live", "polite");
+    logCard.appendChild(log);
+    panel.appendChild(logCard);
+    dvbEls.log = log;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    dvbLog("bench open. One rule: the key decides fit, the cables decide detection, the controller decides the language.", "dim");
+  }
+  function dvbResetRoom() {
+    var sty = document.getElementById("dvbStyle");
+    if (sty && sty.parentNode) sty.parentNode.removeChild(sty);
+    var btn = document.getElementById("dvbBtn");
+    if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
+    if (dvbEls.overlay && dvbEls.overlay.parentNode) dvbEls.overlay.parentNode.removeChild(dvbEls.overlay);
+    dvbEls = {};
+    dvbSt = null;
+    dvbBuild();
+    dvbOpen();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", dvbBuild);
+  } else {
+    dvbBuild();
+  }
+})();
