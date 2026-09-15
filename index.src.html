@@ -1477,23 +1477,30 @@ if ('serviceWorker' in navigator) {
     });
   });
 }
-// Invisible auto-update: check build version on foreground, reload once if changed
+// Invisible auto-update: check build version on load and on foreground, reload once if changed
 (function() {
   const currentVersion = document.querySelector('meta[name="build-version"]')?.content;
   if (!currentVersion) return;
   let checked = false;
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState !== 'visible' || checked) return;
+  let reloaded = false;
+  function checkVersion() {
+    if (document.visibilityState !== 'visible' || checked || reloaded) return;
     checked = true;
-    fetch(location.href, { cache: 'no-store' })
+    // The vcheck query defeats the service worker's cache-first path for
+    // this probe: a unique URL can never match a stale cache entry.
+    fetch(location.href.split('?')[0] + '?vcheck=' + Date.now(), { cache: 'no-store' })
       .then(r => r.text())
       .then(html => {
         const m = html.match(/<meta name="build-version" content="([^"]+)"/);
-        if (m && m[1] !== currentVersion) window.location.reload();
+        if (m && m[1] !== currentVersion) { reloaded = true; window.location.reload(); }
         else checked = false;
       })
       .catch(() => { checked = false; });
-  });
+  }
+  document.addEventListener('visibilitychange', checkVersion);
+  // A fresh launch (the home-screen app) may never fire visibilitychange,
+  // so check once shortly after load as well.
+  setTimeout(checkVersion, 2500);
 })();
 </script>
 </body>
