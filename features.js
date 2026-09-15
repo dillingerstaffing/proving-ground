@@ -48738,25 +48738,24 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
   /* predict-then-verify: free call, no strikes */
-  function fshPredict(q, choices, correct, onVerdict) {
+  function fshPredict(q, choices, correct, why, onVerdict) {
     var box = fshEl("div", "fsh-predict");
-    box.appendChild(fshEl("p", "", "PREDICT FIRST (free call, no strike): "));
+    box.appendChild(fshEl("p", "", "PREDICT FIRST (free call, no strike, change your pick freely): "));
     box.querySelector("p").appendChild(fshEl("span", "fsh-pq", q));
     var row = fshEl("div", "");
     box.appendChild(row);
-    var done = false;
     choices.forEach(function (txt, i) {
       var b = fshBtn(txt, "fsh-pick");
+      b.setAttribute("aria-label", "Predict: " + txt);
       b.addEventListener("click", function () {
-        if (done) return;
-        done = true;
+        for (var k = 0; k < row.children.length; k++) row.children[k].classList.remove("right", "wrong");
         if (i === correct) {
           b.classList.add("right");
-          onVerdict(true, "called it: " + txt);
+          onVerdict(true, "called it: " + txt + ". " + why);
         } else {
           b.classList.add("wrong");
           row.children[correct].classList.add("right");
-          onVerdict(false, "the machine says " + choices[correct]);
+          onVerdict(false, "not quite. The machine says " + choices[correct] + ". " + why);
         }
       });
       row.appendChild(b);
@@ -48934,6 +48933,7 @@ if (typeof module !== "undefined" && module.exports) {
     card.appendChild(rules);
     card.appendChild(fshPredict("C's closing } becomes:",
       ["the epilogue: restore ra, restore fp, free the frame, ret", "a single ret", "nothing; the compiler erases it"], 0,
+      "The closing brace must undo the prologue in reverse: restore what was parked, give the frame back, then ret. A bare ret would leave ra parked and sp still borrowed.",
       function (ok, msg) { fshLog("cmap predict: " + msg, ok ? "ok" : "dim"); }));
     var cpu = fshCpu();
     var si = 0;
@@ -48997,7 +48997,9 @@ if (typeof module !== "undefined" && module.exports) {
     card.appendChild(strip.el);
     card.appendChild(cols);
     card.appendChild(fshPredict("A correct prologue claims 32 bytes. sp starts at 0x8000. Afterward sp is:",
-      ["0x7FE0", "0x7FE8", "0x8020"], 0, function (ok, msg) {
+      ["0x7FE0", "0x7FE8", "0x8020"], 0,
+      "0x8000 - 32 = 0x7FE0. The stack grows toward lower addresses, so claiming 32 bytes moves sp down by 32.",
+      function (ok, msg) {
         fshLog("t1 predict: " + msg, ok ? "ok" : "dim");
       }));
     var run = fshBtn("RUN PROLOGUE", "fsh-btn solid");
@@ -49072,7 +49074,9 @@ if (typeof module !== "undefined" && module.exports) {
     card.appendChild(strip.el);
     card.appendChild(cols);
     card.appendChild(fshPredict("fp = 0x8000. Which address does -24(fp) name?",
-      ["0x7FE8", "0x7FE0", "0x8018"], 0, function (ok, msg) {
+      ["0x7FE8", "0x7FE0", "0x8018"], 0,
+      "0x8000 - 24 = 0x7FE8. A negative fp offset counts down from the frame pointer.",
+      function (ok, msg) {
         fshLog("t2 predict: " + msg, ok ? "ok" : "dim");
       }));
     var run = fshBtn("RUN BODY", "fsh-btn solid");
@@ -49127,7 +49131,9 @@ if (typeof module !== "undefined" && module.exports) {
     card.appendChild(strip.el);
     card.appendChild(cols);
     card.appendChild(fshPredict("The epilogue frees the frame first and loads ra second. ra gets:",
-      ["the caller word at 0x8018", "0x1040, no harm done", "zero"], 0, function (ok, msg) {
+      ["the caller word at 0x8018", "0x1040, no harm done", "zero"], 0,
+      "Freeing first moves sp back to 0x8000, so ld ra,24(sp) reads 0x8018, a caller word, instead of the parked 0x1040. Restore before you free.",
+      function (ok, msg) {
         fshLog("t3 predict: " + msg, ok ? "ok" : "dim");
       }));
     var run = fshBtn("RUN EPILOGUE", "fsh-btn solid");
