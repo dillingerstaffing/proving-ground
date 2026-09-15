@@ -49108,7 +49108,7 @@ if (typeof module !== "undefined" && module.exports) {
       note: "main calls next(7). The call itself has no C syntax: x = 7 arrives in <b>a0</b>, the way home (0x1040) arrives in <b>ra</b>. Watch both registers; everything after this is the function keeping its promises." },
     { line: 0, title: "C: {",
       asms: FSH_PRO,
-      note: "The opening brace becomes the <b>prologue</b>: sp 0x8000 to 0x7FE0 (32 bytes claimed), ra parked at 0x7FF8, the old frame pointer parked at 0x7FF0, s0 anchored at 0x8000. Four instructions, and C never shows you any of them." },
+      note: "In this translation the opening brace becomes the <b>prologue</b>: sp 0x8000 to 0x7FE0 (32 bytes claimed), ra parked at 0x7FF8, the old frame pointer parked at 0x7FF0, s0 anchored at 0x8000. Four instructions, and C never shows you any of them." },
     { line: 1, title: "C: int y = x + 1",
       asms: [
         { asm: "addi t0, a0, 1", op: "addi", rd: "t0", rs1: "a0", imm: 1 },
@@ -49122,7 +49122,7 @@ if (typeof module !== "undefined" && module.exports) {
       note: "The return value travels home in <b>a0</b>: 8. One load. Whatever the caller kept in a0 is gone; the convention owns that register from here." },
     { line: 3, title: "C: }",
       asms: FSH_EPI,
-      note: "The closing brace becomes the <b>epilogue</b>, the prologue in reverse: ra restored to 0x1040, s0 back to 0x9000, sp back to 0x8000, ret jumps home. Compare the strip to the start: identical, except a0 now carries the answer." }
+      note: "In this translation the closing brace becomes the <b>epilogue</b>, the prologue in reverse: ra restored to 0x1040, s0 back to 0x9000, sp back to 0x8000, ret jumps home. Compare the strip to the start: identical, except a0 now carries the answer." }
   ];
   function fshCMapLabel(a, cpu) {
     if (a === 0x7FE8) {
@@ -49155,8 +49155,9 @@ if (typeof module !== "undefined" && module.exports) {
   /* __FSH_ANN_END__ */
   function fshBuildCMap(panel) {
     var card = fshTrialCard("C TO REGISTERS", "ONE TRUTH, THREE LEVELS",
-      "Every C function is three things at once: <b>C source</b> you write, <b>assembly</b> the compiler emits, and <b>registers</b> the machine moves. " +
-      "Step through one real call, <b>next(7)</b>, and watch all three stay in lockstep on the same honest machine. " +
+      "Every C function is three things at once: <b>C source</b> you write, <b>assembly</b> one honest translation emits, and <b>registers</b> the machine moves. " +
+      "Step through one real call, <b>next(7)</b>, built with a full explicit frame so every promise is visible. " +
+      "An optimizing compiler could keep y in a register and skip the frame entirely; this bench spends the extra instructions on purpose, so you can watch the machinery. " +
       "The one idea underneath it all: a register like sp is a <b>pointer</b>, it holds a memory address. <b>24(sp)</b> means take the address in sp, add 24, and read or write there. " +
       "The stack grows down, toward smaller addresses, so claiming space means subtracting from sp. Every instruction below is annotated with its address math, computed live from the machine. Free walk, no strikes.");
     var code = fshEl("div", "fsh-code", "");
@@ -49189,12 +49190,12 @@ if (typeof module !== "undefined" && module.exports) {
     var rules = fshEl("div", "fsh-rules", "");
     rules.innerHTML = "<b>THE THREE RELATIONSHIPS, EXACTLY:</b><ol>" +
       "<li><b>C parameters and return values are registers.</b> Arguments arrive in a0-a7, the return value leaves in a0. The calling convention decides; your C never names them.</li>" +
-      "<li><b>C's { and } are the prologue and epilogue.</b> Every function claims its frame before it works and tears it down in reverse. There is no function without this tax.</li>" +
+      "<li><b>C's { and } can become a prologue and epilogue.</b> The function on this bench needs a frame, so it claims one before it works and tears it down in reverse. An optimized leaf function may need no frame at all: no claim, no teardown, no tax.</li>" +
       "<li><b>A C local is either a register or a frame slot.</b> If nothing takes its address it may live its whole life in a register and never touch memory. Write &y and the compiler must park it in the frame at a fixed fp offset.</li></ol>";
     card.appendChild(rules);
-    card.appendChild(fshPredict("C's closing } becomes:",
+    card.appendChild(fshPredict("For the framed next(7) on this bench, C's closing } becomes:",
       ["the epilogue: restore ra, restore fp, free the frame, ret", "a single ret", "nothing; the compiler erases it"], 0,
-      "The closing brace must undo the prologue in reverse: restore what was parked, give the frame back, then ret. A bare ret would leave ra parked and sp still borrowed.",
+      "This translation built a frame, so the closing brace must undo the prologue in reverse: restore what was parked, give the frame back, then ret. A bare ret would leave ra parked and sp still borrowed. A leaf function with no frame would end with a bare ret, and that would be correct, because there is nothing to undo.",
       function (ok, msg) { fshLog("cmap predict: " + msg, ok ? "ok" : "dim"); }));
     var cpu = fshCpu();
     var si = 0;
@@ -49454,7 +49455,7 @@ if (typeof module !== "undefined" && module.exports) {
   /* ---------------- trial 4: the nested call (capstone) ---------------- */
   function fshBuildT4(panel) {
     var card = fshTrialCard("TRIAL 4", "THE NESTED CALL",
-      "A function that calls another must park ra, because the inner <b>jal</b> overwrites it. The <b>callee-saved</b> contract (s0 to s11, sp, ra: the callee restores what it touches) is what makes the inner call survivable. Assemble the whole lifecycle around the fixed nested call and watch the outer return address survive it.");
+      "A function that calls another must park ra, because the inner <b>jal</b> overwrites it. <b>s0 to s11 are callee-saved</b>: the callee restores what it touches. <b>ra is not</b>: it belongs to the caller, so the outer function must park its own way home before calling and restore it after. Assemble the whole lifecycle around the fixed nested call and watch the outer return address survive it.");
     var strip = fshStateStrip();
     var stack = fshStackBox(fshFrameLabel);
     var cols = fshEl("div", "fsh-cols");
