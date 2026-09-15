@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260915-pg71">
+<meta name="build-version" content="v20260915-pg72">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -512,10 +512,23 @@ div[class*="-overlay"].pg-enter > div {
 }
 body.pg-any-open #pgCloseFab { display: block; }
 #pgCloseFab:active { transform: scale(0.92); }
-/* FAB safe zone: open overlays reserve room above the fixed CLOSE
-   control, so it can never cover bench UI. */
+/* SHARE fab: rides above CLOSE whenever any bench is open. One tap copies
+   the open bench's permalink (already sitting in the address bar) to the
+   clipboard, so visitors can pass the exact bench around. */
+#pgShareFab {
+  position: fixed; right: 16px; bottom: calc(96px + env(safe-area-inset-bottom)); z-index: 10010;
+  width: 64px; height: 64px; border-radius: 4px;
+  border: 1px solid var(--ember); background: transparent; color: var(--ember);
+  font-family: var(--font-m); font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+  cursor: pointer; display: none;
+  -webkit-tap-highlight-color: transparent;
+}
+body.pg-any-open #pgShareFab { display: block; }
+#pgShareFab:active { transform: scale(0.92); }
+/* FAB safe zone: open overlays reserve room above both fixed controls,
+   so they can never cover bench UI. */
 body.pg-any-open div[class*="-overlay"].open {
-  padding-bottom: calc(92px + env(safe-area-inset-bottom));
+  padding-bottom: calc(172px + env(safe-area-inset-bottom));
 }
 
 /* Press anticipation: controls depress before the action fires. */
@@ -1079,8 +1092,22 @@ function pgPaintStates() {
   }
 }
 
+/* Permalinks: opening a bench writes its canonical link into the address
+   bar (#bench=<slug>) via replaceState (no scroll jump, no history spam),
+   so the open bench is always shareable by copying the URL. Closing the
+   last bench clears it back to the index URL. pgOpenSlug tracks the bench
+   currently driving the address bar; the SHARE fab copies it. */
+var pgOpenSlug = null;
+function pgSetHash(slug) {
+  try {
+    var base = location.pathname + location.search;
+    history.replaceState(null, "", slug ? base + "#bench=" + slug : base);
+  } catch (err) { /* non-fatal: the address bar just will not reflect state */ }
+}
 function pgLaunch(b, card) {
   pgSeenMark(b.n);
+  pgOpenSlug = pgSlug(b.name);
+  pgSetHash(pgOpenSlug);
   var r = card ? card.getBoundingClientRect() : null;
   pgLastPoint = r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 }
                   : { x: window.innerWidth / 2, y: window.innerHeight / 2 };
@@ -1091,7 +1118,10 @@ function pgLaunch(b, card) {
 
 /* Deep links: proving-ground/#bench=riscv-playground (or #bench=08)
    opens the bench directly, so the venture sites can link to the exact
-   instrument behind their promises. Waits for the deferred bundle. */
+   instrument behind their promises. Waits for the deferred bundle.
+   The launch path also normalizes the hash to the canonical slug form
+   (#bench=riscv-playground) and writes it to the address bar, which is
+   what the SHARE fab copies. */
 function pgSlug(name) {
   return name.toLowerCase().replace(/^the\s+/, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
@@ -1375,7 +1405,13 @@ function pgSlashKey() {
        sees, so releasing the inline lock here covers all of them,
        present and future. Never set the inline lock here: the class
        alone governs the locked state while a bench is open. */
-    if (!anyOpen) document.body.style.overflow = "";
+    if (!anyOpen) {
+      document.body.style.overflow = "";
+      /* Permalink cleanup: the last bench just closed, so clear the
+         #bench= hash written on launch. Only touch hashes we own. */
+      pgOpenSlug = null;
+      if ((location.hash || "").indexOf("#bench=") === 0) pgSetHash(null);
+    }
   }
   var mo = new MutationObserver(function (muts) {
     for (var k = 0; k < muts.length; k++) {
@@ -1453,6 +1489,50 @@ function pgCloseAllOverlays() {
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") pgCloseAllOverlays();
   });
+})();
+
+/* Permalink sharing: one SHARE control rides with the universal CLOSE
+   control whenever any bench is open. It copies the canonical link for
+   the currently open bench to the clipboard. Best effort: if the write
+   fails, the link is already sitting in the address bar, so the toast
+   says so instead of failing silently. */
+function pgShareFallback(url, done) {
+  try {
+    var ta = document.createElement("textarea");
+    ta.value = url;
+    ta.style.cssText = "position:fixed;opacity:0;top:0;left:0;";
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    done(!!ok);
+  } catch (e) { done(false); }
+}
+function pgShareCopy(url) {
+  function done(ok) {
+    toast(ok ? "Link copied to clipboard."
+             : "Could not copy automatically; the link is in the address bar.");
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(function () { done(true); }, function () {
+      pgShareFallback(url, done);
+    });
+  } else {
+    pgShareFallback(url, done);
+  }
+}
+(function pgShareFab() {
+  var fab = document.createElement("button");
+  fab.id = "pgShareFab";
+  fab.type = "button";
+  fab.textContent = "SHARE";
+  fab.setAttribute("aria-label", "Copy a link to this bench");
+  fab.addEventListener("click", function () {
+    if (!pgOpenSlug) { toast("Open a bench first, then share its link."); return; }
+    pgShareCopy(location.origin + location.pathname + "#bench=" + pgOpenSlug);
+  });
+  document.body.appendChild(fab);
 })();
 
 function pgBoot() {
