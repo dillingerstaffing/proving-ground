@@ -49035,7 +49035,7 @@ if (typeof module !== "undefined" && module.exports) {
   /* ---------------- trial 2: body ---------------- */
   function fshBuildT2(panel) {
     var card = fshTrialCard("TRIAL 2", "LIVE IN THE FRAME",
-      "The <b>body</b> is where the function works. Its locals live at fixed negative offsets from the frame pointer, so their addresses never move even when sp does, and each slot has exactly one owner. <b>t0</b> is one of RISC-V's temporary registers, scratch space for a value being computed. When the function has more live values than registers to hold them, it <b>spills</b>: it parks a register's value in a frame slot for a while and loads it back later. Two live values in one slot, and the second store murders the first. One of the three slots below is a <b>trap</b>: it already holds the parked frame pointer, so storing your local there overwrites it and the epilogue will restore garbage into s0. (The prologue already ran correctly below: fp is 0x8000, ra sleeps at 0x7FF8.)");
+      "The <b>body</b> is where the function works. Its locals live at fixed negative offsets from the frame pointer, so their addresses never move even when sp does, and each slot has exactly one owner. <b>t0</b> is one of RISC-V's temporary registers, scratch space for a value being computed. When the function has more live values than registers to hold them, it <b>spills</b>: it parks a register's value in a frame slot for a while and loads it back later. Two live values in one slot, and the second store murders the first. One of the three slots below is already <b>occupied</b>: it holds the parked frame pointer, so storing your local there overwrites it and the epilogue will restore garbage into s0. (The prologue already ran correctly below: fp is 0x8000, ra sleeps at 0x7FF8.)");
     var strip = fshStateStrip();
     var homes = { aC: null, aT: null };
     function label2(a, cpu) {
@@ -49048,7 +49048,7 @@ if (typeof module !== "undefined" && module.exports) {
     var cols = fshEl("div", "fsh-cols");
     cols.appendChild(stack.el);
     var right = fshEl("div", "");
-    right.appendChild(fshEl("p", "fsh-why", "Give each local a home. One slot is a trap: it already holds the parked frame pointer."));
+    right.appendChild(fshEl("p", "fsh-why", "Give each local a home. One slot is already occupied: it holds the parked frame pointer."));
     var pick = { c: null, t0: null };
     var segBtns = { c: [], t0: [] };
     function slotSeg(who, label) {
@@ -49102,7 +49102,7 @@ if (typeof module !== "undefined" && module.exports) {
       strip.set(cpu); stack.render(cpu);
       var bad = [];
       if (pick.c === pick.t0) bad.push("both locals share " + fshHex(homes.aC) + ": the second store murdered the first. The free slots are -24(fp) and -32(fp); give each local its own.");
-      if (homes.aC === 0x7FF0 || homes.aT === 0x7FF0) bad.push("you stored over the parked frame pointer at 0x7FF0: the teardown will restore garbage. -16(fp) is the trap; the free slots are -24(fp) and -32(fp).");
+      if (homes.aC === 0x7FF0 || homes.aT === 0x7FF0) bad.push("you stored over the parked frame pointer at 0x7FF0: the teardown will restore garbage. -16(fp) is occupied; the free slots are -24(fp) and -32(fp).");
       if (homes.aC === 0x7FF8 || homes.aT === 0x7FF8) bad.push("you stored over the parked return address at 0x7FF8.");
       if (!bad.length && (vC !== 14 || vT !== 0x5EED)) bad.push("load-back mismatch: the slots collided.");
       if (!bad.length) {
