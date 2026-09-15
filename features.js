@@ -48410,3 +48410,868 @@ if (typeof module !== "undefined" && module.exports) {
     tmBuild();
   }
 })();
+/* ============================================================================
+ * BENCH 67: THE FRAME SHOP (riscv)
+ * Function prologue, body, and epilogue from first principles on a real tiny
+ * RISC-V machine: claim the frame, park ra and the frame pointer, live in
+ * fp-relative slots, tear the frame down in reverse, and survive a nested
+ * call. The player assembles real instruction sequences; the machine runs
+ * them honestly and checks every word. Pure client-side, no network.
+ * ========================================================================== */
+(function () {
+  "use strict";
+
+  /* ---------------- the honest machine: a tiny RISC-V ---------------- */
+  function fshHex(v) {
+    return "0x" + (v >>> 0).toString(16).toUpperCase().padStart(8, "0");
+  }
+  function fshCpu() {
+    return {
+      r: { sp: 0x8000, s0: 0x9000, ra: 0x1040, a0: 7, t0: 0x5EED },
+      m: { 0x8000: 0xCA11, 0x8008: 0xCA11, 0x8018: 0xCA11, 0x7FF8: 0xDEAD, 0x7FF0: 0xDEAD },
+      minWrite: 0x100000, retTarget: null, stopped: false
+    };
+  }
+  function fshStore(c, a, v) {
+    a = a >>> 0; c.m[a] = v >>> 0;
+    if (a < c.minWrite) c.minWrite = a;
+  }
+  function fshLoad(c, a) { a = a >>> 0; return c.m[a] === undefined ? 0 : c.m[a]; }
+  function fshStep(c, ins) {
+    if (c.stopped) return;
+    var R = c.r;
+    if (ins.op === "addi") R[ins.rd] = ((R[ins.rs1] + ins.imm) >>> 0);
+    else if (ins.op === "sd") fshStore(c, (R[ins.rs1] + ins.imm) >>> 0, R[ins.rs2]);
+    else if (ins.op === "ld") R[ins.rd] = fshLoad(c, (R[ins.rs1] + ins.imm) >>> 0);
+    else if (ins.op === "ret") { c.retTarget = R.ra; c.stopped = true; }
+    /* jal ra, inner at 0x101C: ra becomes 0x1020, inner bumps a0 and rets. */
+    else if (ins.op === "callinner") { R.ra = 0x1020; R.a0 = ((R.a0 + 1) >>> 0); }
+  }
+  function fshRunSeq(seq) {
+    var c = fshCpu();
+    for (var i = 0; i < seq.length; i++) fshStep(c, seq[i]);
+    return c;
+  }
+
+  /* ---------------- instruction chips ---------------- */
+  var FSH_PRO = [
+    { id: "p_alloc", asm: "addi sp, sp, -32", op: "addi", rd: "sp", rs1: "sp", imm: -32, tag: "claim 32 bytes" },
+    { id: "p_ra", asm: "sd ra, 24(sp)", op: "sd", rs2: "ra", rs1: "sp", imm: 24, tag: "park the return address" },
+    { id: "p_s0", asm: "sd s0, 16(sp)", op: "sd", rs2: "s0", rs1: "sp", imm: 16, tag: "park the old frame pointer" },
+    { id: "p_fp", asm: "addi s0, sp, 32", op: "addi", rd: "s0", rs1: "sp", imm: 32, tag: "anchor the frame pointer" }
+  ];
+  var FSH_EPI = [
+    { id: "e_ra", asm: "ld ra, 24(sp)", op: "ld", rd: "ra", rs1: "sp", imm: 24, tag: "restore the return address" },
+    { id: "e_s0", asm: "ld s0, 16(sp)", op: "ld", rd: "s0", rs1: "sp", imm: 16, tag: "restore the frame pointer" },
+    { id: "e_free", asm: "addi sp, sp, 32", op: "addi", rd: "sp", rs1: "sp", imm: 32, tag: "give the 32 bytes back" },
+    { id: "e_ret", asm: "ret", op: "ret", tag: "jump home" }
+  ];
+  var FSH_CALL = { id: "cap_call", asm: "call inner", op: "callinner", tag: "the nested call (fixed)" };
+  /* deterministic scrambles, so every player meets the same puzzle */
+  var FSH_PRO_S = [FSH_PRO[2], FSH_PRO[0], FSH_PRO[3], FSH_PRO[1]];
+  var FSH_EPI_S = [FSH_EPI[2], FSH_EPI[0], FSH_EPI[3], FSH_EPI[1]];
+  var FSH_CAP_S = [FSH_EPI[2], FSH_PRO[1], FSH_EPI[0], FSH_PRO[3], FSH_EPI[3], FSH_PRO[0], FSH_EPI[1], FSH_PRO[2]];
+
+  /* ---------------- verdicts, read from machine state ---------------- */
+  function fshCheckPro(c) {
+    var bad = [];
+    if (fshLoad(c, 0x8018) !== 0xCA11 || fshLoad(c, 0x8000) !== 0xCA11 || fshLoad(c, 0x8008) !== 0xCA11)
+      bad.push("a caller word got clobbered: you stored before you allocated.");
+    if (c.r.sp !== 0x7FE0) bad.push("sp is " + fshHex(c.r.sp) + ", not 0x7FE0: the frame is not 32 bytes.");
+    if (fshLoad(c, 0x7FF8) !== 0x1040) bad.push("ra was not parked at 0x7FF8.");
+    if (fshLoad(c, 0x7FF0) !== 0x9000) bad.push("the old frame pointer was not parked at 0x7FF0.");
+    if (c.r.s0 !== 0x8000) bad.push("the frame pointer is not anchored at 0x8000.");
+    if (c.minWrite < 0x7FE0) bad.push("you wrote below the frame, into unclaimed stack.");
+    return bad;
+  }
+  function fshCheckEpi(c) {
+    var bad = [];
+    if (c.retTarget === null) bad.push("ret never ran: the teardown is unfinished.");
+    else if (c.retTarget !== 0x1040) bad.push("ret landed at " + fshHex(c.retTarget) + ", not 0x1040.");
+    if (c.r.ra !== 0x1040) bad.push("ra holds " + fshHex(c.r.ra) + ": the restore read the wrong word.");
+    if (c.r.s0 !== 0x9000) bad.push("s0 was not restored to the caller frame pointer.");
+    if (c.r.sp !== 0x8000) bad.push("sp is " + fshHex(c.r.sp) + ", not 0x8000: the 32 bytes were not returned.");
+    if (fshLoad(c, 0x8018) !== 0xCA11) bad.push("a caller word got clobbered on the way out.");
+    return bad;
+  }
+  function fshCheckCap(c) {
+    var bad = fshCheckEpi(c);
+    if (c.r.a0 !== 8) bad.push("inner never ran: a0 is " + c.r.a0 + ", not 8.");
+    return bad;
+  }
+
+  /* ---------------- dom helpers ---------------- */
+  function fshEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== "") e.textContent = text;
+    return e;
+  }
+  function fshBtn(label, cls) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = cls || "fsh-btn";
+    b.textContent = label;
+    return b;
+  }
+
+  var FSH_CSS = [
+    ".fsh-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.92);display:none;overflow-y:auto;}",
+    ".fsh-overlay.open{display:block;}",
+    ".fsh-panel{max-width:860px;margin:0 auto;padding:28px 18px 60px;color:var(--paper);}",
+    ".fsh-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);}",
+    ".fsh-title{font-family:'Space Grotesk',sans-serif;font-size:34px;margin:6px 0 10px;color:#f2f0eb;}",
+    ".fsh-sub{font-size:14px;line-height:1.65;color:#b9b6ae;max-width:64ch;margin:0 0 18px;}",
+    ".fsh-sub b{color:#f2f0eb;}",
+    ".fsh-card{border:1px solid var(--line);background:var(--panel);padding:18px;margin:0 0 16px;}",
+    ".fsh-card h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:#f2f0eb;margin:0 0 8px;}",
+    ".fsh-why{font-size:13px;line-height:1.6;color:#b9b6ae;margin:0 0 14px;max-width:70ch;}",
+    ".fsh-why b{color:#f2f0eb;}",
+    ".fsh-state{display:flex;flex-wrap:wrap;gap:8px 18px;font-family:'IBM Plex Mono',monospace;font-size:13px;margin:0 0 12px;}",
+    ".fsh-state .k{color:#8a877e;letter-spacing:.1em;font-size:11px;}",
+    ".fsh-state .v{color:#ff5a1f;}",
+    ".fsh-cols{display:grid;grid-template-columns:1fr 1fr;gap:14px;}",
+    "@media (max-width:640px){.fsh-cols{grid-template-columns:1fr;}}",
+    ".fsh-stack{font-family:'IBM Plex Mono',monospace;font-size:12px;border:1px solid var(--line);}",
+    ".fsh-row{display:grid;grid-template-columns:88px 88px 1fr;gap:8px;padding:7px 10px;border-bottom:1px solid var(--line);align-items:center;}",
+    ".fsh-row:last-child{border-bottom:none;}",
+    ".fsh-row .fsh-addr{color:#8a877e;}",
+    ".fsh-row .fsh-val{color:#f2f0eb;}",
+    ".fsh-row .fsh-lab{color:#8a877e;font-size:11px;}",
+    ".fsh-row.at-sp{background:rgba(255,90,31,.10);}",
+    ".fsh-row.at-sp .fsh-lab{color:#ff5a1f;}",
+    ".fsh-row.clob .fsh-val{color:#ff3b30;}",
+    ".fsh-row.clob .fsh-lab{color:#ff3b30;}",
+    ".fsh-chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 10px;}",
+    ".fsh-chip{font-family:'IBM Plex Mono',monospace;font-size:13px;min-height:48px;padding:10px 14px;background:#141416;color:#f2f0eb;border:1px solid var(--line);cursor:pointer;text-align:left;}",
+    ".fsh-chip small{display:block;font-size:11px;color:#8a877e;font-family:'Space Grotesk',sans-serif;}",
+    ".fsh-chip:disabled{opacity:.35;cursor:default;}",
+    ".fsh-chip:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".fsh-seq{border:1px dashed var(--line);min-height:52px;padding:8px;margin:0 0 10px;font-family:'IBM Plex Mono',monospace;font-size:13px;}",
+    ".fsh-seq .fsh-step{display:inline-block;background:#1d1d20;border:1px solid var(--line);padding:8px 10px;margin:4px;}",
+    ".fsh-seq .fsh-step.locked{border-color:#ff5a1f;color:#ff5a1f;}",
+    ".fsh-seq .fsh-empty{color:#8a877e;font-size:12px;padding:8px;}",
+    ".fsh-traybtns{display:flex;gap:8px;margin:0 0 10px;flex-wrap:wrap;}",
+    ".fsh-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:#f2f0eb;border:1px solid var(--line);cursor:pointer;}",
+    ".fsh-btn.solid{background:#ff5a1f;border-color:#ff5a1f;color:#0a0a0c;font-weight:700;}",
+    ".fsh-btn:disabled{opacity:.4;cursor:default;}",
+    ".fsh-btn:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".fsh-result{font-family:'IBM Plex Mono',monospace;font-size:13px;line-height:1.6;min-height:22px;margin:10px 0 0;}",
+    ".fsh-result.ok{color:#7dd87d;}",
+    ".fsh-result.no{color:#ff3b30;}",
+    ".fsh-predict{border-top:1px solid var(--line);margin-top:14px;padding-top:12px;}",
+    ".fsh-predict p{font-size:13px;color:#b9b6ae;margin:0 0 8px;}",
+    ".fsh-predict .fsh-pq{color:#f2f0eb;}",
+    ".fsh-pick{font-family:'IBM Plex Mono',monospace;font-size:13px;min-height:48px;padding:10px 14px;margin:0 8px 8px 0;background:#141416;color:#f2f0eb;border:1px solid var(--line);cursor:pointer;}",
+    ".fsh-pick.right{border-color:#7dd87d;color:#7dd87d;}",
+    ".fsh-pick.wrong{border-color:#ff3b30;color:#ff3b30;opacity:.7;}",
+    ".fsh-pick:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px;}",
+    ".fsh-strikes{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.12em;color:#8a877e;margin:0 0 14px;}",
+    ".fsh-banner{display:none;border:1px solid #7dd87d;padding:18px;margin:0 0 16px;}",
+    ".fsh-banner.show{display:block;}",
+    ".fsh-banner h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:#7dd87d;margin:0 0 8px;}",
+    ".fsh-cert{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:#b9b6ae;white-space:pre-wrap;margin:0 0 12px;}",
+    ".fsh-log{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:#8a877e;max-height:180px;overflow-y:auto;}",
+    ".fsh-log .lt-ok{color:#7dd87d;}",
+    ".fsh-log .lt-bad{color:#ff3b30;}",
+    ".fsh-log .lt-dim{color:#5a5852;}",
+    ".fsh-seg{display:flex;gap:0;margin:0 0 10px;}",
+    ".fsh-seg button{font-family:'IBM Plex Mono',monospace;font-size:12px;min-height:48px;padding:10px 16px;background:#141416;color:#8a877e;border:1px solid var(--line);cursor:pointer;}",
+    ".fsh-seg button.on{background:#ff5a1f;border-color:#ff5a1f;color:#0a0a0c;font-weight:700;}",
+    ".fsh-slotrow{display:flex;align-items:center;gap:8px;margin:0 0 8px;flex-wrap:wrap;}",
+    ".fsh-slotrow .fsh-who{font-size:13px;color:#f2f0eb;min-width:120px;}",
+    ".fsh-pop{animation:fshpop .2s ease-out;}",
+    "@keyframes fshpop{0%{transform:scale(.96);}100%{transform:scale(1);}}",
+    "@media (prefers-reduced-motion:reduce){.fsh-pop{animation:none;}}"
+  ].join("\n");
+
+  /* ---------------- shared widgets ---------------- */
+  var fshSt = null;
+  var fshEls = {};
+  var fshEscBound = false;
+
+  function fshLog(msg, cls) {
+    if (!fshEls.log) return;
+    var line = fshEl("div", cls ? "lt-" + cls : "", "[" + new Date().toLocaleTimeString() + "] " + msg);
+    fshEls.log.appendChild(line);
+    fshEls.log.scrollTop = fshEls.log.scrollHeight;
+  }
+  function fshStrikes() {
+    if (fshEls.strikes) fshEls.strikes.textContent = "STRIKES: " + fshSt.strikes + "/3";
+  }
+  function fshStrike(why) {
+    fshSt.strikes++;
+    fshStrikes();
+    fshLog("STRIKE " + fshSt.strikes + "/3: " + why, "bad");
+    if (fshSt.strikes >= 3) {
+      fshSt.failed = true;
+      if (fshEls.failCard) fshEls.failCard.style.display = "";
+      fshLog("ROOM FAILED. The machine does not negotiate. Reset and run it again.", "bad");
+    }
+  }
+
+  function fshStateStrip() {
+    var box = fshEl("div", "fsh-state");
+    var cells = {};
+    ["sp", "fp", "ra", "a0"].forEach(function (k) {
+      var wrap = fshEl("span", "");
+      wrap.appendChild(fshEl("span", "k", k.toUpperCase() + " "));
+      var v = fshEl("span", "v", "0x00000000");
+      wrap.appendChild(v);
+      box.appendChild(wrap);
+      cells[k] = v;
+    });
+    return {
+      el: box,
+      set: function (cpu) {
+        cells.sp.textContent = fshHex(cpu.r.sp);
+        cells.fp.textContent = fshHex(cpu.r.s0);
+        cells.ra.textContent = fshHex(cpu.r.ra);
+        cells.a0.textContent = fshHex(cpu.r.a0);
+      }
+    };
+  }
+
+  var FSH_ROWS = [0x8018, 0x8010, 0x8008, 0x8000, 0x7FF8, 0x7FF0, 0x7FE8, 0x7FE0];
+  function fshStackBox(labelFn) {
+    var box = fshEl("div", "fsh-stack");
+    box.setAttribute("role", "img");
+    box.setAttribute("aria-label", "Stack diagram, addresses high to low");
+    function render(cpu) {
+      box.innerHTML = "";
+      FSH_ROWS.forEach(function (a) {
+        var lab = labelFn(a, cpu);
+        var row = fshEl("div", "fsh-row" + (lab.clob ? " clob" : "") + (a === (cpu.r.sp >>> 0) ? " at-sp" : ""));
+        row.appendChild(fshEl("span", "fsh-addr", fshHex(a)));
+        row.appendChild(fshEl("span", "fsh-val", fshHex(fshLoad(cpu, a))));
+        var note = lab.text + (a === (cpu.r.sp >>> 0) ? "  <sp" : "") + (a === (cpu.r.s0 >>> 0) ? "  <fp" : "");
+        row.appendChild(fshEl("span", "fsh-lab", note));
+        box.appendChild(row);
+      });
+      box.classList.remove("fsh-pop");
+      void box.offsetWidth;
+      box.classList.add("fsh-pop");
+    }
+    return { el: box, render: render };
+  }
+  /* labels for a plain frame: caller words, parked regs, free slots */
+  function fshFrameLabel(a, cpu) {
+    var v = fshLoad(cpu, a);
+    if (a >= 0x8000) return v === 0xCA11 ? { text: "caller word" } : { text: "CLOBBERED caller word", clob: true };
+    if (a === 0x7FF8) return v === 0x1040 ? { text: "ra parked" } : (v === 0xDEAD ? { text: "stale" } : { text: "wrong value", clob: true });
+    if (a === 0x7FF0) return v === 0x9000 ? { text: "old fp parked" } : (v === 0xDEAD ? { text: "stale" } : { text: "wrong value", clob: true });
+    return { text: "free slot" };
+  }
+
+  /* chip tray: click chips in order, UNDO / CLEAR, RUN reads seq() */
+  function fshTray(pool, seqLabel) {
+    var seq = [];
+    var used = {};
+    var wrap = fshEl("div", "");
+    var chipsEl = fshEl("div", "fsh-chips");
+    var seqEl = fshEl("div", "fsh-seq");
+    function paintChips() {
+      chipsEl.innerHTML = "";
+      pool.forEach(function (ch) {
+        var b = fshBtn("", "fsh-chip");
+        b.innerHTML = "";
+        b.appendChild(fshEl("span", "", ch.asm));
+        b.appendChild(fshEl("small", "", ch.tag));
+        b.disabled = !!used[ch.id];
+        b.setAttribute("aria-label", "Add instruction " + ch.asm + ", " + ch.tag);
+        b.addEventListener("click", function () {
+          if (used[ch.id]) return;
+          used[ch.id] = true;
+          seq.push(ch);
+          paint();
+        });
+        chipsEl.appendChild(b);
+      });
+    }
+    function paintSeq() {
+      seqEl.innerHTML = "";
+      if (!seq.length) seqEl.appendChild(fshEl("span", "fsh-empty", seqLabel));
+      seq.forEach(function (ch, i) {
+        var s = fshEl("span", "fsh-step" + (ch.id === "cap_call" ? " locked" : ""), (i + 1) + ". " + ch.asm);
+        seqEl.appendChild(s);
+      });
+    }
+    function paint() { paintChips(); paintSeq(); }
+    var btns = fshEl("div", "fsh-traybtns");
+    var undo = fshBtn("UNDO", "");
+    undo.addEventListener("click", function () {
+      var ch = seq.pop();
+      if (ch && !ch.locked) delete used[ch.id];
+      else if (ch) seq.push(ch);
+      paint();
+    });
+    var clear = fshBtn("CLEAR", "");
+    clear.addEventListener("click", function () {
+      seq = seq.filter(function (ch) { return ch.locked; });
+      used = {};
+      seq.forEach(function (ch) { used[ch.id] = true; });
+      paint();
+    });
+    btns.appendChild(undo);
+    btns.appendChild(clear);
+    wrap.appendChild(chipsEl);
+    wrap.appendChild(seqEl);
+    wrap.appendChild(btns);
+    paint();
+    return {
+      el: wrap, paint: paint,
+      seq: function () { return seq.slice(); },
+      setSeq: function (arr) {
+        seq = []; used = {};
+        arr.forEach(function (ch) { seq.push(ch); used[ch.id] = true; });
+        paint();
+      }
+    };
+  }
+
+  /* predict-then-verify: free call, no strikes */
+  function fshPredict(q, choices, correct, onVerdict) {
+    var box = fshEl("div", "fsh-predict");
+    box.appendChild(fshEl("p", "", "PREDICT FIRST (free call, no strike): "));
+    box.querySelector("p").appendChild(fshEl("span", "fsh-pq", q));
+    var row = fshEl("div", "");
+    box.appendChild(row);
+    var done = false;
+    choices.forEach(function (txt, i) {
+      var b = fshBtn(txt, "fsh-pick");
+      b.addEventListener("click", function () {
+        if (done) return;
+        done = true;
+        if (i === correct) {
+          b.classList.add("right");
+          onVerdict(true, "called it: " + txt);
+        } else {
+          b.classList.add("wrong");
+          row.children[correct].classList.add("right");
+          onVerdict(false, "the machine says " + choices[correct]);
+        }
+      });
+      row.appendChild(b);
+    });
+    return box;
+  }
+
+  function fshTrialCard(num, title, whyHtml) {
+    var card = fshEl("div", "fsh-card");
+    card.appendChild(fshEl("h3", "", num + ": " + title));
+    var why = fshEl("p", "fsh-why", "");
+    why.innerHTML = whyHtml;
+    card.appendChild(why);
+    return card;
+  }
+  function fshResultLine() {
+    return fshEl("p", "fsh-result", "");
+  }
+  function fshSay(resEl, ok, msg) {
+    resEl.className = "fsh-result " + (ok ? "ok" : "no");
+    resEl.textContent = (ok ? "PASS: " : "FAIL: ") + msg;
+  }
+
+  /* ---------------- do-first: watch one honest call ---------------- */
+  function fshBuildDoFirst(panel) {
+    var card = fshTrialCard("DO FIRST", "WATCH ONE HONEST CALL",
+      "No input needed. One correct call runs on the machine: the <b>prologue</b> (setup) claims 32 bytes and parks ra and the frame pointer, the <b>body</b> spills a register into the frame, the <b>epilogue</b> (teardown) restores everything in reverse. Watch sp dip and come back.");
+    var strip = fshStateStrip();
+    var stack = fshStackBox(fshFrameLabel);
+    var cols = fshEl("div", "fsh-cols");
+    cols.appendChild(stack.el);
+    var side = fshEl("div", "");
+    side.appendChild(fshEl("p", "fsh-why",
+      "main calls sum at 0x1000. ra holds 0x1040, the way home. s0 holds the caller frame pointer 0x9000. The machine starts exactly as a real call site leaves it: sp 0x8000, caller words marked."));
+    var asm = fshEl("div", "fsh-seq");
+    side.appendChild(asm);
+    cols.appendChild(side);
+    card.appendChild(strip.el);
+    card.appendChild(cols);
+    var run = fshBtn("WATCH THE CALL", "fsh-btn solid");
+    var res = fshResultLine();
+    card.appendChild(run);
+    card.appendChild(res);
+    var seq = FSH_PRO.concat([
+      { id: "d_spill", asm: "sd t0, -24(s0)", op: "sd", rs2: "t0", rs1: "s0", imm: -24, tag: "spill t0 into the frame" },
+      { id: "d_rel", asm: "ld t0, -24(s0)", op: "ld", rd: "t0", rs1: "s0", imm: -24, tag: "reload it" }
+    ], FSH_EPI);
+    var cpu0 = fshCpu();
+    strip.set(cpu0); stack.render(cpu0);
+    run.addEventListener("click", function () {
+      run.disabled = true;
+      res.className = "fsh-result";
+      res.textContent = "";
+      asm.innerHTML = "";
+      var cpu = fshCpu();
+      var mq = (typeof window.matchMedia === "function") ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+      var reduced = mq ? mq.matches : true;
+      function show(i) {
+        var s = fshEl("span", "fsh-step", (i + 1) + ". " + seq[i].asm);
+        asm.appendChild(s);
+        fshStep(cpu, seq[i]);
+        strip.set(cpu); stack.render(cpu);
+      }
+      if (reduced) {
+        for (var i = 0; i < seq.length; i++) show(i);
+        fshSay(res, true, "sp back at 0x8000, ra restored, ret landed at 0x1040. The borrow was returned exactly.");
+        fshLog("do-first watched: full lifecycle clean.", "ok");
+        run.disabled = false;
+        return;
+      }
+      var i = 0;
+      (function tick() {
+        if (i >= seq.length) {
+          fshSay(res, true, "sp back at 0x8000, ra restored, ret landed at 0x1040. The borrow was returned exactly.");
+          fshLog("do-first watched: full lifecycle clean.", "ok");
+          run.disabled = false;
+          return;
+        }
+        show(i); i++;
+        setTimeout(tick, 450);
+      })();
+    });
+    panel.appendChild(card);
+  }
+
+  /* ---------------- trial 1: prologue ---------------- */
+  function fshBuildT1(panel) {
+    var card = fshTrialCard("TRIAL 1", "BUILD THE FRAME",
+      "The <b>prologue</b> is the setup code that builds the frame, and it runs before anything else because every store needs an address that is already yours. <b>Claim the 32 bytes first, then write.</b> The unforgivable order is storing before you allocate: the words at and above sp still belong to your caller, and the machine will let you overwrite them without a word.");
+    var strip = fshStateStrip();
+    var stack = fshStackBox(fshFrameLabel);
+    var cols = fshEl("div", "fsh-cols");
+    cols.appendChild(stack.el);
+    var right = fshEl("div", "");
+    var tray = fshTray(FSH_PRO_S, "click the chips in prologue order");
+    right.appendChild(tray.el);
+    cols.appendChild(right);
+    card.appendChild(strip.el);
+    card.appendChild(cols);
+    card.appendChild(fshPredict("A correct prologue claims 32 bytes. sp starts at 0x8000. Afterward sp is:",
+      ["0x7FE0", "0x7FE8", "0x8020"], 0, function (ok, msg) {
+        fshLog("t1 predict: " + msg, ok ? "ok" : "dim");
+      }));
+    var run = fshBtn("RUN PROLOGUE", "fsh-btn solid");
+    var res = fshResultLine();
+    card.appendChild(run);
+    card.appendChild(res);
+    var cpu0 = fshCpu();
+    strip.set(cpu0); stack.render(cpu0);
+    run.addEventListener("click", function () {
+      if (fshSt.failed || fshSt.t1.pass) return;
+      var seq = tray.seq();
+      if (seq.length !== 4) { fshSay(res, false, "the prologue needs all four instructions."); return; }
+      var cpu = fshRunSeq(seq);
+      strip.set(cpu); stack.render(cpu);
+      var bad = fshCheckPro(cpu);
+      if (!bad.length) {
+        fshSt.t1.pass = true;
+        fshSay(res, true, "frame built: sp 0x7FE0, ra parked at 0x7FF8, fp anchored, caller untouched.");
+        fshLog("t1 PASS: prologue clean.", "ok");
+        fshCheckCert();
+      } else {
+        fshSay(res, false, bad[0]);
+        fshLog("t1 run: " + bad.join(" "), "bad");
+        fshStrike("t1 prologue: " + bad[0]);
+      }
+    });
+    panel.appendChild(card);
+  }
+
+  /* ---------------- trial 2: body ---------------- */
+  function fshBuildT2(panel) {
+    var card = fshTrialCard("TRIAL 2", "LIVE IN THE FRAME",
+      "The <b>body</b> is where the function works, and its locals live at fixed negative offsets from the frame pointer, so their addresses never move even when sp does. Each slot has exactly one owner. A <b>spill</b> is a register value parked in the frame when the allocator runs out of registers. Two live values in one slot, and the second store murders the first. (The prologue already ran correctly below: fp is 0x8000, ra sleeps at 0x7FF8.)");
+    var strip = fshStateStrip();
+    var homes = { aC: null, aT: null };
+    function label2(a, cpu) {
+      if (a === homes.aC && a === homes.aT) return { text: "CLOBBER: c and t0 share it", clob: true };
+      if (a === homes.aC) return { text: "local c = 14" };
+      if (a === homes.aT) return { text: "spilled t0" };
+      return fshFrameLabel(a, cpu);
+    }
+    var stack = fshStackBox(label2);
+    var cols = fshEl("div", "fsh-cols");
+    cols.appendChild(stack.el);
+    var right = fshEl("div", "");
+    right.appendChild(fshEl("p", "fsh-why", "Give each local a home. One slot is a trap: it already holds the parked frame pointer."));
+    var pick = { c: null, t0: null };
+    var segBtns = { c: [], t0: [] };
+    function slotSeg(who, label) {
+      var row = fshEl("div", "fsh-slotrow");
+      row.appendChild(fshEl("span", "fsh-who", label));
+      var seg = fshEl("div", "fsh-seg");
+      [-16, -24, -32].forEach(function (off) {
+        var b = document.createElement("button");
+        b.type = "button";
+        b.textContent = off + "(fp)";
+        b.setAttribute("aria-label", label + " at offset " + off + " from fp, address " + fshHex(0x8000 + off));
+        b.addEventListener("click", function () {
+          pick[who] = off;
+          segBtns[who].forEach(function (x) { x.classList.remove("on"); });
+          b.classList.add("on");
+        });
+        seg.appendChild(b);
+        segBtns[who].push(b);
+      });
+      row.appendChild(seg);
+      return row;
+    }
+    right.appendChild(slotSeg("c", "local c (int = 14)"));
+    right.appendChild(slotSeg("t0", "spilled t0"));
+    cols.appendChild(right);
+    card.appendChild(strip.el);
+    card.appendChild(cols);
+    card.appendChild(fshPredict("fp = 0x8000. Which address does -24(fp) name?",
+      ["0x7FE8", "0x7FE0", "0x8018"], 0, function (ok, msg) {
+        fshLog("t2 predict: " + msg, ok ? "ok" : "dim");
+      }));
+    var run = fshBtn("RUN BODY", "fsh-btn solid");
+    var res = fshResultLine();
+    card.appendChild(run);
+    card.appendChild(res);
+    var cpu0 = fshCpu();
+    FSH_PRO.forEach(function (ins) { fshStep(cpu0, ins); });
+    strip.set(cpu0); stack.render(cpu0);
+    run.addEventListener("click", function () {
+      if (fshSt.failed || fshSt.t2.pass) return;
+      if (pick.c === null || pick.t0 === null) { fshSay(res, false, "give both locals a home first."); return; }
+      var cpu = fshCpu();
+      FSH_PRO.forEach(function (ins) { fshStep(cpu, ins); });
+      homes.aC = (0x8000 + pick.c) >>> 0;
+      homes.aT = (0x8000 + pick.t0) >>> 0;
+      fshStore(cpu, homes.aC, 14);
+      fshStore(cpu, homes.aT, 0x5EED);
+      var vC = fshLoad(cpu, homes.aC), vT = fshLoad(cpu, homes.aT);
+      strip.set(cpu); stack.render(cpu);
+      var bad = [];
+      if (pick.c === pick.t0) bad.push("both locals share " + fshHex(homes.aC) + ": the second store murdered the first.");
+      if (homes.aC === 0x7FF0 || homes.aT === 0x7FF0) bad.push("you stored over the parked frame pointer at 0x7FF0: the teardown will restore garbage.");
+      if (homes.aC === 0x7FF8 || homes.aT === 0x7FF8) bad.push("you stored over the parked return address at 0x7FF8.");
+      if (!bad.length && (vC !== 14 || vT !== 0x5EED)) bad.push("load-back mismatch: the slots collided.");
+      if (!bad.length) {
+        fshSt.t2.pass = true;
+        fshSay(res, true, "c lives at " + fshHex(homes.aC) + ", spilled t0 at " + fshHex(homes.aT) + ": one owner per slot, both load back clean.");
+        fshLog("t2 PASS: body clean.", "ok");
+        fshCheckCert();
+      } else {
+        fshSay(res, false, bad[0]);
+        fshLog("t2 run: " + bad.join(" "), "bad");
+        fshStrike("t2 body: " + bad[0]);
+      }
+    });
+    panel.appendChild(card);
+  }
+
+  /* ---------------- trial 3: epilogue ---------------- */
+  function fshBuildT3(panel) {
+    var card = fshTrialCard("TRIAL 3", "TEAR IT DOWN",
+      "The <b>epilogue</b> is the prologue in reverse: <b>restore before you deallocate.</b> Load ra after you give the space back and you read your caller's word instead; ret then jumps to garbage and the crash lands far from the bug. (The frame below is already built: ra sleeps at 0x7FF8, fp is 0x8000.)");
+    var strip = fshStateStrip();
+    var stack = fshStackBox(fshFrameLabel);
+    var cols = fshEl("div", "fsh-cols");
+    cols.appendChild(stack.el);
+    var right = fshEl("div", "");
+    var tray = fshTray(FSH_EPI_S, "click the chips in epilogue order");
+    right.appendChild(tray.el);
+    cols.appendChild(right);
+    card.appendChild(strip.el);
+    card.appendChild(cols);
+    card.appendChild(fshPredict("The epilogue frees the frame first and loads ra second. ra gets:",
+      ["the caller word at 0x8018", "0x1040, no harm done", "zero"], 0, function (ok, msg) {
+        fshLog("t3 predict: " + msg, ok ? "ok" : "dim");
+      }));
+    var run = fshBtn("RUN EPILOGUE", "fsh-btn solid");
+    var res = fshResultLine();
+    card.appendChild(run);
+    card.appendChild(res);
+    var cpu0 = fshCpu();
+    FSH_PRO.forEach(function (ins) { fshStep(cpu0, ins); });
+    strip.set(cpu0); stack.render(cpu0);
+    run.addEventListener("click", function () {
+      if (fshSt.failed || fshSt.t3.pass) return;
+      var seq = tray.seq();
+      if (seq.length !== 4) { fshSay(res, false, "the epilogue needs all four instructions."); return; }
+      var cpu = fshCpu();
+      FSH_PRO.forEach(function (ins) { fshStep(cpu, ins); });
+      seq.forEach(function (ins) { fshStep(cpu, ins); });
+      strip.set(cpu); stack.render(cpu);
+      var bad = fshCheckEpi(cpu);
+      if (!bad.length) {
+        fshSt.t3.pass = true;
+        fshSay(res, true, "teardown clean: ra 0x1040 restored, sp back at 0x8000, ret landed at 0x1040.");
+        fshLog("t3 PASS: epilogue clean.", "ok");
+        fshCheckCert();
+      } else {
+        fshSay(res, false, bad[0]);
+        fshLog("t3 run: " + bad.join(" "), "bad");
+        fshStrike("t3 epilogue: " + bad[0]);
+      }
+    });
+    panel.appendChild(card);
+  }
+
+  /* ---------------- trial 4: the nested call (capstone) ---------------- */
+  function fshBuildT4(panel) {
+    var card = fshTrialCard("TRIAL 4", "THE NESTED CALL",
+      "A function that calls another must park ra, because the inner <b>jal</b> overwrites it. The <b>callee-saved</b> contract (s0 to s11, sp, ra: the callee restores what it touches) is what makes the inner call survivable. Assemble the whole lifecycle around the fixed nested call and watch the outer return address survive it.");
+    var strip = fshStateStrip();
+    var stack = fshStackBox(fshFrameLabel);
+    var cols = fshEl("div", "fsh-cols");
+    cols.appendChild(stack.el);
+    var right = fshEl("div", "");
+    var active = "pro";
+    var seg = fshEl("div", "fsh-seg");
+    var bPro = document.createElement("button");
+    bPro.type = "button";
+    bPro.textContent = "EDITING: PROLOGUE";
+    bPro.classList.add("on");
+    var bEpi = document.createElement("button");
+    bEpi.type = "button";
+    bEpi.textContent = "EDITING: EPILOGUE";
+    bPro.addEventListener("click", function () { active = "pro"; bPro.classList.add("on"); bEpi.classList.remove("on"); });
+    bEpi.addEventListener("click", function () { active = "epi"; bEpi.classList.add("on"); bPro.classList.remove("on"); });
+    seg.appendChild(bPro);
+    seg.appendChild(bEpi);
+    right.appendChild(seg);
+    var seqPro = [], seqEpi = [], used = {};
+    var chipsEl = fshEl("div", "fsh-chips");
+    var proBox = fshEl("div", "fsh-seq");
+    var epiBox = fshEl("div", "fsh-seq");
+    function paintSeq(box, seq, emptyTxt) {
+      box.innerHTML = "";
+      if (!seq.length) box.appendChild(fshEl("span", "fsh-empty", emptyTxt));
+      seq.forEach(function (ch, i) { box.appendChild(fshEl("span", "fsh-step", (i + 1) + ". " + ch.asm)); });
+    }
+    function paint() {
+      chipsEl.innerHTML = "";
+      FSH_CAP_S.forEach(function (ch) {
+        var b = fshBtn("", "fsh-chip");
+        b.appendChild(fshEl("span", "", ch.asm));
+        b.appendChild(fshEl("small", "", ch.tag));
+        b.disabled = !!used[ch.id];
+        b.setAttribute("aria-label", "Add instruction " + ch.asm + ", " + ch.tag);
+        b.addEventListener("click", function () {
+          if (used[ch.id]) return;
+          used[ch.id] = true;
+          (active === "pro" ? seqPro : seqEpi).push(ch);
+          paint();
+        });
+        chipsEl.appendChild(b);
+      });
+      paintSeq(proBox, seqPro, "prologue: before the call");
+      paintSeq(epiBox, seqEpi, "epilogue: after the call");
+    }
+    var tb = fshEl("div", "fsh-traybtns");
+    var undo = fshBtn("UNDO", "");
+    undo.addEventListener("click", function () {
+      var arr = active === "pro" ? seqPro : seqEpi;
+      var ch = arr.pop();
+      if (ch) delete used[ch.id];
+      paint();
+    });
+    var clear = fshBtn("CLEAR", "");
+    clear.addEventListener("click", function () { seqPro = []; seqEpi = []; used = {}; paint(); });
+    tb.appendChild(undo);
+    tb.appendChild(clear);
+    right.appendChild(chipsEl);
+    right.appendChild(fshEl("p", "fsh-why", "BEFORE THE CALL (prologue):"));
+    right.appendChild(proBox);
+    var callLine = fshEl("div", "fsh-seq");
+    callLine.appendChild(fshEl("span", "fsh-step locked", "call inner  (fixed: jal overwrites ra, inner bumps a0 and returns)"));
+    right.appendChild(callLine);
+    right.appendChild(fshEl("p", "fsh-why", "AFTER THE CALL (epilogue):"));
+    right.appendChild(epiBox);
+    right.appendChild(tb);
+    cols.appendChild(right);
+    card.appendChild(strip.el);
+    card.appendChild(cols);
+    var run = fshBtn("RUN THE NESTED CALL", "fsh-btn solid");
+    var res = fshResultLine();
+    card.appendChild(run);
+    card.appendChild(res);
+    var cpu0 = fshCpu();
+    strip.set(cpu0); stack.render(cpu0);
+    paint();
+    run.addEventListener("click", function () {
+      if (fshSt.failed || fshSt.t4.pass) return;
+      if (seqPro.length + seqEpi.length !== 8) { fshSay(res, false, "place all eight instructions first."); return; }
+      var seq = seqPro.concat([FSH_CALL], seqEpi);
+      var cpu = fshRunSeq(seq);
+      strip.set(cpu); stack.render(cpu);
+      var bad = fshCheckCap(cpu);
+      if (!bad.length) {
+        fshSt.t4.pass = true;
+        fshSay(res, true, "the nested call survived: inner ran (a0 is 8), ra 0x1040 restored, ret landed at 0x1040, sp balanced.");
+        fshLog("t4 PASS: capstone clean.", "ok");
+        fshCheckCert();
+      } else {
+        fshSay(res, false, bad[0]);
+        fshLog("t4 run: " + bad.join(" "), "bad");
+        fshStrike("t4 capstone: " + bad[0]);
+      }
+    });
+    panel.appendChild(card);
+  }
+
+  /* ---------------- cert, download ---------------- */
+  function fshCheckCert() {
+    if (fshSt.cert || fshSt.failed) return;
+    if (fshSt.t1.pass && fshSt.t2.pass && fshSt.t3.pass && fshSt.t4.pass) {
+      fshSt.cert = true;
+      var lines = [
+        "THE FRAME SHOP: CERTIFIED",
+        "Prologue claims before it writes: sp 0x8000 to 0x7FE0, ra parked at 0x7FF8.",
+        "Body lives at fp-relative offsets: one owner per slot, both values load back.",
+        "Epilogue restores in reverse: ra 0x1040 back, sp 0x8000, ret lands 0x1040.",
+        "Nested call survived: inner overwrote ra and the frame gave it back.",
+        "Rule: build before you work, tear down in reverse, leave no trace.",
+        "Strikes: " + fshSt.strikes + "/3"
+      ];
+      if (fshEls.certP) fshEls.certP.textContent = lines.join("\n");
+      if (fshEls.banner) fshEls.banner.classList.add("show");
+      fshLog("ROOM CERTIFIED. The frame lifecycle held, four ways.", "ok");
+    }
+  }
+  function fshDownloadCert() {
+    var txt = fshEls.certP ? fshEls.certP.textContent : "";
+    var blob = new Blob(["The Frame Shop qualification record\n\n" + txt + "\n"], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "frame-shop-certificate.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  /* ---------------- close, build, reset ---------------- */
+  function fshClose() {
+    if (fshEls.overlay) fshEls.overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
+  function fshOpen() {
+    if (fshEls.overlay) { fshEls.overlay.classList.add("open"); document.body.style.overflow = "hidden"; }
+  }
+  function fshNewBenchState() {
+    return { strikes: 0, failed: false, cert: false,
+      t1: { pass: false }, t2: { pass: false }, t3: { pass: false }, t4: { pass: false } };
+  }
+  function fshBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box) return;
+    if (document.getElementById("fshBtn")) return;
+    fshSt = fshNewBenchState();
+
+    var sty = document.createElement("style");
+    sty.id = "fshStyle";
+    sty.textContent = FSH_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "fshBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Frame Shop";
+    b.addEventListener("click", fshOpen);
+    box.appendChild(b);
+
+    var ov = fshEl("div", "fsh-overlay");
+    ov.id = "fshOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Frame Shop");
+    var x = fshBtn("CLOSE", "fsh-btn");
+    x.id = "fshXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Frame Shop");
+    x.addEventListener("click", fshClose);
+    ov.appendChild(x);
+    fshEls.overlay = ov;
+    if (!fshEscBound) {
+      fshEscBound = true;
+      document.addEventListener("keydown", function (ev) {
+        if (ev.key === "Escape" && fshEls.overlay && fshEls.overlay.classList.contains("open")) fshClose();
+      });
+    }
+
+    var panel = fshEl("div", "fsh-panel");
+    panel.appendChild(fshEl("div", "fsh-kicker", "SILICON BENCH 67"));
+    panel.appendChild(fshEl("h2", "fsh-title", "The Frame Shop"));
+    var sub = fshEl("p", "fsh-sub", "");
+    sub.innerHTML = "<b>HOW IT WORKS</b> Every C function borrows a slice of the stack and must hand it back exactly as found. " +
+      "Borrow wrong and you overwrite your caller's return address; hand it back wrong and ret jumps to garbage. " +
+      "Watch one honest call: main calls sum at 0x1000; sum claims 32 bytes, parks ra (0x1040) and the old frame pointer, " +
+      "works, then tears the frame down in reverse. " +
+      "The setup is the <b>prologue</b>, the work is the <b>body</b>, the teardown is the <b>epilogue</b>. " +
+      "Build all three yourself on a real tiny RISC-V machine, then survive a nested call. " +
+      "Three strikes and the room resets.";
+    panel.appendChild(sub);
+
+    var strikes = fshEl("p", "fsh-strikes", "STRIKES: 0/3");
+    strikes.id = "fshStrikes";
+    strikes.setAttribute("aria-live", "polite");
+    fshEls.strikes = strikes;
+    panel.appendChild(strikes);
+
+    fshBuildDoFirst(panel);
+    fshBuildT1(panel);
+    fshBuildT2(panel);
+    fshBuildT3(panel);
+    fshBuildT4(panel);
+
+    var fail = fshEl("div", "fsh-card", "");
+    fail.id = "fshFailCard";
+    fail.style.display = "none";
+    fail.appendChild(fshEl("h3", "", "THREE STRIKES"));
+    fail.appendChild(fshEl("p", "fsh-why",
+      "The room failed. The machine does not negotiate. Reset and run it again: claim before you write, restore before you free, and park ra whenever you call."));
+    var reset = fshBtn("RESET ROOM", "fsh-btn solid");
+    reset.id = "fshResetBtn";
+    reset.addEventListener("click", fshResetRoom);
+    fail.appendChild(reset);
+    fshEls.failCard = fail;
+    panel.appendChild(fail);
+
+    var banner = fshEl("div", "fsh-banner");
+    banner.id = "fshBanner";
+    banner.appendChild(fshEl("h3", "", "ROOM CERTIFIED"));
+    var certP = fshEl("div", "fsh-cert", "");
+    certP.id = "fshCertLine";
+    banner.appendChild(certP);
+    var dl = fshBtn("DOWNLOAD CERTIFICATE", "fsh-btn");
+    dl.id = "fshCertDl";
+    dl.addEventListener("click", fshDownloadCert);
+    banner.appendChild(dl);
+    fshEls.banner = banner; fshEls.certP = certP;
+    panel.appendChild(banner);
+
+    var logCard = fshEl("div", "fsh-card");
+    logCard.appendChild(fshEl("h3", "", "BENCH LOG"));
+    var log = fshEl("div", "fsh-log", "");
+    log.id = "fshLog";
+    log.setAttribute("aria-live", "polite");
+    logCard.appendChild(log);
+    panel.appendChild(logCard);
+    fshEls.log = log;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    fshLog("bench open. One rule: build before you work, tear down in reverse, leave no trace.", "dim");
+  }
+  function fshResetRoom() {
+    var sty = document.getElementById("fshStyle");
+    if (sty && sty.parentNode) sty.parentNode.removeChild(sty);
+    var btn = document.getElementById("fshBtn");
+    if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
+    if (fshEls.overlay && fshEls.overlay.parentNode) fshEls.overlay.parentNode.removeChild(fshEls.overlay);
+    fshEls = {};
+    fshSt = null;
+    fshBuild();
+    fshOpen();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", fshBuild);
+  } else {
+    fshBuild();
+  }
+})();

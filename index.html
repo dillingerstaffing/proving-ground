@@ -926,7 +926,11 @@ var PG_BENCHES = [
   { section: "analog", n: "66", name: "The Termination Room", btn: "tmBtn", pill: "tapeout", pillLabel: "TAPEOUT",
     desc: "A fast edge that meets a mismatch comes back: fire a step down a 50 ohm line and read the echo on the scope. Call the echo time, call its sign, size the one resistor that kills it, and find a cracked joint by its echo time.",
     how: "Predict the echo time and polarity, FIRE to verify on the scope, size the parallel resistor to 50 ohms, then locate the fault by its round trip.",
-    spec: "TDR SCOPE \u00B7 GAMMA MATH \u00B7 4 TRIALS" }
+    spec: "TDR SCOPE \u00B7 GAMMA MATH \u00B7 4 TRIALS" },
+  { section: "arch", n: "67", name: "The Frame Shop", btn: "fshBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "The stack frame built by hand on a real tiny RISC-V machine: claim 32 bytes, park ra and the frame pointer, live in fp-relative slots, tear it all down in reverse, and survive a nested call. Every sequence you assemble actually executes.",
+    how: "Order the prologue and epilogue chips, call the addresses first, run each sequence on the honest machine, then qualify the full nested call.",
+    spec: "PROLOGUE / EPILOGUE \u00B7 4 TRIALS" }
  ];
 /* Teaching order: the sequence a newcomer should take the benches in.
    The index renders this list top to bottom; the number on each row is its
@@ -943,6 +947,7 @@ var PG_TEACH_ORDER = [
   "26",
   "64",
   "65",
+  "67",
   "01",
   "08",
   "34",
@@ -1491,9 +1496,9 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-<script src="rvcore.js?v=5c25eb3020" defer></script>
-<script src="rvdata.js?v=5c25eb3020" defer></script>
-<script src="riscv-lab.js?v=5c25eb3020" defer></script>
-<script src="features.js?v=5c25eb3020" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=bf94652522" defer></script>
+<script src="rvdata.js?v=bf94652522" defer></script>
+<script src="riscv-lab.js?v=bf94652522" defer></script>
+<script src="features.js?v=bf94652522" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
