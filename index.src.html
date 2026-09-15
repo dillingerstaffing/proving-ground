@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260915-pg72">
+<meta name="build-version" content="v20260915-pg73">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -1142,11 +1142,23 @@ function pgDeepLink() {
     if ($(hit.btn)) {
       clearInterval(timer);
       pgLaunch(hit, row);
-    } else if (tries > 30) {
+    } else if (tries > 60) {
       clearInterval(timer);
+      toast("That bench is still warming up. Try again in a moment.");
     }
   }, 200);
 }
+/* Same-tab arrivals: navigating to a #bench= URL while already on the
+   page (pasting a shared link into the address bar, in-page links) never
+   reloads the document, so the boot-time deep link would never see it.
+   Resolve bench hashes here too. replaceState calls elsewhere on this
+   page never fire hashchange, so this cannot loop. */
+window.addEventListener("hashchange", function () {
+  var m = (location.hash || "").match(/bench=([A-Za-z0-9-]+)/);
+  if (!m) return;
+  if (document.querySelector('div[class*="-overlay"].open')) return;
+  pgDeepLink();
+});
 
 function pgSetFilter(f) {
   if (pgFilter === f) return;
