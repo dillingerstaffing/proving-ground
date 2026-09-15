@@ -48467,6 +48467,7 @@ if (typeof module !== "undefined" && module.exports) {
     if (op === "sd") return "a store writes a register's value into memory. The register keeps its value; exactly one addressed word changes.";
     if (op === "ld") return "a load copies a memory word into a register. Memory keeps its value; exactly one register changes.";
     if (op === "ret") return "ret jumps to the address in ra. It changes no register and no memory word.";
+    if (op === "callinner") return "The nested call is jal in disguise: it overwrites ra with its own return address and runs the inner body. If the outer frame did not park ra first, the way home is gone.";
     return "";
   }
   /* Misconception-targeted wrong answers, computed from live machine state
@@ -48492,6 +48493,10 @@ if (typeof module !== "undefined" && module.exports) {
     } else if (ins.op === "ret") {
       out.push("sp = " + hx(R.sp) + "  (ret gives the frame back)");
       out.push("jump to " + hx(R.sp) + "  (ret jumps to sp)");
+    } else if (ins.op === "callinner") {
+      out.push("ra stays " + hx(R.ra) + "  (the call preserves the caller's registers)");
+      out.push("a0 stays " + R.a0 + ", ra = 0x00001020  (the inner body never runs)");
+      out.push("sp = " + hx((R.sp - 8) >>> 0) + "  (the call claims 8 bytes on the outer stack)");
     }
     var truth = annotate(cpu, ins);
     return out.filter(function (d) { return d !== truth; });
@@ -49150,6 +49155,7 @@ if (typeof module !== "undefined" && module.exports) {
       return ins.rd + " = MEM[" + base + "]";
     }
     if (ins.op === "ret") return "jump to ra (" + fshHex(R.ra) + ")";
+    if (ins.op === "callinner") return "ra = 0x00001020 (jal overwrote the return address), a0 = " + R.a0 + " + 1 = " + (((R.a0 + 1) >>> 0)) + " (inner ran and returned)";
     return "";
   }
   /* __FSH_ANN_END__ */
@@ -49527,8 +49533,10 @@ if (typeof module !== "undefined" && module.exports) {
     cols.appendChild(right);
     card.appendChild(strip.el);
     card.appendChild(cols);
-    var run = fshBtn("RUN THE NESTED CALL", "fsh-btn solid");
+    var run = fshBtn("STEP THROUGH THE NESTED CALL", "fsh-btn solid");
     var res = fshResultLine();
+    var quizSlot4 = fshEl("div", "");
+    card.appendChild(quizSlot4);
     card.appendChild(run);
     card.appendChild(res);
     var cpu0 = fshCpu();
@@ -49538,19 +49546,26 @@ if (typeof module !== "undefined" && module.exports) {
       if (fshSt.failed || fshSt.t4.pass) return;
       if (seqPro.length + seqEpi.length !== 8) { fshSay(res, false, "place all eight instructions first."); return; }
       var seq = seqPro.concat([FSH_CALL], seqEpi);
-      var cpu = fshRunSeq(seq);
-      strip.set(cpu); stack.render(cpu);
-      var bad = fshCheckCap(cpu);
-      if (!bad.length) {
-        fshSt.t4.pass = true;
-        fshSay(res, true, "the nested call survived: inner ran (a0 is 8), ra 0x1040 restored, ret landed at 0x1040, sp balanced.");
-        fshLog("t4 PASS: capstone clean.", "ok");
-        fshCheckCert();
-      } else {
-        fshSay(res, false, bad[0]);
-        fshLog("t4 run: " + bad.join(" "), "bad");
-        fshStrike("t4 capstone: " + bad[0]);
-      }
+      run.disabled = true;
+      fshLog("t4: stepping the nested call. Predict every instruction, including the call itself.", "dim");
+      fshRunGate({
+        seq: seq, cpu0: fshCpu(), strip: strip, stack: stack, quizSlot: quizSlot4,
+        onDone: function (cpu) {
+          quizSlot4.innerHTML = "";
+          var bad = fshCheckCap(cpu);
+          if (!bad.length) {
+            fshSt.t4.pass = true;
+            fshSay(res, true, "the nested call survived: inner ran (a0 is 8), ra 0x1040 restored, ret landed at 0x1040, sp balanced. Every step predicted.");
+            fshLog("t4 PASS: capstone clean.", "ok");
+          } else {
+            fshSay(res, false, "FAIL: " + bad[0]);
+            fshLog("t4 run: " + bad.join(" "), "bad");
+            fshStrike("t4 capstone: " + bad[0]);
+            run.disabled = false;
+          }
+          fshCheckCert();
+        }
+      });
     });
     panel.appendChild(card);
   }
