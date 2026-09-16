@@ -46775,10 +46775,14 @@ if (typeof module !== "undefined" && module.exports) {
       if (e.target === chooser) chooser.close();
     });
     copyBtn.addEventListener("click", function () { copyEmail(copyStatus); });
-    var triggers = document.querySelectorAll("[data-brief]");
-    for (var i = 0; i < triggers.length; i++) {
-      triggers[i].addEventListener("click", function () { openChooser(this.getAttribute("data-brief")); });
-    }
+    /* Delegated trigger binding: [data-brief] triggers can be created after
+       build runs (the sticky deck renders on DOMContentLoaded, and deferred
+       scripts execute before that), so one document-level listener covers
+       present and future triggers alike. */
+    document.addEventListener("click", function (e) {
+      var t = e.target && e.target.closest ? e.target.closest("[data-brief]") : null;
+      if (t && document.contains(t)) openChooser(t.getAttribute("data-brief"));
+    });
     wbBtns = chooser.querySelectorAll(".ch-wb");
     for (var j = 0; j < wbBtns.length; j++) {
       wbBtns[j].addEventListener("click", function () { applyBrief(this.getAttribute("data-wb")); });
