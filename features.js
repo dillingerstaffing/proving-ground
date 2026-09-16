@@ -50512,3 +50512,823 @@ if (typeof module !== "undefined" && module.exports) {
     dvbBuild();
   }
 })();
+/* BENCH 69: THE CONVERT ROOM (riscv)
+   A successive-approximation ADC on the bench. One atomic mechanism: the
+   converter asks one yes-or-no question per bit, MSB first, and N questions
+   make an N-bit reading. Do-first race (naive counter vs SAR), two
+   predict-every-comparator trials (4-bit and 8-bit), then the real world:
+   quantization budget, saturation, and sample-and-hold on a moving input.
+   Standalone module for unit + DOM testing; spliced into features.js after
+   the smoke test passes. */
+(function () {
+  "use strict";
+
+  /* ---------------- pure sim core (test hooks) ---------------- */
+  var ADC = {};
+  /* Comparator truth: HIGH means input is "at least" the trial threshold.
+     Integer-exact: input_mV * 2^n >= trialCode * vref_mV. */
+  ADC.cmp = function (input_mV, trialCode, vref_mV, n) {
+    return input_mV * Math.pow(2, n) >= trialCode * vref_mV;
+  };
+  /* Full SAR code for a steady input (what the questions converge to). */
+  ADC.code = function (input_mV, vref_mV, n) {
+    if (input_mV <= 0) return 0;
+    var max = Math.pow(2, n) - 1;
+    var c = Math.floor(input_mV * Math.pow(2, n) / vref_mV);
+    return c > max ? max : c;
+  };
+  ADC.lsb_mV = function (vref_mV, n) { return vref_mV / Math.pow(2, n); };
+  /* The N questions for a steady input, MSB first. */
+  ADC.questions = function (input_mV, vref_mV, n) {
+    var qs = [], sofar = 0, two = Math.pow(2, n);
+    for (var b = n - 1; b >= 0; b--) {
+      var trial = sofar + Math.pow(2, b);
+      var high = input_mV * two >= trial * vref_mV;
+      qs.push({ bit: b, trial: trial, threshold_mV: trial * vref_mV / two, high: high });
+      if (high) sofar = trial;
+    }
+    return { qs: qs, code: sofar };
+  };
+  /* Naive counter converter: clocks to reach the first count whose voltage
+     reaches the input (one clock per count-and-compare). */
+  ADC.counterClocks = function (input_mV, vref_mV, n) {
+    if (input_mV <= 0) return 1;
+    return Math.ceil(input_mV * Math.pow(2, n) / vref_mV) + 1;
+  };
+  ADC.fmtV = function (mV) {
+    if (mV >= 1000) return (mV / 1000).toFixed(3) + " V";
+    return mV.toFixed(1) + " mV";
+  };
+  /* Mystery voltages: none sits exactly on a comparator threshold, so every
+     AT LEAST / BELOW call has one honest answer. */
+  ADC.POOL1 = [2500, 1173, 3410, 512.5, 88.3, 3999.9, 2048.7, 3000.2]; /* 4-bit, Vref 4096 mV */
+  ADC.POOL2 = [2000.5, 777.7, 3100.2, 150.9, 2543.6, 999.1, 1234.3, 2888.8]; /* 8-bit, Vref 3300 mV */
+  /* Trial 3 station A: 12-bit, Vref 3.300 V, sensor at 1.6500 V. */
+  ADC.verify3A = function (codeStr, errStr, spikeStr) {
+    var code = parseInt(String(codeStr).trim(), 10);
+    var err = parseFloat(String(errStr).trim());
+    var spike = parseInt(String(spikeStr).trim(), 10);
+    return code === 2048 && Math.abs(err - 0.4028) <= 0.06 && spike === 4095;
+  };
+  /* Trial 3 station B: 40 Hz sine, 1000 mV +/- 500 mV, 1 ms per question.
+     Without sample-and-hold each question samples the live wave; with it the
+     input freezes at the first question. */
+  ADC.t3b = function () {
+    var vref = 3300, n = 12, two = Math.pow(2, n);
+    function vin(tms) { return 1000 + 500 * Math.sin(2 * Math.PI * 40 * tms / 1000); }
+    var frozenCode = ADC.code(vin(0), vref, n), sofar = 0;
+    for (var b = n - 1; b >= 0; b--) {
+      var trial = sofar + Math.pow(2, b);
+      if (vin(n - 1 - b) * two >= trial * vref) sofar = trial;
+    }
+    return { movingCode: sofar, frozenCode: frozenCode, frozen_mV: vin(0) };
+  };
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.ADC = ADC;
+  }
+
+  /* ---------------- state ---------------- */
+  var adcSt = null, adcEls = {}, adcEscBound = false;
+  function adcNewState() {
+    return {
+      strikes: 0, failed: false,
+      t1done: false, t2done: false, t3done: false,
+      m1: null, s1: 0, c1: 0,   /* trial 1 mystery, question index, code so far */
+      m2: null, s2: 0, c2: 0,
+      t3a: false, t3b: false, bSmeared: false, bHeld: false, bHeldOn: false,
+      busy: false
+    };
+  }
+  function adcReduced() {
+    return (typeof pgReduced !== "undefined") && pgReduced;
+  }
+
+  /* ---------------- dom helpers ---------------- */
+  function adcEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== "") e.textContent = text;
+    return e;
+  }
+  function adcBtn(label, cls) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = cls || "adc-btn";
+    b.textContent = label;
+    return b;
+  }
+
+  var ADC_CSS = [
+    ".adc-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.92);display:none;overflow-y:auto;}",
+    ".adc-overlay.open{display:block;}",
+    ".adc-panel{max-width:860px;margin:0 auto;padding:28px 18px 60px;color:var(--paper);}",
+    ".adc-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);}",
+    ".adc-title{font-family:'Space Grotesk',sans-serif;font-size:34px;margin:6px 0 10px;color:#f2f0eb;}",
+    ".adc-sub{font-size:14px;line-height:1.65;color:#b9b6ae;max-width:72ch;margin:0 0 18px;}",
+    ".adc-sub b{color:#f2f0eb;}",
+    ".adc-strikes{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.14em;color:#f2f0eb;margin:0 0 16px;}",
+    ".adc-card{border:1px solid var(--line);background:var(--panel);padding:18px;margin:0 0 16px;}",
+    ".adc-card h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:#f2f0eb;margin:0 0 8px;}",
+    ".adc-why{font-size:13px;line-height:1.6;color:#b9b6ae;margin:0 0 14px;max-width:72ch;}",
+    ".adc-why b{color:#f2f0eb;}",
+    ".adc-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.06em;background:transparent;color:var(--paper);border:1px solid var(--line);padding:12px 14px;min-height:48px;cursor:pointer;text-align:left;}",
+    ".adc-btn:hover{border-color:var(--ember);}",
+    ".adc-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".adc-btn:disabled{opacity:.38;cursor:not-allowed;}",
+    ".adc-btn.solid{background:var(--ember);border-color:var(--ember);color:#0a0a0c;font-weight:700;}",
+    ".adc-btn.picked{border-color:var(--ember);color:var(--ember);}",
+    ".adc-actions{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 12px;}",
+    ".adc-actions .adc-btn{text-align:center;min-width:180px;}",
+    ".adc-readout{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:#cfccc4;background:#0b0d0e;border:1px solid var(--line);padding:12px 14px;margin:0 0 12px;min-height:44px;white-space:pre-wrap;}",
+    ".adc-status{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.1em;color:#cfccc4;margin:0 0 12px;}",
+    ".adc-meter{font-family:'IBM Plex Mono',monospace;font-size:15px;letter-spacing:.08em;color:#f2f0eb;border:1px solid var(--line);background:#0b0d0e;padding:12px 14px;margin:0 0 12px;}",
+    ".adc-meter .v{color:var(--ember);}",
+    ".adc-q{font-family:'IBM Plex Mono',monospace;font-size:14px;letter-spacing:.04em;color:#f2f0eb;margin:0 0 12px;min-height:22px;}",
+    ".adc-lamps{display:flex;gap:8px;margin:0 0 12px;}",
+    ".adc-lamp{font-family:'IBM Plex Mono',monospace;font-size:16px;width:48px;height:48px;display:flex;align-items:center;justify-content:center;border:1px solid var(--line);color:#8f8c85;background:#0b0d0e;}",
+    ".adc-lamp.one{border-color:var(--ember);color:var(--ember);}",
+    ".adc-lamp.zero{color:#cfccc4;}",
+    ".adc-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 12px;}",
+    ".adc-row label{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.08em;color:#b9b6ae;}",
+    ".adc-num{font-family:'IBM Plex Mono',monospace;font-size:14px;background:#0b0d0e;border:1px solid var(--line);color:#f2f0eb;padding:12px;min-height:48px;width:140px;}",
+    ".adc-num:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    "input[type=range].adc-slider{width:100%;min-height:48px;accent-color:var(--ember);}",
+    ".adc-lock{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.1em;color:#8f8c85;border:1px dashed var(--line);padding:12px 14px;margin:0 0 12px;}",
+    ".adc-banner{border:1px solid var(--ember);padding:18px;margin:0 0 16px;display:none;}",
+    ".adc-banner.show{display:block;}",
+    ".adc-banner h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--ember);margin:0 0 8px;}",
+    ".adc-cert{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:#cfccc4;margin:0 0 12px;white-space:pre-wrap;}",
+    ".adc-log{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.75;color:#8f8c85;max-height:220px;overflow-y:auto;}",
+    ".adc-log .t{color:#5b5955;}",
+    ".adc-log .bad{color:var(--ember);}",
+    ".adc-log .good{color:#7fd67f;}"
+  ].join("\n");
+
+  /* ---------------- log and strikes ---------------- */
+  function adcLog(msg, cls) {
+    if (!adcEls.log) return;
+    var line = adcEl("div", cls || "", "");
+    var t = new Date();
+    var hh = String(t.getHours()).padStart(2, "0"), mm = String(t.getMinutes()).padStart(2, "0"),
+        ss = String(t.getSeconds()).padStart(2, "0");
+    line.appendChild(adcEl("span", "t", "[" + hh + ":" + mm + ":" + ss + "] "));
+    line.appendChild(document.createTextNode(msg));
+    adcEls.log.appendChild(line);
+    adcEls.log.scrollTop = adcEls.log.scrollHeight;
+  }
+  function adcSetStrikes() {
+    if (adcEls.strikes) adcEls.strikes.textContent = "STRIKES: " + adcSt.strikes + "/3";
+  }
+  function adcStrike(msg) {
+    if (adcSt.failed) return;
+    adcSt.strikes++;
+    adcSetStrikes();
+    adcLog("STRIKE " + adcSt.strikes + "/3: " + msg, "bad");
+    if (adcSt.strikes >= 3) {
+      adcSt.failed = true;
+      adcEls.failCard.style.display = "block";
+      adcLog("three strikes. The room failed.", "bad");
+      if (adcEls.overlay && adcEls.failCard.scrollIntoView) adcEls.failCard.scrollIntoView({ block: "center" });
+    }
+  }
+  function adcBin(code, n) {
+    var s = "";
+    for (var b = n - 1; b >= 0; b--) s += ((code >> b) & 1) ? "1" : "0";
+    return s;
+  }
+  function adcRenderLamps(box, sofar, n, answered) {
+    box.innerHTML = "";
+    for (var b = n - 1; b >= 0; b--) {
+      var lamp = adcEl("span", "adc-lamp", "");
+      if (b > n - 1 - answered) {
+        lamp.textContent = ".";
+        lamp.setAttribute("aria-label", "bit " + b + " unasked");
+      } else {
+        var bit = (sofar >> b) & 1;
+        lamp.textContent = bit ? "1" : "0";
+        lamp.className = "adc-lamp " + (bit ? "one" : "zero");
+        lamp.setAttribute("aria-label", "bit " + b + " = " + bit);
+      }
+      box.appendChild(lamp);
+    }
+  }
+
+  /* ---------------- trial 0: do-first race ---------------- */
+  function adcBuildT0(panel) {
+    var card = adcEl("div", "adc-card", "");
+    card.id = "adcT0";
+    card.appendChild(adcEl("h3", "", "DO FIRST: TWO CONVERTERS, ONE RACE"));
+    card.appendChild(adcEl("p", "adc-why",
+      "Two buttons, zero stakes. CONVERT SLOW is the naive counter: it counts up from zero, one clock " +
+      "per count, until the count's voltage reaches the input. CONVERT is successive approximation: it " +
+      "asks four yes-or-no questions, most significant bit first. Same input, same 4-bit converter, " +
+      "reference 4.096 V. Watch the clock counts and ask yourself which machine you would put on a chip."));
+    var row = adcEl("div", "adc-row", "");
+    row.appendChild(adcEl("label", "", "INPUT VOLTAGE"));
+    var slider = document.createElement("input");
+    slider.type = "range"; slider.min = "0"; slider.max = "4095"; slider.step = "5"; slider.value = "2500";
+    slider.className = "adc-slider"; slider.id = "adcFreeV";
+    slider.setAttribute("aria-label", "Input voltage in millivolts, 0 to 4095");
+    row.appendChild(slider);
+    adcEls.freeV = slider;
+    var read = adcEl("div", "adc-meter", "");
+    read.id = "adcFreeRead";
+    var upd = function () {
+      read.innerHTML = "";
+      read.appendChild(adcEl("span", "", "INPUT "));
+      read.appendChild(adcEl("span", "v", ADC.fmtV(parseFloat(slider.value))));
+    };
+    slider.addEventListener("input", upd); upd();
+    card.appendChild(row);
+    card.appendChild(read);
+    var acts = adcEl("div", "adc-actions", "");
+    var slow = adcBtn("CONVERT SLOW (COUNTER)", "adc-btn");
+    slow.id = "adcFreeSlow";
+    slow.addEventListener("click", adcFreeSlow);
+    var sar = adcBtn("CONVERT (SAR)", "adc-btn solid");
+    sar.id = "adcFreeSar";
+    sar.addEventListener("click", adcFreeSar);
+    acts.appendChild(slow); acts.appendChild(sar);
+    adcEls.freeSlow = slow; adcEls.freeSar = sar;
+    card.appendChild(acts);
+    var lamps = adcEl("div", "adc-lamps", "");
+    lamps.id = "adcFreeBits";
+    adcEls.freeBits = lamps;
+    card.appendChild(lamps);
+    var out = adcEl("div", "adc-readout", "Press a CONVERT button. The counter crawls; the SAR asks four questions.");
+    out.id = "adcFreeOut";
+    out.setAttribute("aria-live", "polite");
+    adcEls.freeOut = out;
+    card.appendChild(out);
+    panel.appendChild(card);
+  }
+  function adcFreeLock(locked) {
+    adcEls.freeSlow.disabled = locked;
+    adcEls.freeSar.disabled = locked;
+    adcEls.freeV.disabled = locked;
+    adcSt.busy = locked;
+  }
+  function adcFreeSlow() {
+    if (adcSt.busy || adcSt.failed) return;
+    var mv = parseFloat(adcEls.freeV.value);
+    var clocks = ADC.counterClocks(mv, 4096, 4);
+    var code = ADC.code(mv, 4096, 4);
+    adcFreeLock(true);
+    adcRenderLamps(adcEls.freeBits, 0, 4, 0);
+    adcLog("counter: input " + ADC.fmtV(mv) + ", counting up from zero.", "");
+    if (adcReduced()) {
+      adcEls.freeOut.textContent = "COUNTER: " + clocks + " clocks to reach code " + code +
+        " (" + adcBin(code, 4) + "). Reads " + ADC.fmtV(code * 256) + ".";
+      adcRenderLamps(adcEls.freeBits, code, 4, 4);
+      adcLog("counter: " + clocks + " clocks, code " + code + ".", "");
+      adcFreeLock(false);
+      return;
+    }
+    var k = 0;
+    var tick = function () {
+      k++;
+      adcEls.freeOut.textContent = "CLOCK " + k + ": count = " + (k - 1) +
+        ", compares " + ADC.fmtV((k - 1) * 256) + " against " + ADC.fmtV(mv) + "...";
+      if (k < clocks) { setTimeout(tick, 90); return; }
+      adcEls.freeOut.textContent = "COUNTER: " + clocks + " clocks to reach code " + code +
+        " (" + adcBin(code, 4) + "). Reads " + ADC.fmtV(code * 256) + ".";
+      adcRenderLamps(adcEls.freeBits, code, 4, 4);
+      adcLog("counter: " + clocks + " clocks, code " + code + ". Now press CONVERT (SAR) on the same input.", "");
+      adcFreeLock(false);
+    };
+    tick();
+  }
+  function adcFreeSar() {
+    if (adcSt.busy || adcSt.failed) return;
+    var mv = parseFloat(adcEls.freeV.value);
+    var r = ADC.questions(mv, 4096, 4);
+    adcFreeLock(true);
+    adcRenderLamps(adcEls.freeBits, 0, 4, 0);
+    adcLog("SAR: input " + ADC.fmtV(mv) + ", four questions.", "");
+    var i = 0, sofar = 0;
+    var stepFn = function () {
+      if (i < r.qs.length) {
+        var q = r.qs[i];
+        if (q.high) sofar = q.trial;
+        var line = "Q" + (i + 1) + ": at least " + ADC.fmtV(q.threshold_mV) + "? " +
+          (q.high ? "YES" : "NO") + " (comparator " + (q.high ? "HIGH" : "LOW") + "), bit " +
+          q.bit + " = " + (q.high ? "1" : "0") + ".";
+        adcEls.freeOut.textContent = line;
+        adcLog("SAR " + line, q.high ? "good" : "");
+        adcRenderLamps(adcEls.freeBits, sofar, 4, i + 1);
+        i++;
+        if (adcReduced()) { stepFn(); return; }
+        setTimeout(stepFn, 220);
+        return;
+      }
+      adcEls.freeOut.textContent = "SAR: CODE " + adcBin(r.code, 4) + " = " + r.code +
+        ". Reads " + ADC.fmtV(r.code * 256) + ". 4 questions, 4 clocks.";
+      adcLog("SAR: code " + r.code + " in 4 questions. The counter needed " +
+        ADC.counterClocks(mv, 4096, 4) + " clocks for the same input.", "good");
+      adcFreeLock(false);
+    };
+    stepFn();
+  }
+
+  /* ---------------- trials 1 and 2: call the comparator ---------------- */
+  function adcTrialCfg(which) {
+    return which === 1
+      ? { n: 4, vref: 4096, pool: ADC.POOL1, name: "TRIAL 1: FOUR QUESTIONS",
+          why: "A 4-bit converter, reference 4.096 V, one step is 0.256 V. The bench hides a voltage on " +
+               "the meter. Call the comparator's answer, one question at a time: AT LEAST means the input " +
+               "reaches the threshold (comparator HIGH, the bit is 1). Four right calls clears the trial. " +
+               "A wrong call is a strike and a fresh mystery voltage." }
+      : { n: 8, vref: 3300, pool: ADC.POOL2, name: "TRIAL 2: EIGHT QUESTIONS",
+          why: "An 8-bit converter, reference 3.300 V, one step is 12.9 mV. Same game, eight questions, " +
+               "tighter arithmetic. Read the meter, compare against each threshold, call all eight. A " +
+               "wrong call is a strike and a fresh mystery voltage." };
+  }
+  function adcBuildTrial(panel, which) {
+    var cfg = adcTrialCfg(which);
+    var card = adcEl("div", "adc-card", "");
+    card.id = "adcT" + which;
+    card.appendChild(adcEl("h3", "", cfg.name));
+    card.appendChild(adcEl("p", "adc-why", cfg.why));
+    var lock = adcEl("div", "adc-lock", which === 1 ?
+      "TRIAL 1 IS OPEN. PRESS NEW MYSTERY VOLTAGE TO BEGIN." :
+      "LOCKED: CLEAR TRIAL 1 TO UNLOCK.");
+    lock.id = "adcLock" + which;
+    adcEls["lock" + which] = lock;
+    card.appendChild(lock);
+    var myst = adcBtn("NEW MYSTERY VOLTAGE", "adc-btn");
+    myst.id = "adcMyst" + which;
+    myst.addEventListener("click", function () { adcNewMystery(which); });
+    card.appendChild(adcEl("div", "adc-actions", "")).appendChild(myst);
+    adcEls["myst" + which] = myst;
+    var meter = adcEl("div", "adc-meter", "");
+    meter.id = "adcMeter" + which;
+    meter.appendChild(adcEl("span", "", "METER "));
+    meter.appendChild(adcEl("span", "v", "--"));
+    card.appendChild(meter);
+    adcEls["meter" + which] = meter;
+    var q = adcEl("p", "adc-q", "Press NEW MYSTERY VOLTAGE to begin.");
+    q.id = "adcQ" + which;
+    q.setAttribute("aria-live", "polite");
+    card.appendChild(q);
+    adcEls["q" + which] = q;
+    var acts = adcEl("div", "adc-actions", "");
+    var hi = adcBtn("AT LEAST (COMPARATOR HIGH)", "adc-btn");
+    hi.id = "adcQHi" + which;
+    hi.addEventListener("click", function () { adcAnswer(which, true); });
+    var lo = adcBtn("BELOW (COMPARATOR LOW)", "adc-btn");
+    lo.id = "adcQLo" + which;
+    lo.addEventListener("click", function () { adcAnswer(which, false); });
+    acts.appendChild(hi); acts.appendChild(lo);
+    card.appendChild(acts);
+    adcEls["qhi" + which] = hi; adcEls["qlo" + which] = lo;
+    var lamps = adcEl("div", "adc-lamps", "");
+    lamps.id = "adcBits" + which;
+    card.appendChild(lamps);
+    adcEls["bits" + which] = lamps;
+    var stat = adcEl("p", "adc-status", "");
+    stat.id = "adcStat" + which;
+    stat.setAttribute("aria-live", "polite");
+    card.appendChild(stat);
+    adcEls["stat" + which] = stat;
+    panel.appendChild(card);
+    adcSetTrialLock(which, which === 2);
+    hi.disabled = true; lo.disabled = true; myst.disabled = (which === 2);
+  }
+  function adcSetTrialLock(which, locked) {
+    var ids = ["myst" + which, "qhi" + which, "qlo" + which];
+    for (var i = 0; i < ids.length; i++) if (adcEls[ids[i]]) adcEls[ids[i]].disabled = locked;
+    if (adcEls["lock" + which]) {
+      adcEls["lock" + which].textContent = locked
+        ? "LOCKED: CLEAR TRIAL " + (which - 1) + " TO UNLOCK."
+        : (which === 1 ? "TRIAL 1 IS OPEN. PRESS NEW MYSTERY VOLTAGE TO BEGIN."
+                       : "TRIAL 2 IS OPEN. PRESS NEW MYSTERY VOLTAGE TO BEGIN.");
+    }
+  }
+  function adcNewMystery(which) {
+    var cfg = adcTrialCfg(which);
+    if (adcSt.failed) return;
+    var pick;
+    do { pick = cfg.pool[Math.floor(Math.random() * cfg.pool.length)]; }
+    while (pick === adcSt["m" + which]);
+    var scaled = pick * Math.pow(2, cfg.n) / cfg.vref;
+    if (Math.abs(scaled - Math.round(scaled)) < 1e-9) pick += 0.37; /* never on a threshold */
+    adcSt["m" + which] = pick;
+    adcSt["s" + which] = 0;
+    adcSt["c" + which] = 0;
+    adcEls["meter" + which].innerHTML = "";
+    adcEls["meter" + which].appendChild(adcEl("span", "", "METER "));
+    adcEls["meter" + which].appendChild(adcEl("span", "v", ADC.fmtV(pick)));
+    adcRenderLamps(adcEls["bits" + which], 0, cfg.n, 0);
+    adcEls["qhi" + which].disabled = false;
+    adcEls["qlo" + which].disabled = false;
+    adcAsk(which);
+    adcLog("trial " + which + ": mystery voltage on the meter. Call Q1.", "");
+  }
+  function adcAsk(which) {
+    var cfg = adcTrialCfg(which);
+    var step = adcSt["s" + which], sofar = adcSt["c" + which];
+    var bit = cfg.n - 1 - step;
+    var trial = sofar + Math.pow(2, bit);
+    var thr = trial * cfg.vref / Math.pow(2, cfg.n);
+    adcEls["q" + which].textContent = "Q" + (step + 1) + " OF " + cfg.n +
+      ": IS THE INPUT AT LEAST " + ADC.fmtV(thr) + "?";
+    return { bit: bit, trial: trial, thr: thr };
+  }
+  function adcAnswer(which, saidHigh) {
+    var cfg = adcTrialCfg(which);
+    if (adcSt.failed || adcSt["m" + which] === null) return;
+    if ((which === 1 && adcSt.t1done) || (which === 2 && adcSt.t2done)) return;
+    var step = adcSt["s" + which];
+    var q = adcAsk(which);
+    var mv = adcSt["m" + which];
+    var truth = ADC.cmp(mv, q.trial, cfg.vref, cfg.n);
+    if (saidHigh === truth) {
+      if (truth) adcSt["c" + which] = q.trial;
+      adcSt["s" + which] = step + 1;
+      adcLog("trial " + which + " Q" + (step + 1) + ": comparator " +
+        (truth ? "HIGH" : "LOW") + ", bit " + q.bit + " = " + (truth ? "1" : "0") + ".",
+        truth ? "good" : "");
+      adcRenderLamps(adcEls["bits" + which], adcSt["c" + which], cfg.n, step + 1);
+      if (step + 1 === cfg.n) {
+        var code = adcSt["c" + which];
+        var reads = code * cfg.vref / Math.pow(2, cfg.n);
+        adcEls["stat" + which].textContent = "TRIAL " + which + " PASS: CODE " +
+          adcBin(code, cfg.n) + " = " + code + ", READS " + ADC.fmtV(reads) +
+          ". MYSTERY WAS " + ADC.fmtV(mv) + ".";
+        adcEls["qhi" + which].disabled = true;
+        adcEls["qlo" + which].disabled = true;
+        adcEls["myst" + which].disabled = true;
+        adcEls["q" + which].textContent = "Trial " + which + " clear.";
+        adcLog("trial " + which + " PASS: " + cfg.n + " questions, " + cfg.n + " right calls.", "good");
+        if (which === 1) { adcSt.t1done = true; adcSetTrialLock(2, false); }
+        else { adcSt.t2done = true; adcSetT3Lock(false); }
+        adcCheckCert();
+      } else {
+        adcAsk(which);
+      }
+    } else {
+      adcStrike("Trial " + which + " Q" + (step + 1) + ": you called " +
+        (saidHigh ? "HIGH" : "LOW") + ", the comparator said " + (truth ? "HIGH" : "LOW") +
+        " (" + ADC.fmtV(mv) + (truth ? " is at least " : " is below ") + ADC.fmtV(q.thr) + ").");
+      if (!adcSt.failed) adcNewMystery(which);
+    }
+  }
+
+  /* ---------------- trial 3: the real world ---------------- */
+  function adcBuildT3(panel) {
+    var card = adcEl("div", "adc-card", "");
+    card.id = "adcT3";
+    card.appendChild(adcEl("h3", "", "TRIAL 3: THE REAL WORLD"));
+    card.appendChild(adcEl("p", "adc-why",
+      "Station A is the quantization budget: the last digit is hope, not data. Station B is the " +
+      "sample-and-hold contract: the input must hold still for all N questions. Clear both stations."));
+    var lock = adcEl("div", "adc-lock", "LOCKED: CLEAR TRIAL 2 TO UNLOCK.");
+    lock.id = "adcLock3";
+    adcEls.lock3 = lock;
+    card.appendChild(lock);
+
+    card.appendChild(adcEl("h3", "", "STATION A: THE QUANTIZATION BUDGET"));
+    card.appendChild(adcEl("p", "adc-why",
+      "A sensor holds 1.6500 V into a 12-bit converter with a 3.300 V reference. One step is " +
+      "3.300 / 4096 = 0.806 mV, so half a step is 0.403 mV. Commit all three answers; any wrong " +
+      "answer is a strike."));
+    var rowA = adcEl("div", "adc-row", "");
+    rowA.appendChild(adcEl("label", "", "12-BIT CODE FOR 1.6500 V"));
+    var inCode = document.createElement("input");
+    inCode.className = "adc-num"; inCode.id = "adcACode"; inCode.inputMode = "numeric";
+    inCode.setAttribute("aria-label", "12-bit code for 1.6500 volts");
+    rowA.appendChild(inCode);
+    adcEls.aCode = inCode;
+    card.appendChild(rowA);
+    var rowB = adcEl("div", "adc-row", "");
+    rowB.appendChild(adcEl("label", "", "WORST-CASE ERROR, mV, ONE DECIMAL"));
+    var inErr = document.createElement("input");
+    inErr.className = "adc-num"; inErr.id = "adcAErr"; inErr.inputMode = "decimal";
+    inErr.setAttribute("aria-label", "Worst-case quantization error in millivolts");
+    rowB.appendChild(inErr);
+    adcEls.aErr = inErr;
+    card.appendChild(rowB);
+    var rowC = adcEl("div", "adc-row", "");
+    rowC.appendChild(adcEl("label", "", "CODE WHEN THE SENSOR SPIKES TO 3.600 V"));
+    var inSpike = document.createElement("input");
+    inSpike.className = "adc-num"; inSpike.id = "adcASpike"; inSpike.inputMode = "numeric";
+    inSpike.setAttribute("aria-label", "Code when the sensor spikes to 3.6 volts");
+    rowC.appendChild(inSpike);
+    adcEls.aSpike = inSpike;
+    card.appendChild(rowC);
+    var actsA = adcEl("div", "adc-actions", "");
+    var commitA = adcBtn("COMMIT STATION A", "adc-btn solid");
+    commitA.id = "adcACommit";
+    commitA.addEventListener("click", adcCommitA);
+    actsA.appendChild(commitA);
+    adcEls.aCommit = commitA;
+    card.appendChild(actsA);
+    var statA = adcEl("p", "adc-status", "");
+    statA.id = "adcAStat"; statA.setAttribute("aria-live", "polite");
+    card.appendChild(statA);
+    adcEls.aStat = statA;
+
+    card.appendChild(adcEl("h3", "", "STATION B: THE MOVING INPUT"));
+    card.appendChild(adcEl("p", "adc-why",
+      "This input is a sine wave, 1.000 V swinging plus or minus 0.500 V at 40 Hz, and one question " +
+      "costs 1 ms, so the wave moves while the 12 questions are asked. Convert with sample-and-hold " +
+      "OFF and watch the code smear. Then engage sample-and-hold, which freezes the input at the first " +
+      "question, convert again, and name the failure."));
+    var actsB = adcEl("div", "adc-actions", "");
+    var convOff = adcBtn("CONVERT (SAMPLE-AND-HOLD OFF)", "adc-btn");
+    convOff.id = "adcBConv";
+    convOff.addEventListener("click", adcConvOff);
+    var shBtn = adcBtn("ENGAGE SAMPLE-AND-HOLD", "adc-btn");
+    shBtn.id = "adcBSH";
+    shBtn.addEventListener("click", adcEngageSH);
+    var convOn = adcBtn("CONVERT (SAMPLE-AND-HOLD ON)", "adc-btn");
+    convOn.id = "adcBConv2";
+    convOn.addEventListener("click", adcConvOn);
+    actsB.appendChild(convOff); actsB.appendChild(shBtn); actsB.appendChild(convOn);
+    adcEls.bConv = convOff; adcEls.bSH = shBtn; adcEls.bConv2 = convOn;
+    card.appendChild(actsB);
+    var outB = adcEl("div", "adc-readout", "Convert with sample-and-hold OFF first.");
+    outB.id = "adcBOut"; outB.setAttribute("aria-live", "polite");
+    card.appendChild(outB);
+    adcEls.bOut = outB;
+    card.appendChild(adcEl("p", "adc-why", "Name the failure:"));
+    var actsD = adcEl("div", "adc-actions", "");
+    var o1 = adcBtn("THE REFERENCE VOLTAGE DRIFTED DURING THE CONVERSION", "adc-btn");
+    o1.id = "adcBOpt1";
+    var o2 = adcBtn("THE INPUT MOVED DURING THE 12 QUESTIONS; FREEZING IT FIRST IS THE FIX", "adc-btn");
+    o2.id = "adcBOpt2";
+    var o3 = adcBtn("TWELVE BITS ARE NOT ENOUGH TO RESOLVE A SINE WAVE", "adc-btn");
+    o3.id = "adcBOpt3";
+    o1.addEventListener("click", function () { adcDiagnose(1); });
+    o2.addEventListener("click", function () { adcDiagnose(2); });
+    o3.addEventListener("click", function () { adcDiagnose(3); });
+    actsD.appendChild(o1); actsD.appendChild(o2); actsD.appendChild(o3);
+    adcEls.bOpt1 = o1; adcEls.bOpt2 = o2; adcEls.bOpt3 = o3;
+    card.appendChild(actsD);
+    var statB = adcEl("p", "adc-status", "");
+    statB.id = "adcBStat"; statB.setAttribute("aria-live", "polite");
+    card.appendChild(statB);
+    adcEls.bStat = statB;
+
+    panel.appendChild(card);
+    adcSetT3Lock(true);
+  }
+  function adcSetT3Lock(locked) {
+    var ids = ["aCode", "aErr", "aSpike", "aCommit", "bConv", "bSH", "bConv2", "bOpt1", "bOpt2", "bOpt3"];
+    for (var i = 0; i < ids.length; i++) if (adcEls[ids[i]]) adcEls[ids[i]].disabled = locked;
+    if (adcEls.lock3) adcEls.lock3.textContent = locked ?
+      "LOCKED: CLEAR TRIAL 2 TO UNLOCK." : "TRIAL 3 IS OPEN. CLEAR BOTH STATIONS.";
+  }
+  function adcCommitA() {
+    if (adcSt.failed || adcSt.t3a) return;
+    var c = adcEls.aCode.value, e = adcEls.aErr.value, s = adcEls.aSpike.value;
+    if (!c.trim() || !e.trim() || !s.trim()) {
+      adcEls.aStat.textContent = "FILL ALL THREE FIELDS, THEN COMMIT.";
+      return;
+    }
+    if (ADC.verify3A(c, e, s)) {
+      adcSt.t3a = true;
+      adcEls.aStat.textContent = "STATION A PASS: CODE 2048, WORST-CASE ERROR 0.4 mV, " +
+        "AND THE 3.600 V SPIKE READS 4095, FULL SCALE FOREVER. THE CONVERTER CLIPS; IT DOES NOT MEASURE PAST ITS REFERENCE.";
+      adcEls.aCode.disabled = true; adcEls.aErr.disabled = true;
+      adcEls.aSpike.disabled = true; adcEls.aCommit.disabled = true;
+      adcLog("station A PASS: quantization budgeted, saturation named.", "good");
+      adcCheckCert();
+    } else {
+      adcStrike("Station A: the committed answers do not match the 12-bit math " +
+        "(code 2048, error 0.4 mV, spike 4095).");
+    }
+  }
+  function adcConvOff() {
+    if (adcSt.failed || adcSt.t3b) return;
+    var r = ADC.t3b();
+    adcSt.bSmeared = true;
+    adcEls.bOut.textContent = "S/H OFF: 12 questions, 12 different samples.\n" +
+      "CODE " + r.movingCode + ", READS " + ADC.fmtV(r.movingCode * 3300 / 4096) + ".\n" +
+      "FROZEN AT THE FIRST QUESTION THE INPUT WAS " + ADC.fmtV(r.frozen_mV) +
+      ": CODE " + r.frozenCode + ", READS " + ADC.fmtV(r.frozenCode * 3300 / 4096) + ".\n" +
+      "THE CODE SMEARED. ENGAGE SAMPLE-AND-HOLD AND CONVERT AGAIN.";
+    adcLog("station B: S/H off, code " + r.movingCode + " vs frozen " + r.frozenCode + ". Smeared.", "bad");
+  }
+  function adcEngageSH() {
+    if (adcSt.failed || adcSt.t3b) return;
+    adcSt.bHeldOn = true;
+    adcEls.bSH.disabled = true;
+    adcEls.bSH.textContent = "SAMPLE-AND-HOLD ENGAGED";
+    adcLog("station B: sample-and-hold engaged. The input freezes at the first question.", "");
+  }
+  function adcConvOn() {
+    if (adcSt.failed || adcSt.t3b) return;
+    if (!adcSt.bHeldOn) {
+      adcEls.bOut.textContent = "ENGAGE SAMPLE-AND-HOLD FIRST.";
+      return;
+    }
+    var r = ADC.t3b();
+    adcSt.bHeld = true;
+    adcEls.bOut.textContent = "S/H ON: INPUT FROZEN AT THE FIRST QUESTION.\n" +
+      "CODE " + r.frozenCode + ", READS " + ADC.fmtV(r.frozenCode * 3300 / 4096) + ".\n" +
+      "MATCHES THE FROZEN INPUT. NOW NAME THE FAILURE.";
+    adcLog("station B: S/H on, code " + r.frozenCode + " matches the frozen input.", "good");
+  }
+  function adcDiagnose(pick) {
+    if (adcSt.failed || adcSt.t3b) return;
+    if (!adcSt.bSmeared || !adcSt.bHeld) {
+      adcEls.bStat.textContent = "CONVERT WITH S/H OFF AND WITH S/H ON FIRST, THEN DIAGNOSE.";
+      return;
+    }
+    if (pick === 2) {
+      adcSt.t3b = true;
+      adcEls.bStat.textContent = "STATION B PASS: THE INPUT MOVED DURING THE 12 QUESTIONS. " +
+        "SAMPLE-AND-HOLD FREEZES IT FIRST. TRIAL 3 CLEAR.";
+      adcEls.bConv.disabled = true; adcEls.bSH.disabled = true; adcEls.bConv2.disabled = true;
+      adcEls.bOpt1.disabled = true; adcEls.bOpt2.disabled = true; adcEls.bOpt3.disabled = true;
+      adcLog("station B PASS: the moving input diagnosed.", "good");
+      adcCheckCert();
+    } else {
+      adcStrike("Station B: wrong diagnosis. The reference did not drift and twelve bits resolve " +
+        "a frozen sine just fine; the wave moved mid-conversion.");
+    }
+  }
+
+  /* ---------------- cert ---------------- */
+  function adcCheckCert() {
+    if (adcSt.t1done && adcSt.t2done && adcSt.t3a && adcSt.t3b && !adcSt.t3done) {
+      adcSt.t3done = true;
+      adcEls.banner.classList.add("show");
+      var d = new Date();
+      adcEls.certP.textContent = "THE CONVERT ROOM, BENCH 69, THE PROVING GROUND\n" +
+        "Certified " + d.toISOString().slice(0, 10) + "\n" +
+        "Trials: 4-bit SAR (predict every comparator), 8-bit SAR (predict every comparator), " +
+        "12-bit quantization budget plus saturation, sample-and-hold on a moving input.\n" +
+        "Strikes: " + adcSt.strikes + "/3.";
+      adcLog("ROOM CERTIFIED.", "good");
+      if (adcEls.banner.scrollIntoView) adcEls.banner.scrollIntoView({ block: "center" });
+    }
+  }
+  function adcDownloadCert() {
+    var txt = adcEls.certP.textContent;
+    var blob = new Blob(["The Convert Room qualification record\n\n" + txt + "\n"], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "convert-room-bench-69.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      URL.revokeObjectURL(a.href);
+      if (a.parentNode) a.parentNode.removeChild(a);
+    }, 500);
+  }
+
+  /* ---------------- build / open / close / reset ---------------- */
+  var ADC_INTRO_HTML = [
+    "<b>WHY THIS ROOM EXISTS</b> Every sensor reading your firmware ever took passed through an " +
+    "analog-to-digital converter, and the converter inside almost every microcontroller is the same " +
+    "machine: successive approximation. It asks one yes-or-no question per bit, most significant bit " +
+    "first: 'Is the input at least this big?' A 12-bit reading costs 12 questions and a single " +
+    "comparator. This is the peripheral that turns the analog world into numbers your code can use, " +
+    "and every question it asks is arithmetic you can do by hand.",
+    "<b>THE OBVIOUS ATTEMPTS</b> The fast way is a flash converter: one comparator per code, all " +
+    "deciding at once. For 12 bits that is 4096 comparators: fast and enormous. The cheap way is a " +
+    "counter: start at zero and count up until the count's voltage reaches the input. One comparator, " +
+    "but up to 4096 clocks for a single reading. At a 1 MHz clock that is 4 milliseconds per reading, " +
+    "about 250 readings a second. The SAR asks twelve smart questions instead: top half or bottom " +
+    "half, then which quarter, which eighth. Twelve questions, twelve bits, done. At the same 1 MHz " +
+    "clock that is 12 microseconds per reading: about 83,000 a second.",
+    "<b>THE WORKED EXAMPLE</b> A 4-bit converter, reference 4.096 V, so one step (one LSB) is exactly " +
+    "0.256 V. The input is 2.500 V. The machine asks: 'At least 2.048 V, half of full scale?' YES, " +
+    "bit 3 = 1. 'At least 3.072 V (2.048 + 1.024)?' NO, bit 2 = 0. 'At least 2.560 V (2.048 + 0.512)?' " +
+    "NO, bit 1 = 0. 'At least 2.304 V (2.048 + 0.256)?' YES, bit 0 = 1. Code 1001 = 9, reading " +
+    "2.304 V. The truth was 2.500 V, so the error is 0.196 V: under one step, never zero, never more " +
+    "than one step. That is the whole contract. Check every subtraction yourself; the arithmetic is " +
+    "the lesson.",
+    "<b>THE FAILURE MODES</b> Three, stated before you touch anything. One: quantization. The answer " +
+    "is always off by up to one step, so a 12-bit reading of a 3.3 V rail is honest to about 0.8 mV " +
+    "and no better; the last digit is hope, not data. Two: the input must hold still for all N " +
+    "questions. If it moves mid-conversion the code smears, which is why real converters freeze the " +
+    "input first with sample-and-hold. Three: saturation. Anything above the reference reads full " +
+    "scale forever. The converter does not measure past its reference, it clips."
+  ].join(" ");
+  if (typeof module !== "undefined" && module.exports && module.exports.ADC) {
+    module.exports.ADC.introHTML = ADC_INTRO_HTML;
+  }
+
+  function adcBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box || document.getElementById("adcBtn")) return;
+    adcSt = adcNewState();
+
+    var sty = document.createElement("style");
+    sty.id = "adcStyle";
+    sty.textContent = ADC_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "adcBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Convert Room";
+    b.addEventListener("click", adcOpen);
+    box.appendChild(b);
+
+    var ov = adcEl("div", "adc-overlay");
+    ov.id = "adcOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Convert Room");
+    var x = adcBtn("CLOSE", "adc-btn");
+    x.id = "adcXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Convert Room");
+    x.addEventListener("click", adcClose);
+    ov.appendChild(x);
+    adcEls.overlay = ov;
+    if (!adcEscBound) {
+      adcEscBound = true;
+      document.addEventListener("keydown", function (ev) {
+        if (ev.key === "Escape" && adcEls.overlay && adcEls.overlay.classList.contains("open")) adcClose();
+      });
+    }
+
+    var panel = adcEl("div", "adc-panel");
+    adcEls.panel = panel;
+    panel.appendChild(adcEl("div", "adc-kicker", "RISC-V BENCH 69"));
+    panel.appendChild(adcEl("h2", "adc-title", "The Convert Room"));
+    var sub = adcEl("p", "adc-sub", "");
+    sub.innerHTML = ADC_INTRO_HTML;
+    panel.appendChild(sub);
+
+    var strikes = adcEl("p", "adc-strikes", "STRIKES: 0/3");
+    strikes.id = "adcStrikes";
+    strikes.setAttribute("aria-live", "polite");
+    adcEls.strikes = strikes;
+    panel.appendChild(strikes);
+
+    adcBuildT0(panel);
+    adcBuildTrial(panel, 1);
+    adcBuildTrial(panel, 2);
+    adcBuildT3(panel);
+
+    var fail = adcEl("div", "adc-card", "");
+    fail.id = "adcFailCard";
+    fail.style.display = "none";
+    fail.appendChild(adcEl("h3", "", "THREE STRIKES"));
+    fail.appendChild(adcEl("p", "adc-why",
+      "The room failed. The converter does not negotiate: the comparator answers what it answers. " +
+      "Reset and run it again: call AT LEAST only when the meter truly reaches the threshold, budget " +
+      "half a step of error, and freeze a moving input before the questions start."));
+    var reset = adcBtn("RESET ROOM", "adc-btn solid");
+    reset.id = "adcResetBtn";
+    reset.addEventListener("click", adcResetRoom);
+    fail.appendChild(reset);
+    adcEls.failCard = fail;
+    panel.appendChild(fail);
+
+    var banner = adcEl("div", "adc-banner");
+    banner.id = "adcBanner";
+    banner.appendChild(adcEl("h3", "", "ROOM CERTIFIED"));
+    var certP = adcEl("div", "adc-cert", "");
+    certP.id = "adcCertLine";
+    banner.appendChild(certP);
+    var dl = adcBtn("DOWNLOAD CERTIFICATE", "adc-btn");
+    dl.id = "adcCertDl";
+    dl.addEventListener("click", adcDownloadCert);
+    banner.appendChild(dl);
+    adcEls.banner = banner; adcEls.certP = certP;
+    panel.appendChild(banner);
+
+    var logCard = adcEl("div", "adc-card");
+    logCard.appendChild(adcEl("h3", "", "BENCH LOG"));
+    var log = adcEl("div", "adc-log", "");
+    log.id = "adcLog";
+    log.setAttribute("aria-live", "polite");
+    logCard.appendChild(log);
+    panel.appendChild(logCard);
+    adcEls.log = log;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    adcLog("bench open. One rule: the comparator answers what it answers; your job is to call it before it does.", "");
+  }
+  function adcOpen() {
+    if (adcEls.overlay) adcEls.overlay.classList.add("open");
+  }
+  function adcClose() {
+    if (adcEls.overlay) adcEls.overlay.classList.remove("open");
+  }
+  function adcResetRoom() {
+    var sty = document.getElementById("adcStyle");
+    if (sty && sty.parentNode) sty.parentNode.removeChild(sty);
+    var btn = document.getElementById("adcBtn");
+    if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
+    if (adcEls.overlay && adcEls.overlay.parentNode) adcEls.overlay.parentNode.removeChild(adcEls.overlay);
+    adcEls = {};
+    adcSt = null;
+    adcBuild();
+    adcOpen();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", adcBuild);
+  } else {
+    adcBuild();
+  }
+})();
