@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260916-pg86">
+<meta name="build-version" content="v20260916-pg87">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -177,11 +177,6 @@ a { color: var(--ember); }
 }
 .wordmark .outline { color: transparent; -webkit-text-stroke: 1.5px var(--paper); }
 @supports not (-webkit-text-stroke: 1px #000) { .wordmark .outline { color: var(--paper); } }
-/* Header lede: one plain line under the wordmark for cold visitors. */
-.pg-lede {
-  font-family: var(--font-m); font-size: 13px; letter-spacing: 0.02em;
-  color: var(--dim); max-width: 46ch; margin: 18px 0 0;
-}
 @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
 
 /* ---------- Filter deck (sticky glass; the grid melts beneath it) ---------- */
@@ -581,7 +576,6 @@ body.pg-any-open div[class*="-overlay"].open {
       </div>
     </div>
     <h1 class="wordmark"><span class="wl"><span>The Proving</span></span><span class="wl"><span class="outline">Ground</span></span></h1>
-    <p class="pg-lede">Real working engineering benches, running live in your browser. No account, nothing to install.</p>
   </header>
 
   <main id="benches" aria-label="Engineering benches"></main>
@@ -1059,7 +1053,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-16-pg86";
+var PG_REV = "2026-09-16-pg87";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
