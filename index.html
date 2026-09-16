@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260916-pg90">
+<meta name="build-version" content="v20260916-pg91">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -344,7 +344,7 @@ a { color: var(--ember); }
     padding: 2px 6px; margin-right: 8px; vertical-align: 1px;
   }
   .blaunch { grid-area: launch; }
-  .btitle-meta { margin-left: 0; }
+  .btitle-meta { margin-left: 0; flex-wrap: wrap; row-gap: 6px; }
 }
 
 /* ---------- Footer: the ventures, as unmistakable external rows ---------- */
@@ -1058,7 +1058,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-16-pg90";
+var PG_REV = "2026-09-16-pg91";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
