@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260916-pg92">
+<meta name="build-version" content="v20260916-pg93">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -540,20 +540,23 @@ body.pg-any-open #pgShareFab { display: block; }
 }
 body.pg-any-open #pgHireFab { display: block; }
 #pgHireFab:active { transform: scale(0.92); }
-/* FAB safe zone: open overlays reserve room around all three fixed controls,
-   so they can never cover bench UI. The !important is load-bearing: the
-   WebView hardening above pins overlay padding with !important, which had
-   silently defeated this rule (computed 16px, never 252px). */
-body.pg-any-open div[class*="-overlay"].open {
+/* FAB safe zone: while a bench is open, the fixed HIRE/SHARE/CLOSE rail
+   occupies the rightmost 80px and bottom 240px of the viewport. Bench
+   modules render their content in a *-panel child of the *-overlay, so the
+   safe zone must land on the panel: overlay-level padding is covered by
+   inset:0 panels and full-width panels alike, and never moves text. (The
+   old overlay-level rule was additionally defeated by the WebView
+   hardening's !important overlay padding: computed 16px, never 252px.) */
+body.pg-any-open div[class*="-overlay"].open > div[class*="-panel"] {
   padding-bottom: calc(252px + env(safe-area-inset-bottom)) !important;
 }
 @media (max-width: 640px) {
-  /* Right rail too: on phones the content column spans the full width, so
-     bench copy scrolled straight under the fixed HIRE/SHARE/CLOSE buttons
-     (measured on The Gate Room: text ran x=16..364 beneath fabs at x=310..374).
-     64px fab + 16px edge + 16px gutter. Desktop keeps full width: its content
-     column never reaches the rail. */
-  body.pg-any-open div[class*="-overlay"].open {
+  /* Right rail too, phones only: the content column spans the full width,
+     so bench copy scrolled straight under the fixed buttons (measured on
+     The Gate Room: text ran x=16..364 beneath fabs at x=310..374). 64px fab
+     + 16px edge + 16px gutter. Desktop is untouched: its content column
+     never reaches the rail. */
+  body.pg-any-open div[class*="-overlay"].open > div[class*="-panel"] {
     padding-right: 96px !important;
   }
 }
@@ -1070,7 +1073,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-16-pg92";
+var PG_REV = "2026-09-16-pg93";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
