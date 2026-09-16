@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260916-pg88">
+<meta name="build-version" content="v20260916-pg89">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -1053,7 +1053,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-16-pg88";
+var PG_REV = "2026-09-16-pg89";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
@@ -1331,15 +1331,6 @@ function pgRender() {
   var count = el("p", "deck-count");
   count.id = "deckCount";
   deck.appendChild(count);
-  /* Deck hire pill: the header CTA scrolls away with the hero, and the
-     overlay HIRE fab only exists inside an open bench, so the sticky deck
-     keeps a contact action in reach while browsing the index. Reuses the
-     header .hire-btn treatment; the chooser binds every [data-brief]. */
-  var deckHire = el("button", "hire-btn");
-  deckHire.type = "button";
-  deckHire.textContent = "HIRE CHRIS";
-  deckHire.setAttribute("data-brief", "general");
-  deck.appendChild(deckHire);
   main.appendChild(deck);
 
   /* Blueprint title block: every label is real data rendered from the registry. */
