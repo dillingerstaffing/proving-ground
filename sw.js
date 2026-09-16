@@ -2,7 +2,7 @@
 // Bump VERSION whenever this file changes: the browser only installs a new
 // worker when the bytes differ, and the page reloads itself on
 // controllerchange, which is how stuck clients get unstuck automatically.
-const VERSION = 'v20260915-1425';
+const VERSION = 'v20260916-1900';
 const CACHE = 'proving-ground-' + VERSION;
 const OFFLINE_URL = 'index.html';
 

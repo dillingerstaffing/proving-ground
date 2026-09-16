@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260916-pg93">
+<meta name="build-version" content="v20260916-pg94">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -48,6 +48,20 @@
   Object.defineProperty(shim, "length", { get: function () { return Object.keys(mem).length; } });
   try { Object.defineProperty(window, "localStorage", { value: shim, configurable: true, writable: true }); }
   catch (e2) { try { window.localStorage = shim; } catch (e3) {} }
+})();
+</script>
+<script>
+/* Theme: notebook is the default; a stored visitor choice wins.
+   Shared key emi-site-theme across all sites. Runs before the stylesheet
+   is parsed so the first paint is already the right theme (no flash of
+   the wrong one). */
+(function () {
+  try {
+    var t = localStorage.getItem("emi-site-theme");
+    document.documentElement.dataset.theme = (t === "classic") ? "classic" : "notebook";
+  } catch (e) {
+    document.documentElement.dataset.theme = "notebook";
+  }
 })();
 </script>
 <style>
@@ -565,9 +579,192 @@ body.pg-any-open div[class*="-overlay"].open > div[class*="-panel"] {
 .filter:active, .rv-btn:active, .rv-tab:active, .rv-mini:active { transform: scale(0.94); }
 .rv-close:active { transform: scale(0.96); }
 
+/* ============================================================
+   Theme system: notebook (default) and classic.
+   :root carries the classic financial-terminal theme, untouched. Everything
+   below re-voices the same markup in the notebook design language: flat
+   warm paper, committed dark ink, one sanguine accent reserved for
+   affordances and annotations, hairline rules, serif article type,
+   no glow, no gradients, no texture.
+   Bench instruments stay on ink plates: inside *-overlay elements the
+   classic dark palette is restored, so every bench renders exactly as
+   designed, like an evidence figure pasted into the notebook. Tonal
+   transitions keep the switch smooth; the wipe reveal is driven by the
+   view-transition API from the toggle's position.
+   ============================================================ */
+[data-theme="notebook"] {
+  --ink: #ece6d5;
+  --panel: #e3dac2;
+  --panel-2: #d9cfae;
+  --paper: #241f17;
+  --steel: #5e5648;
+  --dim: #8d8474;
+  --line: #c9bfa4;
+  --ember: #8c3f22;
+  --ember-deep: #6e3018;
+  --ember-glow: rgba(140, 63, 34, 0.22);
+  --bad: #a3271e;
+  --ice: #33527a;
+  --amber: #8a5a18;
+  --mint: #2f6b44;
+  --acid: #8c3f22;
+  --cyan: #33527a;
+  --orange: #8a5a18;
+  --black: #241f17;
+  --font-d: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+  color-scheme: light;
+}
+html[data-theme="notebook"] { background: #ece6d5; }
+[data-theme="notebook"] body {
+  background: var(--ink);
+  background-image: none;
+  color: var(--paper);
+  font-family: var(--font-d);
+}
+[data-theme="notebook"] ::selection { background: var(--ember); color: #f4efe0; }
+/* Bench instruments stay on ink plates: restore the classic dark palette
+   inside bench overlays so every bench renders exactly as designed. */
+[data-theme="notebook"] div[class*="-overlay"] {
+  --ink: #0a0c0e;
+  --panel: #10141a;
+  --panel-2: #141a21;
+  --paper: #f2ede3;
+  --steel: #9aa3ad;
+  --dim: #6b7480;
+  --line: rgba(242, 237, 227, 0.13);
+  --ember: #ff5a1f;
+  --ember-deep: #b53c0d;
+  --ember-glow: rgba(255, 90, 31, 0.35);
+  --bad: #ff5d5d;
+  --ice: #7cc4ff;
+  --amber: #ffbe4d;
+  --mint: #7de0a8;
+  --acid: #ff5a1f;
+  --cyan: #7cc4ff;
+  --orange: #ffbe4d;
+  --black: #05070a;
+  --font-d: "Space Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme: dark;
+}
+/* Tonal timing on theme switches (both themes). Elements that own their
+   press/hover transitions are untouched. */
+body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
+  transition: background-color 0.45s ease, color 0.45s ease, border-color 0.45s ease;
+}
+/* Scrollbars: paper track, ink thumb. */
+[data-theme="notebook"] ::-webkit-scrollbar-track { background: #ece6d5; }
+[data-theme="notebook"] ::-webkit-scrollbar-thumb { background: #b3a685; border: 2px solid #ece6d5; }
+[data-theme="notebook"] ::-webkit-scrollbar-thumb:hover { background: #8c3f22; }
+/* Skip link: sanguine plate, paper text. */
+[data-theme="notebook"] .skip { background: var(--ember); color: #f4efe0; }
+/* Header mark: committed ink, sanguine sigil. */
+[data-theme="notebook"] .sigil .draw-ring { stroke: #8c3f22; }
+[data-theme="notebook"] .sigil path.draw-core { fill: #8c3f22; }
+[data-theme="notebook"] .sigil circle.draw-core { fill: #ece6d5; }
+/* Sticky filter deck: flat paper, hairline only. */
+[data-theme="notebook"] .deck {
+  background: rgba(236, 230, 213, 0.96);
+  box-shadow: inset 0 1px 0 rgba(36, 31, 23, 0.06);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+[data-theme="notebook"] .deck::after {
+  background: linear-gradient(to bottom, rgba(236, 230, 213, 0.55), rgba(236, 230, 213, 0));
+}
+[data-theme="notebook"] .filters { background: rgba(227, 218, 194, 0.75); }
+[data-theme="notebook"] .filter.is-on { color: #f4efe0; }
+[data-theme="notebook"] .btitle { background: rgba(227, 218, 194, 0.5); }
+[data-theme="notebook"] .brow:hover { background: rgba(36, 31, 23, 0.05); }
+[data-theme="notebook"] .vrow:hover { background: rgba(140, 63, 34, 0.06); }
+/* Hire button: ink plate at rest, sanguine fill on hover. */
+[data-theme="notebook"] .hire-btn:hover, [data-theme="notebook"] .hire-btn:focus-visible {
+  background: var(--ember); color: #f4efe0;
+}
+/* FAB rail: sanguine plates, paper glyphs, soft ink shadows. */
+[data-theme="notebook"] #pgCloseFab, [data-theme="notebook"] #pgHireFab {
+  background: var(--ember); border-color: var(--ember); color: #f4efe0;
+  box-shadow: 0 6px 20px rgba(36, 31, 23, 0.35);
+}
+[data-theme="notebook"] #pgShareFab { border-color: var(--ember); color: var(--ember); }
+/* Chooser dialog: paper card, ink scrim. */
+[data-theme="notebook"] .pg-chooser { box-shadow: 0 18px 48px rgba(36, 31, 23, 0.25); }
+[data-theme="notebook"] .pg-chooser::backdrop { background: rgba(36, 31, 23, 0.45); }
+/* Toast: paper card, sanguine keyline. */
+[data-theme="notebook"] #pgToast { box-shadow: 0 12px 32px rgba(36, 31, 23, 0.28); }
+/* The page-level toast from bench modules hardcodes a dark surface:
+   keep it as an ink plate, keyed in paper ink. */
+[data-theme="notebook"] .sb-toast { background: #242019; color: #f4efe0; border-color: #b3a685; }
+/* ---- Diagram discipline (notebook only) ----
+   Bench diagrams live on ink plates inside *-overlay elements; the classic
+   theme keeps its original visuals untouched. Two devices from the
+   notebook research, applied as presentation only (no bench logic):
+   1. Direct keying: separate legend bars become marginal keys, a hairline
+      rule and micro-type keyed to the diagram, never decorative bars.
+      Swatch chips keep their functional colors (they key the legend to
+      the diagram) inside hairline key borders.
+   2. Ink roles: revision and superseded marks (killed, struck, stale)
+      take the sanguine strike; committed diagram ink stays bright,
+      provisional annotation stays dim. */
+[data-theme="notebook"] div[class*="-overlay"] [class*="-legend"] {
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+[data-theme="notebook"] div[class*="-overlay"] [class*="-legend"] i,
+[data-theme="notebook"] div[class*="-overlay"] [class*="-legend"] .sw,
+[data-theme="notebook"] div[class*="-overlay"] [class*="-legend"] .th-sw {
+  border: 1px solid var(--steel);
+}
+[data-theme="notebook"] div[class*="-overlay"] canvas {
+  border-radius: 2px;
+}
+[data-theme="notebook"] div[class*="-overlay"] .ph-trace tr.killed td,
+[data-theme="notebook"] div[class*="-overlay"] .td-opt.struck,
+[data-theme="notebook"] div[class*="-overlay"] .fr-cell.stale {
+  color: #c98a63;
+  text-decoration-color: #ff5a1f;
+}
+/* ---- The theme toggle: a quiet folio mark, not a nav link ---- */
+.theme-toggle {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.theme-toggle:hover { border-color: var(--ember); }
+.theme-toggle:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+.theme-toggle-mark { display: flex; width: 12px; height: 12px; transition: transform 0.5s cubic-bezier(0.3, 0.7, 0.2, 1); }
+.theme-toggle-mark i { display: block; width: 6px; height: 12px; }
+.theme-toggle-mark i:first-child { background: #ece6d5; }
+.theme-toggle-mark i:last-child { background: #241f17; border-left: 1px solid #ece6d5; }
+.theme-toggle.is-flipped .theme-toggle-mark { transform: rotate(180deg); }
+/* ---- Theme wipe: a calm radial reveal from the toggle ---- */
+::view-transition-old(root), ::view-transition-new(root) {
+  animation: none; mix-blend-mode: normal;
+}
+::view-transition-new(root) {
+  z-index: 2147483647;
+  clip-path: circle(0px at var(--tx, 50vw) var(--ty, 12px));
+  animation: theme-wipe 0.7s cubic-bezier(0.32, 0.72, 0.24, 1) forwards;
+}
+@keyframes theme-wipe {
+  to { clip-path: circle(150vmax at var(--tx, 50vw) var(--ty, 12px)); }
+}
+
 /* Motion sensitivity: honor it, always. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+  ::view-transition-old(root), ::view-transition-new(root) { animation: none !important; }
+  .theme-toggle-mark { transition: none; }
 }
 </style>
 <link rel="manifest" href="manifest.json">
@@ -588,6 +785,9 @@ body.pg-any-open div[class*="-overlay"].open > div[class*="-panel"] {
       <div class="head-group">
         <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">09</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;ALL&nbsp;SYSTEMS&nbsp;NOMINAL</span></span></div>
         <button class="hire-btn" type="button" data-brief="general">HIRE CHRIS</button>
+        <button class="theme-toggle" type="button" aria-label="Switch to terminal theme" title="Switch theme">
+          <span class="theme-toggle-mark" aria-hidden="true"><i></i><i></i></span>
+        </button>
       </div>
     </div>
     <h1 class="wordmark"><span class="wl"><span>The Proving</span></span><span class="wl"><span class="outline">Ground</span></span></h1>
@@ -1073,7 +1273,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-16-pg93";
+var PG_REV = "2026-09-16-pg94";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
@@ -1641,6 +1841,50 @@ if ('serviceWorker' in navigator) {
   // A fresh launch (the home-screen app) may never fire visibilitychange,
   // so check once shortly after load as well.
   setTimeout(checkVersion, 2500);
+})();
+</script>
+<script>
+/* Theme engine: notebook is the default, a stored choice wins (the head
+   script already set data-theme before first paint). The toggle flips
+   live; with the view-transition API the new theme wipes in radially
+   from the toggle, otherwise the tonal CSS transitions carry it. */
+(function () {
+  var KEY = 'emi-site-theme';
+  var root = document.documentElement;
+  var COLORS = { notebook: '#ece6d5', classic: '#ff5a1f' };
+  function current() { return root.dataset.theme === 'classic' ? 'classic' : 'notebook'; }
+  function otherName(t) { return t === 'classic' ? 'notebook folio' : 'terminal'; }
+  function apply(t) {
+    root.dataset.theme = t;
+    var metas = document.querySelectorAll('meta[name="theme-color"]');
+    for (var i = 0; i < metas.length; i++) metas[i].setAttribute('content', COLORS[t]);
+    var cs = document.querySelector('meta[name="color-scheme"]');
+    if (cs) cs.setAttribute('content', t === 'notebook' ? 'light' : 'dark');
+    var btn = document.querySelector('.theme-toggle');
+    if (btn) {
+      btn.setAttribute('aria-label', 'Switch to ' + otherName(t) + ' theme');
+      btn.classList.toggle('is-flipped', t === 'classic');
+    }
+  }
+  function toggle() {
+    var next = current() === 'classic' ? 'notebook' : 'classic';
+    try { localStorage.setItem(KEY, next); } catch (_) {}
+    var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var btn = document.querySelector('.theme-toggle');
+    if (btn) {
+      var r = btn.getBoundingClientRect();
+      root.style.setProperty('--tx', Math.round(r.left + r.width / 2) + 'px');
+      root.style.setProperty('--ty', Math.round(r.top + r.height / 2) + 'px');
+    }
+    if (!reduced && document.startViewTransition) {
+      document.startViewTransition(function () { apply(next); });
+    } else {
+      apply(next);
+    }
+  }
+  var btn = document.querySelector('.theme-toggle');
+  if (btn) btn.addEventListener('click', toggle);
+  apply(current());
 })();
 </script>
 </body>
