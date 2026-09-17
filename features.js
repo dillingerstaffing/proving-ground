@@ -51379,3 +51379,993 @@ if (typeof module !== "undefined" && module.exports) {
     adcBuild();
   }
 })();
+
+/* BENCH 70: THE TIMER ROOM (riscv)
+   The machine timer: mtime ticks at 1 MHz and never stops; mtimecmp is the
+   deadline. The hardware raises a machine-timer interrupt the instant
+   mtime >= mtimecmp. Three trials: call the deadline arithmetic by hand,
+   hold a 2.00 Hz tick against handler latency (re-arm discipline), then arm
+   the past on purpose and disarm the interrupt storm the hardware way.
+   Pure sim hooks live in TR for the smoke test; the DOM engine below runs
+   the same code in real time. */
+(function () {
+
+  /* ---------------- pure hooks (testable, no DOM) ---------------- */
+  var TR = {
+    TICKS_PER_S: 1000000,
+    DISARM_STR: "18446744073709551615",
+    DISARM_YEARS: "about 584,000 years",
+    /* deadline value for a delay of delayMs from a snapshot mtime (us) */
+    deadlineFor: function (mtimeUs, delayMs) {
+      return Math.floor(mtimeUs) + Math.round(delayMs * 1000);
+    },
+    /* re-arm strategies. A: from now. B: from the last deadline. C: one shot. */
+    rearm: function (strategy, mtimeUs, lastDeadlineUs, periodUs) {
+      if (strategy === "A") return Math.floor(mtimeUs) + periodUs;
+      if (strategy === "B") return lastDeadlineUs + periodUs;
+      return null;
+    },
+    isPast: function (mtimeUs, deadlineUs) { return deadlineUs <= mtimeUs; },
+    /* trial 1 prediction: exact integer match against snapshot + 750,000 */
+    predict1: function (snapshotUs, typed) {
+      var t = String(typed).replace(/[\s,]/g, "");
+      if (!/^\d+$/.test(t)) return { ok: false, expected: snapshotUs + 750000 };
+      return { ok: parseInt(t, 10) === snapshotUs + 750000, expected: snapshotUs + 750000 };
+    },
+    /* trial 2 grading: mean interval within tolerance of target */
+    gradeRun: function (intervalsMs, targetMs, tolMs) {
+      if (!intervalsMs || intervalsMs.length === 0) return { n: 0, mean: 0, ok: false };
+      var s = 0, i;
+      for (i = 0; i < intervalsMs.length; i++) s += intervalsMs[i];
+      var mean = s / intervalsMs.length;
+      return { n: intervalsMs.length, mean: mean, ok: Math.abs(mean - targetMs) <= tolMs };
+    },
+    hz: function (meanMs) { return 1000 / meanMs; }
+  };
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.TR = TR;
+  }
+
+  /* ---------------- state ---------------- */
+  var trSt = null, trEls = {}, trEscBound = false, trPumpId = 0;
+  function trNewState() {
+    return {
+      strikes: 0, failed: false, certified: false,
+      sim: { baseUs: 0, baseMs: 0, cmpUs: null },
+      mode: "idle",
+      /* trial 1 */
+      t1snap: null, t1a: false, t1b: false, t1cPoll: false, t1cSleep: false,
+      t1armStartUs: 0, t1sleepStartUs: 0,
+      /* trial 2 */
+      t2strat: null, t2fires: 0, t2intervals: [], t2lastFireUs: 0,
+      t2lastDl: 0, t2done: false, t2running: false,
+      /* trial 3 */
+      t3pred: false, t3disarmed: false, t3healthy: false, t3done: false,
+      /* storm + heartbeat */
+      stormTicks: 0, lastFireUs: 0, heart: 0
+    };
+  }
+  function trReduced() {
+    return (typeof pgReduced !== "undefined") && pgReduced;
+  }
+  function trNowMs() {
+    return (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+  }
+
+  /* ---------------- dom helpers ---------------- */
+  function trEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== "") e.textContent = text;
+    return e;
+  }
+  function trBtn(label, cls) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = cls || "tmr-btn";
+    b.textContent = label;
+    return b;
+  }
+
+  var TR_CSS = [
+    ".tmr-overlay{position:fixed;inset:0;z-index:90;background:var(--ink);display:none;overflow-y:auto;}",
+    ".tmr-overlay.open{display:block;}",
+    ".tmr-panel{max-width:860px;margin:0 auto;padding:28px 18px 60px;color:var(--paper);}",
+    ".tmr-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);}",
+    ".tmr-title{font-family:'Space Grotesk',sans-serif;font-size:34px;margin:6px 0 10px;color:var(--paper);}",
+    ".tmr-sub{font-size:14px;line-height:1.65;color:var(--dim);max-width:72ch;margin:0 0 18px;}",
+    ".tmr-sub b{color:var(--paper);}",
+    ".tmr-intro{font-size:13px;line-height:1.7;color:var(--dim);max-width:78ch;margin:0 0 18px;}",
+    ".tmr-intro b{color:var(--paper);}",
+    ".tmr-strikes{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.14em;color:var(--paper);margin:0 0 16px;}",
+    ".tmr-card{border:1px solid var(--line);background:var(--panel);padding:18px;margin:0 0 16px;}",
+    ".tmr-card h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--paper);margin:0 0 8px;}",
+    ".tmr-why{font-size:13px;line-height:1.6;color:var(--dim);margin:0 0 14px;max-width:72ch;}",
+    ".tmr-why b{color:var(--paper);}",
+    ".tmr-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.06em;background:transparent;color:var(--paper);border:1px solid var(--line);padding:12px 14px;min-height:48px;cursor:pointer;text-align:left;}",
+    ".tmr-btn:hover{border-color:var(--ember);}",
+    ".tmr-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".tmr-btn:disabled{opacity:.38;cursor:not-allowed;}",
+    ".tmr-btn.solid{background:var(--ember);border-color:var(--ember);color:var(--ink);font-weight:700;}",
+    ".tmr-btn.picked{border-color:var(--ember);color:var(--ember);}",
+    ".tmr-actions{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 12px;}",
+    ".tmr-actions .tmr-btn{text-align:center;min-width:180px;}",
+    ".tmr-readout{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:var(--dim);background:var(--panel);border:1px solid var(--line);padding:12px 14px;margin:0 0 12px;min-height:44px;white-space:pre-wrap;}",
+    ".tmr-status{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.08em;color:var(--dim);margin:0 0 12px;line-height:1.7;}",
+    ".tmr-status b{color:var(--paper);}",
+    ".tmr-meter{font-family:'IBM Plex Mono',monospace;font-size:15px;letter-spacing:.06em;color:var(--paper);border:1px solid var(--line);background:var(--panel);padding:12px 14px;margin:0 0 12px;}",
+    ".tmr-meter .v{color:var(--ember);}",
+    ".tmr-lamp{display:flex;align-items:center;gap:12px;margin:0 0 12px;}",
+    ".tmr-dot{width:48px;height:48px;border:1px solid var(--line);background:var(--panel);flex:0 0 auto;}",
+    ".tmr-dot.on{background:var(--ember);border-color:var(--ember);}",
+    ".tmr-dotlbl{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.1em;color:var(--dim);}",
+    ".tmr-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 12px;}",
+    ".tmr-row label{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.08em;color:var(--dim);}",
+    ".tmr-num{font-family:'IBM Plex Mono',monospace;font-size:14px;background:var(--panel);border:1px solid var(--line);color:var(--paper);padding:12px;min-height:48px;width:220px;}",
+    ".tmr-num:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".tmr-storm{border:1px solid var(--ember);padding:14px;margin:0 0 12px;display:none;}",
+    ".tmr-storm.show{display:block;}",
+    ".tmr-storm h4{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.14em;color:var(--ember);margin:0 0 6px;}",
+    ".tmr-storm p{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:var(--dim);margin:0;}",
+    ".tmr-banner{border:1px solid var(--ember);padding:18px;margin:0 0 16px;display:none;}",
+    ".tmr-banner.show{display:block;}",
+    ".tmr-banner h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--ember);margin:0 0 8px;}",
+    ".tmr-cert{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:var(--dim);margin:0 0 12px;white-space:pre-wrap;}",
+    ".tmr-log{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.75;color:var(--dim);max-height:220px;overflow-y:auto;border:1px solid var(--line);padding:12px 14px;margin:0 0 12px;}",
+    ".tmr-log .t{color:var(--dim);}",
+    ".tmr-log .bad{color:var(--ember);}",
+    ".tmr-log .good{color:var(--mint);}",
+    ".tmr-fail{border:1px solid var(--ember);padding:18px;margin:0 0 16px;display:none;}",
+    ".tmr-fail.show{display:block;}",
+    ".tmr-fail h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--ember);margin:0 0 8px;}",
+    ".tmr-fail p{font-size:13px;line-height:1.6;color:var(--dim);margin:0 0 12px;}"
+  ].join("\n");
+
+  /* ---------------- log and strikes ---------------- */
+  function trLog(msg, cls) {
+    if (!trEls.log) return;
+    var line = trEl("div", cls || "", "");
+    var t = new Date();
+    var hh = String(t.getHours()).padStart(2, "0"), mm = String(t.getMinutes()).padStart(2, "0"),
+        ss = String(t.getSeconds()).padStart(2, "0");
+    line.appendChild(trEl("span", "t", "[" + hh + ":" + mm + ":" + ss + "] "));
+    line.appendChild(document.createTextNode(msg));
+    trEls.log.appendChild(line);
+    trEls.log.scrollTop = trEls.log.scrollHeight;
+  }
+  function trSetStrikes() {
+    if (trEls.strikes) trEls.strikes.textContent = "STRIKES: " + trSt.strikes + "/3";
+  }
+  function trStrike(msg) {
+    if (trSt.failed) return;
+    trSt.strikes++;
+    trSetStrikes();
+    trLog("STRIKE " + trSt.strikes + "/3: " + msg, "bad");
+    if (trSt.strikes >= 3) {
+      trSt.failed = true;
+      trEls.failCard.classList.add("show");
+      trLog("three strikes. The room failed.", "bad");
+      if (trEls.failCard.scrollIntoView) trEls.failCard.scrollIntoView({ block: "center" });
+    }
+  }
+
+  /* ---------------- the machine: mtime, mtimecmp, the pump ---------------- */
+  function trMtimeUs() {
+    var s = trSt.sim;
+    return s.baseUs + (trNowMs() - s.baseMs) * 1000;
+  }
+  function trFmt(n) {
+    return String(Math.floor(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  }
+  function trRenderMtime(m) {
+    if (trEls.mtime) trEls.mtime.innerHTML = "";
+    if (!trEls.mtime) return;
+    trEls.mtime.appendChild(trEl("span", "", "MTIME "));
+    trEls.mtime.appendChild(trEl("span", "v", trFmt(m)));
+    trEls.mtime.appendChild(trEl("span", "", "   MTIMECMP "));
+    trEls.mtime.appendChild(trEl("span", "v",
+      trSt.sim.cmpUs === null ? "(disarmed)" : trFmt(trSt.sim.cmpUs)));
+  }
+  function trRenderHeart(starved) {
+    if (!trEls.heart) return;
+    trEls.heart.innerHTML = "";
+    trEls.heart.appendChild(trEl("span", "", "MAIN LOOP: "));
+    var b = trEl("b", "", starved ? "STARVED" : "BEATING");
+    trEls.heart.appendChild(b);
+    if (!starved) trEls.heart.appendChild(document.createTextNode("  (heartbeat " + trSt.heart + ")"));
+  }
+  function trFlashLamp() {
+    if (!trEls.dot) return;
+    trEls.dot.classList.add("on");
+    trEls.dotlbl.textContent = "LAMP: ON (interrupt fired)";
+    setTimeout(function () {
+      if (trEls.dot) trEls.dot.classList.remove("on");
+      if (trEls.dotlbl) trEls.dotlbl.textContent = "LAMP: OFF";
+    }, trReduced() ? 60 : 150);
+  }
+  function trBlinkLamp() {
+    if (!trEls.dot) return;
+    var on = trEls.dot.classList.toggle("on");
+    trEls.dotlbl.textContent = on ? "LAMP: ON" : "LAMP: OFF";
+  }
+  function trShowStorm(on, note) {
+    if (!trEls.storm) return;
+    trEls.storm.classList.toggle("show", !!on);
+    if (on && note && trEls.stormNote) trEls.stormNote.textContent = note;
+  }
+
+  /* One pump tick: advance the model, fire if past the deadline. The heartbeat
+     only advances on pump ticks with no fire: that is the honest single-thread
+     model of preemption, an interrupt storm freezes the main loop. */
+  function trPump() {
+    if (!trSt || !trEls.overlay || !trEls.overlay.classList.contains("open")) return;
+    var m = trMtimeUs();
+    var fired = false;
+    if (trSt.sim.cmpUs !== null && m >= trSt.sim.cmpUs) {
+      fired = true;
+      trOnFire(m);
+    }
+    if (!fired) {
+      trSt.heart++;
+      if (trSt.heart % 25 === 0) trRenderHeart(false);
+    } else {
+      trRenderHeart(true);
+    }
+    trRenderMtime(m);
+  }
+
+  function trOnFire(m) {
+    var mode = trSt.mode;
+    var gapUs = trSt.lastFireUs ? (m - trSt.lastFireUs) : 1e12;
+    trSt.lastFireUs = m;
+    if (mode === "t2break") {
+      /* every fire here re-arms in the past by construction: count it directly.
+         (gapUs is useless here because the simulated 600 ms handler work jumps
+         mtime forward 600,000 ticks per fire.) */
+      trSt.stormTicks++;
+    } else if (gapUs < 30000) {
+      trSt.stormTicks++;
+    } else {
+      trSt.stormTicks = 0;
+      trShowStorm(false);
+    }
+    if (mode === "dofirst") {
+      trSt.sim.cmpUs = null;
+      trSt.mode = "idle";
+      trFlashLamp();
+      var ms = (m - trSt.t1armStartUs) / 1000;
+      trEls.doOut.textContent = "RANG at " + ms.toFixed(1) + " ms (target 2,000 ms). " +
+        "The arithmetic was: snapshot + 2,000,000. Nothing polled.";
+      trLog("do-first: rang at " + ms.toFixed(1) + " ms.", "good");
+    } else if (mode === "t1arm") {
+      trSt.sim.cmpUs = null;
+      trSt.mode = "idle";
+      trFlashLamp();
+      var ms1 = (m - trSt.t1armStartUs) / 1000;
+      trEls.t1armOut.textContent = "FIRED at " + ms1.toFixed(1) + " ms wall. Your arithmetic said 750.0 ms; " +
+        "the extra is interrupt latency (deadline to handler), not your addition.";
+      trLog("trial 1: deadline fired at " + ms1.toFixed(1) + " ms.", "good");
+      if (!trSt.t1b) { trSt.t1b = true; trCheckCert(); }
+    } else if (mode === "t1sleep") {
+      trSt.sim.cmpUs = null;
+      trSt.mode = "idle";
+      trFlashLamp();
+      var ms2 = (m - trSt.t1sleepStartUs) / 1000;
+      trEls.t1sleepOut.textContent = "SLEPT " + ms2.toFixed(1) + " ms. Iterations burned: 0. " +
+        "The interrupt did the waiting.";
+      trLog("trial 1: slept " + ms2.toFixed(1) + " ms on zero iterations.", "good");
+      if (!trSt.t1cSleep) { trSt.t1cSleep = true; trCheckT1(); trCheckCert(); }
+    } else if (mode === "t2run") {
+      trT2Fire(m);
+    } else if (mode === "t2break") {
+      /* simulated 600 ms of handler work: advance the virtual counter */
+      trSt.sim.baseUs += 600000;
+      var m2 = trMtimeUs();
+      trSt.sim.cmpUs = trSt.t2lastDl + 500000;
+      trSt.t2lastDl = trSt.sim.cmpUs;
+      trBlinkLamp();
+      trLog("break demo: handler took 600 ms, re-armed B to " + trFmt(trSt.sim.cmpUs) +
+        " which is already past.", "bad");
+      if (trSt.stormTicks >= 3) {
+        trShowStorm(true, "NO-STAKES DEMO. The 600 ms handler made every B re-arm land in the past, " +
+          "so the interrupt re-pends every pump: " + trSt.stormTicks + " fast fires and counting. " +
+          "The main loop is starved. Disarm it below.");
+      }
+    } else if (mode === "t3storm") {
+      /* the buggy handler: re-arm 100 ms in the past, forever */
+      trSt.sim.cmpUs = trMtimeUs() - 100000;
+      trBlinkLamp();
+      if (trSt.stormTicks >= 3) {
+        trShowStorm(true, "TRIAL 3. You armed the past. The buggy handler re-arms the past, so the " +
+          "interrupt re-pends every pump: " + trSt.stormTicks + " fast fires and counting. " +
+          "The main loop is starved. Disarm it the hardware way.");
+      }
+    } else if (mode === "t3healthy") {
+      trSt.sim.cmpUs = null;
+      trSt.mode = "idle";
+      trFlashLamp();
+      var ms3 = (m - trSt.t1armStartUs) / 1000;
+      trEls.t3healthOut.textContent = "FIRED at " + ms3.toFixed(1) + " ms (target 1,000 ms).";
+      trLog("trial 3: healthy 1 s deadline fired at " + ms3.toFixed(1) + " ms.", "good");
+      if (!trSt.t3healthy && ms3 >= 950 && ms3 <= 1050) {
+        trSt.t3healthy = true;
+        trEls.t3healthOut.textContent += " CLEAN. TRIAL 3 CLEAR.";
+        trCheckCert();
+      } else if (!trSt.t3healthy) {
+        trEls.t3healthOut.textContent += " Outside 950 to 1,050 ms: re-arm and try again.";
+      }
+    } else {
+      /* idle with a past deadline: disarm rather than storm by accident */
+      trSt.sim.cmpUs = null;
+      trSt.stormTicks = 0;
+    }
+  }
+
+  /* Trial 2 fire: real 50 ms of handler work, re-arm per strategy, grade at 11 fires. */
+  function trT2Fire(m) {
+    var w0 = trNowMs();
+    while (trNowMs() - w0 < 50) { /* the handler does 50 ms of real work per fire */ }
+    var m2 = trMtimeUs();
+    if (trSt.t2lastFireUs) {
+      var iv = (m - trSt.t2lastFireUs) / 1000;
+      trSt.t2intervals.push(iv);
+      trEls.t2iv.textContent = "LAST INTERVAL " + iv.toFixed(1) + " ms   FIRES " + trSt.t2fires +
+        "   MEAN " + (trSt.t2intervals.reduce(function (a, b) { return a + b; }, 0) /
+        trSt.t2intervals.length).toFixed(1) + " ms";
+    }
+    trSt.t2lastFireUs = m;
+    trSt.t2fires++;
+    trBlinkLamp();
+    var s = trSt.t2strat;
+    if (s === "C" || trSt.t2intervals.length >= 10) {
+      trSt.sim.cmpUs = null;
+      trSt.mode = "idle";
+      trSt.t2running = false;
+      trT2Grade();
+      return;
+    }
+    var nd = TR.rearm(s, m2, trSt.t2lastDl, 500000);
+    trSt.sim.cmpUs = nd;
+    trSt.t2lastDl = nd;
+  }
+  function trT2Grade() {
+    var s = trSt.t2strat;
+    trEls.t2stratA.disabled = false; trEls.t2stratB.disabled = false; trEls.t2stratC.disabled = false;
+    trEls.t2start.disabled = false;
+    if (s === "C") {
+      trEls.t2verdict.textContent = "MISS: one blink, then dark. The hardware fires once per arming; " +
+        "nobody re-armed, so the tick died after one fire. Pick a re-arm strategy and run again.";
+      trLog("trial 2: one-shot, tick died.", "bad");
+      return;
+    }
+    var g = TR.gradeRun(trSt.t2intervals, 500, 15);
+    if (s === "B" && g.ok) {
+      trSt.t2done = true;
+      trEls.t2verdict.textContent = "HOLD: mean " + g.mean.toFixed(1) + " ms over 10 ticks = " +
+        TR.hz(g.mean).toFixed(3) + " Hz. Re-arming from the last deadline is phase-locked: the 50 ms " +
+        "handler cost never enters the period. TRIAL 2 CLEAR.";
+      trLog("trial 2 PASS: 2.000 Hz held, phase-locked.", "good");
+      trCheckCert();
+    } else if (s === "A") {
+      trEls.t2verdict.textContent = "MISS: mean " + g.mean.toFixed(1) + " ms = " +
+        TR.hz(g.mean).toFixed(3) + " Hz. Re-arming from 'now' adds the 50 ms handler latency to every " +
+        "period, so the tick walks late, one latency per fire. Try re-arming from the last deadline.";
+      trLog("trial 2: strategy A walked to " + TR.hz(g.mean).toFixed(3) + " Hz.", "bad");
+    } else {
+      trEls.t2verdict.textContent = "MISS: mean " + g.mean.toFixed(1) + " ms, outside 485 to 515 ms. " +
+        "Jitter happens; run it again.";
+      trLog("trial 2: jitter miss, mean " + g.mean.toFixed(1) + " ms.", "bad");
+    }
+  }
+
+  /* ---------------- trial 1 ---------------- */
+  function trCheckT1() {
+    if (trSt.t1a && trSt.t1b && trSt.t1cPoll && trSt.t1cSleep && trEls.t1stat) {
+      trEls.t1stat.innerHTML = "";
+      trEls.t1stat.appendChild(trEl("b", "", "TRIAL 1 CLEAR: "));
+      trEls.t1stat.appendChild(document.createTextNode(
+        "you called the deadline to the tick and measured polling against sleeping."));
+      trLog("trial 1 CLEAR.", "good");
+    }
+  }
+  function trBuildT1(panel) {
+    var card = trEl("div", "tmr-card", "");
+    card.appendChild(trEl("h3", "", "TRIAL 1: CALL THE DEADLINE"));
+    card.appendChild(trEl("p", "tmr-why", "Predict-then-verify. The counter ticks at 1 MHz, one tick per " +
+      "microsecond. Snapshot it, do one addition by hand for a 750 ms wakeup, then arm the real " +
+      "deadline and watch it fire. After that, measure polling against sleeping with real counters."));
+    var stat = trEl("p", "tmr-status", "");
+    stat.id = "tmrT1Stat";
+    trEls.t1stat = stat;
+    card.appendChild(stat);
+
+    var row = trEl("div", "tmr-row", "");
+    var snap = trBtn("SNAPSHOT MTIME", "");
+    snap.id = "tmrSnap";
+    var snapOut = trEl("span", "tmr-status", "No snapshot yet.");
+    snapOut.id = "tmrSnapOut";
+    snap.addEventListener("click", function () {
+      trSt.t1snap = Math.floor(trMtimeUs());
+      snapOut.textContent = "SNAPSHOT " + trFmt(trSt.t1snap) + ". Add 750,000 (750 ms in ticks). " +
+        "What goes into MTIMECMP?";
+      trLog("trial 1: snapshot " + trFmt(trSt.t1snap) + ".");
+    });
+    row.appendChild(snap);
+    row.appendChild(snapOut);
+    card.appendChild(row);
+
+    var row2 = trEl("div", "tmr-row", "");
+    row2.appendChild(trEl("label", "", "PREDICTED MTIMECMP"));
+    var inp = document.createElement("input");
+    inp.className = "tmr-num";
+    inp.id = "tmrPred";
+    inp.setAttribute("inputmode", "numeric");
+    inp.setAttribute("aria-label", "Predicted MTIMECMP value");
+    var chk = trBtn("CHECK PREDICTION", "");
+    chk.id = "tmrCheck";
+    var chkOut = trEl("p", "tmr-status", "");
+    chkOut.id = "tmrCheckOut";
+    chk.addEventListener("click", function () {
+      if (trSt.t1snap === null) {
+        chkOut.textContent = "Snapshot the counter first.";
+        return;
+      }
+      var r = TR.predict1(trSt.t1snap, inp.value);
+      if (r.ok) {
+        trSt.t1a = true;
+        chkOut.innerHTML = "";
+        chkOut.appendChild(trEl("b", "", "EXACT. "));
+        chkOut.appendChild(document.createTextNode(trFmt(trSt.t1snap) + " + 750,000 = " +
+          trFmt(r.expected) + ". That is the deadline."));
+        trLog("trial 1: prediction exact.", "good");
+        trCheckT1(); trCheckCert();
+      } else {
+        trStrike("Trial 1: you predicted " + String(inp.value).replace(/[\s,]/g, "") +
+          "; the deadline is snapshot + 750,000 = " + trFmt(r.expected) + ".");
+        chkOut.textContent = "Not exact. Re-snapshot (the counter moved) and add 750,000.";
+      }
+    });
+    row2.appendChild(inp);
+    row2.appendChild(chk);
+    card.appendChild(row2);
+    card.appendChild(chkOut);
+
+    var row3 = trEl("div", "tmr-row", "");
+    var arm = trBtn("ARM 750 MS", "tmr-btn solid");
+    arm.id = "tmrArm";
+    var armOut = trEl("p", "tmr-status", "");
+    armOut.id = "tmrArmOut";
+    trEls.t1armOut = armOut;
+    arm.addEventListener("click", function () {
+      if (trSt.mode !== "idle" || trSt.failed) return;
+      trSt.mode = "t1arm";
+      trSt.t1armStartUs = trMtimeUs();
+      trSt.sim.cmpUs = TR.deadlineFor(trSt.t1armStartUs, 750);
+      armOut.textContent = "ARMED: MTIMECMP = " + trFmt(trSt.sim.cmpUs) + ". Waiting for the interrupt...";
+      trLog("trial 1: armed 750 ms deadline.");
+    });
+    row3.appendChild(arm);
+    card.appendChild(row3);
+    card.appendChild(armOut);
+
+    var row4 = trEl("div", "tmr-actions", "");
+    var poll = trBtn("POLL FOR 750 MS", "");
+    poll.id = "tmrPoll";
+    var sleep = trBtn("SLEEP 750 MS", "");
+    sleep.id = "tmrSleep";
+    poll.addEventListener("click", function () {
+      if (trSt.failed) return;
+      var t0 = trNowMs(), it = 0;
+      while (trNowMs() - t0 < 750) { it++; }
+      trEls.t1pollOut.textContent = "POLL burned " + trFmt(it) + " loop iterations doing nothing " +
+        "for 750 ms. Every one of those was a wasted chance to sleep or do real work.";
+      trLog("trial 1: poll burned " + trFmt(it) + " iterations.", "");
+      if (!trSt.t1cPoll) { trSt.t1cPoll = true; trCheckT1(); trCheckCert(); }
+    });
+    sleep.addEventListener("click", function () {
+      if (trSt.mode !== "idle" || trSt.failed) return;
+      trSt.mode = "t1sleep";
+      trSt.t1sleepStartUs = trMtimeUs();
+      trSt.sim.cmpUs = TR.deadlineFor(trSt.t1sleepStartUs, 750);
+      trEls.t1sleepOut.textContent = "ARMED. The core is doing nothing until the hardware wakes it...";
+      trLog("trial 1: sleeping on a 750 ms deadline.");
+    });
+    row4.appendChild(poll);
+    row4.appendChild(sleep);
+    card.appendChild(row4);
+    var pollOut = trEl("p", "tmr-status", "");
+    pollOut.id = "tmrPollOut";
+    trEls.t1pollOut = pollOut;
+    card.appendChild(pollOut);
+    var sleepOut = trEl("p", "tmr-status", "");
+    sleepOut.id = "tmrSleepOut";
+    trEls.t1sleepOut = sleepOut;
+    card.appendChild(sleepOut);
+    panel.appendChild(card);
+  }
+
+  /* ---------------- trial 2 ---------------- */
+  function trBuildT2(panel) {
+    var card = trEl("div", "tmr-card", "");
+    card.appendChild(trEl("h3", "", "TRIAL 2: HOLD THE TICK"));
+    card.appendChild(trEl("p", "tmr-why", "A periodic tick needs periodic re-arming, and where you re-arm " +
+      "from decides whether the tick holds. The handler does 50 ms of real work per fire (stated up " +
+      "front, on screen). Pick the re-arm strategy, run 10 ticks, and hold 2.00 Hz inside 485 to 515 ms " +
+      "mean interval. Then watch the slow-handler case break, with no stakes."));
+    var strat = trEl("div", "tmr-actions", "");
+    var a = trBtn("A: RE-ARM FROM NOW", "");
+    a.id = "tmrStratA";
+    var b = trBtn("B: RE-ARM FROM LAST DEADLINE", "");
+    b.id = "tmrStratB";
+    var c = trBtn("C: NO RE-ARM (ONE SHOT)", "");
+    c.id = "tmrStratC";
+    trEls.t2stratA = a; trEls.t2stratB = b; trEls.t2stratC = c;
+    function pick(s, btn) {
+      trSt.t2strat = s;
+      [a, b, c].forEach(function (x) { x.classList.remove("picked"); });
+      btn.classList.add("picked");
+      trLog("trial 2: strategy " + s + " picked.");
+    }
+    a.addEventListener("click", function () { pick("A", a); });
+    b.addEventListener("click", function () { pick("B", b); });
+    c.addEventListener("click", function () { pick("C", c); });
+    strat.appendChild(a); strat.appendChild(b); strat.appendChild(c);
+    card.appendChild(strat);
+
+    var row = trEl("div", "tmr-actions", "");
+    var start = trBtn("START THE 10-TICK RUN", "tmr-btn solid");
+    start.id = "tmrT2Start";
+    trEls.t2start = start;
+    start.addEventListener("click", function () {
+      if (trSt.mode !== "idle" || trSt.failed || trSt.t2running) return;
+      if (!trSt.t2strat) {
+        trEls.t2verdict.textContent = "Pick a re-arm strategy first.";
+        return;
+      }
+      trSt.t2running = true;
+      trSt.t2fires = 0; trSt.t2intervals = []; trSt.t2lastFireUs = 0;
+      trEls.t2verdict.textContent = "";
+      trEls.t2iv.textContent = "RUNNING: 10 ticks at 500 ms, 50 ms of handler work per fire...";
+      a.disabled = true; b.disabled = true; c.disabled = true; start.disabled = true;
+      trSt.mode = "t2run";
+      var dl = TR.deadlineFor(trMtimeUs(), 500);
+      trSt.sim.cmpUs = dl;
+      trSt.t2lastDl = dl;
+      trLog("trial 2: 10-tick run started, strategy " + trSt.t2strat + ".");
+    });
+    row.appendChild(start);
+    card.appendChild(row);
+    var iv = trEl("p", "tmr-status", "");
+    iv.id = "tmrT2Iv";
+    trEls.t2iv = iv;
+    card.appendChild(iv);
+    var verdict = trEl("p", "tmr-status", "");
+    verdict.id = "tmrT2Verdict";
+    trEls.t2verdict = verdict;
+    card.appendChild(verdict);
+
+    var brk = trEl("div", "tmr-card", "");
+    brk.appendChild(trEl("h3", "", "WATCH IT BREAK (NO STAKES)"));
+    brk.appendChild(trEl("p", "tmr-why", "Same strategy B, but the handler now takes 600 ms per fire " +
+      "(simulated: the room advances the virtual counter instead of burning your CPU). 600 ms of work " +
+      "against a 500 ms period. Predict what happens, then press it."));
+    var brow = trEl("div", "tmr-actions", "");
+    var go = trBtn("RUN THE SLOW HANDLER", "");
+    go.id = "tmrBreak";
+    var dis = trBtn("DISARM", "");
+    dis.id = "tmrBreakDisarm";
+    dis.disabled = true;
+    go.addEventListener("click", function () {
+      if (trSt.mode !== "idle" || trSt.failed) return;
+      trSt.mode = "t2break";
+      trSt.stormTicks = 0;
+      var dl = TR.deadlineFor(trMtimeUs(), 500);
+      trSt.sim.cmpUs = dl;
+      trSt.t2lastDl = dl;
+      go.disabled = true;
+      dis.disabled = false;
+      trLog("break demo: slow handler (600 ms virtual) with strategy B.", "bad");
+    });
+    dis.addEventListener("click", function () {
+      trSt.sim.cmpUs = null;
+      trSt.mode = "idle";
+      trShowStorm(false);
+      trRenderHeart(false);
+      go.disabled = false;
+      dis.disabled = true;
+      trEls.breakOut.textContent = "Storm stopped. The 600 ms handler made every B re-arm land in the " +
+        "past: deadline = last deadline + 500 ms, but the counter had already advanced 600 ms. " +
+        "Phase-locked is only safe while the handler stays shorter than the period. Trial 3 makes " +
+        "you disarm a storm you armed yourself.";
+      trLog("break demo: disarmed.", "good");
+    });
+    brow.appendChild(go);
+    brow.appendChild(dis);
+    brk.appendChild(brow);
+    var bout = trEl("p", "tmr-status", "");
+    bout.id = "tmrBreakOut";
+    trEls.breakOut = bout;
+    brk.appendChild(bout);
+    card.appendChild(brk);
+    panel.appendChild(card);
+  }
+
+  /* ---------------- trial 3 ---------------- */
+  function trBuildT3(panel) {
+    var card = trEl("div", "tmr-card", "");
+    card.appendChild(trEl("h3", "", "TRIAL 3: THE STORM"));
+    card.appendChild(trEl("p", "tmr-why", "The failure mode from the intro, on purpose. First call it: " +
+      "what happens the instant you write a deadline 100 ms in the past? Then arm it, watch the main " +
+      "loop starve, and disarm it the hardware way: write all ones to MTIMECMP."));
+    var q = trEl("div", "tmr-actions", "");
+    var o1 = trBtn("FIRES IMMEDIATELY", "");
+    var o2 = trBtn("FIRES IN 100 MS", "");
+    var o3 = trBtn("NOTHING HAPPENS", "");
+    o1.id = "tmrQ1"; o2.id = "tmrQ2"; o3.id = "tmrQ3";
+    var qout = trEl("p", "tmr-status", "");
+    qout.id = "tmrQOut";
+    function qpick(ok) {
+      if (trSt.t3pred || trSt.failed) return;
+      if (ok) {
+        trSt.t3pred = true;
+        qout.innerHTML = "";
+        qout.appendChild(trEl("b", "", "RIGHT. "));
+        qout.appendChild(document.createTextNode(
+          "The hardware compares every tick: mtime is already past the deadline, so the interrupt " +
+          "is pending before the write even retires. Now arm it and watch."));
+        trEls.t3arm.disabled = false;
+        trLog("trial 3: prediction right, fires immediately.", "good");
+      } else {
+        trStrike("Trial 3: the deadline is already past, so the interrupt is pending at once. " +
+          "It does not wait 100 ms and it does not stay quiet.");
+        qout.textContent = "Wrong. Think about the comparator: mtime >= deadline is already true.";
+      }
+    }
+    o1.addEventListener("click", function () { qpick(true); });
+    o2.addEventListener("click", function () { qpick(false); });
+    o3.addEventListener("click", function () { qpick(false); });
+    q.appendChild(o1); q.appendChild(o2); q.appendChild(o3);
+    card.appendChild(q);
+    card.appendChild(qout);
+
+    var row = trEl("div", "tmr-actions", "");
+    var armPast = trBtn("ARM 100 MS IN THE PAST", "tmr-btn solid");
+    armPast.id = "tmrArmPast";
+    armPast.disabled = true;
+    trEls.t3arm = armPast;
+    var disarm = trBtn("DISARM: WRITE ALL ONES", "");
+    disarm.id = "tmrDisarm";
+    disarm.disabled = true;
+    trEls.t3disarm = disarm;
+    armPast.addEventListener("click", function () {
+      if (trSt.mode !== "idle" || trSt.failed || !trSt.t3pred) return;
+      trSt.mode = "t3storm";
+      trSt.stormTicks = 0;
+      trSt.sim.cmpUs = Math.floor(trMtimeUs()) - 100000;
+      armPast.disabled = true;
+      disarm.disabled = false;
+      trLog("trial 3: armed 100 ms in the past. Storm incoming.", "bad");
+    });
+    disarm.addEventListener("click", function () {
+      if (trSt.mode !== "t3storm") return;
+      trSt.sim.cmpUs = null;
+      trSt.mode = "idle";
+      trSt.t3disarmed = true;
+      trShowStorm(false);
+      trRenderHeart(false);
+      disarm.disabled = true;
+      trEls.t3disOut.innerHTML = "";
+      trEls.t3disOut.appendChild(trEl("b", "", "DISARMED. "));
+      trEls.t3disOut.appendChild(document.createTextNode("Wrote " + TR.DISARM_STR + " (2^64 - 1): " +
+        TR.DISARM_YEARS + " at 1 MHz. The deadline never arrives, the interrupt never pends, " +
+        "the main loop breathes again. Now prove the room is healthy."));
+      trEls.t3healthyBtn.disabled = false;
+      trLog("trial 3: disarmed with all-ones.", "good");
+      trCheckCert();
+    });
+    row.appendChild(armPast);
+    row.appendChild(disarm);
+    card.appendChild(row);
+    var disOut = trEl("p", "tmr-status", "");
+    disOut.id = "tmrDisOut";
+    trEls.t3disOut = disOut;
+    card.appendChild(disOut);
+
+    var hrow = trEl("div", "tmr-actions", "");
+    var healthy = trBtn("PROVE HEALTHY: RING IN 1 S", "");
+    healthy.id = "tmrHealthy";
+    healthy.disabled = true;
+    trEls.t3healthyBtn = healthy;
+    healthy.addEventListener("click", function () {
+      if (trSt.mode !== "idle" || trSt.failed || !trSt.t3disarmed) return;
+      trSt.mode = "t3healthy";
+      trSt.t1armStartUs = trMtimeUs();
+      trSt.sim.cmpUs = TR.deadlineFor(trSt.t1armStartUs, 1000);
+      trEls.t3healthOut.textContent = "ARMED for 1,000 ms. One clean fire proves the room survived.";
+      trLog("trial 3: healthy 1 s deadline armed.");
+    });
+    hrow.appendChild(healthy);
+    card.appendChild(hrow);
+    var hOut = trEl("p", "tmr-status", "");
+    hOut.id = "tmrHealthOut";
+    trEls.t3healthOut = hOut;
+    card.appendChild(hOut);
+    panel.appendChild(card);
+  }
+
+  /* ---------------- cert ---------------- */
+  function trCheckCert() {
+    if (trSt.certified || trSt.failed) return;
+    var t1 = trSt.t1a && trSt.t1b && trSt.t1cPoll && trSt.t1cSleep;
+    if (t1 && trSt.t2done && trSt.t3disarmed && trSt.t3healthy) {
+      trSt.certified = true;
+      trSt.t3done = true;
+      trEls.banner.classList.add("show");
+      var d = new Date();
+      trEls.certP.textContent = "THE TIMER ROOM, BENCH 70, THE PROVING GROUND\n" +
+        "Certified " + d.toISOString().slice(0, 10) + "\n" +
+        "Trials: 750 ms deadline predicted to the tick and fired, poll vs sleep measured " +
+        "(poll burned cycles, sleep burned zero), 2.00 Hz tick held phase-locked for 10 ticks " +
+        "against 50 ms handler latency, interrupt storm armed in the past and disarmed with " +
+        "all-ones MTIMECMP, healthy 1 s deadline after the storm.\n" +
+        "Strikes: " + trSt.strikes + "/3.";
+      trLog("ROOM CERTIFIED.", "good");
+      if (trEls.banner.scrollIntoView) trEls.banner.scrollIntoView({ block: "center" });
+    }
+  }
+  function trDownloadCert() {
+    var txt = trEls.certP.textContent;
+    var blob = new Blob(["The Timer Room qualification record\n\n" + txt + "\n"], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "timer-room-bench-70.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      URL.revokeObjectURL(a.href);
+      if (a.parentNode) a.parentNode.removeChild(a);
+    }, 500);
+  }
+
+  /* ---------------- build / open / close / reset ---------------- */
+  var TR_INTRO_HTML = [
+    "<b>WHY THIS ROOM EXISTS</b> Every operating system heartbeat runs on one piece of hardware: a " +
+    "counter that never stops ticking, and a compare register that wakes the CPU the instant the " +
+    "counter reaches your deadline. The scheduler tick, the network timeout, the blinking cursor: all " +
+    "of them are this machine. RISC-V names it mtime and mtimecmp. mtime ticks one million times a " +
+    "second and nothing stops it, not even sleep. The moment mtime reaches the value in mtimecmp, the " +
+    "hardware raises a machine-timer interrupt. Set the deadline, go quiet, and get woken exactly on " +
+    "time. This room makes you drive it by hand.",
+    "<b>THE OBVIOUS ATTEMPTS</b> The obvious way to wait 750 milliseconds is to poll: sit in a loop " +
+    "reading mtime until it passes the target. It works, and it burns every cycle doing nothing. The " +
+    "second obvious way is a software countdown in the main loop, which drifts the moment anything " +
+    "else runs long. The deadline register fixes both: the comparison happens in hardware, every " +
+    "tick, for free. Trial 1 makes you measure the difference, and the poll loop's wasted iterations " +
+    "are real, counted, and on screen.",
+    "<b>THE WORKED EXAMPLE</b> mtime ticks at 1 MHz, so one tick is one microsecond. The room snapshots " +
+    "mtime at 8,000,000. You want a wakeup in 250 ms. 250 ms is 250,000 ticks. Write 8,250,000 into " +
+    "mtimecmp. The interrupt fires the instant mtime reaches 8,250,000, not a tick sooner. Check the " +
+    "addition yourself: 8,000,000 + 250,000 = 8,250,000. Trial 1 is this exact arithmetic with a live " +
+    "counter.",
+    "<b>THE FAILURE MODES</b> Three, stated before you touch anything. One: arm the deadline in the " +
+    "past and it fires instantly. If the handler then re-arms in the past, the interrupt re-pends " +
+    "forever: an interrupt storm that starves the main loop. Trial 3 shows you this storm on purpose. " +
+    "Two: the one-shot. The hardware fires once per arming. Forget to re-arm in the handler and a " +
+    "periodic tick dies after one fire. Three: phase walk. Re-arm from 'now' and every tick lands one " +
+    "handler-latency late, so the tick drifts. Re-arm from the last deadline and it stays phase-locked, " +
+    "unless the handler ever runs longer than the period, in which case the new deadline is in the " +
+    "past and you are back to the storm. Trial 2 grades all of this to the millisecond.",
+    "<b>OPTIONAL DEPTH</b> On RV32, mtimecmp is two 32-bit registers. Writing the low half first while " +
+    "the high half already holds a large value can set a deadline in the past for a few instructions " +
+    "and fire a spurious interrupt. The privileged specification gives the safe order: write all-ones " +
+    "to the low half, then the high half, then the low half. This room runs the 64-bit view, where one " +
+    "write is atomic."
+  ].join(" ");
+  if (typeof module !== "undefined" && module.exports && module.exports.TR) {
+    module.exports.TR.introHTML = TR_INTRO_HTML;
+  }
+  /* test-only: drive the engine without wall-clock waits */
+  if (typeof module !== "undefined" && module.exports && module.exports.TR) {
+    module.exports.TR.debug = {
+      pump: function () { trPump(); },
+      tick: function (ms) { if (trSt) trSt.sim.baseUs += ms * 1000; },
+      state: function () { return trSt; },
+      els: function () { return trEls; }
+    };
+  }
+
+  function trBuildDoFirst(panel) {
+    var card = trEl("div", "tmr-card", "");
+    card.appendChild(trEl("h3", "", "DO FIRST: RING IN 2 SECONDS"));
+    card.appendChild(trEl("p", "tmr-why", "Two seconds, zero stakes. Press the button: the room reads " +
+      "mtime, writes mtime + 2,000,000 into MTIMECMP, and the hardware rings the lamp exactly then. " +
+      "Watch the arithmetic line; that line is the whole bench."));
+    var row = trEl("div", "tmr-actions", "");
+    var go = trBtn("RING IN 2 SECONDS", "tmr-btn solid");
+    go.id = "tmrDoFirst";
+    var out = trEl("p", "tmr-status", "");
+    out.id = "tmrDoOut";
+    trEls.doOut = out;
+    go.addEventListener("click", function () {
+      if (trSt.mode !== "idle" || trSt.failed) return;
+      var m = trMtimeUs();
+      trSt.mode = "dofirst";
+      trSt.t1armStartUs = m;
+      trSt.sim.cmpUs = TR.deadlineFor(m, 2000);
+      out.textContent = "ARMED: MTIME was " + trFmt(m) + ", MTIMECMP = " + trFmt(m) +
+        " + 2,000,000 = " + trFmt(trSt.sim.cmpUs) + ". Waiting...";
+      trLog("do-first: armed 2 s deadline at " + trFmt(trSt.sim.cmpUs) + ".");
+    });
+    row.appendChild(go);
+    card.appendChild(row);
+    card.appendChild(out);
+    panel.appendChild(card);
+  }
+
+  function trBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box) return;
+    if (document.getElementById("tmrBtn")) return;
+    trSt = trNewState();
+    trSt.sim.baseMs = trNowMs();
+
+    var sty = document.createElement("style");
+    sty.id = "tmrStyle";
+    sty.textContent = TR_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "tmrBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Timer Room";
+    b.addEventListener("click", trOpen);
+    box.appendChild(b);
+
+    var ov = trEl("div", "tmr-overlay", "");
+    ov.id = "tmrOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Timer Room");
+    var x = trBtn("CLOSE", "tmr-btn");
+    x.id = "tmrXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Timer Room");
+    x.addEventListener("click", trClose);
+    ov.appendChild(x);
+    trEls.overlay = ov;
+    if (!trEscBound) {
+      trEscBound = true;
+      document.addEventListener("keydown", function (ev) {
+        if (ev.key === "Escape" && trEls.overlay && trEls.overlay.classList.contains("open")) trClose();
+      });
+    }
+
+    var panel = trEl("div", "tmr-panel", "");
+    trEls.panel = panel;
+    panel.appendChild(trEl("div", "tmr-kicker", "RISC-V BENCH 70"));
+    panel.appendChild(trEl("h2", "tmr-title", "The Timer Room"));
+    var sub = trEl("p", "tmr-sub", "");
+    sub.innerHTML = "<b>HOW IT WORKS</b> The machine timer: mtime ticks at 1 MHz and never stops, " +
+      "mtimecmp is the deadline, and the hardware raises a machine-timer interrupt the instant mtime " +
+      "reaches it. Ring the free 2-second tick, predict a 750 ms deadline to the tick, hold 2.00 Hz " +
+      "for 10 blinks against handler latency, then arm the past on purpose and disarm the storm. " +
+      "Three strikes and the room resets.";
+    panel.appendChild(sub);
+    var intro = trEl("p", "tmr-intro", "");
+    intro.innerHTML = TR_INTRO_HTML;
+    panel.appendChild(intro);
+
+    var strikes = trEl("p", "tmr-strikes", "STRIKES: 0/3");
+    strikes.id = "tmrStrikes";
+    strikes.setAttribute("aria-live", "polite");
+    trEls.strikes = strikes;
+    panel.appendChild(strikes);
+
+    /* the machine, always visible */
+    var meter = trEl("div", "tmr-meter", "");
+    meter.id = "tmrMtime";
+    meter.setAttribute("aria-label", "Machine timer readout");
+    trEls.mtime = meter;
+    panel.appendChild(meter);
+    var lampRow = trEl("div", "tmr-lamp", "");
+    var dot = trEl("div", "tmr-dot", "");
+    dot.id = "tmrDot";
+    dot.setAttribute("aria-hidden", "true");
+    var dotlbl = trEl("span", "tmr-dotlbl", "LAMP: OFF");
+    dotlbl.id = "tmrDotLbl";
+    trEls.dot = dot; trEls.dotlbl = dotlbl;
+    lampRow.appendChild(dot);
+    lampRow.appendChild(dotlbl);
+    panel.appendChild(lampRow);
+    var heart = trEl("p", "tmr-status", "");
+    heart.id = "tmrHeart";
+    trEls.heart = heart;
+    panel.appendChild(heart);
+    trRenderHeart(false);
+
+    var storm = trEl("div", "tmr-storm", "");
+    storm.id = "tmrStorm";
+    storm.appendChild(trEl("h4", "", "INTERRUPT STORM"));
+    var snote = trEl("p", "", "");
+    snote.id = "tmrStormNote";
+    trEls.stormNote = snote;
+    storm.appendChild(snote);
+    trEls.storm = storm;
+    panel.appendChild(storm);
+
+    trBuildDoFirst(panel);
+    trBuildT1(panel);
+    trBuildT2(panel);
+    trBuildT3(panel);
+
+    /* cert banner */
+    var banner = trEl("div", "tmr-banner", "");
+    banner.id = "tmrBanner";
+    banner.appendChild(trEl("h3", "", "ROOM CERTIFIED"));
+    var certP = trEl("p", "tmr-cert", "");
+    certP.id = "tmrCertP";
+    trEls.certP = certP;
+    banner.appendChild(certP);
+    var dl = trBtn("DOWNLOAD RECORD", "");
+    dl.id = "tmrDl";
+    dl.addEventListener("click", trDownloadCert);
+    banner.appendChild(dl);
+    trEls.banner = banner;
+    panel.appendChild(banner);
+
+    /* fail card */
+    var fail = trEl("div", "tmr-fail", "");
+    fail.id = "tmrFail";
+    fail.appendChild(trEl("h3", "", "ROOM FAILED"));
+    fail.appendChild(trEl("p", "", "Three strikes. The timer does not grade on intent: reset the room " +
+      "and run it again."));
+    var rs = trBtn("RESET ROOM", "tmr-btn solid");
+    rs.id = "tmrReset";
+    rs.addEventListener("click", trResetRoom);
+    fail.appendChild(rs);
+    trEls.failCard = fail;
+    panel.appendChild(fail);
+
+    var log = trEl("div", "tmr-log", "");
+    log.id = "tmrLog";
+    log.setAttribute("aria-label", "Room log");
+    panel.appendChild(log);
+    trEls.log = log;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+    trLog("bench open. One rule: the comparator answers every tick; your job is to set the deadline.", "");
+    trPump();
+  }
+  function trOpen() {
+    if (trEls.overlay) {
+      trEls.overlay.classList.add("open");
+      if (trSt) { trSt.sim.baseMs = trNowMs(); }
+      if (!trPumpId) trPumpId = setInterval(trPump, 10);
+      trPump();
+    }
+  }
+  function trClose() {
+    if (trEls.overlay) trEls.overlay.classList.remove("open");
+    if (trPumpId) { clearInterval(trPumpId); trPumpId = 0; }
+    if (trSt) trSt.sim.cmpUs = null;
+  }
+  function trResetRoom() {
+    if (trPumpId) { clearInterval(trPumpId); trPumpId = 0; }
+    var sty = document.getElementById("tmrStyle");
+    if (sty && sty.parentNode) sty.parentNode.removeChild(sty);
+    var btn = document.getElementById("tmrBtn");
+    if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
+    if (trEls.overlay && trEls.overlay.parentNode) trEls.overlay.parentNode.removeChild(trEls.overlay);
+    trEls = {};
+    trSt = null;
+    trBuild();
+    trOpen();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", trBuild);
+  } else {
+    trBuild();
+  }
+})();
