@@ -52567,7 +52567,7 @@ if (typeof module !== "undefined" && module.exports) {
     "<div class=\"bp-sec\">WHY THIS BENCH EXISTS</div>",
     "<p class=\"bp-p\">A pipelined CPU fetches the next instruction before the branch in front of it is resolved, so at every branch it must guess. Every guess has two parts: <b>WHERE</b> the branch goes, and <b>WHETHER</b> it goes at all.</p>",
     "<p class=\"bp-p\">The <b>BTB</b> (branch target buffer) remembers where taken branches went before: that is the WHERE. The <b>direction predictor</b> votes taken or not taken: that is the WHETHER. In this bench's five-stage teaching model, each wrong guess costs 2 cycles: the two instructions the pipe had already started. That 2-cycle number belongs to this model, not to every pipeline.</p>",
-    "<p class=\"bp-p\">The two parts fail for different reasons and need different fixes. This bench is the hands-on version of a real question from a LinkedIn thread on CVA6 and WAL: can a waveform separate BTB misses from direction mispredicts, or does it only see aggregate fetch redirects? The mechanism below is generic. Bench 02 taught you that predictors learn; here you open the predictor and meet its two halves.</p>",
+    "<p class=\"bp-p\">The two parts fail for different reasons and need different fixes. One redirect count cannot tell you which part failed. Bench 02 taught you that predictors learn; here you open the predictor and meet its two halves.</p>",
     "<div class=\"bp-sec\">THE WORKED EXAMPLE</div>",
     "<p class=\"bp-p\">Five branches, a 2-entry BTB, a 1-bit direction predictor. A is a loop branch, B is an if inside it. Predict-then-verify: cover the RESULT column, guess each row, then check yourself against the simulator.</p>",
     "<div class=\"bp-scrollx\"><table class=\"bp-table\" aria-label=\"Worked example steps\">",
@@ -52599,7 +52599,7 @@ if (typeof module !== "undefined" && module.exports) {
 
   BP.DEPTH_HTML = [
     "<div class=\"bp-sec\">OPTIONAL DEPTH</div>",
-    "<p class=\"bp-p\">A design can expose separate counters or waveform signals: one counts BTB misses, another counts direction mispredicts, so a slowdown can be blamed precisely instead of guessed at. Waveform tools answer the same question from signals, cycle by cycle: did fetch redirect because the target was unknown, or because the direction vote was wrong? That is the question behind the CVA6 and WAL thread: whether the tool separates the two causes or only reports aggregate fetch redirects. This bench's answer is the general one: the aggregate shows the symptom, the signals name the cause.</p>"
+    "<p class=\"bp-p\">A design can expose separate counters or waveform signals: one counts BTB misses, another counts direction mispredicts, so a slowdown can be blamed precisely instead of guessed at. Waveform tools answer the same question from signals, cycle by cycle: did fetch redirect because the target was unknown, or because the direction vote was wrong? The aggregate shows the symptom, the signals name the cause.</p>"
   ].join("\n");
 
   if (typeof module !== "undefined" && module.exports) {
