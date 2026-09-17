@@ -18707,7 +18707,7 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(prEl("p", "pr-story",
       "Three dead machines on the OLD IRON intake line, one piezo speaker each, and no video to read: the beep pattern <b>is</b> " +
       "the diagnosis. INTAKE-114 is the drill: one long and two short means a video adapter fault, and the fix is reseating the graphics card. " +
-      "INTAKE-337 is the trap: the speaker says nothing at all, and silence is itself a code, POST never starts, answered with the CMOS jumper. " +
+      "INTAKE-337 is the decoy: the speaker says nothing at all, and silence is itself a code, POST never starts, answered with the CMOS jumper. " +
       "Read the pattern off the timing diagram, match it against the chart, <b>power down</b> before " +
       "you touch anything, and apply the fix that earns a POST. Three strikes and the bench resets."));
 
@@ -51424,7 +51424,7 @@ if (typeof module !== "undefined" && module.exports) {
   };
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports.TR = TR;
+    module.exports.TMR = TR;
   }
 
   /* ---------------- state ---------------- */
@@ -52162,12 +52162,12 @@ if (typeof module !== "undefined" && module.exports) {
     "to the low half, then the high half, then the low half. This room runs the 64-bit view, where one " +
     "write is atomic."
   ].join(" ");
-  if (typeof module !== "undefined" && module.exports && module.exports.TR) {
-    module.exports.TR.introHTML = TR_INTRO_HTML;
+  if (typeof module !== "undefined" && module.exports && module.exports.TMR) {
+    module.exports.TMR.introHTML = TR_INTRO_HTML;
   }
   /* test-only: drive the engine without wall-clock waits */
-  if (typeof module !== "undefined" && module.exports && module.exports.TR) {
-    module.exports.TR.debug = {
+  if (typeof module !== "undefined" && module.exports && module.exports.TMR) {
+    module.exports.TMR.debug = {
       pump: function () { trPump(); },
       tick: function (ms) { if (trSt) trSt.sim.baseUs += ms * 1000; },
       state: function () { return trSt; },
@@ -52367,5 +52367,853 @@ if (typeof module !== "undefined" && module.exports) {
     document.addEventListener("DOMContentLoaded", trBuild);
   } else {
     trBuild();
+  }
+})();
+/* BENCH 71: THE TWO GUESSES (riscv)
+   A branch predictor makes two separate guesses about every branch: WHERE it
+   goes (the BTB remembers the target) and WHETHER it goes (the direction
+   predictor votes taken or not taken). In this bench's five-stage teaching
+   model each wrong guess costs 2 cycles, the two instructions the pipe had
+   already started, but each needs its own fix: BTB misses want more entries,
+   direction misses want a smarter predictor.
+   The mystery has two stages. Stage 1 shows only the aggregate and teaches
+   that one number cannot name the repair. Stage 2 opens the waveform, and the
+   player classifies every redirect from the signals, then names the repair
+   the waveform justifies.
+   Pure sim hooks live in BP for the smoke test; the DOM engine below drives
+   the same code. */
+(function () {
+
+  /* ---------------- pure hooks (testable, no DOM) ---------------- */
+  var LOOP_ROUND = [["A", 1], ["B", 1], ["A", 1], ["A", 1], ["B", 0], ["A", 1],
+                    ["A", 1], ["B", 1], ["A", 1], ["A", 0]];
+  var BRANCHY_ROUND = [["C", 1], ["D", 0], ["E", 1], ["F", 1], ["G", 1], ["C", 1],
+                       ["H", 0], ["E", 0], ["I", 1], ["D", 0], ["J", 1], ["C", 1],
+                       ["E", 1], ["K", 0], ["D", 1], ["H", 1], ["C", 0], ["E", 0],
+                       ["L", 1], ["D", 0]];
+  var FLICKER_SEQ = [["A", 1], ["A", 0], ["A", 1], ["A", 0], ["A", 1], ["A", 0]];
+  var CROWD_SEQ = [["C", 1], ["D", 1], ["E", 1], ["F", 1], ["C", 1], ["D", 1]];
+  function bpRep(round, n) {
+    var s = [], i;
+    for (i = 0; i < n; i++) s = s.concat(round);
+    return s;
+  }
+  var BP = {
+    PENALTY: 2, /* model cost per wrong guess: the two in-flight instructions */
+    BID: { A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, G: 6, H: 7, I: 8, J: 9, K: 10, L: 11 },
+    TRACES: {
+      worked: {
+        label: "THE WORKED EXAMPLE", sub: "5 branches, 2-entry BTB, 1-bit predictor",
+        seq: [["A", 1], ["B", 1], ["A", 1], ["A", 0], ["B", 0]]
+      },
+      loop: {
+        label: "THE COUNTER", sub: "a counted loop with an if inside, four laps",
+        seq: bpRep(LOOP_ROUND, 4)
+      },
+      branchy: {
+        label: "THE DISPATCHER", sub: "ten branches with irregular habits, three rounds",
+        seq: bpRep(BRANCHY_ROUND, 3)
+      },
+      flicker: {
+        label: "THE FLICKER", sub: "one branch that cannot sit still, six events",
+        seq: FLICKER_SEQ.slice()
+      },
+      crowd: {
+        label: "THE CROWD", sub: "four hot branches, a two-entry BTB",
+        seq: CROWD_SEQ.slice()
+      }
+    },
+    /* Direction-predictor mechanics, exposed pure so the smoke test can check
+       1-bit updates and 2-bit saturation directly. */
+    dirInit: function (kind) { return kind === "2bit" ? 1 : 0; },
+    dirVote: function (kind, d) { return kind === "2bit" ? d >= 2 : d === 1; },
+    dirNext: function (kind, d, taken) {
+      if (kind === "2bit") return taken ? Math.min(3, d + 1) : Math.max(0, d - 1);
+      return taken ? 1 : 0;
+    },
+    /* Full step-by-step trace. BTB is direct-mapped on the branch id and only
+       learns taken branches (a not-taken branch needs no target). Attribution
+       is exclusive: a taken branch with a BTB miss counts as a BTB miss and
+       the direction vote is not consulted; a BTB hit with a wrong vote counts
+       as a direction mispredict. Each step carries the waveform signals:
+       tgt is KNOWN when the BTB held the target, ?? when the target was
+       unknown, and not needed when the branch fell through. */
+    trace: function (traceKey, btbEntries, dirKind) {
+      var seq = BP.TRACES[traceKey].seq;
+      var btb = [];
+      var i;
+      for (i = 0; i < btbEntries; i++) btb.push(-1);
+      var dir = {};
+      var steps = [];
+      var r = { branches: 0, taken: 0, btbMisses: 0, dirMisses: 0, cyclesLost: 0, perBranch: {} };
+      for (i = 0; i < seq.length; i++) {
+        var name = seq[i][0], taken = seq[i][1] === 1;
+        var id = BP.BID[name];
+        r.branches++;
+        if (taken) r.taken++;
+        var pb = r.perBranch[name];
+        if (!pb) { pb = { n: 0, took: 0, btb: 0, dir: 0 }; r.perBranch[name] = pb; }
+        pb.n++;
+        if (taken) pb.took++;
+        var slot = btbEntries > 0 ? (id % btbEntries) : -1;
+        var hit = slot >= 0 && btb[slot] === id;
+        var d = (dir[id] === undefined) ? BP.dirInit(dirKind) : dir[id];
+        var voteT = BP.dirVote(dirKind, d);
+        var cost = 0, why, kind = "ok";
+        var tgt = hit ? "KNOWN" : (taken ? "??" : "n/a");
+        if (!hit) {
+          if (taken) {
+            r.btbMisses++; pb.btb++; cost = BP.PENALTY; kind = "btb";
+            why = "MISS: target unknown, redirect " + BP.PENALTY;
+          } else {
+            why = "MISS: not taken needs no target";
+          }
+          if (slot >= 0 && taken) btb[slot] = id;
+        } else if (voteT !== taken) {
+          r.dirMisses++; pb.dir++; cost = BP.PENALTY; kind = "dir";
+          why = "HIT: vote " + (voteT ? "T" : "N") + ", wrong, redirect " + BP.PENALTY;
+        } else {
+          why = "HIT: vote " + (voteT ? "T" : "N") + ", correct";
+        }
+        r.cyclesLost += cost;
+        dir[id] = BP.dirNext(dirKind, d, taken);
+        steps.push({ n: i + 1, br: name, took: taken, hit: hit, voteT: voteT,
+                     tgt: tgt, redirect: cost > 0, why: why, cost: cost, kind: kind });
+      }
+      r.steps = steps;
+      return r;
+    },
+    /* Ground-truth classifier: which guess failed on this step. */
+    classifyStep: function (s) { return s.kind; },
+    /* The aggregate view: everything a tool that only reports totals can see. */
+    aggregateOf: function (r) {
+      return { branches: r.branches, redirects: r.btbMisses + r.dirMisses,
+               cyclesLost: r.cyclesLost };
+    },
+    verdict: function (r) {
+      var b = r.btbMisses, d = r.dirMisses;
+      if (b === 0 && d === 0) {
+        return { key: "tie", head: "CLEAN",
+          body: "No misses at all. This setup predicts the trace perfectly; there is nothing to fix." };
+      }
+      if (b >= 2 * d) {
+        return { key: "btb", head: "BTB MISSES DOMINATE",
+          body: "The fix is capacity: more BTB entries (or fewer distinct branches). A smarter direction predictor would change nothing." };
+      }
+      if (d >= 2 * b) {
+        return { key: "dir", head: "DIRECTION MISSPREDICTS DOMINATE",
+          body: "The fix is a smarter predictor (1-bit to 2-bit, or better). More BTB entries would change nothing." };
+      }
+      return { key: "tie", head: "ROUGHLY TIED",
+        body: "Both guesses fail at a similar rate. Fix the cheaper one first, then re-measure." };
+    },
+    /* Stage-1 engine: group predictor setups by their aggregate total and keep
+       the groups where one total hides at least two different interiors with
+       at least two different diagnoses. Each group is a proof that the
+       aggregate cannot name the repair. */
+    findAmbiguous: function (traceKey) {
+      var groups = {}, b, qi;
+      var dirs = ["1bit", "2bit"];
+      for (b = 0; b <= 16; b++) {
+        for (qi = 0; qi < dirs.length; qi++) {
+          var r = BP.trace(traceKey, b, dirs[qi]);
+          var tot = r.btbMisses + r.dirMisses;
+          if (tot < 10) continue;
+          var g = groups[tot] || (groups[tot] = []);
+          g.push({ btb: b, dir: dirs[qi], btbMisses: r.btbMisses,
+                   dirMisses: r.dirMisses, verdict: BP.verdict(r).key });
+        }
+      }
+      var out = [];
+      Object.keys(groups).forEach(function (tot) {
+        var seen = {}, verdicts = {}, variants = [];
+        groups[tot].forEach(function (v) {
+          var sk = v.btbMisses + "/" + v.dirMisses;
+          if (!seen[sk]) { seen[sk] = 1; variants.push(v); }
+          verdicts[v.verdict] = 1;
+        });
+        if (variants.length >= 2 && Object.keys(verdicts).length >= 2) {
+          out.push({ trace: traceKey, total: +tot, variants: variants });
+        }
+      });
+      out.sort(function (x, y) { return x.total - y.total; });
+      return out;
+    },
+    /* Stage-2 deals: short waveforms with a strict majority, few enough rows
+       to classify each redirect by hand. */
+    stage2Deals: function () {
+      return [
+        { trace: "flicker", btb: 4, dir: "1bit" },
+        { trace: "crowd", btb: 2, dir: "1bit" }
+      ];
+    },
+    /* The repair the evidence justifies: the majority cause. */
+    repairFor: function (r) {
+      if (r.btbMisses === r.dirMisses) return "tie";
+      return r.btbMisses > r.dirMisses ? "btb" : "dir";
+    },
+    humanScale: function (cycles) {
+      var ns = Math.round((cycles / 3) * 10) / 10;
+      return "At 3 GHz, " + cycles + " modeled cycles is about " + ns + " ns. " +
+        "A billion branches a second at a 5% miss rate steals 100 million cycles a second: " +
+        "about 3% of the core, gone.";
+    },
+    fmt: function (n) {
+      return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    }
+  };
+
+  BP.INTRO_HTML = [
+    "<div class=\"bp-sec\">WHY THIS BENCH EXISTS</div>",
+    "<p class=\"bp-p\">A pipelined CPU fetches the next instruction before the branch in front of it is resolved, so at every branch it must guess. Every guess has two parts: <b>WHERE</b> the branch goes, and <b>WHETHER</b> it goes at all.</p>",
+    "<p class=\"bp-p\">The <b>BTB</b> (branch target buffer) remembers where taken branches went before: that is the WHERE. The <b>direction predictor</b> votes taken or not taken: that is the WHETHER. In this bench's five-stage teaching model, each wrong guess costs 2 cycles: the two instructions the pipe had already started. That 2-cycle number belongs to this model, not to every pipeline.</p>",
+    "<p class=\"bp-p\">The two parts fail for different reasons and need different fixes. This bench is the hands-on version of a real question from a LinkedIn thread on CVA6 and WAL: can a waveform separate BTB misses from direction mispredicts, or does it only see aggregate fetch redirects? The mechanism below is generic. Bench 02 taught you that predictors learn; here you open the predictor and meet its two halves.</p>",
+    "<div class=\"bp-sec\">THE WORKED EXAMPLE</div>",
+    "<p class=\"bp-p\">Five branches, a 2-entry BTB, a 1-bit direction predictor. A is a loop branch, B is an if inside it. Predict-then-verify: cover the RESULT column, guess each row, then check yourself against the simulator.</p>",
+    "<div class=\"bp-scrollx\"><table class=\"bp-table\" aria-label=\"Worked example steps\">",
+    "<thead><tr><th>#</th><th>BR</th><th>TOOK?</th><th>BTB</th><th>VOTE</th><th>RESULT</th><th>CYC</th></tr></thead>",
+    "<tbody id=\"bpWorkedBody\"></tbody></table></div>",
+    "<p class=\"bp-p\">Totals: 5 branches, 2 BTB misses, 2 direction mispredicts, 8 modeled cycles lost. With no BTB at all, the 3 taken branches all redirect: 3 misses, 6 modeled cycles, and the direction predictor's vote changes nothing.</p>"
+  ].join("\n");
+
+  BP.FAILURES_HTML = [
+    "<div class=\"bp-sec\">THE FAILURE MODES</div>",
+    "<ul class=\"bp-list\">",
+    "<li>In this model, a BTB miss on a taken branch costs 2 cycles. The target is unknown, so fetch redirects and waits for the branch to resolve. No predictor cleverness avoids it.</li>",
+    "<li>A BTB miss on a not-taken branch costs nothing. Fall-through is the next sequential instruction; no target is needed.</li>",
+    "<li>An alternating branch (taken, not taken, taken, not taken...) defeats 1-bit and 2-bit predictors alike. The pattern has no majority to learn.</li>",
+    "<li>More BTB entries never fix direction mispredicts, and a smarter predictor never fixes BTB misses. Each fix only fixes its own failure. That is the whole diagnostic.</li>",
+    "</ul>"
+  ].join("\n");
+
+  BP.STAGE1_HTML = [
+    "<div class=\"bp-sec\">STAGE 1: THE AGGREGATE LIE</div>",
+    "<p class=\"bp-p\">One number hides the split. The deal below runs a real trace through a hidden predictor setup. You get the aggregate only: total fetch redirects and modeled cycles lost. Name the repair.</p>"
+  ].join("\n");
+
+  BP.STAGE2_HTML = [
+    "<div class=\"bp-sec\">STAGE 2: READ THE WAVEFORM</div>",
+    "<p class=\"bp-p\">A design can expose separate counters or waveform signals. Here is the waveform: one row per branch event, carrying the signals a tool like WAL would read. <b>BR</b> is the branch. <b>BTB</b> is HIT or MISS. <b>VOTE</b> is the direction predictor's guess, <b>ACTUAL</b> is what the branch did. <b>TARGET</b> is KNOWN when the BTB held it, ?? when the target was unknown, n/a when no target was needed. <b>REDIRECT</b> marks the events where fetch changed course.</p>",
+    "<p class=\"bp-p\">Classify every redirect: a <b>BTB target miss</b> means the target was unknown; a <b>direction misprediction</b> means the vote was wrong. Then name the repair the waveform justifies.</p>"
+  ].join("\n");
+
+  BP.DEPTH_HTML = [
+    "<div class=\"bp-sec\">OPTIONAL DEPTH</div>",
+    "<p class=\"bp-p\">A design can expose separate counters or waveform signals: one counts BTB misses, another counts direction mispredicts, so a slowdown can be blamed precisely instead of guessed at. Waveform tools answer the same question from signals, cycle by cycle: did fetch redirect because the target was unknown, or because the direction vote was wrong? That is the question behind the CVA6 and WAL thread: whether the tool separates the two causes or only reports aggregate fetch redirects. This bench's answer is the general one: the aggregate shows the symptom, the signals name the cause.</p>"
+  ].join("\n");
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.BP = BP;
+  }
+
+  /* ---------------- state ---------------- */
+  var bpSt = null, bpEls = {}, bpEscBound = false;
+  function bpNewState() {
+    return {
+      trace: "loop", btb: 4, dir: "2bit",
+      s1: { group: null, done: false },
+      s2: { deal: null, r: null, classes: {}, classDone: false, repairDone: false }
+    };
+  }
+
+  /* ---------------- dom helpers ---------------- */
+  function bpEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== "") e.textContent = text;
+    return e;
+  }
+  function bpBtn(label, cls) {
+    var b = bpEl("button", cls || "bp-btn", "");
+    b.textContent = label;
+    b.type = "button";
+    return b;
+  }
+  function bpEsc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  var BP_CSS = [
+    ".bp-overlay{position:fixed;inset:0;z-index:90;background:var(--ink);display:none;overflow-y:auto;}",
+    ".bp-overlay.open{display:block;}",
+    ".bp-panel{max-width:860px;margin:0 auto;padding:28px 18px 60px;color:var(--paper);}",
+    ".bp-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);}",
+    ".bp-title{font-family:'Space Grotesk',sans-serif;font-size:34px;margin:6px 0 10px;color:var(--paper);}",
+    ".bp-sec{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.16em;color:var(--ember);margin:26px 0 10px;padding-top:16px;border-top:1px solid var(--line);}",
+    ".bp-p{font-size:13.5px;line-height:1.7;color:var(--dim);max-width:74ch;margin:0 0 12px;}",
+    ".bp-p b{color:var(--paper);}",
+    ".bp-list{margin:0 0 12px;padding-left:20px;max-width:74ch;}",
+    ".bp-list li{font-size:13.5px;line-height:1.7;color:var(--dim);margin:0 0 8px;}",
+    ".bp-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.06em;background:transparent;color:var(--paper);border:1px solid var(--line);padding:12px 16px;min-height:48px;cursor:pointer;}",
+    ".bp-btn:hover{border-color:var(--ember);}",
+    ".bp-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".bp-btn:disabled{opacity:.38;cursor:not-allowed;}",
+    ".bp-btn.solid{background:var(--ember);border-color:var(--ember);color:var(--ink);font-weight:700;}",
+    ".bp-btn.picked{border-color:var(--ember);color:var(--ember);}",
+    ".bp-group{margin:0 0 14px;}",
+    ".bp-group .bp-lbl{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:var(--dim);display:block;margin:0 0 8px;}",
+    ".bp-row{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 12px;}",
+    ".bp-out{font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.75;color:var(--dim);background:var(--panel);border:1px solid var(--line);padding:14px 16px;margin:0 0 12px;white-space:pre-wrap;}",
+    ".bp-out .v{color:var(--ember);}",
+    ".bp-out .w{color:var(--paper);font-weight:700;}",
+    ".bp-scrollx{overflow-x:auto;margin:0 0 12px;border:1px solid var(--line);}",
+    ".bp-scrollx .bp-table{margin:0;border:none;}",
+    ".bp-table{width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--dim);background:var(--panel);}",
+    ".bp-table th{font-size:10px;letter-spacing:.1em;color:var(--paper);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap;}",
+    ".bp-table td{padding:7px 10px;border-bottom:1px solid var(--line);white-space:nowrap;}",
+    ".bp-table tr:last-child td{border-bottom:none;}",
+    ".bp-table td.hot{color:var(--ember);}",
+    ".bp-table tr.bp-ok td{background:rgba(120,200,120,.08);}",
+    ".bp-table tr.bp-bad td{background:rgba(220,90,90,.10);}",
+    ".bp-class-btn{font-family:'IBM Plex Mono',monospace;font-size:11px;min-height:48px;min-width:52px;margin:2px;padding:8px 6px;background:transparent;color:var(--dim);border:1px solid var(--line);cursor:pointer;}",
+    ".bp-class-btn.picked{border-color:var(--ember);color:var(--ember);}",
+    ".bp-banner{border:1px solid var(--ember);padding:18px;margin:0 0 16px;display:none;}",
+    ".bp-banner.show{display:block;}",
+    ".bp-banner h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--ember);margin:0 0 8px;}",
+    ".bp-cert{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:var(--dim);margin:0 0 12px;white-space:pre-wrap;}"
+  ].join("\n");
+
+  function bpWorkedRows() {
+    var r = BP.trace("worked", 2, "1bit");
+    return r.steps.map(function (s) {
+      return "<tr><td>" + s.n + "</td><td>" + s.br + "</td><td>" + (s.took ? "T" : "NT") + "</td>" +
+        "<td>" + (s.hit ? "HIT" : "MISS") + "</td><td>" + (s.voteT ? "T" : "N") + "</td>" +
+        "<td>" + bpEsc(s.why) + "</td><td class=\"" + (s.cost ? "hot" : "") + "\">" + s.cost + "</td></tr>";
+    }).join("");
+  }
+
+  function bpDescribeConfig() {
+    var t = BP.TRACES[bpSt.trace];
+    return t.label + " | BTB " + bpSt.btb + " | " + (bpSt.dir === "2bit" ? "2-BIT" : "1-BIT");
+  }
+
+  function bpRenderResult(r, outEl) {
+    var v = BP.verdict(r);
+    var html = "<span class=\"w\">" + bpDescribeConfig() + "</span>\n" +
+      "Branches: <span class=\"v\">" + r.branches + "</span> (" + r.taken + " taken)\n" +
+      "BTB misses: <span class=\"v\">" + r.btbMisses + "</span>\n" +
+      "Direction mispredicts: <span class=\"v\">" + r.dirMisses + "</span>\n" +
+      "Modeled cycles lost: <span class=\"v\">" + r.cyclesLost + "</span>\n" +
+      BP.humanScale(r.cyclesLost) + "\n" +
+      "VERDICT: <span class=\"w\">" + v.head + "</span>. " + v.body;
+    outEl.innerHTML = html;
+    return v;
+  }
+
+  function bpRenderPerBranch(r, hostEl) {
+    hostEl.innerHTML = "";
+    var tbl = bpEl("table", "bp-table", "");
+    tbl.setAttribute("aria-label", "Per-branch breakdown");
+    var thead = bpEl("thead", "", "");
+    var hr = bpEl("tr", "", "");
+    ["BR", "EXEC", "TOOK", "BTB MISS", "DIR MISS"].forEach(function (h) {
+      hr.appendChild(bpEl("th", "", h));
+    });
+    thead.appendChild(hr);
+    tbl.appendChild(thead);
+    var tb = bpEl("tbody", "", "");
+    Object.keys(r.perBranch).sort().forEach(function (name) {
+      var pb = r.perBranch[name];
+      var tr = bpEl("tr", "", "");
+      tr.appendChild(bpEl("td", "", name));
+      tr.appendChild(bpEl("td", "", String(pb.n)));
+      tr.appendChild(bpEl("td", "", String(pb.took)));
+      tr.appendChild(bpEl("td", pb.btb ? "hot" : "", String(pb.btb)));
+      tr.appendChild(bpEl("td", pb.dir ? "hot" : "", String(pb.dir)));
+      tb.appendChild(tr);
+    });
+    tbl.appendChild(tb);
+    var wrap = bpEl("div", "bp-scrollx", "");
+    wrap.appendChild(tbl);
+    hostEl.appendChild(wrap);
+  }
+
+  function bpProgress() {
+    var s1 = bpSt.s1.done ? "DONE" : "OPEN";
+    var s2 = bpSt.s2.repairDone ? "DONE" : (bpSt.s2.classDone ? "CLASSIFIED" : "OPEN");
+    bpEls.progress.textContent = "STAGE 1: " + s1 + " | STAGE 2: " + s2;
+  }
+
+  function bpCheckWin() {
+    bpProgress();
+    if (bpSt.s1.done && bpSt.s2.repairDone) {
+      bpEls.banner.classList.add("show");
+      bpEls.cert.textContent =
+        "THE TWO GUESSES, BENCH 71, THE PROVING GROUND\n" +
+        "Stage 1: called the aggregate unknowable.\n" +
+        "Stage 2: classified every redirect from the waveform and named the evidence-backed repair.\n" +
+        "The holder separates BTB misses from direction mispredicts.";
+      if (bpEls.overlay.scrollTo) bpEls.overlay.scrollTo(0, bpEls.overlay.scrollHeight);
+    }
+  }
+
+  /* ---------------- interactions ---------------- */
+  function bpDoFirst() {
+    var r = BP.trace("loop", 4, "2bit");
+    var v = bpRenderResult(r, bpEls.doOut);
+    var extra = document.createElement("div");
+    extra.innerHTML = "\nNow set BTB to <span class=\"w\">0</span> below and run again: watch which counter moves.";
+    bpEls.doOut.appendChild(extra);
+    void v;
+  }
+
+  function bpPick(group, btn, val) {
+    bpSt[group] = val;
+    var sibs = btn.parentNode.querySelectorAll(".bp-btn");
+    for (var i = 0; i < sibs.length; i++) sibs[i].classList.remove("picked");
+    btn.classList.add("picked");
+  }
+
+  function bpRun() {
+    var r = BP.trace(bpSt.trace, bpSt.btb, bpSt.dir);
+    bpRenderResult(r, bpEls.out);
+    bpRenderPerBranch(r, bpEls.perBranch);
+  }
+
+  /* ---------- stage 1: the aggregate lie ---------- */
+  function bpS1Deal() {
+    var groups = BP.findAmbiguous("branchy");
+    var g = groups[Math.floor(Math.random() * groups.length)];
+    bpSt.s1 = { group: g, done: false };
+    var t = BP.TRACES[g.trace];
+    var distinct = {};
+    t.seq.forEach(function (s) { distinct[s[0]] = 1; });
+    var branches = t.seq.length;
+    bpEls.s1Out.innerHTML =
+      "<span class=\"w\">THE AGGREGATE</span>\n" +
+      "Trace: <span class=\"w\">" + t.label + "</span> (" + branches + " branches, " +
+      Object.keys(distinct).length + " distinct)\n" +
+      "Fetch redirects: <span class=\"v\">" + g.total + "</span>\n" +
+      "Modeled cycles lost: <span class=\"v\">" + (g.total * BP.PENALTY) + "</span>\n" +
+      "The predictor setup is hidden. Which part needs the fix?";
+    bpEls.s1Msg.textContent = "";
+    bpEls.s1Reveal.innerHTML = "";
+    [bpEls.s1Btb, bpEls.s1Dir, bpEls.s1Unknown].forEach(function (b) { b.disabled = false; });
+    bpProgress();
+  }
+
+  function bpS1Answer(key) {
+    var s1 = bpSt.s1;
+    if (!s1.group || s1.done) return;
+    if (key === "unknown") {
+      s1.done = true;
+      var rows = s1.group.variants.map(function (v) {
+        var r = BP.trace(s1.group.trace, v.btb, v.dir);
+        var verdict = BP.verdict(r);
+        return "<tr><td>BTB " + v.btb + ", " + (v.dir === "2bit" ? "2-bit" : "1-bit") + "</td>" +
+          "<td class=\"hot\">" + v.btbMisses + "</td><td class=\"hot\">" + v.dirMisses + "</td>" +
+          "<td>" + bpEsc(verdict.head) + "</td></tr>";
+      }).join("");
+      bpEls.s1Reveal.innerHTML =
+        "<div class=\"bp-scrollx\"><table class=\"bp-table\" aria-label=\"Same aggregate, different interiors\">" +
+        "<thead><tr><th>SETUP</th><th>BTB MISS</th><th>DIR MISS</th><th>DIAGNOSIS</th></tr></thead>" +
+        "<tbody>" + rows + "</tbody></table></div>";
+      bpEls.s1Msg.innerHTML =
+        "<span class=\"w\">RIGHT.</span> Same symptom, " + s1.group.variants.length +
+        " different interiors. The aggregate shows the symptom, not which predictor " +
+        "component needs repair. Stage 2 opens the waveform so you can see the split directly.";
+      [bpEls.s1Btb, bpEls.s1Dir, bpEls.s1Unknown].forEach(function (b) { b.disabled = true; });
+      bpCheckWin();
+      return;
+    }
+    var guess = key === "btb" ? "the BTB" : "the direction predictor";
+    bpEls.s1Msg.innerHTML =
+      "<span class=\"v\">NOT QUITE.</span> You guessed " + guess + ", but the aggregate " +
+      "is one number and the repair depends on the split, which is hidden. " +
+      "What can you actually conclude from totals alone? Try again.";
+  }
+
+  /* ---------- stage 2: read the waveform ---------- */
+  function bpS2Deal() {
+    var deals = BP.stage2Deals();
+    var cfg = deals[Math.floor(Math.random() * deals.length)];
+    var r = BP.trace(cfg.trace, cfg.btb, cfg.dir);
+    bpSt.s2 = { deal: cfg, r: r, classes: {}, classDone: false, repairDone: false };
+    var t = BP.TRACES[cfg.trace];
+    var html = r.steps.map(function (s) {
+      var clsCell;
+      if (s.redirect) {
+        clsCell = "<button type=\"button\" class=\"bp-class-btn\" data-n=\"" + s.n +
+          "\" data-k=\"btb\">BTB</button>" +
+          "<button type=\"button\" class=\"bp-class-btn\" data-n=\"" + s.n +
+          "\" data-k=\"dir\">DIR</button>";
+      } else {
+        clsCell = "n/a";
+      }
+      return "<tr data-n=\"" + s.n + "\"><td>" + s.n + "</td><td>" + s.br + "</td>" +
+        "<td>" + (s.hit ? "HIT" : "MISS") + "</td>" +
+        "<td>" + (s.voteT ? "T" : "N") + "</td>" +
+        "<td>" + (s.took ? "T" : "NT") + "</td>" +
+        "<td>" + bpEsc(s.tgt) + "</td>" +
+        "<td class=\"" + (s.redirect ? "hot" : "") + "\">" + (s.redirect ? ">>" : "--") + "</td>" +
+        "<td>" + clsCell + "</td></tr>";
+    }).join("");
+    bpEls.waveBody.innerHTML = html;
+    bpEls.waveCap.innerHTML =
+      "Trace: <span class=\"w\">" + t.label + "</span> (" + t.sub + "). " +
+      "Setup hidden. Classify every <span class=\"v\">&gt;&gt;</span> row.";
+    bpEls.s2Msg.textContent = "";
+    bpEls.s2RepairMsg.textContent = "";
+    bpEls.repairRow.style.display = "none";
+    bpEls.s2Check.disabled = false;
+    /* wire the classification buttons */
+    var btns = bpEls.waveBody.querySelectorAll(".bp-class-btn");
+    for (var i = 0; i < btns.length; i++) {
+      (function (el) {
+        el.addEventListener("click", function () {
+          if (bpSt.s2.classDone) return;
+          var n = +el.getAttribute("data-n"), k = el.getAttribute("data-k");
+          bpSt.s2.classes[n] = k;
+          var sibs = el.parentNode.querySelectorAll(".bp-class-btn");
+          for (var j = 0; j < sibs.length; j++) sibs[j].classList.remove("picked");
+          el.classList.add("picked");
+        });
+      })(btns[i]);
+    }
+    bpProgress();
+  }
+
+  function bpS2Check() {
+    var s2 = bpSt.s2;
+    if (!s2.r || s2.classDone) return;
+    var wrong = 0, total = 0;
+    s2.r.steps.forEach(function (s) {
+      if (!s.redirect) return;
+      total++;
+      var row = bpEls.waveBody.querySelector("tr[data-n=\"" + s.n + "\"]");
+      var good = s2.classes[s.n] === BP.classifyStep(s);
+      if (row) {
+        row.classList.remove("bp-ok", "bp-bad");
+        row.classList.add(good ? "bp-ok" : "bp-bad");
+      }
+      if (!good) wrong++;
+    });
+    if (wrong === 0 && total > 0) {
+      s2.classDone = true;
+      bpEls.s2Check.disabled = true;
+      bpEls.s2Msg.innerHTML =
+        "<span class=\"w\">ALL " + total + " REDIRECTS CLASSIFIED.</span> " +
+        "Now the repair: which fix does this waveform justify?";
+      bpEls.repairRow.style.display = "";
+      bpProgress();
+    } else {
+      bpEls.s2Msg.innerHTML =
+        "<span class=\"v\">" + wrong + " OF " + total + " NEED ANOTHER LOOK.</span> " +
+        "Rule of thumb: BTB MISS with a taken branch means the target was unknown. " +
+        "BTB HIT with VOTE different from ACTUAL means the vote was wrong. Re-tap and check again.";
+    }
+  }
+
+  function bpS2Repair(key) {
+    var s2 = bpSt.s2;
+    if (!s2.r || !s2.classDone || s2.repairDone) return;
+    var right = BP.repairFor(s2.r);
+    if (key === right) {
+      s2.repairDone = true;
+      var names = { btb: "BTB CAPACITY / TARGET-SIDE REPAIR", dir: "DIRECTION-PREDICTOR REPAIR" };
+      bpEls.s2RepairMsg.innerHTML =
+        "<span class=\"w\">RIGHT.</span> The waveform shows " + s2.r.btbMisses +
+        " BTB misses against " + s2.r.dirMisses + " direction mispredicts, so " +
+        names[right] + " is the evidence-backed fix.";
+      bpCheckWin();
+    } else {
+      bpEls.s2RepairMsg.innerHTML =
+        "<span class=\"v\">NOT QUITE.</span> Count your classifications: " +
+        s2.r.btbMisses + " BTB misses versus " + s2.r.dirMisses +
+        " direction mispredicts. Which side dominates the waveform? Try again.";
+    }
+  }
+
+  function bpDownload() {
+    var txt = "The Two Guesses qualification record\n\n" + bpEls.cert.textContent + "\n";
+    var blob = new Blob([txt], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "two-guesses-bench71-record.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      URL.revokeObjectURL(a.href);
+      if (a.parentNode) a.parentNode.removeChild(a);
+    }, 500);
+  }
+
+  /* ---------------- build ---------------- */
+  function bpBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box) return;
+    if (document.getElementById("bpBtn")) return;
+    bpSt = bpNewState();
+
+    var sty = document.createElement("style");
+    sty.id = "bpStyle";
+    sty.textContent = BP_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "bpBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Two Guesses";
+    b.addEventListener("click", bpOpen);
+    box.appendChild(b);
+
+    var ov = bpEl("div", "bp-overlay", "");
+    ov.id = "bpOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Two Guesses");
+    var x = bpBtn("CLOSE", "bp-btn");
+    x.id = "bpXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Two Guesses");
+    x.addEventListener("click", bpClose);
+    ov.appendChild(x);
+    bpEls.overlay = ov;
+    if (!bpEscBound) {
+      bpEscBound = true;
+      document.addEventListener("keydown", function (ev) {
+        if (ev.key === "Escape" && bpEls.overlay && bpEls.overlay.classList.contains("open")) bpClose();
+      });
+    }
+
+    var panel = bpEl("div", "bp-panel", "");
+    panel.id = "bpPanel";
+    panel.appendChild(bpEl("div", "bp-kicker", "RISC-V BENCH 71"));
+    panel.appendChild(bpEl("h2", "bp-title", "The Two Guesses"));
+
+    var intro = bpEl("div", "", "");
+    intro.innerHTML = BP.INTRO_HTML;
+    panel.appendChild(intro);
+    bpEls.workedBody = intro.querySelector("#bpWorkedBody");
+
+    /* progress */
+    var prog = bpEl("div", "bp-out", "STAGE 1: OPEN | STAGE 2: OPEN");
+    prog.id = "bpProgress";
+    panel.appendChild(prog);
+    bpEls.progress = prog;
+
+    /* do first */
+    panel.appendChild(bpEl("div", "bp-sec", "DO FIRST"));
+    panel.appendChild(bpEl("p", "bp-p", "One button. It runs the counted loop through a 4-entry BTB and a 2-bit predictor, and splits the cost into the two guesses. Nothing to configure, nothing to break."));
+    var doFirst = bpBtn("RUN THE TRACE", "bp-btn solid");
+    doFirst.id = "bpDoFirst";
+    doFirst.addEventListener("click", bpDoFirst);
+    panel.appendChild(doFirst);
+    var doOut = bpEl("div", "bp-out", "The trace has not run yet.");
+    doOut.id = "bpDoOut";
+    doOut.setAttribute("aria-live", "polite");
+    panel.appendChild(doOut);
+    bpEls.doOut = doOut;
+
+    /* controls */
+    panel.appendChild(bpEl("div", "bp-sec", "THE CONTROLS"));
+    panel.appendChild(bpEl("p", "bp-p", "Pick a trace, size the BTB, choose the predictor, and run. The verdict names the dominant failure and the fix it wants. The two short traces are the stage-2 waveforms; run them here to check your work."));
+    var g1 = bpEl("div", "bp-group", "");
+    g1.appendChild(bpEl("span", "bp-lbl", "TRACE"));
+    var row1 = bpEl("div", "bp-row", "");
+    var traceBtns = [
+      ["bpTraceLoop", "THE COUNTER", "loop", true],
+      ["bpTraceBranchy", "THE DISPATCHER", "branchy", false],
+      ["bpTraceFlicker", "THE FLICKER", "flicker", false],
+      ["bpTraceCrowd", "THE CROWD", "crowd", false]
+    ];
+    traceBtns.forEach(function (cfg) {
+      var btn = bpBtn(cfg[1], "bp-btn" + (cfg[3] ? " picked" : ""));
+      btn.id = cfg[0];
+      (function (v, el) {
+        el.addEventListener("click", function () { bpPick("trace", el, v); });
+      })(cfg[2], btn);
+      row1.appendChild(btn);
+    });
+    g1.appendChild(row1);
+    panel.appendChild(g1);
+    var g2 = bpEl("div", "bp-group", "");
+    g2.appendChild(bpEl("span", "bp-lbl", "BTB ENTRIES"));
+    var row2 = bpEl("div", "bp-row", "");
+    [["bpBtb0", "0", 0], ["bpBtb4", "4", 4], ["bpBtb16", "16", 16]].forEach(function (cfg) {
+      var btn = bpBtn(cfg[1], "bp-btn" + (cfg[2] === 4 ? " picked" : ""));
+      btn.id = cfg[0];
+      (function (v, el) {
+        el.addEventListener("click", function () { bpPick("btb", el, v); });
+      })(cfg[2], btn);
+      row2.appendChild(btn);
+    });
+    g2.appendChild(row2);
+    panel.appendChild(g2);
+    var g3 = bpEl("div", "bp-group", "");
+    g3.appendChild(bpEl("span", "bp-lbl", "DIRECTION PREDICTOR"));
+    var row3 = bpEl("div", "bp-row", "");
+    var d1 = bpBtn("1-BIT", "bp-btn");
+    d1.id = "bpDir1";
+    d1.addEventListener("click", function () { bpPick("dir", d1, "1bit"); });
+    var d2 = bpBtn("2-BIT", "bp-btn picked");
+    d2.id = "bpDir2";
+    d2.addEventListener("click", function () { bpPick("dir", d2, "2bit"); });
+    row3.appendChild(d1); row3.appendChild(d2);
+    g3.appendChild(row3);
+    panel.appendChild(g3);
+    var run = bpBtn("RUN", "bp-btn solid");
+    run.id = "bpRun";
+    run.addEventListener("click", bpRun);
+    panel.appendChild(run);
+    var out = bpEl("div", "bp-out", "Nothing run yet.");
+    out.id = "bpOut";
+    out.setAttribute("aria-live", "polite");
+    panel.appendChild(out);
+    bpEls.out = out;
+    var perBranch = bpEl("div", "", "");
+    perBranch.id = "bpPerBranch";
+    panel.appendChild(perBranch);
+    bpEls.perBranch = perBranch;
+
+    /* failure modes */
+    var fail = bpEl("div", "", "");
+    fail.innerHTML = BP.FAILURES_HTML;
+    panel.appendChild(fail);
+
+    /* stage 1 */
+    var s1 = bpEl("div", "", "");
+    s1.innerHTML = BP.STAGE1_HTML;
+    panel.appendChild(s1);
+    var deal1 = bpBtn("DEAL THE AGGREGATE", "bp-btn solid");
+    deal1.id = "bpS1Deal";
+    deal1.addEventListener("click", bpS1Deal);
+    panel.appendChild(deal1);
+    bpEls.s1Deal = deal1;
+    var s1Out = bpEl("div", "bp-out", "No aggregate dealt yet.");
+    s1Out.id = "bpS1Out";
+    s1Out.setAttribute("aria-live", "polite");
+    panel.appendChild(s1Out);
+    bpEls.s1Out = s1Out;
+    var s1Row = bpEl("div", "bp-row", "");
+    var s1B = bpBtn("BTB (TARGET SIDE)", "bp-btn");
+    s1B.id = "bpS1Btb"; s1B.disabled = true;
+    s1B.addEventListener("click", function () { bpS1Answer("btb"); });
+    var s1D = bpBtn("DIRECTION PREDICTOR", "bp-btn");
+    s1D.id = "bpS1Dir"; s1D.disabled = true;
+    s1D.addEventListener("click", function () { bpS1Answer("dir"); });
+    var s1U = bpBtn("NOT ENOUGH INFORMATION", "bp-btn");
+    s1U.id = "bpS1Unknown"; s1U.disabled = true;
+    s1U.addEventListener("click", function () { bpS1Answer("unknown"); });
+    s1Row.appendChild(s1B); s1Row.appendChild(s1D); s1Row.appendChild(s1U);
+    panel.appendChild(s1Row);
+    bpEls.s1Btb = s1B; bpEls.s1Dir = s1D; bpEls.s1Unknown = s1U;
+    var s1Msg = bpEl("div", "bp-out", "");
+    s1Msg.id = "bpS1Msg";
+    s1Msg.setAttribute("aria-live", "polite");
+    panel.appendChild(s1Msg);
+    bpEls.s1Msg = s1Msg;
+    var s1Reveal = bpEl("div", "", "");
+    s1Reveal.id = "bpS1Reveal";
+    panel.appendChild(s1Reveal);
+    bpEls.s1Reveal = s1Reveal;
+
+    /* stage 2 */
+    var s2 = bpEl("div", "", "");
+    s2.innerHTML = BP.STAGE2_HTML;
+    panel.appendChild(s2);
+    var deal2 = bpBtn("DEAL THE WAVEFORM", "bp-btn solid");
+    deal2.id = "bpS2Deal";
+    deal2.addEventListener("click", bpS2Deal);
+    panel.appendChild(deal2);
+    bpEls.s2Deal = deal2;
+    var waveCap = bpEl("div", "bp-out", "No waveform dealt yet.");
+    waveCap.id = "bpWaveCap";
+    panel.appendChild(waveCap);
+    bpEls.waveCap = waveCap;
+    var waveWrap = bpEl("div", "bp-scrollx", "");
+    waveWrap.id = "bpWaveWrap";
+    var waveTbl = bpEl("table", "bp-table", "");
+    waveTbl.setAttribute("aria-label", "Branch predictor waveform");
+    waveTbl.id = "bpWaveTable";
+    var wthead = bpEl("thead", "", "");
+    var whr = bpEl("tr", "", "");
+    ["#", "BR", "BTB", "VOTE", "ACTUAL", "TARGET", "REDIRECT", "CLASS"].forEach(function (h) {
+      whr.appendChild(bpEl("th", "", h));
+    });
+    wthead.appendChild(whr);
+    waveTbl.appendChild(wthead);
+    var wtbody = bpEl("tbody", "", "");
+    wtbody.id = "bpWaveBody";
+    waveTbl.appendChild(wtbody);
+    waveWrap.appendChild(waveTbl);
+    panel.appendChild(waveWrap);
+    bpEls.waveBody = wtbody;
+    var check = bpBtn("CHECK CLASSIFICATIONS", "bp-btn solid");
+    check.id = "bpS2Check";
+    check.disabled = true;
+    check.addEventListener("click", bpS2Check);
+    panel.appendChild(check);
+    bpEls.s2Check = check;
+    var s2Msg = bpEl("div", "bp-out", "");
+    s2Msg.id = "bpS2Msg";
+    s2Msg.setAttribute("aria-live", "polite");
+    panel.appendChild(s2Msg);
+    bpEls.s2Msg = s2Msg;
+    var repairRow = bpEl("div", "bp-row", "");
+    repairRow.id = "bpS2RepairRow";
+    repairRow.style.display = "none";
+    var rB = bpBtn("BTB CAPACITY / TARGET-SIDE REPAIR", "bp-btn");
+    rB.id = "bpS2RepairBtb";
+    rB.addEventListener("click", function () { bpS2Repair("btb"); });
+    var rD = bpBtn("DIRECTION-PREDICTOR REPAIR", "bp-btn");
+    rD.id = "bpS2RepairDir";
+    rD.addEventListener("click", function () { bpS2Repair("dir"); });
+    repairRow.appendChild(rB); repairRow.appendChild(rD);
+    panel.appendChild(repairRow);
+    bpEls.repairRow = repairRow;
+    var s2RepairMsg = bpEl("div", "bp-out", "");
+    s2RepairMsg.id = "bpS2RepairMsg";
+    s2RepairMsg.setAttribute("aria-live", "polite");
+    panel.appendChild(s2RepairMsg);
+    bpEls.s2RepairMsg = s2RepairMsg;
+
+    /* optional depth */
+    var depth = bpEl("div", "", "");
+    depth.innerHTML = BP.DEPTH_HTML;
+    panel.appendChild(depth);
+
+    /* cert banner */
+    var banner = bpEl("div", "bp-banner", "");
+    banner.id = "bpBanner";
+    banner.appendChild(bpEl("h3", "", "DIAGNOSTICIAN: BENCH 71 CLEAR"));
+    var cert = bpEl("p", "bp-cert", "");
+    cert.id = "bpCertP";
+    banner.appendChild(cert);
+    bpEls.cert = cert;
+    var dl = bpBtn("DOWNLOAD RECORD", "bp-btn");
+    dl.id = "bpDl";
+    dl.addEventListener("click", bpDownload);
+    banner.appendChild(dl);
+    panel.appendChild(banner);
+    bpEls.banner = banner;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    /* fill the worked-example table from the sim itself, so copy can never drift */
+    if (bpEls.workedBody) bpEls.workedBody.innerHTML = bpWorkedRows();
+    bpProgress();
+  }
+
+  function bpOpen() {
+    if (bpEls.overlay) {
+      bpEls.overlay.classList.add("open");
+      if (bpEls.overlay.scrollTo) bpEls.overlay.scrollTo(0, 0);
+    }
+  }
+  function bpClose() {
+    if (bpEls.overlay) bpEls.overlay.classList.remove("open");
+  }
+
+  BP.debug = {
+    state: function () { return bpSt; },
+    s1: function () { return bpSt ? bpSt.s1 : null; },
+    s2: function () { return bpSt ? bpSt.s2 : null; }
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bpBuild);
+  } else {
+    bpBuild();
   }
 })();
