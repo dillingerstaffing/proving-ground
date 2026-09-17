@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260916-pg94">
+<meta name="build-version" content="v20260916-pg95">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -104,6 +104,7 @@
   --acid: #ff5a1f;
   --cyan: #7cc4ff;
   --orange: #ffbe4d;
+  --violet: #c9a2ff;
   --black: #05070a;
   --radius: 4px;
   --font-d: "Space Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -586,11 +587,13 @@ body.pg-any-open div[class*="-overlay"].open > div[class*="-panel"] {
    warm paper, committed dark ink, one sanguine accent reserved for
    affordances and annotations, hairline rules, serif article type,
    no glow, no gradients, no texture.
-   Bench instruments stay on ink plates: inside *-overlay elements the
-   classic dark palette is restored, so every bench renders exactly as
-   designed, like an evidence figure pasted into the notebook. Tonal
-   transitions keep the switch smooth; the wipe reveal is driven by the
-   view-transition API from the toggle's position.
+   Bench instruments follow the same tokens: every bench surface, control,
+   and canvas trace resolves through the variable set below, so the whole
+   bench re-voices with the theme. Tonal transitions keep the switch smooth;
+   the wipe reveal is driven by the view-transition API from the toggle's
+   position.
+   Adding a theme later is a variable block: define the tokens, the
+   components follow.
    ============================================================ */
 [data-theme="notebook"] {
   --ink: #ece6d5;
@@ -610,6 +613,7 @@ body.pg-any-open div[class*="-overlay"].open > div[class*="-panel"] {
   --acid: #8c3f22;
   --cyan: #33527a;
   --orange: #8a5a18;
+  --violet: #5a4a78;
   --black: #241f17;
   --font-d: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
   color-scheme: light;
@@ -622,30 +626,8 @@ html[data-theme="notebook"] { background: #ece6d5; }
   font-family: var(--font-d);
 }
 [data-theme="notebook"] ::selection { background: var(--ember); color: #f4efe0; }
-/* Bench instruments stay on ink plates: restore the classic dark palette
-   inside bench overlays so every bench renders exactly as designed. */
-[data-theme="notebook"] div[class*="-overlay"] {
-  --ink: #0a0c0e;
-  --panel: #10141a;
-  --panel-2: #141a21;
-  --paper: #f2ede3;
-  --steel: #9aa3ad;
-  --dim: #6b7480;
-  --line: rgba(242, 237, 227, 0.13);
-  --ember: #ff5a1f;
-  --ember-deep: #b53c0d;
-  --ember-glow: rgba(255, 90, 31, 0.35);
-  --bad: #ff5d5d;
-  --ice: #7cc4ff;
-  --amber: #ffbe4d;
-  --mint: #7de0a8;
-  --acid: #ff5a1f;
-  --cyan: #7cc4ff;
-  --orange: #ffbe4d;
-  --black: #05070a;
-  --font-d: "Space Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
-  color-scheme: dark;
-}
+/* Bench instruments inherit the notebook tokens directly: no overlay
+   redefinition, no per-component overrides. */
 /* Tonal timing on theme switches (both themes). Elements that own their
    press/hover transitions are untouched. */
 body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
@@ -695,7 +677,7 @@ body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
    keep it as an ink plate, keyed in paper ink. */
 [data-theme="notebook"] .sb-toast { background: #242019; color: #f4efe0; border-color: #b3a685; }
 /* ---- Diagram discipline (notebook only) ----
-   Bench diagrams live on ink plates inside *-overlay elements; the classic
+   Bench diagrams live on paper plates inside *-overlay elements; the classic
    theme keeps its original visuals untouched. Two devices from the
    notebook research, applied as presentation only (no bench logic):
    1. Direct keying: separate legend bars become marginal keys, a hairline
@@ -703,7 +685,7 @@ body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
       Swatch chips keep their functional colors (they key the legend to
       the diagram) inside hairline key borders.
    2. Ink roles: revision and superseded marks (killed, struck, stale)
-      take the sanguine strike; committed diagram ink stays bright,
+      take the sanguine strike; committed diagram ink stays dark,
       provisional annotation stays dim. */
 [data-theme="notebook"] div[class*="-overlay"] [class*="-legend"] {
   border-top: 1px solid var(--line);
@@ -722,8 +704,8 @@ body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
 [data-theme="notebook"] div[class*="-overlay"] .ph-trace tr.killed td,
 [data-theme="notebook"] div[class*="-overlay"] .td-opt.struck,
 [data-theme="notebook"] div[class*="-overlay"] .fr-cell.stale {
-  color: #c98a63;
-  text-decoration-color: #ff5a1f;
+  color: var(--ember);
+  text-decoration-color: var(--ember);
 }
 /* ---- The theme toggle: a quiet folio mark, not a nav link ---- */
 .theme-toggle {
@@ -1273,7 +1255,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-16-pg94";
+var PG_REV = "2026-09-16-pg95";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
@@ -1881,15 +1863,18 @@ if ('serviceWorker' in navigator) {
     } else {
       apply(next);
     }
+    /* Nudge canvas instruments to re-voice: benches that listen for resize
+       redraw immediately; live benches repaint on their next tick. */
+    try { window.dispatchEvent(new Event("resize")); } catch (_) {}
   }
   var btn = document.querySelector('.theme-toggle');
   if (btn) btn.addEventListener('click', toggle);
   apply(current());
 })();
 </script>
-<script src="rvcore.js?v=bc7df31f35" defer></script>
-<script src="rvdata.js?v=bc7df31f35" defer></script>
-<script src="riscv-lab.js?v=bc7df31f35" defer></script>
-<script src="features.js?v=bc7df31f35" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=853ffa9eca" defer></script>
+<script src="rvdata.js?v=853ffa9eca" defer></script>
+<script src="riscv-lab.js?v=853ffa9eca" defer></script>
+<script src="features.js?v=853ffa9eca" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
