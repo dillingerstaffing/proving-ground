@@ -3238,7 +3238,7 @@ if (typeof module !== "undefined" && module.exports) {
 
     /* toolbar */
     var tb = cfEl("div", "cf-toolbar");
-    ex.btnStep = cfEl("button", "secondary", "STEP 1");
+    ex.btnStep = cfEl("button", "secondary", "STEP 1 LOAD");
     ex.btnRun = cfEl("button", "secondary cf-run", "RUN");
     ex.btnReset = cfEl("button", "secondary", "RESET");
     tb.appendChild(ex.btnStep); tb.appendChild(ex.btnRun); tb.appendChild(ex.btnReset);
@@ -3367,6 +3367,7 @@ if (typeof module !== "undefined" && module.exports) {
       else if (frac > 0) cls += " p1";
       if (s === lastSet) cls += (lastKind === "hit" ? " hit" : " miss");
       ex.cells[s].className = cls;
+      ex.cells[s].title = "set " + s + ": " + occ + " of " + a + " ways filled";
     }
   }
 
@@ -3976,7 +3977,7 @@ if (typeof module !== "undefined" && module.exports) {
 
     /* toolbar */
     var tb = mbEl("div", "mb-toolbar");
-    var btnProbe = mbEl("button", "secondary", "PROBE LIVE (240)");
+    var btnProbe = mbEl("button", "secondary", "PROBE LIVE (240 TXNS)");
     var btnQual = mbEl("button", "secondary mb-run", "QUALIFY MODULE (4000)");
     var btnSafe = mbEl("button", "secondary", "RESET TO SAFE");
     var btnCard = mbEl("button", "secondary", "DOWNLOAD BIN CARD");
@@ -4836,6 +4837,7 @@ if (typeof module !== "undefined" && module.exports) {
       'A register allocator decides which values live in the chip&#39;s ' +
       'handful of registers and which wait in memory. Waiting in memory is called a spill, ' +
       'so the allocator spills the cheapest victim it can find. ' +
+      'Spill cost is counted in weighted memory references, shown as u. ' +
       'Trial 2 makes it concrete: eleven virtuals, four physical registers, something has to spill. ' +
       'The live-interval chart shows every value as one horizontal bar across its live instructions, ' +
       'in linear-scan order. A bar takes its register color as you assign it, a dashed ember bar is ' +
@@ -8476,7 +8478,7 @@ function btbTrialDef(id) {
     t.blurb = "Stage 2 sat in a damp warehouse. Its bytes no longer match the manifest. Firmware rule: never boot what you cannot verify.";
     t.defA1 = 0x80000000; t.defA2 = 0x80010000; t.corrupt = true;
   } else {
-    t.name = "OVERLAP TRAP"; t.seed = 7303;
+    t.name = "OVERLAPPING MAP"; t.seed = 7303;
     t.blurb = "Someone else's defaults. Stage 2's load address sits inside stage 1's footprint. Fix the map before you boot.";
     t.defA1 = 0x80000000; t.defA2 = 0x80004000; t.corrupt = false;
   }
@@ -8554,20 +8556,20 @@ function btbBoot(t, cfg) {
   log("info", "RESET: hart0 released at 0x00001000, M-mode ROM, traps to M.");
   var mf = btbCheckMap(cfg.a1, cfg.a2);
   if (mf.length) {
-    for (var i = 0; i < mf.length; i++) log("bad", "MAP FAULT: " + mf[i]);
+    for (var i = 0; i < mf.length; i++) log("bad", "MAP CHECK FAILED: " + mf[i]);
     return halt("memory map fault.");
   }
   log("ok", "MAP: stage regions valid, no overlaps, 4 KB aligned.");
   var pf = btbCheckPmp(cfg.romLock, cfg.fwLock);
   if (pf.length) {
-    for (var j = 0; j < pf.length; j++) log("bad", "PMP FAULT: " + pf[j]);
+    for (var j = 0; j < pf.length; j++) log("bad", "PMP CHECK FAILED: " + pf[j]);
     return halt("PMP refused.");
   }
   log("ok", "PMP: ROM locked R-X, firmware region locked. No tamper window.");
   var im = btbImages(t);
   var v1 = btbVerify(im.img1, im.claimed1);
   if (!v1.match) {
-    log("bad", "SECURE BOOT FAULT: stage1 checksum mismatch (manifest " +
+    log("bad", "SECURE BOOT CHECK FAILED: stage1 checksum mismatch (manifest " +
       btbHex(im.claimed1) + ", computed " + btbHex(v1.computed) + ").");
     return halt("unverified stage1.");
   }
@@ -8582,7 +8584,7 @@ function btbBoot(t, cfg) {
   }
   var v2 = btbVerify(img2, im.claimed2);
   if (!v2.match) {
-    log("bad", "SECURE BOOT FAULT: stage2 checksum mismatch (manifest " +
+    log("bad", "SECURE BOOT CHECK FAILED: stage2 checksum mismatch (manifest " +
       btbHex(im.claimed2) + ", computed " + btbHex(v2.computed) + ").");
     log("bad", "Refusing to boot an unverified stage. Reflash from golden, then retry.");
     return halt("unverified stage2.");
@@ -9062,7 +9064,7 @@ function btbRunBoot(t) {
   res.log.forEach(function (line) {
     var li = btbEl("li");
     var k = btbEl("span", "k-" + line.kind,
-      line.kind === "ok" ? "[ OK ] " : line.kind === "bad" ? "[ FAULT ] " : "[ INFO ] ");
+      line.kind === "ok" ? "[ OK ] " : line.kind === "bad" ? "[ FAILED ] " : "[ INFO ] ");
     li.appendChild(k);
     li.appendChild(document.createTextNode(line.text));
     log.appendChild(li);
@@ -9073,7 +9075,7 @@ function btbRunBoot(t) {
   banner.appendChild(btbEl("div", "t", res.pass ? "TRIAL PASS" : "TRIAL FAIL"));
   var p = btbEl("p", null, res.pass
     ? t.name + " booted clean: reset to login, every stage verified, map clean, PMP locked. Logged."
-    : t.name + " did not boot. Read the FAULT lines, fix the configuration, and boot again. The board is safe.");
+    : t.name + " did not boot. Read the FAILED lines, fix the configuration, and boot again. The board is safe.");
   banner.appendChild(p);
   if (res.pass && !BTB_ST[t.id].passed) {
     BTB_ST[t.id].passed = true;
@@ -9144,7 +9146,7 @@ function btbBuildShell() {
     "lock the PMP regions (hardware fences that make regions read-only or off-limits), and boot from reset to login. " +
     "Trial 2 makes it concrete: stage 2 sat in a damp warehouse and its bytes no longer match the manifest. " +
     "Firmware rule: never boot what you cannot verify. " +
-    "Trial 3 is the map trap: stage 2's load address sits inside stage 1's footprint. Fix it before you boot. " +
+    "Trial 3 is the overlap: stage 2's load address sits inside stage 1's footprint. Fix it before you boot. " +
     "Built for the RISC-V and xv6 systems work in the " +
     "<a href=\"https://dillingerstaffing.github.io/portfolio/\" target=\"_blank\" rel=\"noopener\">portfolio</a>.";
   body.appendChild(sub);
@@ -9462,7 +9464,7 @@ if (typeof module !== "undefined" && module.exports) {
       "Your three knobs are the loop filter: charge pump current (how hard each correction pushes), " +
       "resistor and capacitor (how wide and fast the loop responds). " +
       "Card B makes it concrete: its VCO runs hot and noisy, jitter over budget, and the fix is widening the loop to quiet it. " +
-      "Card C is the other failure mode: the oscillator wakes 12 percent off frequency, and you must lock it inside 600 steps while holding jitter under 25. " +
+      "Card C is the other failure mode: the oscillator wakes 12 percent off frequency, and you must lock it inside 600 steps while holding jitter under 25 ps. " +
       "Read lock time and jitter against each card's budget, qualify all three, sign the TAPEOUT clock certificate. " +
       "Built for the <a href=\"https://dillingerstaffing.github.io/tapeout/\" target=\"_blank\" rel=\"noopener\">TAPEOUT bring-up bench</a>.";
     body.appendChild(sub);
@@ -9626,7 +9628,7 @@ if (typeof module !== "undefined" && module.exports) {
     var m3 = lkEl("div", "lk-metric", "");
     m3.appendChild(lkEl("h5", null, "GRADE"));
     m3.appendChild(lkEl("div", "v", lkGrade(res)));
-    m3.appendChild(lkEl("div", "b", "gold / silver / bronze"));
+    m3.appendChild(lkEl("div", "b", "gold / silver / bronze"));    m3.appendChild(lkEl("div", "b", "GOLD: inside half of both budgets. SILVER: inside 80 percent of both budgets."));
     rbox.appendChild(m3);
 
     var v = lk$("lkVerdict");
@@ -10121,8 +10123,8 @@ if (typeof module !== "undefined" && module.exports) {
       "sampled at 1 MHz on the scope. Frame 0 is always 0x55, alternating bits, the sync byte: probe it " +
       "to measure the bit cell (at 9600 baud each bit is 104.2 us wide), match the baud, set parity and " +
       "stop bits from the datasheet brief, then capture and decode. " +
-      "Hart B is the noise trap: spikes on the wire that a mid-bit sampler never sees. " +
-      "Hart C is the framing trap: a clean decode with the wrong stop count still fails. " +
+      "Hart B is the noisy one: spikes on the wire that a mid-bit sampler never sees. " +
+      "Hart C is the framing check: a clean decode with the wrong stop count still fails. " +
       "Zero errors on all three harts signs the bring-up certificate. " +
       "Built for the <a href=\"https://dillingerstaffing.github.io/portfolio/\" target=\"_blank\" rel=\"noopener\">RISC-V portfolio</a> bring-up bench.";
     body.appendChild(sub);
@@ -11467,7 +11469,7 @@ if (typeof module !== "undefined" && module.exports) {
       "The catch is lag: fans take time to spool and the BMC polls the sensor every 1.5s, so aggressive tuning oscillates. " +
       "Rack A is the classroom: clean heatsink, cool aisle, learn each knob here. " +
       "Rack B is the hot aisle: 33C intake air, almost no fan headroom, the integral term does real work and overshoot is expensive. " +
-      "Rack C is the dust trap: the sink moves 25% less heat and the workload slams in 250W spikes, where derivative action earns its keep. " +
+      "Rack C is the dust-choked one: the sink moves 25% less heat and the workload slams in 250W spikes, where derivative action earns its keep. " +
       "Hold 65C in band through the 90-second workload on all three racks. Built for <a href=\"https://dillingerstaffing.github.io/old-iron/\" " +
       "target=\"_blank\" rel=\"noopener\">OLD IRON</a> server refurbishment.";
     body.appendChild(sub);
@@ -12475,7 +12477,7 @@ if (typeof module !== "undefined" && module.exports) {
       "check intact means two flipped bits, which this code can detect but never fix: quarantine the word. " +
       "A cell that always reads wrong is stuck: no correction helps, quarantine it too. " +
       "Module A is the classroom: mostly clean words, two transient flips, one tired cell, learn the calls here. " +
-      "Module B is the trap: one word carries an uncorrectable double-bit fault, and passing it means data corrupts silently. " +
+      "Module B is the dangerous one: one word carries an uncorrectable double-bit fault, and passing it means data corrupts silently. " +
       "Module C is the refurb lot: two stuck cells, two doubles, only a ruthless scrubber signs it off. " +
       "Built for <a href=\"https://dillingerstaffing.github.io/tapeout/\" " +
       "target=\"_blank\" rel=\"noopener\">TAPEOUT</a> memory qualification.";
@@ -12881,8 +12883,8 @@ if (typeof module !== "undefined" && module.exports) {
       "(how fast the air climbs), soak dwell at 160 C (let every joint equalize before the spike), " +
       "peak temp, peak dwell (hold so lagging joints catch up and wet). " +
       "REF-01 is the reference: clean 2-layer, dry storage. " +
-      "HVY-02 is the copper trap: a 4 oz pour that acts as a thermal sink, so the joints lag the air and need a hotter, longer peak. " +
-      "MST-03 is the damp trap: moisture soaked into the board flashes to steam inside the joints when they ramp past 2.2 C/s, and the pressure popcorn-cracks them, so bake it out first. " +
+      "HVY-02 is the heat sink: a 4 oz pour that acts as a thermal sink, so the joints lag the air and need a hotter, longer peak. " +
+      "MST-03 is the damp one: moisture soaked into the board flashes to steam inside the joints when they ramp past 2.2 C/s, and the pressure popcorn-cracks them, so bake it out first. " +
       "Bake what needs baking, read the joint traces, ship all three. Built for " +
       "<a href=\"https://dillingerstaffing.github.io/tapeout/\" target=\"_blank\" " +
       "rel=\"noopener\">TAPEOUT</a> board qualification.";
@@ -14321,7 +14323,7 @@ if (typeof module !== "undefined" && module.exports) {
     var v = cbEl("div", "cb-verdict " + (res.pass ? "pass" : "fail"));
     if (res.pass) {
       v.appendChild(cbEl("h4", null, "Certified: link up"));
-      v.appendChild(cbEl("p", null, c.tag + ": 1000BASE-T, all eight conductors to standard, all four pairs true twisted pairs."));
+      v.appendChild(cbEl("p", null, c.tag + ": T568 wiring map, all eight conductors to standard, all four pairs true twisted pairs."));
       if (s.faultsSeen.length) {
         v.appendChild(cbEl("p", null, "Faults found and cleared on this cable: " + s.faultsSeen.join("; ") + "."));
       }
@@ -14385,7 +14387,7 @@ if (typeof module !== "undefined" && module.exports) {
     cbS.testing = false;
     if (s.result.pass && !s.certified) {
       s.certified = true;
-      toast(cbCable().tag + " certified at 1000BASE-T");
+      toast(cbCable().tag + " certified to the T568 wiring map");
     }
     cbRenderAll();
   }
@@ -14429,7 +14431,7 @@ if (typeof module !== "undefined" && module.exports) {
       var s = cbS.cables[i];
       lines.push("");
       lines.push(c.tag + " - " + c.name + " (" + c.std + "): " +
-        (s.certified ? "PASS at 1000BASE-T" : "NOT CERTIFIED"));
+        (s.certified ? "PASS: T568 wiring map" : "NOT CERTIFIED"));
       if (s.faultsSeen.length) {
         lines.push("  Faults found and cleared: " + s.faultsSeen.join("; "));
       }
@@ -14521,7 +14523,7 @@ if (typeof module !== "undefined" && module.exports) {
       "run the cable tester, and certify three cables at a full gigabit. " +
       "PATCH-01 is the drill: wire your end to T568B, straight through, pin for pin. " +
       "XOVER-02 teaches the crossover: your end goes T568A, so pairs 1-2 and 3-6 trade places. " +
-      "RMA-03 is the trap: a returned lead where gigabit died overnight. Run the tester, read the fault, re-terminate your end. " +
+      "RMA-03 is the hidden wiring defect: a returned lead where gigabit died overnight. Run the tester, read the fault, re-terminate your end. " +
       "<b>Continuity is not correctness:</b> the pairs must be true twisted pairs or the link will not train.";
     panel.appendChild(sub);
 
@@ -15699,7 +15701,7 @@ if (typeof module !== "undefined" && module.exports) {
     t.className = "sw-bits";
     t.setAttribute("aria-label", "Binary worksheet");
     var head = document.createElement("tr");
-    ["", "octet 1", "octet 2", "octet 3", "octet 4"].forEach(function (h) {
+    ["VALUE", "octet 1", "octet 2", "octet 3", "octet 4"].forEach(function (h) {
       var th = document.createElement("th");
       th.textContent = h;
       head.appendChild(th);
@@ -18469,8 +18471,8 @@ if (typeof module !== "undefined" && module.exports) {
   function dmSeatCheck(st, board) {
     if (st.gen !== board.gen) {
       return { ok: false, msg: "Won't seat: " + st.label + " in a DDR" + board.gen +
-        " slot. The stick's notch sits at " + dmKeyOf(st) + ", the slot key at " +
-        board.key + ". Wrong generation: the key physically blocks it." };
+        " slot. The stick's notch sits at " + dmKeyOf(st) + "%, the slot key at " +
+        board.key + "% across the module (simplified model). Wrong generation: the key physically blocks it." };
     }
     if (st.form !== board.form) {
       return { ok: false, msg: "Won't seat: a " + st.pins + "-pin SO-DIMM in a full-size " +
@@ -18708,7 +18710,7 @@ if (typeof module !== "undefined" && module.exports) {
     key.style.left = "calc(" + t.board.key + "% - 2px)";
     kl.appendChild(key);
     b.appendChild(kl);
-    b.appendChild(dmEl("div", "dm-keylbl", "SLOT KEY " + t.board.key));
+    b.appendChild(dmEl("div", "dm-keylbl", "SLOT KEY " + t.board.key + " (SIMPLIFIED MODEL)"));
     var area = dmEl("div", "dm-stickarea", null);
     if (e) {
       var st = dmStickById(e.stick);
@@ -18752,7 +18754,7 @@ if (typeof module !== "undefined" && module.exports) {
         var st = dmStickById(id);
         var b = dmEl("button", "dm-traystick", null);
         b.setAttribute("aria-pressed", t.selected === id ? "true" : "false");
-        b.textContent = st.label + " / " + st.pins + "-pin / notch " + dmKeyOf(st);
+        b.textContent = st.label + " / " + st.pins + "-pin / notch " + dmKeyOf(st) + "% across module (simplified model)";
         b.addEventListener("click", function () {
           t.selected = (t.selected === id) ? null : id;
           t.selSlot = null;
@@ -20043,7 +20045,11 @@ if (typeof module !== "undefined" && module.exports) {
         trFmt(job.target * (1 - job.tol)) + " to " + trFmt(job.target * (1 + job.tol)) + ")"]
     ];
     if (job.fabMin) rows.push(["FAB MINIMUM WIDTH", trFmt(job.fabMin) + " mil"]);
-    var tb = trEl("tbody", null);
+    var tb = trEl("tbody", null);    var thead = trEl("thead", null);
+    var htr = trEl("tr", null);
+    ["PARAMETER", "VALUE"].forEach(function (h) { htr.appendChild(trEl("th", null, h)); });
+    thead.appendChild(htr);
+    tbl.appendChild(thead);
     rows.forEach(function (r) {
       var tr = trEl("tr", null);
       tr.appendChild(trEl("td", "tr-k", r[0]));
@@ -20058,8 +20064,11 @@ if (typeof module !== "undefined" && module.exports) {
 
     var math = trEl("div", "tr-math");
     math.appendChild(trEl("h4", null, "THE MATH"));
-    var eq = trEl("div", "tr-eq", "Z0 = 87 / sqrt(er + 1.41) x ln( 5.98 x h / (0.8 x w + t) )");
+    var eq = trEl("div", "tr-eq");
+    eq.innerHTML = "Z<sub>0</sub> = 87 / &radic;(&epsilon;<sub>r</sub> + 1.41) &middot; ln( 5.98 &middot; h / (0.8 &middot; w + t))";
     math.appendChild(eq);
+    var eqDefs = trEl("p", "tr-defs", "Z0: characteristic impedance, ohms. er: relative permittivity of the dielectric. h: dielectric height. w: trace width. t: copper thickness.");
+    math.appendChild(eqDefs);
     var note = trEl("p", null,
       "w, h, t in mils. The fab etches the width to w \u00B1 etch, and impedance falls as width rises, " +
       "so the etch band is [Z0(wide), Z0(narrow)]. Both edges must sit inside the target window.");
@@ -20205,7 +20214,7 @@ if (typeof module !== "undefined" && module.exports) {
     trEls.panel = panel;
 
     panel.appendChild(trEl("h3", null, "The Trace Room"));
-    panel.appendChild(trEl("p", "tr-spec", "TAPEOUT R&D // CONTROLLED IMPEDANCE QUALIFICATION"));
+    panel.appendChild(trEl("p", "tr-spec", "SILICON // CONTROLLED IMPEDANCE QUALIFICATION"));
     panel.appendChild(trEl("p", "tr-how",
       "At high speed a copper trace is a transmission line, and its characteristic impedance must match the driver " +
       "and receiver or the signal reflects back on itself: that is what controlled impedance means. Wider trace, lower " +
@@ -20861,8 +20870,12 @@ if (typeof module !== "undefined" && module.exports) {
       });
       rsEls.body.appendChild(prow);
       rsEls.body.appendChild(rsEl("p", "rs-pred-note",
-        t.pred ? "Prediction locked: " + t.pred.toUpperCase() + ". Run the race to check it."
-               : "No prediction yet. Pick one before you certify."));
+        (function () {
+          var lbl = t.pred;
+          for (var li = 0; li < preds.length; li++) if (preds[li].id === t.pred) lbl = preds[li].label;
+          return t.pred ? "Prediction locked: " + lbl + ". Run the race to check it."
+            : "No prediction yet. Pick one before you certify.";
+        })()));
       rsEls.body.appendChild(rsEl("p", "rs-rowlabel", "STEP 2: RUN THE RACE"));
     } else {
       rsEls.body.appendChild(rsEl("p", "rs-rowlabel", "YOUR STRATEGY (BOTH HARTS RUN IT)"));
@@ -22045,7 +22058,7 @@ if (typeof module !== "undefined" && module.exports) {
       i2Els.body.appendChild(rrow);
       i2Els.body.appendChild(i2El("p", "i2-pred-note",
         "0x00 is status, read-only. 0x01 holds the fan duty, 0 to 255."));
-      i2Els.body.appendChild(i2El("p", "i2-rowlabel", "FAN DUTY"));
+      i2Els.body.appendChild(i2El("p", "i2-rowlabel", "FAN DUTY REGISTER VALUE"));
       var frow = i2El("div", "i2-field");
       var rng = document.createElement("input");
       rng.type = "range"; rng.className = "i2-range";
@@ -22172,7 +22185,7 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(i2El("p", "i2-how",
       "A dozen sensors and controllers share two wires, SDA carrying data and SCL carrying the " +
       "clock, and nothing collides, because the address byte at the start of each conversation " +
-      "decides exactly who answers. Scan the bus, read the 16-bit temperature register, set the " +
+      "decides exactly who answers. The host driving this bus is a RISC-V core, reaching the sensor through its memory-mapped I2C controller. Scan the bus, read the 16-bit temperature register, set the " +
       "fan duty and prove it with a readback. Certify all three trials; three strikes fail the bench."));
 
     i2Els.tabs = i2El("div", "i2-tabs");
@@ -22522,7 +22535,7 @@ if (typeof module !== "undefined" && module.exports) {
 
     var head = dcEl("div", "dc-head");
     head.appendChild(dcEl("h3", null, "The Decoupling Bay"));
-    head.appendChild(dcEl("p", "dc-spec", "TAPEOUT // POWER-DELIVERY NETWORK LAB"));
+    head.appendChild(dcEl("p", "dc-spec", "SILICON // POWER-DELIVERY NETWORK LAB"));
     head.appendChild(dcEl("p", "dc-why",
       "A core that wakes up can demand 35 amps in 60 nanoseconds. The voltage regulator " +
       "sits centimeters away and needs about 80 ns just to notice, so for the first instant " +
@@ -23552,7 +23565,7 @@ if (typeof module !== "undefined" && module.exports) {
 
     var head = frEl("div", "fr-head");
     head.appendChild(frEl("h3", null, "The Flash Room"));
-    head.appendChild(frEl("p", "fr-spec", "OLD IRON // NAND FLASH FTL LAB"));
+    head.appendChild(frEl("p", "fr-spec", "SILICON // NAND FLASH FTL LAB"));
     head.appendChild(frEl("p", "fr-why",
       "Every SSD lies about where your bytes live, and the lie is what keeps it alive. " +
       "A flash page can be written exactly once: a rewrite must land on a fresh page while " +
@@ -23601,7 +23614,7 @@ if (typeof module !== "undefined" && module.exports) {
     cols.appendChild(wlCard);
 
     var mapCard = frEl("div", "fr-card");
-    mapCard.appendChild(frEl("h4", null, "SECTOR MAP (KEPT VISIBLE)"));
+    mapCard.appendChild(frEl("h4", null, "LOGICAL TO PHYSICAL SECTOR MAP"));
     frEls.mapWrap = frEl("div", null);
     mapCard.appendChild(frEls.mapWrap);
     cols.appendChild(mapCard);
@@ -24303,7 +24316,7 @@ if (typeof module !== "undefined" && module.exports) {
 
     var head = bnEl("div", "bn-head");
     head.appendChild(bnEl("h3", null, "The Bounce Room"));
-    head.appendChild(bnEl("p", "bn-spec", "OLD IRON // SWITCH DEBOUNCE LAB"));
+    head.appendChild(bnEl("p", "bn-spec", "SILICON // SWITCH DEBOUNCE LAB"));
     head.appendChild(bnEl("p", "bn-why",
       "Every key on an OLD IRON keyboard, every button on a refurbished control panel, is a mechanical " +
       "contact, and every mechanical contact bounces: for a few milliseconds after your finger lands, the " +
@@ -24338,7 +24351,7 @@ if (typeof module !== "undefined" && module.exports) {
     body.appendChild(bnEls.trialHost);
 
     var scopeCard = bnEl("div", "bn-card");
-    scopeCard.appendChild(bnEl("h4", null, "SCOPE (KEPT VISIBLE)"));
+    scopeCard.appendChild(bnEl("h4", null, "RAW AND FILTERED SWITCH SIGNALS"));
     bnEls.scope = bnEl("canvas", "bn-scope");
     scopeCard.appendChild(bnEls.scope);
     bnEls.scopeNote = bnEl("p", "bn-readout", "Press the key: the scope shows the raw chatter and the filtered output.");
@@ -24663,7 +24676,7 @@ if (typeof module !== "undefined" && module.exports) {
     bnEls.trialHost.appendChild(card);
 
     var tc = bnEl("div", "bn-card");
-    tc.appendChild(bnEl("h4", null, "QUALIFICATION TABLE (KEPT VISIBLE)"));
+    tc.appendChild(bnEl("h4", null, "KEY QUALIFICATION RESULTS"));
     var html = "<table class='bn-table'><tr><th>KEY</th><th>WINDOW</th><th>TEST</th><th>STATUS</th></tr>";
     keys.forEach(function (K2, ki) {
       var t = st.tests[ki];
@@ -24854,10 +24867,10 @@ if (typeof module !== "undefined" && module.exports) {
   ];
 
   var BK_CAPS = [
-    { name: "100 uF / 15 mOhm",  C: 100e-6,  esr: 0.015 },
-    { name: "220 uF / 10 mOhm",  C: 220e-6,  esr: 0.010 },
-    { name: "470 uF / 6 mOhm",   C: 470e-6,  esr: 0.006 },
-    { name: "1000 uF / 4 mOhm",  C: 1000e-6, esr: 0.004 }
+    { name: "100 µF / 15 mΩ",  C: 100e-6,  esr: 0.015 },
+    { name: "220 µF / 10 mΩ",  C: 220e-6,  esr: 0.010 },
+    { name: "470 µF / 6 mΩ",   C: 470e-6,  esr: 0.006 },
+    { name: "1000 µF / 4 mΩ",  C: 1000e-6, esr: 0.004 }
   ];
 
   var BK_TRIALS = [
@@ -25364,7 +25377,7 @@ if (typeof module !== "undefined" && module.exports) {
 
     /* readout card */
     var rc = bkEl("div", "bk-card");
-    rc.appendChild(bkEl("h4", null, "READOUT (KEPT VISIBLE)"));
+    rc.appendChild(bkEl("h4", null, "SIMULATION RESULTS"));
     bkEls.readout = bkEl("p", "bk-readout", "No run yet. Set the knobs and press RUN SIMULATION.");
     rc.appendChild(bkEls.readout);
     host.appendChild(rc);
@@ -25497,7 +25510,7 @@ if (typeof module !== "undefined" && module.exports) {
 
     var head = bkEl("div", "bk-head");
     head.appendChild(bkEl("h3", null, "The Buck Room"));
-    head.appendChild(bkEl("p", "bk-spec", "TAPEOUT // GPU VRM QUALIFICATION"));
+    head.appendChild(bkEl("p", "bk-spec", "SILICON // GPU VRM QUALIFICATION"));
     head.appendChild(bkEl("p", "bk-why",
       "Every GPU core on a TAPEOUT card runs near one volt, but the card is fed twelve. Something has " +
       "to step twelve volts down to one at twenty amps, and the obvious part, a linear regulator, would " +
@@ -25513,7 +25526,7 @@ if (typeof module !== "undefined" && module.exports) {
       "rest at zero, and the inductor averages the pulses to 0.10 x 12 = <b>1.20 V</b> on the ideal math. " +
       "The bench lands within a few millivolts of that, because the switches drop almost nothing, which " +
       "is exactly why real VRMs use MOSFETs instead of diodes. That is " +
-      "the whole trick, and it is why the knob that matters most is labeled DUTY. The trap in the " +
+      "the whole trick, and it is why the knob that matters most is labeled DUTY. The failure in the " +
       "obvious alternative: a resistor divider also makes 1.2 V from 12 V on paper, until the 8 A load " +
       "lands in parallel with the lower resistor and the voltage collapses. Division is not regulation.";
     head.appendChild(worked);
@@ -26409,7 +26422,7 @@ if (typeof module !== "undefined" && module.exports) {
       vpeak: 7.5, f: 60, rs: 0.4, vd: 1.4, tEnd: 0.35, floor: 4.4, fuseI2t: 0.80,
       iload: function () { return 1.2; },
       story: "A 5V rail feeding 1.2 amps of logic: 7.5V peak, 4.4V floor, a 0.80 A\u00B2s fuse. " +
-             "Every rating on the shelf is legal this time, so the rating trap is gone and the " +
+             "Every rating on the shelf is legal this time, so the rating constraint is removed and the " +
              "ripple math has to carry you. One cap holds the floor. The next size down misses " +
              "it by about a tenth of a volt, and the scope will show you exactly where.",
       stock: [
@@ -26833,7 +26846,7 @@ if (typeof module !== "undefined" && module.exports) {
 
     var head = rlEl("div", "rl-head");
     head.appendChild(rlEl("h3", null, "The Ripple Room"));
-    head.appendChild(rlEl("p", "rl-spec", "OLD IRON // RESERVOIR CAPACITOR SIZING"));
+    head.appendChild(rlEl("p", "rl-spec", "SILICON // RESERVOIR CAPACITOR SIZING"));
     head.appendChild(rlEl("p", "rl-why",
       "Every board on the OLD IRON bench lives or dies by its power rail, and every rail " +
       "that starts at a transformer carries ripple. The transformer gives you a sine wave, " +
@@ -27735,7 +27748,7 @@ if (typeof module !== "undefined" && module.exports) {
 
     var head = jsEl("div", "js-head");
     head.appendChild(jsEl("h3", null, "The Scan Room"));
-    head.appendChild(jsEl("p", "js-spec", "TAPEOUT // JTAG BOUNDARY SCAN"));
+    head.appendChild(jsEl("p", "js-spec", "SILICON // JTAG BOUNDARY SCAN"));
     var intro = jsEl("div", "js-intro");
     intro.innerHTML = jsIntroHTML();
     head.appendChild(intro);
@@ -27877,14 +27890,14 @@ if (typeof module !== "undefined" && module.exports) {
     jsEls.sweep = sweep; jsEls.shot = shot; jsEls.commit = null;
 
     /* net table */
-    wrap.appendChild(jsEl("p", "js-sec", "THE NETS, SHOWN READING"));
+    wrap.appendChild(jsEl("p", "js-sec", "THE NETS, MEASURED"));
     var table = jsEl("table", "js-table", null);
     table.id = "jsTable";
     var thead = jsEl("thead", null, null);
     var hr = jsEl("tr", null, null);
     hr.appendChild(jsEl("th", null, "NET"));
-    hr.appendChild(jsEl("th", null, "DRV"));
-    hr.appendChild(jsEl("th", null, "CAP"));
+    hr.appendChild(jsEl("th", null, "DRIVEN"));
+    hr.appendChild(jsEl("th", null, "CAPTURED"));
     hr.appendChild(jsEl("th", null, "BEHAVIOR"));
     thead.appendChild(hr);
     table.appendChild(thead);
@@ -29739,7 +29752,7 @@ if (typeof module !== "undefined" && module.exports) {
       guess.setAttribute("inputmode", "decimal");
       guess.setAttribute("aria-label", "Your predicted value of the mystery word");
       row.appendChild(guess);
-      var chk = ftEl("button", "ft-btn primary", "CHECK");
+      var chk = ftEl("button", "ft-btn primary", "CHECK DECIMAL VALUE");
       chk.id = "ftT1Check";
       row.appendChild(chk);
       card.appendChild(row);
@@ -29765,7 +29778,7 @@ if (typeof module !== "undefined" && module.exports) {
       hexin.setAttribute("aria-label", "Your candidate float as 8 hex digits");
       hexin.setAttribute("maxlength", "10");
       row2.appendChild(hexin);
-      var chk2 = ftEl("button", "ft-btn primary", "CHECK");
+      var chk2 = ftEl("button", "ft-btn primary", "CHECK HEX WORD");
       chk2.id = "ftT2Check";
       row2.appendChild(chk2);
       card.appendChild(row2);
@@ -31517,9 +31530,8 @@ if (typeof module !== "undefined" && module.exports) {
         "from where SCK rests and CPHA from which edge moves MISO, then type " +
         "the ID, RUN, certify. Warning, in the datasheet's own words: this " +
         "chip is idle-strict, SCK must rest at 0, or the edge detector never arms.",
-      hint: "SCK rests at 0 between pulses, so CPOL is 0. MISO steps exactly " +
-        "on SCK's falling edges, so the chip shifts on the trailing edge and " +
-        "you must sample on the leading one: CPHA 0." }
+      hint: "Start with the clock line at rest: where does SCK sit when nothing is moving? " +
+        "Then watch MISO: which edge makes it step?" }
   ];
 
   /* ---------------- intro copy (why-first, BFP compliant) ---------------- */
@@ -31967,16 +31979,24 @@ if (typeof module !== "undefined" && module.exports) {
     card.appendChild(spEl("h4", "sp-ctitle", t.title));
     card.appendChild(spEl("p", "sp-cgoal", t.goal));
     var ds = spEl("div", "sp-ds", null);
-    ds.innerHTML =
-      "<span class='k'>DATASHEET " + spEsc(chip.name) + " // SUPPORTED MODES </span>" +
-      "<span class='v'>" + spEsc(chip.modes) + "</span>" +
-      "<span class='k'> // LATCHES ON THE </span><span class='v'>" +
-      (chip.cpha === 0 ? "RISING" : "FALLING") + "</span>" +
-      "<span class='k'> EDGE // IDLE </span><span class='v'>" +
-      spEsc(chip.idleLine.toUpperCase()) + "</span><br>" +
-      "<span class='k'>RATED CEILING </span><span class='v'>" + chip.max +
-      " MHz</span><span class='k'> // JEDEC ID </span><span class='v'>" +
-      spHex6(chip.jedec) + "</span>";
+    if (ti === 2) {
+      ds.innerHTML =
+        "<span class='k'>DATASHEET " + spEsc(chip.name) + " (MODE TABLE LOST) // RATED CEILING </span>" +
+        "<span class='v'>" + chip.max + " MHz</span>" +
+        "<span class='k'> // JEDEC ID </span><span class='v'>" +
+        spHex6(chip.jedec) + "</span>";
+    } else {
+      ds.innerHTML =
+        "<span class='k'>DATASHEET " + spEsc(chip.name) + " // SUPPORTED MODES </span>" +
+        "<span class='v'>" + spEsc(chip.modes) + "</span>" +
+        "<span class='k'> // LATCHES ON THE </span><span class='v'>" +
+        (chip.cpha === 0 ? "RISING" : "FALLING") + "</span>" +
+        "<span class='k'> EDGE // IDLE </span><span class='v'>" +
+        spEsc(chip.idleLine.toUpperCase()) + "</span><br>" +
+        "<span class='k'>RATED CEILING </span><span class='v'>" + chip.max +
+        " MHz</span><span class='k'> // JEDEC ID </span><span class='v'>" +
+        spHex6(chip.jedec) + "</span>";
+    }
     card.appendChild(ds);
     if (ti === 2) {
       var fig = spEl("div", "sp-fig", null);
@@ -31986,9 +32006,7 @@ if (typeof module !== "undefined" && module.exports) {
         "Timing diagram: SCK rests at 0 between pulses, MISO steps on SCK falling edges");
       card.appendChild(fig);
       card.appendChild(spEl("p", "sp-figcap",
-        "Read the figure: SCK rests at 0, so CPOL is 0. MISO steps on the " +
-        "falling edges, so the chip shifts on the trailing edge and you " +
-        "sample on the leading one: CPHA 0."));
+        "Figure 3A: the surviving timing trace, first answer byte."));
     }
     card.appendChild(spEl("p", "sp-thint", "HINT: " + t.hint));
 
@@ -32083,7 +32101,7 @@ if (typeof module !== "undefined" && module.exports) {
 
     var head = spEl("div", "sp-head");
     head.appendChild(spEl("h3", null, "The SPI Room"));
-    head.appendChild(spEl("p", "sp-spec", "TAPEOUT // SPI BRING-UP // 3 CHIPS"));
+    head.appendChild(spEl("p", "sp-spec", "SILICON // SPI BRING-UP // 3 CHIPS"));
     var intro = spEl("div", null, null);
     intro.innerHTML = spIntroHTML();
     head.appendChild(intro);
@@ -32931,7 +32949,7 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(bwEl("div", "bw-kicker", "SILICON BENCH 43"));
     panel.appendChild(bwEl("h2", "bw-title", "The Borrow Room"));
     panel.appendChild(bwEl("p", "bw-sub",
-      "Hardware never subtracts. Predict the result byte and the borrow, chain borrows across lanes, then read the unsigned less-than bit."));
+      "For the unsigned compare this room teaches, hardware never subtracts. Predict the result byte and the borrow, chain borrows across lanes, then read the unsigned less-than bit."));
 
     var introA = bwEl("div", null, "");
     introA.innerHTML = BW_INTRO_A;
@@ -34431,7 +34449,7 @@ if (typeof module !== "undefined" && module.exports) {
   function shBuildT1(card) {
     var st = shState.trials[0];
     shTrialShell(card, 0,
-      "Drive the bit lane above first, then predict the result byte and how many 1-bits fell off for four shifts. Q4 is the RV32 trap: the hardware masks the amount before it shifts.");
+      "Drive the bit lane above first, then predict the result byte and how many 1-bits fell off for four shifts. Q4 is the RV32 pitfall: the hardware masks the amount before it shifts.");
     while (st.qs.length < SH_T1.length) st.qs.push({ rv: null, lv: null, ev: null, done: false, note: "" });
     var ui = [];
     SH_T1.forEach(function (p, i) {
@@ -35500,7 +35518,7 @@ if (typeof module !== "undefined" && module.exports) {
     commitBtn.type = "button"; commitBtn.id = "psCommit" + ti;
     var resetBtn = psEl("button", "ps-btn", "RESET TRIAL");
     resetBtn.type = "button"; resetBtn.id = "psReset" + ti;
-    row2.appendChild(burnBtn); row2.appendChild(commitBtn); row2.appendChild(resetBtn);
+    row2.appendChild(commitBtn); row2.appendChild(burnBtn); row2.appendChild(resetBtn);
     card.appendChild(row2);
 
     var mapHost = psEl("div", "ps-map");
@@ -35666,7 +35684,7 @@ if (typeof module !== "undefined" && module.exports) {
     ov.appendChild(x);
 
     var panel = psEl("div", "ps-panel");
-    panel.appendChild(psEl("div", "ps-kicker", "OLD IRON BENCH 46"));
+    panel.appendChild(psEl("div", "ps-kicker", "SILICON BENCH 46"));
     panel.appendChild(psEl("h2", "ps-title", "The Paste Room"));
     panel.appendChild(psEl("p", "ps-sub",
       "Thermal paste has one job: evict the air between the die and the heatsink. Lay down a pattern, choose the amount, set the mount pressure, and watch what the leftover air does to the chip."));
@@ -36216,7 +36234,7 @@ if (typeof module !== "undefined" && module.exports) {
     ov.appendChild(x);
 
     var panel = clEl("div", "cl-panel");
-    panel.appendChild(clEl("div", "cl-kicker", "OLD IRON BENCH 47"));
+    panel.appendChild(clEl("div", "cl-kicker", "SILICON BENCH 47"));
     panel.appendChild(clEl("h2", "cl-title", "The Cell Room"));
     panel.appendChild(clEl("p", "cl-sub",
       "A 3 V coin cell keeps the clock and the setup memory alive while the wall power is gone. " +
@@ -37102,7 +37120,7 @@ if (typeof module !== "undefined" && module.exports) {
     ov.appendChild(x);
 
     var panel = vdEl("div", "vd-panel");
-    panel.appendChild(vdEl("div", "vd-kicker", "OLD IRON BENCH 48"));
+    panel.appendChild(vdEl("div", "vd-kicker", "SILICON BENCH 48"));
     panel.appendChild(vdEl("h2", "vd-title", "The Divider Room"));
     panel.appendChild(vdEl("p", "vd-sub",
       "Two resistors, one tap, and the arithmetic everyone gets wrong exactly once. " +
@@ -37137,14 +37155,14 @@ if (typeof module !== "undefined" && module.exports) {
 
     /* do-first: let the ear drink */
     var doCard = vdEl("div", "vd-card");
-    doCard.appendChild(vdEl("h3", null, "DO FIRST: LET THE EAR DRINK"));
+    doCard.appendChild(vdEl("h3", null, "DO FIRST: LET THE 10 k LOAD DRINK"));
     doCard.appendChild(vdEl("p", "why",
       "One tap. The 10 k ear connects to the tap of the 5 V / 10 k / 20 k divider and the meter tells you " +
       "what the arithmetic already said. Everything in this room starts from this moment: the same resistors, a different tap."));
     var doMeter = vdSchem("vdDo");
     doCard.appendChild(doMeter.root);
     var doRow = vdEl("div", "vd-row");
-    var drinkBtn = vdEl("button", "vd-btn solid", "LET THE EAR DRINK");
+    var drinkBtn = vdEl("button", "vd-btn solid", "LET THE 10 k LOAD DRINK");
     drinkBtn.type = "button"; drinkBtn.id = "vdDrinkBtn";
     drinkBtn.setAttribute("aria-pressed", "false");
     var earOn = false;
@@ -37165,7 +37183,7 @@ if (typeof module !== "undefined" && module.exports) {
     vdDoShow();
     drinkBtn.addEventListener("click", function () {
       earOn = !earOn;
-      drinkBtn.textContent = earOn ? "DISCONNECT THE EAR" : "LET THE EAR DRINK";
+      drinkBtn.textContent = earOn ? "DISCONNECT THE 10 k LOAD" : "LET THE 10 k LOAD DRINK";
       drinkBtn.setAttribute("aria-pressed", earOn ? "true" : "false");
       vdDoShow();
       if (earOn) vdLog("do-first: ear connected, tap fell 3.33 V to 2.00 V. Same resistors, the load changed.", "warn");
@@ -37324,7 +37342,7 @@ if (typeof module !== "undefined" && module.exports) {
     r2.appendChild(in2);
     var commit2 = vdEl("button", "vd-btn solid", "COMMIT PREDICTION");
     commit2.type = "button"; commit2.id = "vdCommit2";
-    var connect2 = vdEl("button", "vd-btn", "CONNECT THE EAR");
+    var connect2 = vdEl("button", "vd-btn", "CONNECT 10 k LOAD");
     connect2.type = "button"; connect2.id = "vdConnect2"; connect2.disabled = true;
     r2.appendChild(commit2); r2.appendChild(connect2);
     c2.appendChild(r2);
@@ -37371,7 +37389,7 @@ if (typeof module !== "undefined" && module.exports) {
     rng3.value = "1000";
     rng3.setAttribute("aria-label", "R2 in ohms, 100 to 2000");
     r3.appendChild(rng3);
-    var r3val = vdEl("span", "vd-lab", "1000 ");
+    var r3val = vdEl("span", "vd-lab", "1000 ohm");
     r3.appendChild(r3val);
     c3.appendChild(r3);
     var s3 = vdEl("div", "vd-grid");
@@ -37389,7 +37407,7 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(c3);
     function vdT3Show() {
       var r2n = Number(rng3.value);
-      r3val.textContent = r2n + " ";
+      r3val.textContent = r2n + " ohm";
       var chk = vdCheckT3(r2n);
       m3.show({ vin: VD_T3.vin, r1: VD_T3.r1, r2: r2n, rl: VD_T3.rl,
         vUn: vdTapUnloaded(VD_T3.vin, VD_T3.r1, r2n),
@@ -37791,7 +37809,7 @@ if (typeof module !== "undefined" && module.exports) {
     puEls.overlay = ov;
 
     var panel = puEl("div", "pu-panel");
-    panel.appendChild(puEl("div", "pu-kicker", "OLD IRON BENCH 49"));
+    panel.appendChild(puEl("div", "pu-kicker", "SILICON BENCH 49"));
     panel.appendChild(puEl("h2", "pu-title", "The Pullup Room"));
     panel.appendChild(puEl("p", "pu-sub",
       "A CMOS input reads nothing by itself, so one resistor decides its idle state. " +
@@ -37838,7 +37856,7 @@ if (typeof module !== "undefined" && module.exports) {
     var noiseBtn = puEl("button", "pu-btn", "SAMPLE NOISE");
     noiseBtn.type = "button"; noiseBtn.id = "puNoiseBtn";
     noiseBtn.setAttribute("aria-label", "Sample one noisy reading from the floating pin");
-    var tieBtn = puEl("button", "pu-btn solid", "TIE IT UP WITH 10 K");
+    var tieBtn = puEl("button", "pu-btn solid", "TIE IT UP WITH 10 k ohm");
     tieBtn.type = "button"; tieBtn.id = "puTieBtn";
     tieBtn.setAttribute("aria-label", "Connect a 10 k pull-up to the pin");
     doRow.appendChild(noiseBtn); doRow.appendChild(tieBtn);
@@ -37853,7 +37871,7 @@ if (typeof module !== "undefined" && module.exports) {
     tieBtn.addEventListener("click", function () {
       if (puState.tied) {
         puState.tied = false;
-        tieBtn.textContent = "TIE IT UP WITH 10 K";
+        tieBtn.textContent = "TIE IT UP WITH 10 k ohm";
         tieBtn.setAttribute("aria-pressed", "false");
         noiseBtn.disabled = false;
         puLog("pull-up removed. The pin is floating again.", "dim");
@@ -37972,7 +37990,7 @@ if (typeof module !== "undefined" && module.exports) {
     rng3.value = "5";
     rng3.setAttribute("aria-label", "Pull-up resistor, 100 ohms to 1 megohm, standard values");
     r3.appendChild(rng3);
-    var r3val = puEl("span", "pu-lab", "33 k");
+    var r3val = puEl("span", "pu-lab", "33 k ohm");
     r3.appendChild(r3val);
     c3.appendChild(r3);
     var s3 = puEl("div", "pu-grid");
@@ -38519,7 +38537,7 @@ if (typeof module !== "undefined" && module.exports) {
     in1.placeholder = "C";
     var commit1 = ldoEl("button", "ldo-btn", "COMMIT PREDICTION");
     commit1.type = "button"; commit1.id = "ldoCommit1";
-    var reveal1 = ldoEl("button", "ldo-btn solid", "REVEAL");
+    var reveal1 = ldoEl("button", "ldo-btn solid", "REVEAL DIE TEMPERATURE");
     reveal1.type = "button"; reveal1.id = "ldoReveal1"; reveal1.disabled = true;
     t1Row.appendChild(in1); t1Row.appendChild(commit1); t1Row.appendChild(reveal1);
     t1.appendChild(t1Row);
@@ -38800,7 +38818,7 @@ if (typeof module !== "undefined" && module.exports) {
     { id: "s3a", trial: 3, bands: ["red", "red", "brown", "gold"], rev: true,
       blurb: "Drawn backwards on purpose. Find the tolerance end first.", tols: [5, 10] },
     { id: "s3b", trial: 3, bands: ["red", "violet", "brown", "gold"], rev: false,
-      blurb: "Drawn correctly. The trap is assuming they all are.", tols: [5, 10] }
+      blurb: "Drawn correctly. The pitfall is assuming they all are.", tols: [5, 10] }
   ];
 
   /* ---------- pure sims (no DOM) ---------- */
@@ -38887,7 +38905,7 @@ if (typeof module !== "undefined" && module.exports) {
     "<div class=\"stripe-card\"><h3>WHY THIS ROOM EXISTS</h3>",
     "<p class=\"why\">Before a resistor earns a place in a circuit, you read its stripes. The body is too small to print a number on, ",
     "so the industry painted the value on in color. Every bench hand reads bands at a glance, and a misread band is a 50-cent part ",
-    "that lies to the circuit. This room is the whole skill: digit bands, the multiplier, the tolerance band, and the one trap, ",
+    "that lies to the circuit. This room is the whole skill: digit bands, the multiplier, the tolerance band, and the one pitfall, ",
     "reading the stripes from the wrong end.</p>",
     "<p class=\"why\">The worked example, by hand. A part carries red, red, brown, then a wide gap, then gold. ",
     "Red is the digit 2, so the first two bands give 22. Brown is a multiplier of 10: 22 x 10 = 220 ohms. ",
@@ -38899,7 +38917,7 @@ if (typeof module !== "undefined" && module.exports) {
     "<li><b>GOLD AND SILVER ARE NEVER DIGITS:</b> they appear only as the multiplier (gold divides by 10, silver divides by 100) ",
     "or as the tolerance (gold 5%, silver 10%). A reading that starts with gold is wrong by definition.</li>",
     "<li><b>OUT OF TOLERANCE:</b> if the meter reads outside the band's window, the part has drifted or failed. ",
-    "Every part in this room is healthy; the meter is here to confirm your reading, not to trap you.</li></ul></div>"
+    "Every part in this room is healthy; the meter is here to confirm your reading, not to catch you out.</li></ul></div>"
   ].join("");
 
   var SR_CHART_HTML = [
@@ -38990,7 +39008,7 @@ if (typeof module !== "undefined" && module.exports) {
   }
   function srCertLine() {
     return "THE STRIPE ROOM, CERTIFIED. Read 8 parts by their stripes: three 4-band, " +
-      "three precision and gold-multiplier, two through the wrong-end trap. Every meter reading agreed.";
+      "three precision and gold-multiplier, two through the wrong-end misread. Every meter reading agreed.";
   }
 
   /* ---------- part card ---------- */
@@ -39167,7 +39185,7 @@ if (typeof module !== "undefined" && module.exports) {
     });
 
     var panel = srEl("div", "stripe-panel");
-    panel.appendChild(srEl("div", "stripe-kicker", "OLD IRON BENCH 51"));
+    panel.appendChild(srEl("div", "stripe-kicker", "SILICON BENCH 51"));
     panel.appendChild(srEl("h2", "stripe-title", "The Stripe Room"));
     panel.appendChild(srEl("p", "stripe-sub",
       "A resistor's value is painted on its body in colored stripes. Read the digits, the multiplier, " +
@@ -39245,7 +39263,7 @@ if (typeof module !== "undefined" && module.exports) {
     banner.id = "stripeBanner";
     banner.appendChild(srEl("h3", null, "ROOM CERTIFIED"));
     banner.appendChild(srEl("p", null,
-      "Eight parts read by their stripes, two of them through the wrong-end trap. " +
+      "Eight parts read by their stripes, two of them through the wrong-end misread. " +
       "Log the certification and the room remembers."));
     var certAll = srEl("button", "stripe-btn solid", "LOG THE CERTIFICATION");
     certAll.type = "button"; certAll.id = "stripeCertAllBtn";
@@ -39360,13 +39378,42 @@ if (typeof module !== "undefined" && module.exports) {
     "<p class=\"why\">Every status light on every board you will ever service is a light-emitting diode: ",
     "power indicators, fault lights, link activity. They all obey one law. A diode conducts in one direction only, ",
     "and while it conducts it keeps a fixed slice of the voltage for itself, its forward voltage, written Vf. ",
-    "Red keeps 2.0 V, green keeps 2.2 V, white keeps 3.2 V. Miss the toll and the LED is dark, dim, or dead. ",
+    "Red keeps 2.0 V, green keeps 2.2 V, white keeps 3.2 V. Miss the toll and the LED is dark, dim, or dead. ",    "On this bench, each color keeps its nominal forward drop; real parts vary with current and temperature. ",
     "This room is the whole skill: read the toll, do the resistor math on the remainder, ",
     "and tell a backwards LED from a burned one by measurement.</p>",
     "<p class=\"why\">The worked example, by hand. A 5 V supply, a red LED with Vf 2.0 V, target current 20 mA. ",
     "The resistor must absorb 5 minus 2, which is 3 V. Ohm's law: R = 3 V / 0.020 A = 150 ohms. ",
     "Choose 150 ohms in Trial 1 and the bench shows 20.0 mA and a full-bright LED. ",
     "That one subtraction is the only math in the room.</p></div>",
+    "<div class=\"dr-card\"><h3>DIODE I-V CHARACTERISTIC (BENCH MODEL)</h3>",
+    "<svg viewBox=\"0 0 560 340\" role=\"img\" aria-label=\"Diode current versus voltage curve\" style=\"width:100%;height:auto;display:block\" font-family=\"ui-monospace,SFMono-Regular,Menlo,Consolas,monospace\">",
+    "<text x=\"16\" y=\"22\" text-anchor=\"start\" font-size=\"12\" fill=\"var(--paper)\">DIODE I-V CHARACTERISTIC</text>",
+    "<text x=\"16\" y=\"37\" text-anchor=\"start\" font-size=\"9\" fill=\"var(--steel)\">NOMINAL POINTS: RED 2.0 V, GREEN 2.2 V, WHITE 3.2 V</text>",
+    "<line x1=\"352\" y1=\"26\" x2=\"352\" y2=\"288\" stroke=\"var(--line)\" stroke-width=\"1\"/>",
+    "<line x1=\"64\" y1=\"273\" x2=\"544\" y2=\"273\" stroke=\"var(--line)\" stroke-width=\"1\"/>",
+    "<text x=\"64\" y=\"291\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--steel)\">-6</text>",
+    "<text x=\"160\" y=\"291\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--steel)\">-4</text>",
+    "<text x=\"256\" y=\"291\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--steel)\">-2</text>",
+    "<text x=\"352\" y=\"291\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--steel)\">0</text>",
+    "<text x=\"448\" y=\"291\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--steel)\">2</text>",
+    "<text x=\"544\" y=\"291\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--steel)\">4</text>",
+    "<text x=\"58\" y=\"45\" text-anchor=\"end\" font-size=\"10\" fill=\"var(--steel)\">30</text>",
+    "<text x=\"58\" y=\"123\" text-anchor=\"end\" font-size=\"10\" fill=\"var(--steel)\">20</text>",
+    "<text x=\"58\" y=\"200\" text-anchor=\"end\" font-size=\"10\" fill=\"var(--steel)\">10</text>",
+    "<text x=\"58\" y=\"277\" text-anchor=\"end\" font-size=\"10\" fill=\"var(--steel)\">0</text>",
+    "<text x=\"304\" y=\"326\" text-anchor=\"middle\" font-size=\"11\" fill=\"var(--steel)\">VOLTAGE (V)</text>",
+    "<text x=\"18\" y=\"160\" text-anchor=\"middle\" font-size=\"11\" fill=\"var(--steel)\" transform=\"rotate(-90 18 160)\">CURRENT (mA)</text>",
+    "<path d=\"M352,273 L440,272 C446,271 450,268 453,262 C457,254 462,244 467,233 C473,218 479,200 485,180 C491,158 497,130 500,100 C502,80 504,58 506,41\" fill=\"none\" stroke=\"var(--paper)\" stroke-width=\"2\"/>",
+    "<path d=\"M352,273 L196,273 C182,273 172,276 164,280 C156,284 146,286 136,288\" fill=\"none\" stroke=\"var(--ember)\" stroke-width=\"2\"/>",
+    "<text x=\"136\" y=\"308\" text-anchor=\"start\" font-size=\"10\" fill=\"var(--ember)\">REVERSE BREAKDOWN</text>",
+    "<circle cx=\"448\" cy=\"266\" r=\"4\" fill=\"#ff4b3e\"/>",
+    "<text x=\"457\" y=\"270\" text-anchor=\"start\" font-size=\"10\" fill=\"var(--paper)\">RED 2.0 V</text>",
+    "<circle cx=\"458\" cy=\"250\" r=\"4\" fill=\"#3ddc68\"/>",
+    "<text x=\"467\" y=\"254\" text-anchor=\"start\" font-size=\"10\" fill=\"var(--paper)\">GREEN 2.2 V</text>",
+    "<circle cx=\"506\" cy=\"41\" r=\"4\" fill=\"#eef1ff\"/>",
+    "<text x=\"498\" y=\"30\" text-anchor=\"end\" font-size=\"10\" fill=\"var(--paper)\">WHITE 3.2 V</text>",
+    "</svg>",
+    "<p class=\"why\">Forward current rises steeply past the nominal drop; reverse breakdown is the region this bench never enters.</p></div>",
     "<div class=\"dr-card dr-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3>",
     "<ul><li><b>REVERSED:</b> dark, harmless at these voltages. In diode-test mode it reads the toll one way ",
     "and OL the other, so the part is healthy; the circuit has it backwards. Fix it by flipping it.</li>",
@@ -39705,7 +39752,7 @@ if (typeof module !== "undefined" && module.exports) {
     });
 
     var panel = drEl("div", "dr-panel");
-    panel.appendChild(drEl("div", "dr-kicker", "OLD IRON BENCH 52"));
+    panel.appendChild(drEl("div", "dr-kicker", "SILICON BENCH 52"));
     panel.appendChild(drEl("h2", "dr-title", "The Diode Room"));
     panel.appendChild(drEl("p", "dr-sub",
       "A diode conducts in one direction only, and charges a fixed forward-voltage toll while it does. " +
@@ -40075,7 +40122,7 @@ if (typeof module !== "undefined" && module.exports) {
     "<div class=\"tn-card\"><h3>WHY THIS ROOM EXISTS</h3>",
     "<p class=\"why\">A microcontroller pin can source 12 mA. A 12 V fan wants 200 mA. The transistor bridges that gap. ",
     "One milliamp into its base lets a hundred milliamps flow from its collector to its emitter, and that ratio, ",
-    "<b>beta</b>, the current gain, is printed on the datasheet. Flooded with base current the transistor drops to ",
+    "<b>beta</b>, the current gain, is printed on the datasheet. beta here is the nominal design value; the five-times overdrive is what survives the real spread. Flooded with base current the transistor drops to ",
     "0.2 V between collector and emitter: that is <b>saturation</b>, fully on and cool. Starved of base current it ",
     "sits half-open, dropping volts and burning watts. This room is the whole skill: size the base resistor so the ",
     "transistor saturates hard, read Vce to tell a starved base from a dead part, and respect the one component ",
@@ -40713,7 +40760,7 @@ if (typeof module !== "undefined" && module.exports) {
     });
 
     var panel = tnEl("div", "tn-panel");
-    panel.appendChild(tnEl("div", "tn-kicker", "OLD IRON BENCH 53"));
+    panel.appendChild(tnEl("div", "tn-kicker", "SILICON BENCH 53"));
     panel.appendChild(tnEl("h2", "tn-title", "The Transistor Room"));
     panel.appendChild(tnEl("p", "tn-sub",
       "One milliamp into the base switches a hundred milliamps through the load: that is the transistor's whole trick. " +
@@ -41223,7 +41270,7 @@ if (typeof module !== "undefined" && module.exports) {
     card.appendChild(row);
     var sRow = fsEl("div", "fs-row");
     ["F", "T"].forEach(function (k) {
-      var b = fsEl("button", "fs-btn" + (k === "T" ? " sel" : ""), FS_SPEEDS[k].name + "-BLOW");
+      var b = fsEl("button", "fs-btn" + (k === "T" ? " sel" : ""), k === "F" ? "F, FAST-ACTING" : "T, TIME-LAG (SLOW-BLOW)");
       b.type = "button"; b.id = "fsT1_" + p.id + "_s" + k;
       b.setAttribute("aria-label", "Choose " + FS_SPEEDS[k].name + "-blow speed");
       b.addEventListener("click", function () {
@@ -41395,7 +41442,7 @@ if (typeof module !== "undefined" && module.exports) {
     repairRow.appendChild(rRow);
     var sRow = fsEl("div", "fs-row");
     ["F", "T"].forEach(function (k) {
-      var b = fsEl("button", "fs-btn" + (k === "T" ? " sel" : ""), FS_SPEEDS[k].name + "-BLOW");
+      var b = fsEl("button", "fs-btn" + (k === "T" ? " sel" : ""), k === "F" ? "F, FAST-ACTING" : "T, TIME-LAG (SLOW-BLOW)");
       b.type = "button"; b.id = "fsT2_" + p.id + "_fs" + k;
       b.setAttribute("aria-label", "Refit " + FS_SPEEDS[k].name + "-blow");
       b.addEventListener("click", function () {
@@ -41551,7 +41598,7 @@ if (typeof module !== "undefined" && module.exports) {
       rBtns.push(b); fixRow.appendChild(b);
     });
     ["F", "T"].forEach(function (k) {
-      var b = fsEl("button", "fs-btn" + (k === "T" ? " sel" : ""), FS_SPEEDS[k].name + "-BLOW");
+      var b = fsEl("button", "fs-btn" + (k === "T" ? " sel" : ""), k === "F" ? "F, FAST-ACTING" : "T, TIME-LAG (SLOW-BLOW)");
       b.type = "button"; b.id = "fsT3_s" + k;
       b.setAttribute("aria-label", "Fit " + FS_SPEEDS[k].name + "-blow");
       b.addEventListener("click", function () {
@@ -41643,7 +41690,7 @@ if (typeof module !== "undefined" && module.exports) {
     });
 
     var panel = fsEl("div", "fs-panel");
-    panel.appendChild(fsEl("div", "fs-kicker", "OLD IRON BENCH 54"));
+    panel.appendChild(fsEl("div", "fs-kicker", "SILICON BENCH 54"));
     panel.appendChild(fsEl("h2", "fs-title", "The Fuse Room"));
     panel.appendChild(fsEl("p", "fs-sub",
       "A fuse is a deliberate weak link: it dies so the wire lives. Size the rating to the load, " +
@@ -41810,7 +41857,7 @@ if (typeof module !== "undefined" && module.exports) {
     "wire the contacts so the safe state wins when the power dies, and respect the coil as an inductor ",
     "that bites back on release.</p>",
     "<p class=\"why\">The worked example, by hand. A 12 V coil, 120 ohms. Ohm's law: 12 / 120 = 0.1 A, 100 mA, ",
-    "and power 12 x 0.1 = 1.2 W. Its contacts are rated 30 A at 250 V: 7.5 kW of load switched by 1.2 W of ",
+    "and power 12 x 0.1 = 1.2 W. Its contacts are rated 30 A at 250 VAC resistive, switched by 1.2 W of ",
     "control, a ratio above six thousand to one. Pull-in needs 75 percent of rated voltage, so 9 V moves the ",
     "armature and 5 V does nothing. Open the coil with no flyback diode and the field collapse hurls ",
     "0.09 x 0.1 / 0.0001 = 90 V at the driver. Trial 1, part 1, is this exact relay.</p></div>",
@@ -42525,7 +42572,7 @@ if (typeof module !== "undefined" && module.exports) {
     });
 
     var panel = ryEl("div", "ry-panel");
-    panel.appendChild(ryEl("div", "ry-kicker", "OLD IRON BENCH 55"));
+    panel.appendChild(ryEl("div", "ry-kicker", "SILICON BENCH 55"));
     panel.appendChild(ryEl("h2", "ry-title", "The Relay Room"));
     panel.appendChild(ryEl("p", "ry-sub",
       "A relay is a switch with two lives: a small electromagnet on the control side, and contacts on a " +
@@ -43680,7 +43727,7 @@ if (typeof module !== "undefined" && module.exports) {
     });
 
     var panel = mfEl("div", "mf-panel");
-    panel.appendChild(mfEl("div", "mf-kicker", "OLD IRON BENCH 56"));
+    panel.appendChild(mfEl("div", "mf-kicker", "SILICON BENCH 56"));
     panel.appendChild(mfEl("h2", "mf-title", "The MOSFET Room"));
     panel.appendChild(mfEl("p", "mf-sub",
       "A logic pin commands 6 amps with voltage alone. Read the threshold, budget the on-resistance, " +
@@ -43882,6 +43929,58 @@ if (typeof module !== "undefined" && module.exports) {
     "<b>2 percent</b>, which is 20,000 ppm, about twenty-nine minutes a day. That sounds roomy, until a hot ",
     "RC oscillator spends it. The <b>RC oscillator</b> is the chip's built-in resistor-capacitor clock: no crystal, ",
     "cheap, and it drifts about 0.1 percent per degree.</p></div>",
+    "<div class=\"xo-card\"><h3>THE TWO TOLERANCE PLOTS</h3>",
+    "<div class=\"xo-row\">",
+    "<div style=\"flex:1 1 320px;min-width:0\">",
+    "<svg viewBox=\"0 0 380 300\" role=\"img\" aria-label=\"Frequency error versus temperature\" style=\"width:100%;height:auto;display:block\" font-family=\"ui-monospace,SFMono-Regular,Menlo,Consolas,monospace\">",
+    "<text x=\"12\" y=\"18\" text-anchor=\"start\" font-size=\"11\" fill=\"var(--paper)\">FREQUENCY ERROR VS TEMPERATURE</text>",
+    "<text x=\"12\" y=\"31\" text-anchor=\"start\" font-size=\"9\" fill=\"var(--steel)\">TYPICAL AT-CUT SHAPE, NOT MEASURED</text>",
+    "<line x1=\"48\" y1=\"30\" x2=\"48\" y2=\"252\" stroke=\"var(--line)\" stroke-width=\"1\"/>",
+    "<line x1=\"48\" y1=\"141\" x2=\"368\" y2=\"141\" stroke=\"var(--line)\" stroke-width=\"1\"/>",
+    "<line x1=\"48\" y1=\"58\" x2=\"368\" y2=\"58\" stroke=\"var(--steel)\" stroke-width=\"1\" stroke-dasharray=\"4 3\"/>",
+    "<line x1=\"48\" y1=\"113\" x2=\"368\" y2=\"113\" stroke=\"var(--steel)\" stroke-width=\"1\" stroke-dasharray=\"4 3\"/>",
+    "<text x=\"362\" y=\"53\" text-anchor=\"end\" font-size=\"9\" fill=\"var(--steel)\">+30 ppm</text>",
+    "<text x=\"362\" y=\"108\" text-anchor=\"end\" font-size=\"9\" fill=\"var(--steel)\">-30 ppm</text>",
+    "<polyline points=\"48,240 119,124 208,58 297,124 368,240\" fill=\"none\" stroke=\"var(--paper)\" stroke-width=\"2\" stroke-linejoin=\"round\"/>",
+    "<circle cx=\"208\" cy=\"58\" r=\"4\" fill=\"var(--ember)\"/>",
+    "<text x=\"217\" y=\"52\" text-anchor=\"start\" font-size=\"9\" fill=\"var(--ember)\">TURNOVER 25 C</text>",
+    "<text x=\"48\" y=\"270\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--steel)\">-20</text>",
+    "<text x=\"119\" y=\"270\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--steel)\">0</text>",
+    "<text x=\"208\" y=\"270\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--steel)\">25</text>",
+    "<text x=\"297\" y=\"270\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--steel)\">50</text>",
+    "<text x=\"368\" y=\"270\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--steel)\">70</text>",
+    "<text x=\"44\" y=\"145\" text-anchor=\"end\" font-size=\"9\" fill=\"var(--steel)\">0</text>",
+    "<text x=\"44\" y=\"256\" text-anchor=\"end\" font-size=\"9\" fill=\"var(--steel)\">-40</text>",
+    "<text x=\"44\" y=\"34\" text-anchor=\"end\" font-size=\"9\" fill=\"var(--steel)\">+40</text>",
+    "<text x=\"208\" y=\"292\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--steel)\">TEMPERATURE (C)</text>",
+    "<text x=\"14\" y=\"141\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--steel)\" transform=\"rotate(-90 14 141)\">ERROR (ppm)</text>",
+    "</svg>",
+    "</div>",
+    "<div style=\"flex:1 1 320px;min-width:0\">",
+    "<svg viewBox=\"0 0 380 300\" role=\"img\" aria-label=\"Frequency pull versus load capacitance\" style=\"width:100%;height:auto;display:block\" font-family=\"ui-monospace,SFMono-Regular,Menlo,Consolas,monospace\">",
+    "<text x=\"12\" y=\"18\" text-anchor=\"start\" font-size=\"11\" fill=\"var(--paper)\">FREQUENCY PULL VS LOAD CAPACITANCE</text>",
+    "<text x=\"12\" y=\"31\" text-anchor=\"start\" font-size=\"9\" fill=\"var(--steel)\">TYPICAL SHAPE, NOT MEASURED</text>",
+    "<line x1=\"48\" y1=\"30\" x2=\"48\" y2=\"252\" stroke=\"var(--line)\" stroke-width=\"1\"/>",
+    "<line x1=\"48\" y1=\"189\" x2=\"368\" y2=\"189\" stroke=\"var(--steel)\" stroke-width=\"1\" stroke-dasharray=\"4 3\"/>",
+    "<text x=\"362\" y=\"183\" text-anchor=\"end\" font-size=\"9\" fill=\"var(--steel)\">NOMINAL</text>",
+    "<line x1=\"208\" y1=\"30\" x2=\"208\" y2=\"252\" stroke=\"var(--ice)\" stroke-width=\"1\" stroke-dasharray=\"4 3\"/>",
+    "<text x=\"214\" y=\"60\" text-anchor=\"start\" font-size=\"9\" fill=\"var(--ice)\">RATED CL 18 pF</text>",
+    "<polyline points=\"48,67 128,133 208,173 288,199 368,218\" fill=\"none\" stroke=\"var(--paper)\" stroke-width=\"2\" stroke-linejoin=\"round\"/>",
+    "<text x=\"48\" y=\"270\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--steel)\">6</text>",
+    "<text x=\"128\" y=\"270\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--steel)\">12</text>",
+    "<text x=\"208\" y=\"270\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--steel)\">18</text>",
+    "<text x=\"288\" y=\"270\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--steel)\">24</text>",
+    "<text x=\"368\" y=\"270\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--steel)\">30</text>",
+    "<text x=\"44\" y=\"193\" text-anchor=\"end\" font-size=\"9\" fill=\"var(--steel)\">0</text>",
+    "<text x=\"44\" y=\"129\" text-anchor=\"end\" font-size=\"9\" fill=\"var(--steel)\">20</text>",
+    "<text x=\"44\" y=\"66\" text-anchor=\"end\" font-size=\"9\" fill=\"var(--steel)\">40</text>",
+    "<text x=\"44\" y=\"256\" text-anchor=\"end\" font-size=\"9\" fill=\"var(--steel)\">-20</text>",
+    "<text x=\"208\" y=\"292\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--steel)\">LOAD CAPACITANCE (pF)</text>",
+    "<text x=\"14\" y=\"141\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--steel)\" transform=\"rotate(-90 14 141)\">PULL (ppm)</text>",
+    "</svg>",
+    "</div>",
+    "</div>",
+    "<p class=\"why\">AT-cut crystals follow a cubic temperature curve; load capacitance pulls the frequency, which is why CL must match the crystal's rating.</p></div>",
     "<div class=\"xo-card\"><h3>THE WORKED EXAMPLE</h3>",
     "<p class=\"why\">The bench board's strays measure 4 pF per side, and the crystal is rated at CL 18 pF. ",
     "The sizing formula is C = 2 x (CL spec - stray) = 2 x (18 - 4) = 28 pF. The tray holds standard values, so ",
@@ -44296,7 +44395,7 @@ if (typeof module !== "undefined" && module.exports) {
   function xoDownloadCert() {
     var txt = [
       "THE CRYSTAL ROOM",
-      "TAPEOUT BENCH 57 · THE PROVING GROUND",
+      "SILICON BENCH 57 · THE PROVING GROUND",
       "",
       "Trial 1: predicted the 85 C hot-chamber kill (RC at +6.5 % vs the 2 % UART budget),",
       "         watched it die, fitted the crystal, certified the link clean.",
@@ -44357,7 +44456,7 @@ if (typeof module !== "undefined" && module.exports) {
     });
 
     var panel = xoEl("div", "xo-panel");
-    panel.appendChild(xoEl("div", "xo-kicker", "TAPEOUT BENCH 57"));
+    panel.appendChild(xoEl("div", "xo-kicker", "SILICON BENCH 57"));
     panel.appendChild(xoEl("h2", "xo-title", "The Crystal Room"));
     panel.appendChild(xoEl("p", "xo-sub",
       "A UART has no shared clock, so both ends must agree within 2 percent. Size the load caps that hold " +
@@ -45119,7 +45218,7 @@ if (typeof module !== "undefined" && module.exports) {
     var sh = s.t1.shunt === null ? "?" : SN_SHUNTS[s.t1.shunt].spec;
     var txt = [
       "THE PROVING GROUND · BENCH 58 · THE SHUNT ROOM",
-      "OLD IRON BENCH · " + new Date().toISOString(),
+      "SILICON BENCH · " + new Date().toISOString(),
       "",
       "TRIAL 1 · SIZE THE SHUNT: " + sh + " fitted, burden called before the load stepped,",
       "  all three checks pass (burden <= 250 mV, sense >= 20 mV, power inside rating).",
@@ -45180,7 +45279,7 @@ if (typeof module !== "undefined" && module.exports) {
     });
 
     var panel = snEl("div", "sn-panel");
-    panel.appendChild(snEl("div", "sn-kicker", "OLD IRON BENCH 58"));
+    panel.appendChild(snEl("div", "sn-kicker", "SILICON BENCH 58"));
     panel.appendChild(snEl("h2", "sn-title", "The Shunt Room"));
     panel.appendChild(snEl("p", "sn-sub",
       "A shunt resistor turns current into a voltage you can read, but every reading costs burden voltage, " +
@@ -46049,7 +46148,7 @@ if (typeof module !== "undefined" && module.exports) {
     var r1 = znFeedSpec(ZN_T1_TRAY[znState.t1.feed === null ? 2 : znState.t1.feed]);
     var txt = [
       "THE PROVING GROUND \u00B7 BENCH 59 \u00B7 THE ZENER ROOM",
-      "OLD IRON BENCH \u00B7 " + new Date().toISOString(),
+      "SILICON BENCH \u00B7 " + new Date().toISOString(),
       "",
       "TRIAL 1 \u00B7 SIZE THE FEED: " + r1 + " fitted for the 2 mA load, Iz called before the load stepped,",
       "  all three checks pass (knee >= 2 mA, Zener <= 200 mW, feed <= 250 mW).",
@@ -46111,7 +46210,7 @@ if (typeof module !== "undefined" && module.exports) {
     });
 
     var panel = znEl("div", "zn-panel");
-    panel.appendChild(znEl("div", "zn-kicker", "OLD IRON BENCH 59"));
+    panel.appendChild(znEl("div", "zn-kicker", "SILICON BENCH 59"));
     panel.appendChild(znEl("h2", "zn-title", "The Zener Room"));
     panel.appendChild(znEl("p", "zn-sub",
       "A shunt regulator in two parts: the feed resistor brings current, the Zener diode drinks whatever " +
@@ -46587,7 +46686,7 @@ if (typeof module !== "undefined" && module.exports) {
       opPop(card);
     });
     row.appendChild(loadB);
-    var run = opEl("button", "oa-btn solid", "DRIVE");
+    var run = opEl("button", "oa-btn solid", "DRIVE THE FOLLOWER");
     run.id = "oaDoFirst_run";
     row.appendChild(run);
     card.appendChild(row);
@@ -46654,7 +46753,7 @@ if (typeof module !== "undefined" && module.exports) {
     pred.step = "0.05";
     pred.min = "0";
     pred.setAttribute("aria-label", "Called output voltage in volts");
-    pred.placeholder = "V";
+    pred.placeholder = "volts, e.g. 2.50";
     prow.appendChild(pred);
     var callBtn = opEl("button", "oa-btn", "CALL THE OUTPUT");
     callBtn.id = "oaT1_call";
@@ -46954,7 +47053,7 @@ if (typeof module !== "undefined" && module.exports) {
     var p = s.t1.pair === null ? "?" : OP_T1_PAIRS[s.t1.pair].spec;
     var txt = [
       "THE PROVING GROUND \u00B7 BENCH 60 \u00B7 THE OP-AMP ROOM",
-      "OLD IRON BENCH \u00B7 " + new Date().toISOString(),
+      "SILICON BENCH \u00B7 " + new Date().toISOString(),
       "",
       "TRIAL 1 \u00B7 SIZE THE GAIN: " + p + " fitted, output called before the amp ran,",
       "  clean output inside the 0.1 to 4.9 V rails.",
@@ -47015,7 +47114,7 @@ if (typeof module !== "undefined" && module.exports) {
     });
 
     var panel = opEl("div", "oa-panel");
-    panel.appendChild(opEl("div", "oa-kicker", "OLD IRON BENCH 60"));
+    panel.appendChild(opEl("div", "oa-kicker", "SILICON BENCH 60"));
     panel.appendChild(opEl("h2", "oa-title", "The Op-Amp Room"));
     panel.appendChild(opEl("p", "oa-sub",
       "An op-amp's feedback turns wild open-loop gain into a precise closed-loop copy with muscle. " +
@@ -47125,7 +47224,7 @@ if (typeof module !== "undefined" && module.exports) {
   function t5Freq(r1, r2, c) { return 1 / t5Period(r1, r2, c); }
   function t5Duty(r1, r2, c) { return t5THigh(r1, r2, c) / t5Period(r1, r2, c); }
 
-  function t5FmtR(r) { return r >= 1000 ? (r / 1000) + "k" : r + ""; }
+  function t5FmtR(r) { return r >= 1000 ? (r / 1000) + "kΩ" : r + "Ω"; }
   function t5FmtC(c) { return (c * 1e6) + "uF"; }
   function t5FmtF(f) { return f < 10 ? f.toFixed(2) + " Hz" : f.toFixed(1) + " Hz"; }
   function t5FmtPct(d) { return (d * 100).toFixed(1) + "%"; }
@@ -47560,7 +47659,7 @@ if (typeof module !== "undefined" && module.exports) {
     inp.id = "t5T1_pred";
     inp.setAttribute("inputmode", "decimal");
     inp.setAttribute("aria-label", "predicted frequency in hertz");
-    var call = t5El("button", "t5-btn", "CALL IT");
+    var call = t5El("button", "t5-btn", "COMMIT FREQUENCY");
     call.id = "t5T1_call";
     var run = t5El("button", "t5-btn solid", "POWER");
     run.id = "t5T1_run";
@@ -47649,7 +47748,7 @@ if (typeof module !== "undefined" && module.exports) {
     inp.id = "t5T2_pred";
     inp.setAttribute("inputmode", "decimal");
     inp.setAttribute("aria-label", "predicted duty cycle in percent");
-    var call = t5El("button", "t5-btn", "CALL IT");
+    var call = t5El("button", "t5-btn", "COMMIT DUTY");
     call.id = "t5T2_call";
     var run = t5El("button", "t5-btn solid", "POWER");
     run.id = "t5T2_run";
@@ -47831,7 +47930,7 @@ if (typeof module !== "undefined" && module.exports) {
     });
 
     var panel = t5El("div", "t5-panel");
-    panel.appendChild(t5El("div", "t5-kicker", "OLD IRON BENCH 61"));
+    panel.appendChild(t5El("div", "t5-kicker", "SILICON BENCH 61"));
     panel.appendChild(t5El("h2", "t5-title", "The 555 Room"));
     panel.appendChild(t5El("p", "t5-sub",
       "Two comparators stare at one capacitor, and three parts around an 8-pin chip turn charge and " +
@@ -48550,7 +48649,7 @@ if (typeof module !== "undefined" && module.exports) {
     });
     rowP.appendChild(pred);
     inEls.t1pred = pred;
-    var callB = inEl("button", "in-btn solid", "CALL IT");
+    var callB = inEl("button", "in-btn solid", "COMMIT KICK VOLTAGE");
     callB.id = "inT1_call"; callB.type = "button";
     rowP.appendChild(callB);
     var runB = inEl("button", "in-btn", "OPEN THE SWITCH");
@@ -48651,7 +48750,7 @@ if (typeof module !== "undefined" && module.exports) {
     });
     rowP.appendChild(pred);
     inEls.t2pred = pred;
-    var callB = inEl("button", "in-btn solid", "CALL IT");
+    var callB = inEl("button", "in-btn solid", "COMMIT RAMP TIME");
     callB.id = "inT2_call"; callB.type = "button";
     rowP.appendChild(callB);
     var runB = inEl("button", "in-btn", "ENERGIZE");
@@ -48825,7 +48924,7 @@ if (typeof module !== "undefined" && module.exports) {
     }
 
     var panel = inEl("div", "in-panel");
-    panel.appendChild(inEl("div", "in-kicker", "OLD IRON BENCH 62"));
+    panel.appendChild(inEl("div", "in-kicker", "SILICON BENCH 62"));
     panel.appendChild(inEl("h2", "in-title", "The Inductor Room"));
     panel.appendChild(inEl("p", "in-sub",
       "Current through a coil cannot change instantly: V = L di/dt. Open the switch and the coil " +
@@ -49887,7 +49986,7 @@ if (typeof module !== "undefined" && module.exports) {
     "wrong, and it looks plausible enough to ship. Every bug in this room is this bug.</li>",
     "<li><b>THE ASSUMED ORDER:</b> reading the bytes in address order as the value is " +
     "big-endian thinking on a little-endian machine. Trial 1 catches it by name.</li>",
-    "<li><b>THE HALFWORD TRAP:</b> swapping a 32-bit word as two 16-bit halves produces " +
+    "<li><b>THE HALFWORD MIS-SWAP</b> swapping a 32-bit word as two 16-bit halves produces " +
     "neither order. Trial 2 makes the byte positions visible so the swap lands on the right " +
     "boundaries.</li>",
     "<li><b>THE UNPACKED HEADER:</b> network order is big-endian, always. A little-endian " +
@@ -52084,7 +52183,7 @@ if (typeof module !== "undefined" && module.exports) {
     }
 
     var panel = tmEl("div", "tm-panel");
-    panel.appendChild(tmEl("div", "tm-kicker", "TAPEOUT BENCH 66"));
+    panel.appendChild(tmEl("div", "tm-kicker", "SILICON BENCH 66"));
     panel.appendChild(tmEl("h2", "tm-title", "The Termination Room"));
     panel.appendChild(tmEl("p", "tm-sub",
       "A fast edge that meets a mismatch comes back. Fire a step down a 50 ohm line, " +
@@ -54184,7 +54283,7 @@ if (typeof module !== "undefined" && module.exports) {
 
     var panel = dvbEl("div", "dvb-panel");
     dvbEls.panel = panel;
-    panel.appendChild(dvbEl("div", "dvb-kicker", "OLD IRON BENCH 68"));
+    panel.appendChild(dvbEl("div", "dvb-kicker", "SILICON BENCH 68"));
     panel.appendChild(dvbEl("h2", "dvb-title", "The Drive Bay"));
     var sub = dvbEl("p", "dvb-sub", "");
     sub.innerHTML = "<b>HOW IT WORKS</b> Three intake machines arrived dead this morning and every drive " +
@@ -54936,7 +55035,8 @@ if (typeof module !== "undefined" && module.exports) {
   /* ---------------- build / open / close / reset ---------------- */
   var ADC_INTRO_HTML = [
     "<b>WHY THIS ROOM EXISTS</b> Every sensor reading your firmware ever took passed through an " +
-    "analog-to-digital converter, and the converter inside almost every microcontroller is the same " +
+    "analog-to-digital converter, and the converter inside every RISC-V microcontroller: a SAR ADC on " +
+    "the analog die, programmed through the registers your firmware writes. It is the same " +
     "machine: successive approximation. It asks one yes-or-no question per bit, most significant bit " +
     "first: 'Is the input at least this big?' A 12-bit reading costs 12 questions and a single " +
     "comparator. This is the peripheral that turns the analog world into numbers your code can use, " +
@@ -55643,12 +55743,12 @@ if (typeof module !== "undefined" && module.exports) {
     card.appendChild(row);
 
     var row2 = trEl("div", "tmr-row", "");
-    row2.appendChild(trEl("label", "", "PREDICTED MTIMECMP"));
+    row2.appendChild(trEl("label", "", "PREDICTED MTIMECMP (1 MHz TICKS)"));
     var inp = document.createElement("input");
     inp.className = "tmr-num";
     inp.id = "tmrPred";
     inp.setAttribute("inputmode", "numeric");
-    inp.setAttribute("aria-label", "Predicted MTIMECMP value");
+    inp.setAttribute("aria-label", "Predicted MTIMECMP value in 1 MHz ticks");
     var chk = trBtn("CHECK PREDICTION", "");
     chk.id = "tmrCheck";
     var chkOut = trEl("p", "tmr-status", "");
@@ -56542,12 +56642,12 @@ if (typeof module !== "undefined" && module.exports) {
   ].join("\n");
 
   BP.STAGE1_HTML = [
-    "<div class=\"bp-sec\">STAGE 1: THE AGGREGATE LIE</div>",
+    "<h3 class=\"bp-sec\">STAGE 1: THE AGGREGATE LIE</h3>",
     "<p class=\"bp-p\">One number hides the split. The deal below runs a real trace through a hidden predictor setup. You get the aggregate only: total fetch redirects and modeled cycles lost. Name the repair.</p>"
   ].join("\n");
 
   BP.STAGE2_HTML = [
-    "<div class=\"bp-sec\">STAGE 2: READ THE TRACE</div>",
+    "<h3 class=\"bp-sec\">STAGE 2: READ THE TRACE</h3>",
     "<p class=\"bp-p\">This is the state-trace table. <b>STATE</b> is the predictor's counter before the event, in the names from the diagram above. <b>PRED</b> is the vote, the counter's most significant bit. <b>ACTUAL</b> is what the branch did, and <b>*</b> marks a mispredict. <b>BTB</b> is HIT when the target was known, MISS when it was not. The 1-bit table below runs the same nine laps with a one-bit predictor. It has only two states, T and N, and every outcome sets it outright, so a single surprise flips its vote. Count its * marks and compare with the 2-bit table.</p>",
     "<p class=\"bp-p\">Classify every <b>*</b> row: a <b>BTB target miss</b> means the target was unknown; a <b>direction misprediction</b> means the vote was wrong. Then name the repair the trace justifies.</p>"
   ].join("\n");
@@ -56992,13 +57092,13 @@ if (typeof module !== "undefined" && module.exports) {
     bpEls.wTot = intro.querySelector("#bpWTot");
 
     /* progress */
-    var prog = bpEl("div", "bp-out", "STAGE 1: OPEN | STAGE 2: OPEN");
+    var prog = bpEl("div", "bp-out", "STAGE 1: NOT STARTED | STAGE 2: NOT STARTED");
     prog.id = "bpProgress";
     panel.appendChild(prog);
     bpEls.progress = prog;
 
     /* do first */
-    panel.appendChild(bpEl("div", "bp-sec", "DO FIRST"));
+    panel.appendChild(bpEl("h3", "bp-sec", "DO FIRST"));
     panel.appendChild(bpEl("p", "bp-p", "One button. It runs the counted loop through a 4-entry BTB and a 2-bit predictor, and splits the cost into the two guesses. Nothing to configure, nothing to break."));
     var doFirst = bpBtn("RUN THE TRACE", "bp-btn solid");
     doFirst.id = "bpDoFirst";
@@ -57011,8 +57111,8 @@ if (typeof module !== "undefined" && module.exports) {
     bpEls.doOut = doOut;
 
     /* controls */
-    panel.appendChild(bpEl("div", "bp-sec", "THE CONTROLS"));
-    panel.appendChild(bpEl("p", "bp-p", "Pick a trace, size the BTB, choose the predictor, and run. Each trace is named for the program shape behind it. The verdict names the dominant failure and the fix it wants. The two short traces are the stage-2 deals; run them here to check your work."));
+    panel.appendChild(bpEl("h3", "bp-sec", "THE CONTROLS"));
+    panel.appendChild(bpEl("p", "bp-p", "Pick a trace, size the BTB, choose the predictor, and run. Each trace is named for the program shape behind it. The verdict names the dominant failure and the fix it wants. The two short traces are the stage-2 views; run them here to check your work."));
     var g1 = bpEl("div", "bp-group", "");
     g1.appendChild(bpEl("span", "bp-lbl", "TRACE"));
     var row1 = bpEl("div", "bp-row", "");
@@ -57057,7 +57157,7 @@ if (typeof module !== "undefined" && module.exports) {
     row3.appendChild(d1); row3.appendChild(d2);
     g3.appendChild(row3);
     panel.appendChild(g3);
-    var run = bpBtn("RUN", "bp-btn solid");
+    var run = bpBtn("RUN WORKED EXAMPLE", "bp-btn solid");
     run.id = "bpRun";
     run.addEventListener("click", bpRun);
     panel.appendChild(run);
@@ -57080,12 +57180,12 @@ if (typeof module !== "undefined" && module.exports) {
     var s1 = bpEl("div", "", "");
     s1.innerHTML = BP.STAGE1_HTML;
     panel.appendChild(s1);
-    var deal1 = bpBtn("DEAL THE AGGREGATE", "bp-btn solid");
+    var deal1 = bpBtn("SHOW AGGREGATE TOTALS", "bp-btn solid");
     deal1.id = "bpS1Deal";
     deal1.addEventListener("click", bpS1Deal);
     panel.appendChild(deal1);
     bpEls.s1Deal = deal1;
-    var s1Out = bpEl("div", "bp-out", "No aggregate dealt yet.");
+    var s1Out = bpEl("div", "bp-out", "No aggregate shown yet.");
     s1Out.id = "bpS1Out";
     s1Out.setAttribute("aria-live", "polite");
     panel.appendChild(s1Out);
@@ -57117,12 +57217,12 @@ if (typeof module !== "undefined" && module.exports) {
     var s2 = bpEl("div", "", "");
     s2.innerHTML = BP.STAGE2_HTML;
     panel.appendChild(s2);
-    var deal2 = bpBtn("DEAL THE TRACE", "bp-btn solid");
+    var deal2 = bpBtn("SHOW STATE TRACE", "bp-btn solid");
     deal2.id = "bpS2Deal";
     deal2.addEventListener("click", bpS2Deal);
     panel.appendChild(deal2);
     bpEls.s2Deal = deal2;
-    var waveCap = bpEl("div", "bp-out", "No trace dealt yet.");
+    var waveCap = bpEl("div", "bp-out", "No trace shown yet.");
     waveCap.id = "bpWaveCap";
     panel.appendChild(waveCap);
     bpEls.waveCap = waveCap;
