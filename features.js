@@ -19321,13 +19321,8 @@ if (typeof module !== "undefined" && module.exports) {
     ".tr-cell .tr-cv{font-family:var(--font-m);font-size:15px;color:var(--paper);}",
     ".tr-cell .tr-cv.good{color:var(--ember);}",
     ".tr-cell .tr-cv.bad{color:var(--steel);}",
-    ".tr-bandwrap{padding:4px 12px 14px;}",
-    ".tr-bandbar{position:relative;height:44px;border:1px solid var(--line);margin-top:6px;}",
-    ".tr-specwin{position:absolute;top:0;bottom:0;border-left:1px solid var(--ember);border-right:1px solid var(--ember);background:rgba(140,63,34,.08);}",
-    ".tr-bandmark{position:absolute;top:14px;height:16px;background:var(--steel);transition:left .2s ease,width .2s ease;}",
-    ".tr-bandmark.good{background:var(--ember);}",
-    ".tr-bandticks{display:flex;justify-content:space-between;font-family:var(--font-m);font-size:10px;letter-spacing:.08em;color:var(--steel);margin-top:6px;}",
-    ".tr-bandticks .tgt{color:var(--ember);}",
+    ".bp-table td.tr-good{color:var(--ember);font-weight:700;}",
+    ".bp-table td.tr-bad{color:var(--steel);}",
     ".tr-verdict{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;padding:0 12px 12px;}",
     ".tr-verdict.good{color:var(--ember);}",
     ".tr-verdict.bad{color:var(--steel);}",
@@ -19442,30 +19437,24 @@ if (typeof module !== "undefined" && module.exports) {
     var b = trBand(job, t.width);
     trEls.wval.textContent = trFmt(t.width) + " mil";
     if (document.activeElement !== trEls.slider) trEls.slider.value = t.width;
-    trEls.cZ0.textContent = trFmt(b.z0) + " \u03A9";
-    trEls.cBand.textContent = trFmt(b.lo) + " .. " + trFmt(b.hi) + " \u03A9";
-    trEls.cTgt.textContent = trFmt(b.specLo) + " .. " + trFmt(b.specHi) + " \u03A9";
+    trEls.tW.textContent = trFmt(t.width) + " mil";
+    trEls.tZ0.textContent = trFmt(b.z0) + " \u03A9";
+    trEls.tBand.textContent = trFmt(b.lo) + " .. " + trFmt(b.hi) + " \u03A9";
+    trEls.tEtchTol.textContent = "\u00B1" + Math.round(job.etch * 100) + "%";
+    trEls.tTgt.textContent = trFmt(job.target) + " \u03A9";
+    trEls.tTgtTol.textContent = "\u00B1" + Math.round(job.tol * 100) + "%";
     var drc = job.fabMin && t.width < job.fabMin;
-    var verdict = trEls.cVerdict;
+    var verdict = trEls.tVerdict;
     if (drc) {
       verdict.textContent = "BELOW FAB MINIMUM";
-      verdict.className = "tr-cv bad";
+      verdict.className = "tr-bad";
     } else if (b.inSpec) {
       verdict.textContent = "IN SPEC";
-      verdict.className = "tr-cv good";
+      verdict.className = "tr-good";
     } else {
       verdict.textContent = "OUT OF SPEC";
-      verdict.className = "tr-cv bad";
+      verdict.className = "tr-bad";
     }
-    var g = trBandGeom(job, t.width);
-    trEls.specwin.style.left = g.specL + "%";
-    trEls.specwin.style.width = g.specW + "%";
-    trEls.bandmark.style.left = g.bandL + "%";
-    trEls.bandmark.style.width = g.bandW + "%";
-    trEls.bandmark.className = "tr-bandmark" + (!drc && b.inSpec ? " good" : "");
-    trEls.tickLo.textContent = g.tickLo;
-    trEls.tickT.textContent = g.tickT + " TARGET";
-    trEls.tickHi.textContent = g.tickHi;
     var vline = trEls.verdictLine;
     if (drc) {
       vline.textContent = "DRC: unmanufacturable below " + trFmt(job.fabMin) + " mil. No penalty, but it will not qualify.";
@@ -19616,40 +19605,33 @@ if (typeof module !== "undefined" && module.exports) {
     srow.appendChild(trEls.wval);
     lab.appendChild(srow);
 
-    var read = trEl("div", "tr-read");
-    read.setAttribute("aria-live", "polite");
-    function cell(key, label) {
-      var c = trEl("div", "tr-cell");
-      c.appendChild(trEl("div", "tr-ck", label));
-      var v = trEl("div", "tr-cv", "");
-      c.appendChild(v);
-      trEls[key] = v;
-      read.appendChild(c);
-    }
-    cell("cZ0", "NOMINAL Z0");
-    cell("cBand", "ETCH BAND");
-    cell("cTgt", "TARGET WINDOW");
-    cell("cVerdict", "VERDICT");
-    lab.appendChild(read);
-
-    var bandwrap = trEl("div", "tr-bandwrap");
-    var bar = trEl("div", "tr-bandbar");
-    bar.setAttribute("role", "img");
-    bar.setAttribute("aria-label", "Etch band plotted against the target window");
-    trEls.specwin = trEl("div", "tr-specwin");
-    bar.appendChild(trEls.specwin);
-    trEls.bandmark = trEl("div", "tr-bandmark");
-    bar.appendChild(trEls.bandmark);
-    bandwrap.appendChild(bar);
-    var ticks = trEl("div", "tr-bandticks");
-    trEls.tickLo = trEl("span", null, "");
-    trEls.tickT = trEl("span", "tgt", "");
-    trEls.tickHi = trEl("span", null, "");
-    ticks.appendChild(trEls.tickLo);
-    ticks.appendChild(trEls.tickT);
-    ticks.appendChild(trEls.tickHi);
-    bandwrap.appendChild(ticks);
-    lab.appendChild(bandwrap);
+    /* Impedance table, the fab convention: tolerance is a column, not a diagram.
+       One live row for the current trace, updated on every slider move. */
+    var impWrap = trEl("div", "bp-scrollx");
+    impWrap.setAttribute("aria-live", "polite");
+    var imp = document.createElement("table");
+    imp.className = "bp-table";
+    imp.setAttribute("aria-label", "Impedance table: live width against target and tolerance");
+    var impHead = document.createElement("thead");
+    var impHr = document.createElement("tr");
+    ["TRACE WIDTH", "NOMINAL Z0", "ETCH BAND", "ETCH TOL", "TARGET", "TARGET TOL", "VERDICT"].forEach(function (h) {
+      var th = document.createElement("th");
+      th.textContent = h;
+      impHr.appendChild(th);
+    });
+    impHead.appendChild(impHr);
+    imp.appendChild(impHead);
+    var impBody = document.createElement("tbody");
+    var impRow = document.createElement("tr");
+    ["tW", "tZ0", "tBand", "tEtchTol", "tTgt", "tTgtTol", "tVerdict"].forEach(function (k) {
+      var td = document.createElement("td");
+      trEls[k] = td;
+      impRow.appendChild(td);
+    });
+    impBody.appendChild(impRow);
+    imp.appendChild(impBody);
+    impWrap.appendChild(imp);
+    lab.appendChild(impWrap);
     trEls.verdictLine = trEl("div", "tr-verdict bad", "");
     lab.appendChild(trEls.verdictLine);
     panel.appendChild(lab);
@@ -20146,6 +20128,8 @@ if (typeof module !== "undefined" && module.exports) {
     ".rs-rcell .v.bad{color:var(--ember);}",
     ".rs-rcell .v.good{color:var(--mint);}",
     ".rs-log{font-family:var(--font-m);font-size:12px;line-height:1.7;color:var(--paper);border:1px solid var(--line);background:var(--panel);padding:12px 14px;min-height:120px;max-height:260px;overflow-y:auto;margin:0 0 12px;}",
+    ".rs-tlcap{font-family:var(--font-m);font-size:11.5px;line-height:1.7;color:var(--steel);margin:0 0 12px;max-width:78ch;}",
+    ".rs-tlcap b{color:var(--ember);}",
     ".rs-log .dim{color:var(--steel);}",
     ".rs-log .good{color:var(--mint);}",
     ".rs-log .bad{color:var(--ember);}",
@@ -20332,6 +20316,193 @@ if (typeof module !== "undefined" && module.exports) {
     cell("SC FAILURES", rsFmt(r.scFail), null);
     cell("STRATEGY", RS_STRATS[t.strat].label, null);
     box.appendChild(grid);
+    box.appendChild(rsEl("h4", null, "THREAD INTERLEAVING"));
+    box.appendChild(rsTimeline(job, t));
+  }
+
+  /* Interleaving trace: a view-only deterministic replay of the race.
+     rsSim is pure and seeded ("rs-" + trial.id), so re-running its exact
+     schedule with the same rng draw order reproduces the interleaving the
+     scored run took. No sim state is touched and no sim output changes.
+     Each event is one instruction: {h, op, mem, noise}. raceIdx marks the
+     first stale store or the first failed SC. */
+  function rsTrace(playerStrat, trial) {
+    var rng = rsRand(rsSeed("rs-" + trial.id));
+    var PREEMPT = 0.25, NOISE = 0.05;
+    var isTake = trial.kind === "take";
+    var iters = trial.n;
+    var rivalStrat = trial.rival === "same" ? playerStrat : trial.rival;
+    var mem = isTake ? trial.stock : 0;
+    var resv = [false, false];
+    var st = [
+      { strat: playerStrat, done: 0, phase: 0, reg: 0, scok: false, read: 0 },
+      { strat: rivalStrat, done: 0, phase: 0, reg: 0, scok: false, read: 0 }
+    ];
+    var evs = [], raceIdx = -1, raceNote = "", noiseNext = false;
+
+    function ev(h, op, memBefore) {
+      var e = { h: h, op: op, mem: mem, memBefore: memBefore, noise: noiseNext };
+      noiseNext = false;
+      evs.push(e);
+      return e;
+    }
+
+    function markRace(idx, note) {
+      if (raceIdx >= 0) return;
+      raceIdx = idx;
+      raceNote = note;
+    }
+
+    function insn(h) {
+      var s = st[h];
+      if (s.done >= iters) return;
+      var memBefore = mem, op = "", stored = false, stale = false;
+      if (!isTake) {
+        if (s.strat === "amoadd") {
+          op = "AMOADD";
+          mem = mem + 1; stored = true; s.done++;
+        } else if (s.strat === "plain") {
+          if (s.phase === 0) { op = "LD"; s.reg = mem; s.read = mem; }
+          else if (s.phase === 1) { op = "ADD"; s.reg = s.reg + 1; }
+          else {
+            op = "ST"; mem = s.reg; stored = true; s.done++; s.phase = -1;
+            stale = (memBefore !== s.read);
+          }
+          s.phase++;
+        } else if (s.strat === "lrsc-once") {
+          if (s.phase === 0) { op = "LR"; s.reg = mem; resv[h] = true; s.read = mem; }
+          else if (s.phase === 1) { op = "ADD"; s.reg = s.reg + 1; }
+          else {
+            if (resv[h]) { op = "SC"; mem = s.reg; stored = true; }
+            else op = "SC!";
+            resv[h] = false; s.done++; s.phase = -1;
+          }
+          s.phase++;
+        } else { /* lrsc-retry */
+          if (s.phase === 0) { op = "LR"; s.reg = mem; resv[h] = true; s.phase = 1; s.read = mem; }
+          else if (s.phase === 1) { op = "ADD"; s.reg = s.reg + 1; s.phase = 2; }
+          else {
+            if (resv[h]) { op = "SC"; mem = s.reg; stored = true; s.done++; s.phase = 0; }
+            else { op = "SC!"; s.phase = 0; }
+            resv[h] = false;
+          }
+        }
+      } else {
+        if (s.strat === "plain") {
+          if (s.phase === 0) { op = "LD"; s.reg = mem; s.read = mem; }
+          else if (s.phase === 1) {
+            op = "CMP";
+            s.scok = (s.reg >= 100);
+            s.reg = s.scok ? s.reg - 100 : s.reg;
+          } else {
+            op = s.scok ? "ST" : "ST-";
+            if (s.scok) {
+              mem = s.reg; stored = true;
+              stale = (memBefore !== s.read);
+            }
+            s.done++; s.phase = -1;
+          }
+          s.phase++;
+        } else { /* lrsc-retry */
+          if (s.phase === 0) { op = "LR"; s.reg = mem; resv[h] = true; s.phase = 1; s.read = mem; }
+          else if (s.phase === 1) {
+            op = "CMP";
+            s.scok = (s.reg >= 100);
+            s.reg = s.scok ? s.reg - 100 : s.reg;
+            s.phase = 2;
+          } else {
+            if (resv[h]) {
+              op = "SC";
+              if (s.scok) { mem = s.reg; stored = true; }
+              s.done++; s.phase = 0;
+            } else { op = "SC!"; s.phase = 0; }
+            resv[h] = false;
+          }
+        }
+      }
+      if (stored) resv[1 - h] = false;
+      ev(h, op, memBefore);
+      var idx = evs.length - 1;
+      if (stale) {
+        markRace(idx, "HART " + h + " stored on a stale read (read " + rsFmt(s.read) +
+          ", mem was " + rsFmt(memBefore) + "): the other hart's write vanished.");
+      } else if (op === "SC!") {
+        markRace(idx, "HART " + h + "'s SC failed: the reservation was gone, so the store " +
+          "never happened" + (s.strat === "lrsc-retry" ? " (the retry loop runs the pair again)." : "."));
+      }
+    }
+
+    var h = 0, guard = 0;
+    while (guard++ < 50000000) {
+      if (st[0].done >= iters && st[1].done >= iters) break;
+      if (st[h].done < iters) insn(h);
+      if (rng() < PREEMPT) {
+        h = 1 - h;
+        if (rng() < NOISE) { resv[h] = false; noiseNext = true; }
+      }
+    }
+    return { evs: evs, raceIdx: raceIdx, raceNote: raceNote };
+  }
+
+  /* Thread interleaving / happens-before timeline: the two harts' operations
+     in time order on shared OP columns, a MEM row showing the shared word
+     after each op, and the race point marked. Shows a window around the race
+     (or the first 40 ops when there is none), inside a horizontal scroll. */
+  function rsTimeline(job, t) {
+    var trace = rsTrace(t.strat, job);
+    var evs = trace.evs, n = evs.length, i, r;
+    var start = 0, end = Math.min(n, 40);
+    if (trace.raceIdx >= 0) {
+      start = Math.max(0, trace.raceIdx - 12);
+      end = Math.min(n, trace.raceIdx + 21);
+      if (end - start > 56) end = start + 56;
+    }
+    var frag = document.createDocumentFragment();
+    var wrap = rsEl("div", "bp-scrollx");
+    var tbl = document.createElement("table");
+    tbl.className = "bp-table";
+    tbl.setAttribute("aria-label", "Thread interleaving timeline: hart operations in time order");
+    var thead = document.createElement("thead");
+    var hr = document.createElement("tr");
+    hr.appendChild(rsEl("th", null, "TIME"));
+    for (i = start; i < end; i++) hr.appendChild(rsEl("th", null, "OP " + (i + 1)));
+    thead.appendChild(hr);
+    tbl.appendChild(thead);
+    var tb = document.createElement("tbody");
+    var names = ["HART 0", "HART 1", "MEM"];
+    for (r = 0; r < 3; r++) {
+      var row = rsEl("tr", null);
+      row.appendChild(rsEl("td", null, names[r]));
+      for (i = start; i < end; i++) {
+        var e = evs[i];
+        var td = rsEl("td", null);
+        if (r < 2) {
+          if (e.h === r) {
+            td.textContent = e.op + (e.noise ? " !" : "");
+            if (i === trace.raceIdx) td.className = "hot";
+          }
+        } else {
+          td.textContent = rsFmt(e.mem);
+          if (i === trace.raceIdx) td.className = "hot";
+        }
+        row.appendChild(td);
+      }
+      tb.appendChild(row);
+    }
+    tbl.appendChild(tb);
+    wrap.appendChild(tbl);
+    frag.appendChild(wrap);
+    var cap = rsEl("p", "rs-tlcap", null);
+    if (trace.raceIdx >= 0) {
+      cap.appendChild(rsEl("b", null, "RACE at op " + (trace.raceIdx + 1) + ": "));
+      cap.appendChild(document.createTextNode(trace.raceNote +
+        " Showing ops " + (start + 1) + " to " + end + " of " + rsFmt(n) + "."));
+    } else {
+      cap.textContent = "No race in this run: every store landed on a fresh read. " +
+        "Showing the first " + (end - start) + " of " + rsFmt(n) + " ops.";
+    }
+    frag.appendChild(cap);
+    return frag;
   }
 
   function rsRenderFoot() {
@@ -24877,6 +25048,7 @@ if (typeof module !== "undefined" && module.exports) {
     if (st.complete) divHtml += "  = " + st.engineQ + "  (unsigned)";
     work.innerHTML = divHtml;
     card.appendChild(work);
+    card.appendChild(dvStepTable(st, m));
     if (st.strikes > 0 || st.failed) {
       card.appendChild(dvEl("p", "dv-strikes",
         st.failed ? "TRIAL FAILED: 3 STRIKES. RESET THE TRIAL." : "STRIKES " + st.strikes + "/3"));
@@ -24911,6 +25083,40 @@ if (typeof module !== "undefined" && module.exports) {
       card.appendChild(ro);
     }
     return card;
+  }
+
+  /* Canonical restoring-division step table (Berkeley CS61C form): one row per
+     iteration, ITERATION / REMAINDER / QUOTIENT / DIVISOR / OPERATION, rendered
+     alongside the live registers. Rows fill in as the engine runs; the current
+     iteration is marked, future iterations show pending. Driven by the same
+     dvDivU steps the engine scores against, so the table can never drift from
+     the run. */
+  function dvStepTable(st, m) {
+    var eng = dvDivU(m.a, m.b);
+    var host = dvEl("div", null);
+    host.appendChild(dvEl("p", "dv-stepinfo",
+      "STEP HISTORY: one row per iteration, the canonical restoring-division table."));
+    var wrap = dvEl("div", "bp-scrollx");
+    var html = "<table class=\"bp-table\" aria-label=\"Restoring division step history\">" +
+      "<thead><tr><th>ITERATION</th><th>REMAINDER</th><th>QUOTIENT</th>" +
+      "<th>DIVISOR</th><th>OPERATION</th></tr></thead><tbody>";
+    for (var k = 0; k < 8; k++) {
+      var s = eng.steps[k];
+      var done = k < st.step;
+      var cur = st.running && k === st.step;
+      var qbits = "";
+      for (var j = 0; j <= k; j++) qbits += (j < st.qbits.length) ? String(st.qbits[j]) : "_";
+      html += "<tr><td>" + (k + 1) + "</td><td" + (cur ? " class=\"hot\"" : "") + ">" +
+        (done ? dvBin8(s.rAfter) + " (" + s.rAfter + ")" : "--") + "</td><td>" +
+        (done || cur ? qbits : "________") + "</td><td>" + dvBin8(m.b) + " (" + m.b + ")</td><td" +
+        (cur ? " class=\"hot\"" : "") + ">" +
+        (done ? (s.sub ? "SHIFT-SUBTRACT" : "SHIFT") : (cur ? "AWAITING CALL" : "--")) +
+        "</td></tr>";
+    }
+    html += "</tbody></table>";
+    wrap.innerHTML = html;
+    host.appendChild(wrap);
+    return host;
   }
 
   function dvRenderTrial() {
@@ -34769,11 +34975,10 @@ if (typeof module !== "undefined" && module.exports) {
     ".vd-log .ok{color:var(--mint)}.vd-log .bad{color:var(--ember)}.vd-log .warn{color:var(--amber)}.vd-log .dim{color:var(--dim)}",
     ".vd-pop{animation:vdpop .2s ease-out}",
     "@keyframes vdpop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
-    ".vd-meter{border:1px solid var(--line,var(--line));border-radius:8px;background:var(--panel);padding:14px;margin:10px 0}",
-    ".vd-mbar{height:22px;border:1px solid var(--line,var(--line));border-radius:4px;position:relative;overflow:hidden;background:var(--panel)}",
-    ".vd-mfill{position:absolute;left:0;top:0;bottom:0;background:var(--ember,var(--ember));width:0%}",
-    ".vd-mnum{font-size:26px;color:var(--paper,var(--paper));margin:8px 0 0}",
-    ".vd-mnum small{font-size:12px;color:var(--dim)}",
+    ".vd-schem{margin:10px 0}",
+    ".vd-schem svg{width:100%;height:auto;display:block}",
+    ".vd-schem text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}",
+    ".vd-scap{font-size:11px;color:var(--dim);margin:6px 0 0;line-height:1.6}",
     ".vd-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:10px 0}",
     ".vd-stat{border:1px solid var(--line,var(--line));border-radius:6px;padding:10px;background:var(--panel)}",
     ".vd-stat .k{font-size:10px;letter-spacing:.14em;color:var(--dim)}",
@@ -34864,23 +35069,103 @@ if (typeof module !== "undefined" && module.exports) {
     "<span class='k'>, so the tap collapses. Trial 3 makes you build a divider that passes the rule.</span>"
   ];
 
-  /* ---------- meter widget: a tap voltmeter ---------- */
-  function vdMeter(id) {
-    var root = vdEl("div", "vd-meter");
-    var bar = vdEl("div", "vd-mbar");
-    var fill = vdEl("div", "vd-mfill");
-    bar.appendChild(fill);
-    var num = vdEl("div", "vd-mnum");
-    root.appendChild(vdEl("div", "vd-lab", "TAP VOLTMETER"));
-    root.appendChild(bar);
-    root.appendChild(num);
-    function show(v, vin) {
-      var frac = vin > 0 ? Math.max(0, Math.min(1, v / vin)) : 0;
-      fill.style.width = (frac * 100).toFixed(1) + "%";
-      num.innerHTML = "";
-      num.appendChild(document.createTextNode(vdFmtV(v) + " V "));
-      var sm = vdEl("small", "", "of " + vdFmtV(vin) + " V rail");
-      num.appendChild(sm);
+  /* ---------- divider schematic (view-only): two-resistor ladder, labeled nodes ---------- */
+  var VD_INK = "#c9cdd3", VD_DIM = "#868e98";
+  function vdSvg(tag, attrs) {
+    var e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+  function vdSvgT(x, y, s, anchor, fill, size) {
+    var t = vdSvg("text", { x: x, y: y, "text-anchor": anchor || "start",
+      "font-size": size || 11, fill: fill || VD_INK });
+    t.textContent = s;
+    return t;
+  }
+  function vdZig(x, y0, y1) {           /* vertical resistor zigzag, 6 peaks */
+    var d = "M" + x + " " + y0, i, yy;
+    for (i = 0; i < 6; i++) {
+      yy = y0 + (y1 - y0) * (i + 0.5) / 6;
+      d += "L" + (x + (i % 2 === 0 ? 10 : -10)) + " " + yy;
+      yy = y0 + (y1 - y0) * (i + 1) / 6;
+      d += "L" + x + " " + yy;
+    }
+    return vdSvg("path", { d: d, fill: "none", stroke: VD_INK, "stroke-width": 2 });
+  }
+  function vdGnd(x, y) {
+    var g = vdSvg("g", { stroke: VD_INK, "stroke-width": 2 });
+    g.appendChild(vdSvg("line", { x1: x - 12, y1: y, x2: x + 12, y2: y }));
+    g.appendChild(vdSvg("line", { x1: x - 8, y1: y + 5, x2: x + 8, y2: y + 5 }));
+    g.appendChild(vdSvg("line", { x1: x - 4, y1: y + 10, x2: x + 4, y2: y + 10 }));
+    return g;
+  }
+  /* o = { vin, r1, r2, rl, vUn, vLd, iDiv, iLoad }: every number is computed by
+     the existing vd* sim functions at the call site; this draws only. */
+  function vdSchemSVG(o) {
+    var loaded = o.rl > 0;
+    var W = loaded ? 360 : 300, H = 210;
+    var svg = vdSvg("svg", { viewBox: "0 0 " + W + " " + H, role: "img",
+      "aria-label": "Voltage divider schematic" });
+    var x0 = 84;
+    svg.appendChild(vdSvgT(20, 16, "VIN = " + vdFmtV(o.vin) + " V", "start", VD_INK, 12));
+    svg.appendChild(vdSvg("line", { x1: 20, y1: 26, x2: loaded ? 196 : x0, y2: 26,
+      stroke: VD_INK, "stroke-width": 2 }));
+    svg.appendChild(vdSvg("line", { x1: x0, y1: 26, x2: x0, y2: 44, stroke: VD_INK, "stroke-width": 2 }));
+    svg.appendChild(vdZig(x0, 44, 84));
+    svg.appendChild(vdSvgT(x0 + 16, 68, "R1 " + vdFmtR(o.r1), "start", VD_INK));
+    svg.appendChild(vdSvg("line", { x1: x0, y1: 84, x2: x0, y2: 96, stroke: VD_INK, "stroke-width": 2 }));
+    svg.appendChild(vdSvg("circle", { cx: x0, cy: 100, r: 3.5, fill: VD_INK }));
+    svg.appendChild(vdSvgT(x0 + 16, 96, "VTAP = " + vdFmtV(o.vLd) + " V", "start", VD_INK, 12));
+    if (loaded) svg.appendChild(vdSvgT(x0 + 16, 110, "open-circuit " + vdFmtV(o.vUn) + " V",
+      "start", VD_DIM, 10));
+    svg.appendChild(vdZig(x0, 116, 156));
+    svg.appendChild(vdSvgT(x0 + 16, 140, "R2 " + vdFmtR(o.r2), "start", VD_INK));
+    svg.appendChild(vdSvg("line", { x1: x0, y1: 156, x2: x0, y2: 170, stroke: VD_INK, "stroke-width": 2 }));
+    svg.appendChild(vdGnd(x0, 170));
+    svg.appendChild(vdSvg("line", { x1: 48, y1: 46, x2: 48, y2: 150, stroke: VD_DIM, "stroke-width": 1.5 }));
+    svg.appendChild(vdSvg("path", { d: "M48 150 l-5 -10 h10 z", fill: VD_DIM }));
+    svg.appendChild(vdSvgT(40, 166, "IDIV " + vdFmtA(o.iDiv), "start", VD_DIM, 10));
+    if (loaded) {
+      var x1 = 176;
+      svg.appendChild(vdSvg("line", { x1: x0, y1: 100, x2: x1, y2: 100, stroke: VD_INK, "stroke-width": 2 }));
+      svg.appendChild(vdZig(x1, 116, 156));
+      svg.appendChild(vdSvgT(x1 + 16, 140, "RL " + vdFmtR(o.rl), "start", VD_INK));
+      svg.appendChild(vdSvg("line", { x1: x1, y1: 156, x2: x1, y2: 170, stroke: VD_INK, "stroke-width": 2 }));
+      svg.appendChild(vdSvg("line", { x1: x1, y1: 170, x2: x0, y2: 170, stroke: VD_INK, "stroke-width": 2 }));
+      svg.appendChild(vdSvg("line", { x1: 214, y1: 104, x2: 214, y2: 150, stroke: VD_DIM, "stroke-width": 1.5 }));
+      svg.appendChild(vdSvg("path", { d: "M214 150 l-5 -10 h10 z", fill: VD_DIM }));
+      svg.appendChild(vdSvgT(206, 166, "ILOAD " + vdFmtA(o.iLoad), "start", VD_DIM, 10));
+      var x2 = 292;
+      svg.appendChild(vdSvgT(x2 - 34, 16, "equivalent", "start", VD_DIM, 10));
+      svg.appendChild(vdSvg("line", { x1: x2 - 40, y1: 26, x2: x2 + 40, y2: 26,
+        stroke: VD_INK, "stroke-width": 2 }));
+      svg.appendChild(vdSvg("line", { x1: x2, y1: 26, x2: x2, y2: 44, stroke: VD_INK, "stroke-width": 2 }));
+      svg.appendChild(vdZig(x2, 44, 84));
+      svg.appendChild(vdSvgT(x2 + 16, 68, "R1", "start", VD_INK));
+      svg.appendChild(vdSvg("line", { x1: x2, y1: 84, x2: x2, y2: 96, stroke: VD_INK, "stroke-width": 2 }));
+      svg.appendChild(vdSvg("circle", { cx: x2, cy: 100, r: 3.5, fill: VD_INK }));
+      svg.appendChild(vdZig(x2, 116, 156));
+      svg.appendChild(vdSvgT(x2 + 16, 140, "R2||RL", "start", VD_INK));
+      svg.appendChild(vdSvgT(x2 + 16, 154, vdFmtR(vdPar(o.r2, o.rl)), "start", VD_DIM, 10));
+      svg.appendChild(vdSvg("line", { x1: x2, y1: 156, x2: x2, y2: 170, stroke: VD_INK, "stroke-width": 2 }));
+      svg.appendChild(vdGnd(x2, 170));
+    }
+    return svg;
+  }
+  function vdSchem(id) {
+    var root = vdEl("div", "vd-schem");
+    root.appendChild(vdEl("div", "vd-lab", "DIVIDER SCHEMATIC"));
+    var stage = vdEl("div", "");
+    root.appendChild(stage);
+    var cap = vdEl("div", "vd-scap");
+    root.appendChild(cap);
+    function show(o) {
+      stage.innerHTML = "";
+      stage.appendChild(vdSchemSVG(o));
+      cap.textContent = "Tap " + vdFmtV(o.vLd) + " V" +
+        (o.rl > 0 ? " with RL fitted (open-circuit " + vdFmtV(o.vUn) + " V)" : " unloaded") +
+        ". Divider current " + vdFmtA(o.iDiv) +
+        (o.rl > 0 ? ", load current " + vdFmtA(o.iLoad) + "." : ".");
     }
     return { root: root, show: show };
   }
@@ -34918,7 +35203,8 @@ if (typeof module !== "undefined" && module.exports) {
     c.r.textContent = (ratio === Infinity ? "no load" : (Math.round(ratio * 10) / 10) + "x : " + h.t);
     c.r.className = "v" + (h.c === "ok" ? "" : " hot");
     c.e.textContent = s.rl == null ? "none" : vdFmtA(e);
-    vdEls.exMeter.show(l, s.vin);
+    vdEls.exMeter.show({ vin: s.vin, r1: s.r1, r2: s.r2, rl: s.rl || 0,
+      vUn: u, vLd: l, iDiv: i, iLoad: e });
     vdEls.exLab.textContent = "VIN " + vdFmtV(s.vin) + " V : R1 " + vdFmtR(s.r1) + " : R2 " + vdFmtR(s.r2) +
       " : EAR " + (s.rl == null ? "DISCONNECTED" : vdFmtR(s.rl).trim() + " CONNECTED");
   }
@@ -35009,7 +35295,7 @@ if (typeof module !== "undefined" && module.exports) {
     doCard.appendChild(vdEl("p", "why",
       "One tap. The 10 k ear connects to the tap of the 5 V / 10 k / 20 k divider and the meter tells you " +
       "what the arithmetic already said. Everything in this room starts from this moment: the same resistors, a different tap."));
-    var doMeter = vdMeter("vdDo");
+    var doMeter = vdSchem("vdDo");
     doCard.appendChild(doMeter.root);
     var doRow = vdEl("div", "vd-row");
     var drinkBtn = vdEl("button", "vd-btn solid", "LET THE EAR DRINK");
@@ -35023,7 +35309,11 @@ if (typeof module !== "undefined" && module.exports) {
       var v = earOn
         ? vdTapLoaded(VD_T1.vin, VD_T1.r1, VD_T1.r2, VD_T2.rl)
         : vdTapUnloaded(VD_T1.vin, VD_T1.r1, VD_T1.r2);
-      doMeter.show(v, VD_T1.vin);
+      doMeter.show({ vin: VD_T1.vin, r1: VD_T1.r1, r2: VD_T1.r2, rl: earOn ? VD_T2.rl : 0,
+        vUn: vdTapUnloaded(VD_T1.vin, VD_T1.r1, VD_T1.r2),
+        vLd: v,
+        iDiv: vdDivCurrent(VD_T1.vin, VD_T1.r1, VD_T1.r2),
+        iLoad: earOn ? vdLoadCurrent(VD_T1.vin, VD_T1.r1, VD_T1.r2, VD_T2.rl) : 0 });
       vdPop(doCard);
     }
     vdDoShow();
@@ -35114,7 +35404,7 @@ if (typeof module !== "undefined" && module.exports) {
 
     var exLab = vdEl("div", "vd-lab", "");
     exCard.appendChild(exLab);
-    var exMeter = vdMeter("vdEx");
+    var exMeter = vdSchem("vdEx");
     exCard.appendChild(exMeter.root);
     var exg = vdStatGrid();
     exCard.appendChild(exg.grid);
@@ -35133,7 +35423,7 @@ if (typeof module !== "undefined" && module.exports) {
     c1.appendChild(vdEl("p", "why",
       "5 V rail, R1 10 k, R2 20 k, nothing drinking. Write down the tap voltage in volts, commit it, " +
       "then reveal the meter. Within 0.06 V counts."));
-    var m1 = vdMeter("vdM1"); c1.appendChild(m1.root);
+    var m1 = vdSchem("vdM1"); c1.appendChild(m1.root);
     var r1 = vdEl("div", "vd-row");
     r1.appendChild(vdEl("span", "vd-lab", "YOUR CALL (V)"));
     var in1 = vdEl("input", "vd-in"); in1.type = "text"; in1.inputMode = "decimal";
@@ -35155,7 +35445,11 @@ if (typeof module !== "undefined" && module.exports) {
     });
     reveal1.addEventListener("click", function () {
       var chk = vdCheckT12(in1.value, VD_T1.vin, VD_T1.r1, VD_T1.r2, VD_T1.rl);
-      m1.show(chk.v, VD_T1.vin);
+      m1.show({ vin: VD_T1.vin, r1: VD_T1.r1, r2: VD_T1.r2, rl: VD_T1.rl,
+        vUn: vdTapUnloaded(VD_T1.vin, VD_T1.r1, VD_T1.r2),
+        vLd: chk.v,
+        iDiv: vdDivCurrent(VD_T1.vin, VD_T1.r1, VD_T1.r2),
+        iLoad: vdLoadCurrent(VD_T1.vin, VD_T1.r1, VD_T1.r2, VD_T1.rl) });
       if (chk.ok) {
         t1.committed = true; t1.pred = Number(in1.value);
         vdLog("trial 1: " + vdFmtV(t1.pred) + " V vs " + vdFmtV(chk.v) +
@@ -35176,7 +35470,7 @@ if (typeof module !== "undefined" && module.exports) {
     c2.appendChild(vdEl("p", "why",
       "Same divider, but the 10 k ear connects and drinks. Call the loaded tap in volts BEFORE you connect it, " +
       "commit, then connect and read the meter. Within 0.06 V counts."));
-    var m2 = vdMeter("vdM2"); c2.appendChild(m2.root);
+    var m2 = vdSchem("vdM2"); c2.appendChild(m2.root);
     var r2 = vdEl("div", "vd-row");
     r2.appendChild(vdEl("span", "vd-lab", "YOUR CALL (V)"));
     var in2 = vdEl("input", "vd-in"); in2.type = "text"; in2.inputMode = "decimal";
@@ -35198,7 +35492,11 @@ if (typeof module !== "undefined" && module.exports) {
     });
     connect2.addEventListener("click", function () {
       var chk = vdCheckT12(in2.value, VD_T2.vin, VD_T2.r1, VD_T2.r2, VD_T2.rl);
-      m2.show(chk.v, VD_T2.vin);
+      m2.show({ vin: VD_T2.vin, r1: VD_T2.r1, r2: VD_T2.r2, rl: VD_T2.rl,
+        vUn: vdTapUnloaded(VD_T2.vin, VD_T2.r1, VD_T2.r2),
+        vLd: chk.v,
+        iDiv: vdDivCurrent(VD_T2.vin, VD_T2.r1, VD_T2.r2),
+        iLoad: vdLoadCurrent(VD_T2.vin, VD_T2.r1, VD_T2.r2, VD_T2.rl) });
       if (chk.ok) {
         t2.committed = true; t2.pred = Number(in2.value);
         vdLog("trial 2: " + vdFmtV(t2.pred) + " V vs " + vdFmtV(chk.v) +
@@ -35219,7 +35517,7 @@ if (typeof module !== "undefined" && module.exports) {
     c3.appendChild(vdEl("p", "why",
       "A 12 V brick, R1 bolted at 1 k, a 10 k ear. Dial R2 so the LOADED tap lands between 3.0 V and 3.6 V " +
       "AND the divider burns at least ten times what the ear sips. Then certify the size."));
-    var m3 = vdMeter("vdM3"); c3.appendChild(m3.root);
+    var m3 = vdSchem("vdM3"); c3.appendChild(m3.root);
     var r3 = vdEl("div", "vd-row");
     r3.appendChild(vdEl("span", "vd-lab", "R2"));
     var rng3 = document.createElement("input");
@@ -35247,7 +35545,11 @@ if (typeof module !== "undefined" && module.exports) {
       var r2n = Number(rng3.value);
       r3val.textContent = r2n + " ";
       var chk = vdCheckT3(r2n);
-      m3.show(chk.v, VD_T3.vin);
+      m3.show({ vin: VD_T3.vin, r1: VD_T3.r1, r2: r2n, rl: VD_T3.rl,
+        vUn: vdTapUnloaded(VD_T3.vin, VD_T3.r1, r2n),
+        vLd: chk.v,
+        iDiv: vdDivCurrent(VD_T3.vin, VD_T3.r1, r2n),
+        iLoad: vdLoadCurrent(VD_T3.vin, VD_T3.r1, r2n, VD_T3.rl) });
       s3v.textContent = vdFmtV(chk.v) + " V" + (chk.vOk ? "" : " (outside 3.0-3.6)");
       s3v.className = "v" + (chk.vOk ? "" : " hot");
       s3r.textContent = (Math.round(chk.ratio * 10) / 10) + "x" + (chk.rOk ? "" : " (want 10x)");
@@ -35399,13 +35701,10 @@ if (typeof module !== "undefined" && module.exports) {
     ".pu-log .ok{color:var(--mint)}.pu-log .bad{color:var(--ember)}.pu-log .warn{color:var(--amber)}.pu-log .dim{color:var(--dim)}",
     ".pu-pop{animation:pupop .2s ease-out}",
     "@keyframes pupop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
-    ".pu-meter{border:1px solid var(--line,var(--line));border-radius:8px;background:var(--panel);padding:14px;margin:10px 0}",
-    ".pu-mbar{height:22px;border:1px solid var(--line,var(--line));border-radius:4px;position:relative;overflow:hidden;background:var(--panel)}",
-    ".pu-mfill{position:absolute;left:0;top:0;bottom:0;background:var(--ember,var(--ember));width:0%}",
-    ".pu-mnum{font-size:26px;color:var(--paper,var(--paper));margin:8px 0 0}",
-    ".pu-mnum small{font-size:12px;color:var(--dim)}",
-    ".pu-mstate{font-size:12px;letter-spacing:.18em;margin-top:6px}",
-    ".pu-mstate.high{color:var(--mint)}.pu-mstate.low{color:var(--ember)}.pu-mstate.undef{color:var(--amber)}",
+    ".pu-schem{margin:10px 0}",
+    ".pu-schem svg{width:100%;height:auto;display:block}",
+    ".pu-schem text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}",
+    ".pu-scap{font-size:11px;color:var(--dim);margin:6px 0 0;line-height:1.6}",
     ".pu-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:10px 0}",
     ".pu-stat{border:1px solid var(--line,var(--line));border-radius:6px;padding:10px;background:var(--panel)}",
     ".pu-stat .k{font-size:10px;letter-spacing:.14em;color:var(--dim)}",
@@ -35492,27 +35791,107 @@ if (typeof module !== "undefined" && module.exports) {
     "<span class='k'> through the pressed button. Trial 3 makes you pick the middle ground.</span>"
   ];
 
-  /* ---------- meter widget: a pin voltmeter with a state label ---------- */
-  function puMeter(id) {
-    var root = puEl("div", "pu-meter");
-    var bar = puEl("div", "pu-mbar");
-    var fill = puEl("div", "pu-mfill");
-    bar.appendChild(fill);
-    var num = puEl("div", "pu-mnum");
-    var st = puEl("div", "pu-mstate", "");
-    root.appendChild(puEl("div", "pu-lab", "PIN VOLTMETER"));
-    root.appendChild(bar);
-    root.appendChild(num);
-    root.appendChild(st);
-    function show(v, s) {
-      var frac = Math.max(0, Math.min(1, v / PU_VDD));
-      fill.style.width = (frac * 100).toFixed(1) + "%";
-      num.innerHTML = "";
-      num.appendChild(document.createTextNode(puFmtV(v) + " V "));
-      var sm = puEl("small", "", "of " + puFmtV(PU_VDD) + " V rail");
-      num.appendChild(sm);
-      st.textContent = "READS " + s;
-      st.className = "pu-mstate " + (s === "HIGH" ? "high" : (s === "LOW" ? "low" : "undef"));
+  /* ---------- pull-up schematic (view-only): VDD, resistor, pin, switch to ground ---------- */
+  var PU_INK = "#c9cdd3", PU_DIM = "#868e98";
+  function puSvg(tag, attrs) {
+    var e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+  function puSvgT(x, y, s, anchor, fill, size) {
+    var t = puSvg("text", { x: x, y: y, "text-anchor": anchor || "start",
+      "font-size": size || 11, fill: fill || PU_INK });
+    t.textContent = s;
+    return t;
+  }
+  function puZig(x, y0, y1) {           /* vertical resistor zigzag, 6 peaks */
+    var d = "M" + x + " " + y0, i, yy;
+    for (i = 0; i < 6; i++) {
+      yy = y0 + (y1 - y0) * (i + 0.5) / 6;
+      d += "L" + (x + (i % 2 === 0 ? 10 : -10)) + " " + yy;
+      yy = y0 + (y1 - y0) * (i + 1) / 6;
+      d += "L" + x + " " + yy;
+    }
+    return puSvg("path", { d: d, fill: "none", stroke: PU_INK, "stroke-width": 2 });
+  }
+  function puGnd(x, y) {
+    var g = puSvg("g", { stroke: PU_INK, "stroke-width": 2 });
+    g.appendChild(puSvg("line", { x1: x - 12, y1: y, x2: x + 12, y2: y }));
+    g.appendChild(puSvg("line", { x1: x - 8, y1: y + 5, x2: x + 8, y2: y + 5 }));
+    g.appendChild(puSvg("line", { x1: x - 4, y1: y + 10, x2: x + 4, y2: y + 10 }));
+    return g;
+  }
+  /* o = { v, s, r, rLabel }: v from puPin/puFloatSample, s from puReadAs,
+     r the pull-up ohms (0 = floating). Draws only. */
+  function puSchemSVG(o) {
+    var W = 360, H = 300;
+    var svg = puSvg("svg", { viewBox: "0 0 " + W + " " + H, role: "img",
+      "aria-label": "Pull-up resistor schematic with logic threshold bands" });
+    var x0 = 120;
+    svg.appendChild(puSvgT(20, 16, "VDD = " + puFmtV(PU_VDD) + " V", "start", PU_INK, 12));
+    svg.appendChild(puSvg("line", { x1: 20, y1: 26, x2: 220, y2: 26, stroke: PU_INK, "stroke-width": 2 }));
+    svg.appendChild(puSvg("line", { x1: x0, y1: 26, x2: x0, y2: 42, stroke: PU_INK, "stroke-width": 2 }));
+    if (o.r > 0) {
+      svg.appendChild(puZig(x0, 42, 82));
+      svg.appendChild(puSvgT(x0 + 16, 66, "R " + puFmtR(o.r), "start", PU_INK));
+    } else {
+      svg.appendChild(puSvg("line", { x1: x0, y1: 42, x2: x0, y2: 82, stroke: PU_DIM,
+        "stroke-width": 1.5, "stroke-dasharray": "5 4" }));
+      svg.appendChild(puSvgT(x0 + 16, 66, "no pull-up", "start", PU_DIM));
+    }
+    svg.appendChild(puSvg("line", { x1: x0, y1: 82, x2: x0, y2: 94, stroke: PU_INK, "stroke-width": 2 }));
+    svg.appendChild(puSvg("circle", { cx: x0, cy: 98, r: 3.5, fill: PU_INK }));
+    svg.appendChild(puSvgT(x0 + 14, 94, "PIN " + puFmtV(o.v) + " V", "start", PU_INK, 12));
+    svg.appendChild(puSvgT(x0 + 14, 110, "READS " + o.s, "start", PU_INK, 11));
+    /* MCU pin block */
+    svg.appendChild(puSvg("rect", { x: 218, y: 84, width: 104, height: 28, fill: "none",
+      stroke: PU_INK, "stroke-width": 1.5 }));
+    svg.appendChild(puSvgT(270, 102, "MCU", "middle", PU_INK, 11));
+    svg.appendChild(puSvg("line", { x1: x0, y1: 98, x2: 218, y2: 98, stroke: PU_INK, "stroke-width": 2 }));
+    /* switch to ground, drawn open (idle reading); pressing it pulls the pin low */
+    svg.appendChild(puSvg("line", { x1: x0, y1: 102, x2: x0, y2: 128, stroke: PU_INK, "stroke-width": 2 }));
+    svg.appendChild(puSvg("circle", { cx: x0, cy: 128, r: 2.5, fill: PU_INK }));
+    svg.appendChild(puSvg("line", { x1: x0, y1: 128, x2: x0 + 34, y2: 112, stroke: PU_INK, "stroke-width": 2 }));
+    svg.appendChild(puSvg("circle", { cx: x0 + 38, cy: 112, r: 2.5, fill: PU_INK }));
+    svg.appendChild(puSvg("line", { x1: x0 + 38, y1: 112, x2: x0 + 38, y2: 140, stroke: PU_INK, "stroke-width": 2 }));
+    svg.appendChild(puSvg("line", { x1: x0 + 38, y1: 140, x2: x0 + 38, y2: 152, stroke: PU_INK, "stroke-width": 2 }));
+    svg.appendChild(puGnd(x0 + 38, 152));
+    svg.appendChild(puSvgT(x0 + 48, 140, "press: pin to GND", "start", PU_DIM, 10));
+    /* threshold bands: VIL 0..0.8 LOW, 0.8..2.0 undefined, 2.0..3.3 HIGH */
+    var ax0 = 30, ax1 = 330, ay = 226, ah = 26;
+    function vx(v) { return ax0 + (ax1 - ax0) * v / PU_VDD; }
+    svg.appendChild(puSvgT(ax0, ay - 8, "pin voltage against the logic thresholds", "start", PU_DIM, 10));
+    svg.appendChild(puSvg("rect", { x: vx(0), y: ay, width: vx(PU_VIL) - vx(0), height: ah,
+      fill: "none", stroke: PU_INK, "stroke-width": 1.5 }));
+    svg.appendChild(puSvg("rect", { x: vx(PU_VIL), y: ay, width: vx(PU_VIH) - vx(PU_VIL), height: ah,
+      fill: "none", stroke: PU_DIM, "stroke-width": 1, "stroke-dasharray": "4 3" }));
+    svg.appendChild(puSvg("rect", { x: vx(PU_VIH), y: ay, width: vx(PU_VDD) - vx(PU_VIH), height: ah,
+      fill: "none", stroke: PU_INK, "stroke-width": 1.5 }));
+    svg.appendChild(puSvgT(vx(PU_VIL / 2), ay + 17, "LOW", "middle", PU_INK, 10));
+    svg.appendChild(puSvgT(vx((PU_VIL + PU_VIH) / 2), ay + 17, "?", "middle", PU_DIM, 10));
+    svg.appendChild(puSvgT(vx((PU_VIH + PU_VDD) / 2), ay + 17, "HIGH", "middle", PU_INK, 10));
+    svg.appendChild(puSvgT(vx(0), ay + ah + 14, "0", "middle", PU_DIM, 10));
+    svg.appendChild(puSvgT(vx(PU_VIL), ay + ah + 14, "0.8 VIL", "middle", PU_DIM, 10));
+    svg.appendChild(puSvgT(vx(PU_VIH), ay + ah + 14, "2.0 VIH", "middle", PU_DIM, 10));
+    svg.appendChild(puSvgT(vx(PU_VDD), ay + ah + 14, "3.3", "middle", PU_DIM, 10));
+    var mx = vx(Math.max(0, Math.min(PU_VDD, o.v)));
+    svg.appendChild(puSvg("line", { x1: mx, y1: ay - 4, x2: mx, y2: ay + ah + 4,
+      stroke: "#d8b24a", "stroke-width": 2.5 }));
+    svg.appendChild(puSvgT(mx, ay - 10, puFmtV(o.v) + " V", "middle", "#d8b24a", 10));
+    return svg;
+  }
+  function puSchem(id) {
+    var root = puEl("div", "pu-schem");
+    root.appendChild(puEl("div", "pu-lab", "PULL-UP SCHEMATIC"));
+    var stage = puEl("div", "");
+    root.appendChild(stage);
+    var cap = puEl("div", "pu-scap");
+    root.appendChild(cap);
+    function show(o) {
+      stage.innerHTML = "";
+      stage.appendChild(puSchemSVG(o));
+      cap.textContent = (o.r > 0 ? puFmtR(o.r) + " pull-up" : "Pin floating") +
+        ": " + puFmtV(o.v) + " V on the pin, reads " + o.s + ".";
     }
     return { root: root, show: show };
   }
@@ -35607,7 +35986,7 @@ if (typeof module !== "undefined" && module.exports) {
       "Nothing is connected to this pin, not even the pull-up. Press SAMPLE NOISE and the meter takes one " +
       "ambient reading, the way a real board does between interrupts. Everything in this room starts from this moment: " +
       "a pin with no resistor invents its own truth."));
-    var doMeter = puMeter("puDo");
+    var doMeter = puSchem("puDo");
     doCard.appendChild(doMeter.root);
     var doRow = puEl("div", "pu-row");
     var noiseBtn = puEl("button", "pu-btn", "SAMPLE NOISE");
@@ -35621,7 +36000,7 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(doCard);
     noiseBtn.addEventListener("click", function () {
       var s = puFloatSample();
-      doMeter.show(s.v, s.s);
+      doMeter.show({ v: s.v, s: s.s, r: 0 });
       puLog("floating pin reads " + puFmtV(s.v) + " V, " + s.s + ". No resistor, no promise.", "warn");
       puPop(doCard);
     });
@@ -35635,7 +36014,7 @@ if (typeof module !== "undefined" && module.exports) {
       } else {
         puState.tied = true;
         var v = puPin(10000, 2e-6);
-        doMeter.show(v, puReadAs(v));
+        doMeter.show({ v: v, s: puReadAs(v), r: 10000 });
         tieBtn.textContent = "REMOVE THE PULL-UP";
         tieBtn.setAttribute("aria-pressed", "true");
         noiseBtn.disabled = true;
@@ -35652,7 +36031,7 @@ if (typeof module !== "undefined" && module.exports) {
     c1.appendChild(puEl("p", "why",
       "3.3 V rail, 10 k pull-up, button released, pin leakage 2 uA. Write down the pin voltage in volts, " +
       "commit it, then reveal the meter. Within 0.06 V counts."));
-    var m1 = puMeter("puM1"); c1.appendChild(m1.root);
+    var m1 = puSchem("puM1"); c1.appendChild(m1.root);
     var r1 = puEl("div", "pu-row");
     r1.appendChild(puEl("span", "pu-lab", "YOUR CALL (V)"));
     var in1 = puEl("input", "pu-in"); in1.type = "text"; in1.inputMode = "decimal";
@@ -35674,7 +36053,7 @@ if (typeof module !== "undefined" && module.exports) {
     });
     reveal1.addEventListener("click", function () {
       var chk = puCheckT12(in1.value, PU_T1.r, PU_T1.leak);
-      m1.show(chk.v, puReadAs(chk.v));
+      m1.show({ v: chk.v, s: puReadAs(chk.v), r: PU_T1.r });
       if (chk.ok) {
         t1.committed = true; t1.pred = Number(in1.value);
         puLog("trial 1: " + puFmtV(t1.pred) + " V vs " + puFmtV(chk.v) +
@@ -35695,7 +36074,7 @@ if (typeof module !== "undefined" && module.exports) {
     c2.appendChild(puEl("p", "why",
       "Same 3.3 V rail, same 2 uA of leakage, but a 1 M pull-up. Call the pin voltage in volts BEFORE " +
       "you read it, commit, then reveal. Within 0.06 V counts. Watch what the meter's state label says."));
-    var m2 = puMeter("puM2"); c2.appendChild(m2.root);
+    var m2 = puSchem("puM2"); c2.appendChild(m2.root);
     var r2 = puEl("div", "pu-row");
     r2.appendChild(puEl("span", "pu-lab", "YOUR CALL (V)"));
     var in2 = puEl("input", "pu-in"); in2.type = "text"; in2.inputMode = "decimal";
@@ -35717,7 +36096,7 @@ if (typeof module !== "undefined" && module.exports) {
     });
     reveal2.addEventListener("click", function () {
       var chk = puCheckT12(in2.value, PU_T2.r, PU_T2.leak);
-      m2.show(chk.v, puReadAs(chk.v));
+      m2.show({ v: chk.v, s: puReadAs(chk.v), r: PU_T2.r });
       if (chk.ok) {
         t2.committed = true; t2.pred = Number(in2.value);
         puLog("trial 2: " + puFmtV(t2.pred) + " V vs " + puFmtV(chk.v) +
@@ -35739,7 +36118,7 @@ if (typeof module !== "undefined" && module.exports) {
       "This machine ships on batteries, and the button pulls the pin to ground when pressed. " +
       "Pick a resistor from the drawer that keeps the pressed current at or under 1 mA " +
       "AND the idle pin at or above 2.4 V with 2 uA of leakage. Then certify the size."));
-    var m3 = puMeter("puM3"); c3.appendChild(m3.root);
+    var m3 = puSchem("puM3"); c3.appendChild(m3.root);
     var r3 = puEl("div", "pu-row");
     r3.appendChild(puEl("span", "pu-lab", "RESISTOR"));
     var rng3 = document.createElement("input");
@@ -35768,7 +36147,7 @@ if (typeof module !== "undefined" && module.exports) {
       r3val.textContent = puFmtR(r);
       var chk = puCheckT3(r);
       var st = puReadAs(chk.v);
-      m3.show(chk.v, st);
+      m3.show({ v: chk.v, s: st, r: r });
       s3v.textContent = puFmtV(chk.v) + " V" + (chk.vOk ? "" : " (want >= 2.4)");
       s3v.className = "v" + (chk.vOk ? "" : " hot");
       s3i.textContent = puFmtA(chk.i) + (chk.iOk ? "" : " (want <= 1 mA)");
@@ -35917,10 +36296,10 @@ if (typeof module !== "undefined" && module.exports) {
     ".ldo-btn:disabled{opacity:.35;cursor:default}",
     ".ldo-btn.solid{background:var(--ember,var(--ember));border-color:var(--ember,var(--ember));color:var(--ink)}",
     ".ldo-btn:focus-visible{outline:2px solid var(--ember,var(--ember));outline-offset:2px}",
-    ".ldo-therm{position:relative;height:26px;border:1px solid var(--line,var(--line));margin:12px 0 4px;background:rgba(0,0,0,.35)}",
-    ".ldo-fill{position:absolute;left:0;top:0;bottom:0;width:0%;background:var(--ember,var(--ember));transition:width 200ms linear}",
-    ".ldo-fill.hot{background:var(--amber)}",
-    ".ldo-fill.dead{background:var(--dim)}",
+    ".ldo-plots{margin:10px 0}",
+    ".ldo-plots svg{width:100%;height:auto;display:block;margin:0 0 10px}",
+    ".ldo-plots text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}",
+    ".ldo-pcap{font-size:11px;color:var(--dim);margin:6px 0 0;line-height:1.6}",
     ".ldo-read{font-size:13px;line-height:1.7;min-height:88px}",
     ".ldo-read .big{font-size:26px;font-family:'Space Grotesk',sans-serif}",
     ".ldo-tag{display:inline-block;font-size:11px;letter-spacing:.14em;padding:4px 10px;border:1px solid var(--line,var(--line));margin:2px 6px 2px 0}",
@@ -36004,19 +36383,123 @@ if (typeof module !== "undefined" && module.exports) {
     certified: false
   };
 
+  /* ---------- LDO datasheet plots (view-only): dropout curve, Tj vs load, derating ----------
+     Every curve is drawn from the existing ldoSim model; nothing here computes
+     temperature or verdicts, it only renders ldoSim's answers. */
+  var LDO_INK = "#c9cdd3", LDO_DIM = "#868e98", LDO_REF = "#d8b24a";
+  function ldoSvg(tag, attrs) {
+    var e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+  function ldoSvgT(x, y, s, anchor, fill, size) {
+    var t = ldoSvg("text", { x: x, y: y, "text-anchor": anchor || "start",
+      "font-size": size || 11, fill: fill || LDO_INK });
+    t.textContent = s;
+    return t;
+  }
+  function ldoFrame(title, W, H, x0, x1, y0, y1) {
+    var m = { l: 46, r: 12, t: 24, b: 32 };
+    var svg = ldoSvg("svg", { viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": title });
+    function px(x) { return m.l + (W - m.l - m.r) * (x - x0) / (x1 - x0); }
+    function py(y) { return H - m.b - (H - m.t - m.b) * (y - y0) / (y1 - y0); }
+    svg.appendChild(ldoSvg("line", { x1: m.l, y1: m.t, x2: m.l, y2: H - m.b,
+      stroke: LDO_INK, "stroke-width": 1.5 }));
+    svg.appendChild(ldoSvg("line", { x1: m.l, y1: H - m.b, x2: W - m.r, y2: H - m.b,
+      stroke: LDO_INK, "stroke-width": 1.5 }));
+    svg.appendChild(ldoSvgT(m.l, 15, title, "start", LDO_DIM, 10));
+    return { svg: svg, px: px, py: py };
+  }
+  function ldoPoly(pts, stroke, dash) {
+    var d = "", k;
+    for (k = 0; k < pts.length; k++) d += (k ? "L" : "M") + pts[k][0].toFixed(1) + " " + pts[k][1].toFixed(1);
+    var attrs = { d: d, fill: "none", stroke: stroke, "stroke-width": 2 };
+    if (dash) attrs["stroke-dasharray"] = dash;
+    return ldoSvg("path", attrs);
+  }
+  /* Draws the three plots for one scenario. update(vin, i, pkg, tjNow) redraws
+     the curves and the operating-point markers; tjNow is the animated die
+     temperature and may be omitted. reset() returns the marker to ambient. */
+  function ldoPlots(vin, i, pkg) {
+    var root = ldoEl("div", "ldo-plots");
+    function draw(vin2, i2, pkg2, tjNow) {
+      root.innerHTML = "";
+      var th = LDO_TH[pkg2];
+      var cap = ldoEl("div", "ldo-pcap",
+        pkg2 + ", " + vin2.toFixed(1) + " V in, " + ldoFmtI(i2) + " load. " +
+        "Curves from the same thermal model as the readout below.");
+      /* A: dropout transfer curve */
+      var A = ldoFrame("VOUT vs VIN", 360, 190, 0, 6, 0, 3.6);
+      var pts = [], vx;
+      for (vx = 0; vx <= 6.001; vx += 0.1) pts.push([A.px(vx), A.py(ldoSim(vx, i2, pkg2).vout)]);
+      A.svg.appendChild(ldoPoly(pts, LDO_INK));
+      A.svg.appendChild(ldoSvg("line", { x1: A.px(0), y1: A.py(LDO_VOUT), x2: A.px(6), y2: A.py(LDO_VOUT),
+        stroke: LDO_DIM, "stroke-width": 1, "stroke-dasharray": "5 4" }));
+      A.svg.appendChild(ldoSvgT(A.px(0.2), A.py(LDO_VOUT) - 6, "3.3 V regulated", "start", LDO_DIM, 10));
+      A.svg.appendChild(ldoSvgT(A.px(LDO_VOUT + LDO_DROP) + 4, A.py(0.5), "dropout knee " +
+        (LDO_VOUT + LDO_DROP).toFixed(1) + " V", "start", LDO_DIM, 10));
+      A.svg.appendChild(ldoSvgT(A.px(0), A.py(-0.28), "0", "middle", LDO_DIM, 10));
+      A.svg.appendChild(ldoSvgT(A.px(6), A.py(-0.28), "Vin (V)", "end", LDO_DIM, 10));
+      var opA = ldoSim(vin2, i2, pkg2).vout;
+      A.svg.appendChild(ldoSvg("circle", { cx: A.px(vin2), cy: A.py(opA), r: 4.5, fill: LDO_REF }));
+      A.svg.appendChild(ldoSvgT(A.px(vin2), A.py(opA) - 10, ldoFmtV(opA) + " V", "middle", LDO_REF, 10));
+      root.appendChild(A.svg);
+      /* B: junction temperature vs load current */
+      var B = ldoFrame("DIE TEMPERATURE vs LOAD CURRENT", 360, 190, 0, 1, 0, 225);
+      pts = [];
+      var ix;
+      for (ix = 0; ix <= 1.001; ix += 0.02) pts.push([B.px(ix), B.py(Math.min(225, ldoSim(vin2, ix, pkg2).tj))]);
+      B.svg.appendChild(ldoPoly(pts, LDO_INK));
+      B.svg.appendChild(ldoSvg("line", { x1: B.px(0), y1: B.py(LDO_TMAX), x2: B.px(1), y2: B.py(LDO_TMAX),
+        stroke: LDO_DIM, "stroke-width": 1, "stroke-dasharray": "5 4" }));
+      B.svg.appendChild(ldoSvgT(B.px(0.98), B.py(LDO_TMAX) - 5, "125 C max", "end", LDO_DIM, 10));
+      B.svg.appendChild(ldoSvg("line", { x1: B.px(0), y1: B.py(LDO_TSHUT), x2: B.px(1), y2: B.py(LDO_TSHUT),
+        stroke: LDO_DIM, "stroke-width": 1, "stroke-dasharray": "5 4" }));
+      B.svg.appendChild(ldoSvgT(B.px(0.98), B.py(LDO_TSHUT) - 5, "150 C shutdown", "end", LDO_DIM, 10));
+      B.svg.appendChild(ldoSvgT(B.px(1), B.py(-14), "Iout (A)", "end", LDO_DIM, 10));
+      var tjMark = (tjNow == null) ? LDO_TAMB : tjNow;
+      B.svg.appendChild(ldoSvg("circle", { cx: B.px(i2), cy: B.py(Math.min(225, tjMark)), r: 4.5, fill: LDO_REF }));
+      B.svg.appendChild(ldoSvgT(B.px(i2), B.py(Math.min(225, tjMark)) - 10,
+        ldoFmtT(tjMark) + " C", "middle", LDO_REF, 10));
+      root.appendChild(B.svg);
+      /* C: thermal derating, max current vs ambient */
+      var C = ldoFrame("THERMAL DERATING: MAX CURRENT vs AMBIENT", 360, 190, 25, 125, 0, 1.5);
+      var vout = ldoSim(vin2, i2, pkg2).vout;
+      var pdrop = Math.max(0.05, vin2 - vout);
+      pts = [];
+      var ta;
+      for (ta = 25; ta <= 125; ta += 2) {
+        var imax = Math.max(0, (LDO_TSHUT - ta) / (th * pdrop));
+        pts.push([C.px(ta), C.py(Math.min(1.5, imax))]);
+      }
+      C.svg.appendChild(ldoPoly(pts, LDO_INK));
+      C.svg.appendChild(ldoSvgT(C.px(27), C.py(1.32), "shutdown at 150 C die", "start", LDO_DIM, 10));
+      C.svg.appendChild(ldoSvgT(C.px(125), C.py(-0.1), "Tamb (C)", "end", LDO_DIM, 10));
+      C.svg.appendChild(ldoSvgT(C.px(25), C.py(-0.1), "25", "middle", LDO_DIM, 10));
+      C.svg.appendChild(ldoSvg("circle", { cx: C.px(25), cy: C.py(Math.min(1.5, i2)), r: 4.5, fill: LDO_REF }));
+      C.svg.appendChild(ldoSvgT(C.px(25) + 8, C.py(Math.min(1.5, i2)) - 8,
+        ldoFmtI(i2) + " now", "start", LDO_REF, 10));
+      root.appendChild(C.svg);
+      root.appendChild(cap);
+    }
+    function update(vin2, i2, pkg2, tjNow) { draw(vin2, i2, pkg2, tjNow); }
+    function reset() { draw(vin, i, pkg, LDO_TAMB); }
+    root._ldoUpdate = update;
+    root._ldoReset = reset;
+    draw(vin, i, pkg, LDO_TAMB);
+    return { root: root, update: update, reset: reset };
+  }
+
   /* ---------- thermal animation: exponential approach, same verdict math ---------- */
   function ldoAnimate(card, vin, i, pkg, done) {
     var target = ldoSim(vin, i, pkg).tj;
-    var bar = card.querySelector(".ldo-fill");
+    var plots = card.querySelector(".ldo-plots");
     var read = card.querySelector(".ldo-read");
     var tj = LDO_TAMB, simT = 0, shut = false, smoked = false;
-    var span = Math.max(1, target - LDO_TAMB);
     var tick = setInterval(function () {
       simT += 1.2;                       /* simulated seconds per tick */
       tj = LDO_TAMB + (target - LDO_TAMB) * (1 - Math.exp(-simT / 12));
-      var frac = Math.min(1, Math.max(0, (tj - LDO_TAMB) / span));
-      bar.style.width = (frac * 100).toFixed(1) + "%";
-      bar.className = "ldo-fill" + (tj >= LDO_TSMOKE ? " dead" : (tj >= LDO_TSHUT ? " hot" : ""));
+      if (plots && plots._ldoUpdate) plots._ldoUpdate(vin, i, pkg, tj);
       var fate = ldoFate(tj);
       var tag = fate === "alive" ? "<span class=\"ldo-tag ok\">REGULATING</span>" :
         (fate === "shutdown" ? "<span class=\"ldo-tag warn\">THERMAL SHUTDOWN</span>" :
@@ -36120,7 +36603,7 @@ if (typeof module !== "undefined" && module.exports) {
     doCard.appendChild(ldoEl("h3", null, "DO FIRST: BURN ONE"));
     doCard.appendChild(ldoEl("p", "why",
       "A 5 V rail feeds a 3.3 V regulator in a SOT-23 package, and you own the load. " +
-      "Push the slider and press RUN THE LOAD. The bar is the die temperature climbing toward its fate. " +
+      "Push the slider and press RUN THE LOAD. The marker is the die temperature climbing toward its fate on the middle plot. " +
       "Nothing here is graded; this is the moment the mechanism becomes yours."));
     var doRow = ldoEl("div", "ldo-row");
     var slider = ldoEl("input", "ldo-range");
@@ -36132,9 +36615,7 @@ if (typeof module !== "undefined" && module.exports) {
     sliderVal.id = "ldoSliderVal";
     doRow.appendChild(sliderVal);
     doCard.appendChild(doRow);
-    var therm = ldoEl("div", "ldo-therm");
-    therm.appendChild(ldoEl("div", "ldo-fill"));
-    doCard.appendChild(therm);
+    doCard.appendChild(ldoPlots(5.0, Number(slider.value) / 1000, "SOT-23").root);
     var doRead = ldoEl("div", "ldo-read");
     doRead.id = "ldoFreeRead";
     doRead.innerHTML = "<span class=\"big\">25 C</span> die<br><span class=\"ldo-tag ok\">REGULATING</span>";
@@ -36150,6 +36631,8 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(doCard);
     slider.addEventListener("input", function () {
       sliderVal.textContent = slider.value + " mA";
+      var plots = doCard.querySelector(".ldo-plots");
+      if (plots && plots._ldoUpdate) plots._ldoUpdate(5.0, Number(slider.value) / 1000, "SOT-23", LDO_TAMB);
     });
     runFree.addEventListener("click", function () {
       if (ldoState.free.running || ldoState.free.dead) return;
@@ -36170,8 +36653,8 @@ if (typeof module !== "undefined" && module.exports) {
       ldoState.free.dead = false;
       ldoState.free.tj = LDO_TAMB;
       runFree.disabled = false;
-      var bar = doCard.querySelector(".ldo-fill");
-      bar.style.width = "0%"; bar.className = "ldo-fill";
+      var plots = doCard.querySelector(".ldo-plots");
+      if (plots && plots._ldoReset) plots._ldoReset();
       doRead.innerHTML = "<span class=\"big\">25 C</span> die<br><span class=\"ldo-tag ok\">REGULATING</span>";
       ldoLog("die swapped for a fresh part. The last one is a paperweight.", "dim");
     });
@@ -36194,9 +36677,7 @@ if (typeof module !== "undefined" && module.exports) {
     reveal1.type = "button"; reveal1.id = "ldoReveal1"; reveal1.disabled = true;
     t1Row.appendChild(in1); t1Row.appendChild(commit1); t1Row.appendChild(reveal1);
     t1.appendChild(t1Row);
-    var t1Therm = ldoEl("div", "ldo-therm");
-    t1Therm.appendChild(ldoEl("div", "ldo-fill"));
-    t1.appendChild(t1Therm);
+    t1.appendChild(ldoPlots(LDO_T1.vin, LDO_T1.i, LDO_T1.pkg).root);
     var t1Read = ldoEl("div", "ldo-read");
     t1Read.id = "ldoT1Read";
     t1Read.innerHTML = "<span class=\"big\">? C</span> die<br><span class=\"ldo-tag\">UNRUN</span>";
@@ -36263,9 +36744,7 @@ if (typeof module !== "undefined" && module.exports) {
     reset2.type = "button"; reset2.id = "ldoReset2"; reset2.disabled = true;
     t2BtnRow.appendChild(commit2); t2BtnRow.appendChild(reset2);
     t2.appendChild(t2BtnRow);
-    var t2Therm = ldoEl("div", "ldo-therm");
-    t2Therm.appendChild(ldoEl("div", "ldo-fill"));
-    t2.appendChild(t2Therm);
+    t2.appendChild(ldoPlots(4.2, LDO_T2.i, LDO_T2.pkg).root);
     var t2Read = ldoEl("div", "ldo-read");
     t2Read.id = "ldoT2Read";
     t2Read.innerHTML = "<span class=\"big\">? C</span> die<br><span class=\"ldo-tag\">UNRUN</span>";
@@ -36311,8 +36790,8 @@ if (typeof module !== "undefined" && module.exports) {
       delete ldoState.trials[1].vin;
       commit2.disabled = false; reset2.disabled = true;
       for (var k in t2Sel) t2Sel[k].checked = false;
-      var bar = t2.querySelector(".ldo-fill");
-      bar.style.width = "0%"; bar.className = "ldo-fill";
+      var plots = t2.querySelector(".ldo-plots");
+      if (plots && plots._ldoReset) plots._ldoReset();
       t2Read.innerHTML = "<span class=\"big\">? C</span> die<br><span class=\"ldo-tag\">UNRUN</span>";
       v2.textContent = ""; v2.className = "ldo-verdict";
       ldoMaybeCertify();
@@ -37770,7 +38249,13 @@ if (typeof module !== "undefined" && module.exports) {
     "coil hurls its stored energy as a voltage spike, hundreds of volts, that punches straight through the transistor. ",
     "Symptom: it worked once, then never again. The fix is a diode across the coil, giving the spike a safe loop.</li>",
     "<li><b>FLOATING BASE:</b> an unconnected base is an antenna and switches on noise. If the driver can go ",
-    "high-impedance, park the base with a 10 k resistor to ground so off means off.</li></ul></div>"
+    "high-impedance, park the base with a 10 k resistor to ground so off means off.</li></ul></div>",
+    "<div class=\"tn-card\"><h3>THE CANONICAL VIEWS</h3>",
+    "<p class=\"why\">Two standard pictures carry this room. The common-emitter low-side switch: GPIO through Rb ",
+    "into the base, the fan between the 12 V rail and the collector. And the output characteristics: Ic against Vce ",
+    "with the load line drawn from the rail. The load line is the rail talking: Vce = Vcc - Ic x Rc. Where it ",
+    "crosses the curve for your base current, the transistor lives. The do-first card and every trial below draw ",
+    "both, live, from the same solver the verdicts use.</p></div>"
   ].join("");
   var TN_METER_HTML = [
     "<p class=\"why\">METER DISCIPLINE, IN ONE LINE: black probe on ground, red probe on the point named. ",
@@ -37825,7 +38310,10 @@ if (typeof module !== "undefined" && module.exports) {
     ".tn-spec{font-size:13px;line-height:1.7;margin:0 0 8px}",
     ".tn-fan{font-size:12px;letter-spacing:.12em;border:1px solid var(--line,var(--line));padding:10px 14px;margin:10px 0;max-width:280px;text-align:center}",
     ".tn-fan.spin{border-color:var(--ember,var(--ember));color:var(--ember,var(--ember))}",
-    ".tn-smoke{font-size:13px;letter-spacing:.2em;color:var(--ember);margin:8px 0 0;min-height:20px}"
+    ".tn-smoke{font-size:13px;letter-spacing:.2em;color:var(--ember);margin:8px 0 0;min-height:20px}",
+    ".tn-viz{margin:12px 0 4px}",
+    ".tn-viz svg{margin:0 0 12px}",
+    ".tn-viz svg:last-child{margin-bottom:0}"
   ].join("\n");
 
   /* ---------- tiny DOM helpers (page-local, prefixed) ---------- */
@@ -37868,6 +38356,125 @@ if (typeof module !== "undefined" && module.exports) {
     if (tnEls && tnEls.banner) tnEls.banner.style.display = tnAllPassed() ? "block" : "none";
   }
 
+  /* ---------- canonical views: common-emitter schematic, output curves, load line ---------- */
+  function tnTxt(x, y, s, anchor, size, fill) {
+    return '<text x="' + x + '" y="' + y + '" text-anchor="' + (anchor || "start") + '" font-size="' +
+      (size || 11) + '" font-family="\'JetBrains Mono\',monospace" fill="' + (fill || "var(--paper)") + '">' + s + "</text>";
+  }
+  function tnZig(x1, x2, y, peaks) {
+    var d = "M" + x1 + "," + y, i, n = peaks * 2, w = (x2 - x1) / n;
+    for (i = 1; i < n; i++) d += " L" + (x1 + w * i).toFixed(1) + "," + (y + (i % 2 ? -9 : 9));
+    return '<path d="' + d + " L" + x2 + "," + y + '" stroke="var(--paper)" stroke-width="1.5" fill="none"/>';
+  }
+  function tnGround(x, y) {
+    return '<line x1="' + (x - 20) + '" y1="' + y + '" x2="' + (x + 20) + '" y2="' + y +
+      '" stroke="var(--paper)" stroke-width="1.5"/>' +
+      '<line x1="' + (x - 12) + '" y1="' + (y + 6) + '" x2="' + (x + 12) + '" y2="' + (y + 6) +
+      '" stroke="var(--paper)" stroke-width="1.5"/>' +
+      '<line x1="' + (x - 5) + '" y1="' + (y + 12) + '" x2="' + (x + 5) + '" y2="' + (y + 12) +
+      '" stroke="var(--paper)" stroke-width="1.5"/>';
+  }
+  function tnFmtRb(rb) {
+    if (!rb) return "NONE";
+    return rb >= 1000 ? (rb / 1000) + "k" : String(rb);
+  }
+  function tnSchematicSVG(p, rb, r) {
+    var W = 460, H = 330, ink = "var(--paper)", dim = "var(--steel)";
+    var s = '<svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="Common-emitter low-side switch schematic" style="width:100%;height:auto;display:block">';
+    s += tnTxt(20, 22, "COMMON-EMITTER LOW-SIDE SWITCH", "start", 11, dim);
+    s += '<line x1="20" y1="40" x2="440" y2="40" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += tnTxt(28, 34, "+" + p.vcc + " V", "start", 10, dim);
+    s += '<rect x="180" y="48" width="80" height="44" fill="none" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += tnTxt(220, 66, p.load, "middle", 11, ink);
+    s += tnTxt(220, 82, (p.ic * 1000).toFixed(0) + " mA", "middle", 10, dim);
+    s += '<line x1="220" y1="40" x2="220" y2="48" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<line x1="220" y1="92" x2="220" y2="122" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<line x1="220" y1="122" x2="220" y2="142" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<line x1="220" y1="142" x2="220" y2="182" stroke="' + ink + '" stroke-width="3"/>';
+    s += '<line x1="168" y1="162" x2="220" y2="162" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<line x1="220" y1="182" x2="220" y2="222" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<polygon points="220,214 213,202 227,202" fill="' + ink + '"/>';
+    s += tnTxt(196, 138, "C", "middle", 10, dim);
+    s += tnTxt(160, 166, "B", "middle", 10, dim);
+    s += tnTxt(196, 226, "E", "middle", 10, dim);
+    s += '<line x1="220" y1="222" x2="220" y2="252" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += tnGround(220, 252);
+    s += tnZig(70, 168, 162, 4);
+    s += tnTxt(119, 146, "Rb " + tnFmtRb(rb), "middle", 10, dim);
+    s += '<rect x="14" y="142" width="56" height="40" fill="none" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += tnTxt(42, 160, "GPIO", "middle", 10, ink);
+    s += tnTxt(42, 174, "3V3", "middle", 10, dim);
+    s += '<line x1="238" y1="96" x2="238" y2="118" stroke="var(--ice)" stroke-width="1.5"/>';
+    s += '<polygon points="238,122 234,114 242,114" fill="var(--ice)"/>';
+    s += tnTxt(246, 116, "Ic", "start", 10, "var(--ice)");
+    s += '<line x1="258" y1="122" x2="258" y2="222" stroke="' + dim + '" stroke-width="1"/>';
+    s += '<polygon points="258,126 255,132 261,132" fill="' + dim + '"/>';
+    s += '<polygon points="258,218 255,212 261,212" fill="' + dim + '"/>';
+    s += tnTxt(266, 176, "Vce", "start", 10, dim);
+    var vals = r
+      ? "Ib " + r.ibMa.toFixed(1) + " mA \u00B7 Ic " + r.icMa.toFixed(0) + " mA \u00B7 Vce " + r.vce.toFixed(1) + " V \u00B7 " + r.mode
+      : "Ib -- \u00B7 Ic -- \u00B7 Vce -- \u00B7 NO BASE RESISTOR";
+    s += tnTxt(20, 306, vals, "start", 11, r ? "var(--mint)" : dim);
+    return s + "</svg>";
+  }
+  function tnLoadLineSVG(p, r) {
+    var W = 480, H = 300, L = 52, R = 14, T = 16, B = 34;
+    var rc = p.vcc / p.ic, iMax = p.ic * 1000, yMax = iMax * 1.2;
+    function X(v) { return (L + (v / p.vcc) * (W - L - R)).toFixed(1); }
+    function Y(ma) { return (H - B - (ma / yMax) * (H - T - B)).toFixed(1); }
+    var s = '<svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="BJT output characteristics with load line" style="width:100%;height:auto;display:block">';
+    var i, t;
+    [0, p.vcc / 2, p.vcc].forEach(function (tv) {
+      s += '<line x1="' + X(tv) + '" y1="' + T + '" x2="' + X(tv) + '" y2="' + (H - B) + '" stroke="var(--line)" stroke-width="1"/>';
+      s += tnTxt(X(tv), H - B + 16, String(tv), "middle", 10, "var(--steel)");
+    });
+    [0, iMax / 2, iMax].forEach(function (tm) {
+      s += '<line x1="' + L + '" y1="' + Y(tm) + '" x2="' + (W - R) + '" y2="' + Y(tm) + '" stroke="var(--line)" stroke-width="1"/>';
+      s += tnTxt(L - 6, +Y(tm) + 4, tm.toFixed(0), "end", 10, "var(--steel)");
+    });
+    s += tnTxt((W + L) / 2, H - 6, "Vce (V)", "middle", 11, "var(--steel)");
+    var ibNeed = (p.ic * 1000) / TN_BETA;
+    [0.25, 0.5, 1, 2, 4].forEach(function (k) {
+      var ib = ibNeed * k, icFlat = ib * TN_BETA, pts = [], v;
+      for (v = 0; v <= p.vcc + 1e-9; v += p.vcc / 60) {
+        var iLL = Math.max(0, (p.vcc - v) / rc) * 1000;
+        pts.push(X(v) + "," + Y(Math.min(icFlat, iLL)));
+      }
+      s += '<polyline points="' + pts.join(" ") + '" fill="none" stroke="var(--steel)" stroke-width="1" opacity="0.55"/>';
+      s += tnTxt(X(p.vcc) + 4, +Y(Math.min(icFlat, iMax)) + 3, "Ib " + ib.toFixed(1), "start", 9, "var(--steel)");
+    });
+    s += '<line x1="' + X(0) + '" y1="' + Y(iMax) + '" x2="' + X(p.vcc) + '" y2="' + Y(0) +
+      '" stroke="var(--ember)" stroke-width="2"/>';
+    s += tnTxt(X(p.vcc * 0.62), +Y(iMax * 0.62) - 8, "LOAD LINE", "middle", 10, "var(--ember)");
+    if (r) {
+      s += '<circle cx="' + X(r.vce) + '" cy="' + Y(r.icMa) + '" r="4.5" fill="var(--mint)" stroke="var(--ink)" stroke-width="1"/>';
+      s += tnTxt(X(r.vce), +Y(r.icMa) - 10, "Q " + r.mode, "middle", 10, "var(--mint)");
+    } else {
+      s += tnTxt((W + L) / 2, T + 14, "FIT A RESISTOR TO PLACE Q", "middle", 10, "var(--steel)");
+    }
+    return s + "</svg>";
+  }
+  function tnVizDoFirst(el, on) {
+    var p = { vcc: 12, ic: 0.20, load: "12 V FAN" };
+    var r = on ? tnSolve(p, 220) : { ibMa: 0, icMa: 0, vce: p.vcc, pW: 0, mode: "OFF" };
+    el.innerHTML = tnSchematicSVG(p, 220, r) + tnLoadLineSVG(p, r);
+  }
+  function tnVizT1(el, p, rb, r) {
+    el.innerHTML = tnSchematicSVG(p, rb || 0, r) + tnLoadLineSVG(p, r);
+  }
+  function tnVizT3(el, ma, dead) {
+    var p = { vcc: 3.3, ic: 0.040, load: "PIN LOAD" }, r;
+    if (dead) r = { ibMa: 0, icMa: 0, vce: p.vcc, pW: 0, mode: "PIN DEAD" };
+    else if (ma <= 0) r = { ibMa: 0, icMa: 0, vce: p.vcc, pW: 0, mode: "OFF" };
+    else r = {
+      ibMa: ma, icMa: Math.min(ma * TN_BETA, 40), vce: p.vcc, pW: 0,
+      mode: ma > TN_PIN_MAX ? "PAST 40 mA: DEAD" : "CLIMBING, NO RESISTOR"
+    };
+    el.innerHTML = tnSchematicSVG(p, 0, r) + tnLoadLineSVG(p, r);
+  }
+
   /* ---------- do-first card: consequence-free base drive ---------- */
   function tnDoFirstCard() {
     var card = tnEl("div", "tn-card");
@@ -37882,6 +38489,10 @@ if (typeof module !== "undefined" && module.exports) {
     var read = tnEl("p", "tn-read", "Vce 12.0 V \u00B7 BASE OFF \u00B7 COOL");
     read.id = "tnDoFirst_read";
     card.appendChild(read);
+    var viz = tnEl("div", "tn-viz");
+    viz.id = "tnDoFirst_viz";
+    card.appendChild(viz);
+    tnVizDoFirst(viz, false);
     var row = tnEl("div", "tn-row");
     var drive = tnEl("button", "tn-btn solid", "DRIVE THE BASE");
     drive.type = "button"; drive.id = "tnDoFirst_drive";
@@ -37893,6 +38504,7 @@ if (typeof module !== "undefined" && module.exports) {
       fan.classList.toggle("spin", on);
       read.textContent = on ? "Vce 0.2 V \u00B7 SATURATED \u00B7 FAN 200 mA \u00B7 COOL"
                             : "Vce 12.0 V \u00B7 BASE OFF \u00B7 COOL";
+      tnVizDoFirst(viz, on);
       tnLog("do-first: base " + (on ? "driven, fan at full speed, Vce 0.2 V." : "released, fan stopped."), "dim");
       tnPop(card);
     });
@@ -37931,6 +38543,10 @@ if (typeof module !== "undefined" && module.exports) {
     var read = tnEl("p", "tn-read", "No resistor fitted yet.");
     read.id = "tnT1_" + p.id + "_read";
     card.appendChild(read);
+    var viz = tnEl("div", "tn-viz");
+    viz.id = "tnT1_" + p.id + "_viz";
+    card.appendChild(viz);
+    tnVizT1(viz, p, null, null);
     var commit = tnEl("button", "tn-btn solid", "COMMIT SIZING");
     commit.type = "button"; commit.id = "tnT1_" + p.id + "_commit";
     commit.setAttribute("aria-label", "Commit the base resistor sizing");
@@ -37945,6 +38561,7 @@ if (typeof module !== "undefined" && module.exports) {
       }
       var v = tnVerdict(p, sel);
       read.textContent = tnReadLine(v.r);
+      tnVizT1(viz, p, sel, v.r);
       if (v.ok) {
         st.passed = true;
         verdict.textContent = "PASS: " + v.why;
@@ -38082,6 +38699,10 @@ if (typeof module !== "undefined" && module.exports) {
     var smoke = tnEl("p", "tn-smoke", "");
     smoke.id = "tnT3_smoke";
     card.appendChild(smoke);
+    var viz = tnEl("div", "tn-viz");
+    viz.id = "tnT3_viz";
+    card.appendChild(viz);
+    tnVizT3(viz, 0, false);
 
     var pRow = tnEl("div", "tn-row");
     pRow.id = "tnT3_predRow";
@@ -38126,11 +38747,13 @@ if (typeof module !== "undefined" && module.exports) {
       var tick = setInterval(function () {
         var ma = steps[i];
         read.textContent = "PIN CURRENT: " + ma.toFixed(0) + " mA and climbing...";
+        tnVizT3(viz, ma, false);
         i++;
         if (i >= steps.length) {
           clearInterval(tick);
           read.textContent = "PIN CURRENT: 0.0 mA. Pin dead.";
           smoke.textContent = "POP. THE PIN IS DEAD.";
+          tnVizT3(viz, 0, true);
           var note2 = document.getElementById("tnT3_predNote");
           note2.textContent = "2.4 A through a 12 mA pin. The bond wire inside the microcontroller fused: " +
             "that is the no-resistor failure mode. The transistor is fine; the pin is gone. " +
@@ -38478,7 +39101,13 @@ if (typeof module !== "undefined" && module.exports) {
     "<li><b>NO FUSE:</b> a bolted fault with nothing to open it. 60 A through 18 AWG smokes the wire in 1.84 s. ",
     "Nobody is coming to save the harness. The fix is fitting the weak link before the fault finds the rail.</li>",
     "<li><b>WRONG SPEED:</b> fast-blow on a motor or a supply with inrush. Survives the day, dies on every start. ",
-    "Speed is about energy (A\u00B2s), not current alone.</li></ul></div>"
+    "Speed is about energy (A\u00B2s), not current alone.</li></ul></div>",
+    "<div class=\"fs-card\"><h3>THE CANONICAL VIEWS</h3>",
+    "<p class=\"why\">Two standard pictures carry this room. The fuse time-current curve on log-log axes: blow time ",
+    "falls as current squared, drawn from the room's own melt model, with the wire's smoke curve dashed beside it. ",
+    "Below the hold current the fuse never opens; above it, follow the curve down to the fault. And the inrush ",
+    "waveform: the pulse and its I-squared-t energy, the number the speed choice is really about. The do-first card ",
+    "and Trial 1 draw both from the same model the verdicts use.</p></div>"
   ].join("");
   var FS_WIRE_HTML = [
     "<p class=\"why\">THE ROOM'S WIRE TABLE, FIXED FOR EVERY TRIAL: 14 AWG is 15 A, 16 AWG is 10 A, 18 AWG is 7 A, ",
@@ -38533,7 +39162,10 @@ if (typeof module !== "undefined" && module.exports) {
     ".fs-banner p{font-size:13px;line-height:1.65;margin:0 0 12px}",
     ".fs-pop{animation:fsPop 200ms ease-out}",
     "@keyframes fsPop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
-    "@media (prefers-reduced-motion:reduce){.fs-pop{animation:none}}"
+    "@media (prefers-reduced-motion:reduce){.fs-pop{animation:none}}",
+    ".fs-viz{margin:12px 0 4px}",
+    ".fs-viz svg{margin:0 0 12px}",
+    ".fs-viz svg:last-child{margin-bottom:0}"
   ].join("\n");
 
   /* ---------- tiny DOM helpers (page-local, prefixed) ---------- */
@@ -38571,6 +39203,97 @@ if (typeof module !== "undefined" && module.exports) {
     if (fsEls && fsEls.banner) fsEls.banner.style.display = fsAllPassed() ? "block" : "none";
   }
 
+  /* ---------- canonical views: fuse time-current curve, inrush waveform ---------- */
+  function fsTxt(x, y, s, anchor, size, fill) {
+    return '<text x="' + x + '" y="' + y + '" text-anchor="' + (anchor || "start") + '" font-size="' +
+      (size || 11) + '" font-family="\'JetBrains Mono\',monospace" fill="' + (fill || "var(--paper)") + '">' + s + "</text>";
+  }
+  function fsTCurveSVG(rail, rating, speedKey) {
+    var W = 500, H = 320, L = 58, R = 14, T = 16, B = 40;
+    function X(i) { return (L + (Math.log10(i) / 2) * (W - L - R)).toFixed(1); }
+    function Y(t) { return (H - B - ((Math.log10(t) + 3) / 5) * (H - T - B)).toFixed(1); }
+    var s = '<svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="Fuse time-current curve on log-log axes" style="width:100%;height:auto;display:block">';
+    s += fsTxt(20, 22, "TIME-CURRENT CURVE (LOG-LOG)", "start", 11, "var(--steel)");
+    [1, 2, 5, 10, 20, 50, 100].forEach(function (g) {
+      s += '<line x1="' + X(g) + '" y1="' + T + '" x2="' + X(g) + '" y2="' + (H - B) + '" stroke="var(--line)" stroke-width="1"/>';
+      s += fsTxt(X(g), H - B + 16, String(g), "middle", 10, "var(--steel)");
+    });
+    [0.001, 0.01, 0.1, 1, 10, 100].forEach(function (g) {
+      s += '<line x1="' + L + '" y1="' + Y(g) + '" x2="' + (W - R) + '" y2="' + Y(g) + '" stroke="var(--line)" stroke-width="1"/>';
+      s += fsTxt(L - 6, +Y(g) + 4, g < 1 ? (g * 1000) + " ms" : g + " s", "end", 10, "var(--steel)");
+    });
+    s += fsTxt((W + L) / 2, H - 8, "CURRENT (A)", "middle", 11, "var(--steel)");
+    var awg = FS_AWGS[rail.awg], pts = [], i, t;
+    for (i = awg.amp * 1.02; i <= 100; i *= 1.06) {
+      t = fsSmokeT(rail.awg, i);
+      if (t > 100) break;
+      pts.push(X(i) + "," + Y(t));
+    }
+    s += '<polyline points="' + pts.join(" ") + '" fill="none" stroke="var(--ember)" stroke-width="1.5" stroke-dasharray="6 3"/>';
+    s += fsTxt(X(awg.amp * 3), +Y(fsSmokeT(rail.awg, awg.amp * 3)) - 6, "WIRE " + rail.awg + " AWG SMOKES", "start", 10, "var(--ember)");
+    if (rating !== null && rating !== undefined) {
+      var hold = FS_SPEEDS[speedKey].hold, melt = fsMelt(rating, speedKey), pts2 = [], i2, t2;
+      for (i2 = hold * rating * 1.02; i2 <= 100; i2 *= 1.06) {
+        t2 = melt / (i2 * i2);
+        if (t2 > 100) break;
+        pts2.push(X(i2) + "," + Y(t2));
+      }
+      s += '<polyline points="' + pts2.join(" ") + '" fill="none" stroke="var(--mint)" stroke-width="2"/>';
+      s += '<line x1="' + X(hold * rating) + '" y1="' + T + '" x2="' + X(hold * rating) + '" y2="' + (H - B) +
+        '" stroke="var(--steel)" stroke-width="1" stroke-dasharray="3 3"/>';
+      s += fsTxt(X(hold * rating), T + 12, "HOLDS " + (hold * rating).toFixed(2) + " A", "middle", 10, "var(--steel)");
+      var lx = hold * rating * 4, lt = melt / (lx * lx);
+      s += fsTxt(X(lx) + 4, +Y(Math.min(lt, 100)) - 6, rating + " A " + FS_SPEEDS[speedKey].name + "-BLOW", "start", 10, "var(--mint)");
+      if (rail.inrush) {
+        s += '<circle cx="' + X(rail.inrush.i) + '" cy="' + Y(rail.inrush.t) + '" r="4" fill="var(--ice)" stroke="var(--ink)" stroke-width="1"/>';
+        s += fsTxt(X(rail.inrush.i), +Y(rail.inrush.t) - 10, "INRUSH", "middle", 10, "var(--ice)");
+      }
+      var bt = fsBlowT(rating, speedKey, FS_FAULT);
+      if (bt !== null) {
+        s += '<circle cx="' + X(FS_FAULT) + '" cy="' + Y(Math.min(bt, 100)) + '" r="4" fill="var(--ember)" stroke="var(--ink)" stroke-width="1"/>';
+        s += fsTxt(X(FS_FAULT), +Y(Math.min(bt, 100)) - 10, FS_FAULT + " A FAULT", "middle", 10, "var(--ember)");
+      }
+    } else {
+      s += fsTxt((W + L) / 2, T + 16, "FIT A FUSE TO PLOT ITS CURVE", "middle", 10, "var(--steel)");
+    }
+    s += fsTxt(20, H - 22, "SOLID: FUSE (ROOM MODEL) \u00B7 DASHED: WIRE", "start", 9, "var(--steel)");
+    return s + "</svg>";
+  }
+  function fsInrushSVG(inrush) {
+    var W = 500, H = 190, L = 58, R = 14, T = 14, B = 34;
+    var tMax = 1, iMax = inrush.i * 1.25, t0 = 0.05;
+    function X(t) { return (L + (t / tMax) * (W - L - R)).toFixed(1); }
+    function Y(a) { return (H - B - (a / iMax) * (H - T - B)).toFixed(1); }
+    var s = '<svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="Inrush current waveform" style="width:100%;height:auto;display:block">';
+    s += fsTxt(20, 22, "INRUSH: CURRENT VS TIME", "start", 11, "var(--steel)");
+    [0, 0.5, 1].forEach(function (t) {
+      s += '<line x1="' + X(t) + '" y1="' + T + '" x2="' + X(t) + '" y2="' + (H - B) + '" stroke="var(--line)" stroke-width="1"/>';
+      s += fsTxt(X(t), H - B + 16, t + " s", "middle", 10, "var(--steel)");
+    });
+    [0, inrush.i].forEach(function (a) {
+      s += '<line x1="' + L + '" y1="' + Y(a) + '" x2="' + (W - R) + '" y2="' + Y(a) + '" stroke="var(--line)" stroke-width="1"/>';
+      s += fsTxt(L - 6, +Y(a) + 4, a + " A", "end", 10, "var(--steel)");
+    });
+    s += '<rect x="' + X(t0) + '" y="' + Y(inrush.i) + '" width="' + (+X(t0 + inrush.t) - +X(t0)).toFixed(1) +
+      '" height="' + (+Y(0) - +Y(inrush.i)).toFixed(1) + '" fill="var(--ice)" opacity="0.3"/>';
+    s += '<polyline points="' + X(0) + "," + Y(0) + " " + X(t0) + "," + Y(0) + " " + X(t0) + "," + Y(inrush.i) +
+      " " + X(t0 + inrush.t) + "," + Y(inrush.i) + " " + X(t0 + inrush.t) + "," + Y(0) + " " + X(tMax) + "," + Y(0) +
+      '" fill="none" stroke="var(--ice)" stroke-width="2"/>';
+    s += fsTxt(+X(t0 + inrush.t) + 8, +Y(inrush.i) + 4,
+      "INRUSH " + inrush.i + " A x " + (inrush.t * 1000) + " ms = " + fsInrushI2t(inrush.i, inrush.t).toFixed(0) + " A\u00B2s",
+      "start", 10, "var(--ice)");
+    return s + "</svg>";
+  }
+  function fsVizDoFirst(el) {
+    var rail = { amps: 2.4, inrush: { i: 20, t: 0.2 }, awg: "18" };
+    el.innerHTML = fsInrushSVG(rail.inrush) + fsTCurveSVG(rail, 4, "T");
+  }
+  function fsVizT1(el, rail, rating, speedKey) {
+    el.innerHTML = (rail.inrush ? fsInrushSVG(rail.inrush) : "") + fsTCurveSVG(rail, rating, speedKey);
+  }
+
   /* ---------- do-first card: consequence-free fuse on the bench ---------- */
   function fsDoFirstCard() {
     var card = fsEl("div", "fs-card");
@@ -38584,6 +39307,10 @@ if (typeof module !== "undefined" && module.exports) {
     var read = fsEl("p", "fs-read", "Fuse fitted. The rail is live at 12 V.");
     read.id = "fsDoFirst_read";
     card.appendChild(read);
+    var viz = fsEl("div", "fs-viz");
+    viz.id = "fsDoFirst_viz";
+    card.appendChild(viz);
+    fsVizDoFirst(viz);
     var row = fsEl("div", "fs-row");
     var day = fsEl("button", "fs-btn", "RUN A NORMAL DAY");
     day.type = "button"; day.id = "fsDoFirst_day";
@@ -38665,6 +39392,10 @@ if (typeof module !== "undefined" && module.exports) {
     var read = fsEl("p", "fs-read", "No fuse fitted yet.");
     read.id = "fsT1_" + p.id + "_read";
     card.appendChild(read);
+    var viz = fsEl("div", "fs-viz");
+    viz.id = "fsT1_" + p.id + "_viz";
+    card.appendChild(viz);
+    fsVizT1(viz, { amps: p.amps, inrush: p.inrush, awg: p.awg }, null, null);
     var commit = fsEl("button", "fs-btn solid", "COMMIT SIZING");
     commit.type = "button"; commit.id = "fsT1_" + p.id + "_commit";
     commit.setAttribute("aria-label", "Commit the fuse sizing");
@@ -38680,6 +39411,7 @@ if (typeof module !== "undefined" && module.exports) {
       var v = fsVerdictT1({ amps: p.amps, inrush: p.inrush, awg: p.awg }, selR, selS);
       read.textContent = "Fitted: " + selR + " A " + FS_SPEEDS[selS].name + "-BLOW. " +
         (v.ok ? ("Melt " + v.melt.toFixed(0) + " A\u00B2s.") : "");
+      fsVizT1(viz, { amps: p.amps, inrush: p.inrush, awg: p.awg }, selR, selS);
       if (v.ok) {
         st.passed = true;
         verdict.textContent = "PASS: " + v.why;
@@ -39248,7 +39980,12 @@ if (typeof module !== "undefined" && module.exports) {
     "taught properly in The Diode Room (bench 52).</li>",
     "<li><b>WRONG CONTACT FOR FAIL-SAFE:</b> the safe state must be the relay's resting state: coil dead, ",
     "NC closed, NO open. Pick the other contact and the load is safe exactly until the controller dies, ",
-    "then it does the dangerous thing unattended.</li></ul></div>"
+    "then it does the dangerous thing unattended.</li></ul></div>",
+    "<div class=\"ry-card\"><h3>THE CANONICAL VIEWS</h3>",
+    "<p class=\"why\">Two standard pictures carry this room. The relay schematic with the isolation drawn in: coil and ",
+    "drive on one side, SPDT contacts and loads on the other, nothing shared but the air gap. And the switching-state ",
+    "diagram: coil voltage, coil current, the NO contact, and the driver's voltage at turn-off, where the flyback ",
+    "spike either clamps at 0.7 V or kills the transistor at 90 V. The cards below redraw both as the coil state changes.</p></div>"
   ].join("");
 
   if (typeof module !== "undefined" && module.exports && module.exports.RY) {
@@ -39297,7 +40034,10 @@ if (typeof module !== "undefined" && module.exports) {
     ".ry-banner p{font-size:13px;line-height:1.65;margin:0 0 12px}",
     ".ry-pop{animation:ryPop 200ms ease-out}",
     "@keyframes ryPop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
-    "@media (prefers-reduced-motion:reduce){.ry-pop{animation:none}}"
+    "@media (prefers-reduced-motion:reduce){.ry-pop{animation:none}}",
+    ".ry-viz{margin:12px 0 4px}",
+    ".ry-viz svg{margin:0 0 12px}",
+    ".ry-viz svg:last-child{margin-bottom:0}"
   ].join("\n");
 
   /* ---------- tiny DOM helpers (page-local, prefixed) ---------- */
@@ -39334,6 +40074,118 @@ if (typeof module !== "undefined" && module.exports) {
     if (ryEls && ryEls.banner) ryEls.banner.style.display = ryAllPassed() ? "block" : "none";
   }
 
+  /* ---------- canonical views: relay schematic with isolation, switching-state diagram ---------- */
+  function ryTxt(x, y, s, anchor, size, fill) {
+    return '<text x="' + x + '" y="' + y + '" text-anchor="' + (anchor || "start") + '" font-size="' +
+      (size || 11) + '" font-family="\'JetBrains Mono\',monospace" fill="' + (fill || "var(--paper)") + '">' + s + "</text>";
+  }
+  function ryZig(x1, x2, y, peaks) {
+    var d = "M" + x1 + "," + y, i, n = peaks * 2, w = (x2 - x1) / n;
+    for (i = 1; i < n; i++) d += " L" + (x1 + w * i).toFixed(1) + "," + (y + (i % 2 ? -9 : 9));
+    return '<path d="' + d + " L" + x2 + "," + y + '" stroke="var(--paper)" stroke-width="1.5" fill="none"/>';
+  }
+  function ryRelaySVG(part, selV, state, diodeOn) {
+    var W = 520, H = 320, ink = "var(--paper)", dim = "var(--steel)";
+    var on = state === "on";
+    var s = '<svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="Relay coil and SPDT contact schematic" style="width:100%;height:auto;display:block">';
+    s += ryTxt(16, 22, "RELAY: COIL AND SPDT CONTACTS", "start", 11, dim);
+    s += '<rect x="10" y="100" width="205" height="120" fill="none" stroke="' + dim + '" stroke-width="1" stroke-dasharray="5 4"/>';
+    s += ryTxt(20, 92, "CONTROL SIDE", "start", 10, dim);
+    s += '<rect x="285" y="60" width="225" height="200" fill="none" stroke="' + dim + '" stroke-width="1" stroke-dasharray="5 4"/>';
+    s += ryTxt(295, 52, "LOAD SIDE", "start", 10, dim);
+    s += ryTxt(250, 262, "AIR GAP", "middle", 9, dim);
+    var dv = (selV === null || selV === undefined) ? "--" : selV + " V";
+    s += '<rect x="18" y="132" width="64" height="44" fill="none" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += ryTxt(50, 152, "DRIVE", "middle", 10, ink);
+    s += ryTxt(50, 168, dv, "middle", 10, dim);
+    s += '<line x1="82" y1="154" x2="104" y2="154" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<rect x="104" y="126" width="96" height="56" fill="none" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += ryZig(114, 190, 154, 3);
+    s += ryTxt(152, 200, "COIL " + (part ? part.coilV + " V" : "--"), "middle", 10, ink);
+    s += '<g opacity="' + (diodeOn ? "1" : "0.16") + '">';
+    s += '<line x1="104" y1="116" x2="140" y2="116" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<polygon points="140,116 154,109 154,123" fill="' + ink + '"/>';
+    s += '<line x1="154" y1="107" x2="154" y2="125" stroke="' + ink + '" stroke-width="2.5"/>';
+    s += '<line x1="154" y1="116" x2="200" y2="116" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += "</g>";
+    s += ryTxt(152, 108, diodeOn ? "FLYBACK DIODE" : "NO DIODE", "middle", 9, diodeOn ? "var(--mint)" : dim);
+    var tipY = on ? 118 : 186;
+    s += '<circle cx="230" cy="152" r="4" fill="' + ink + '"/>';
+    s += '<line x1="230" y1="152" x2="292" y2="' + tipY + '" stroke="' + (on ? "var(--mint)" : ink) + '" stroke-width="2.5"/>';
+    s += ryTxt(230, 140, "COM", "middle", 9, dim);
+    s += '<circle cx="300" cy="114" r="4.5" fill="' + (on ? "var(--mint)" : "none") + '" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += ryTxt(316, 118, "NO", "start", 10, on ? "var(--mint)" : dim);
+    s += '<circle cx="300" cy="190" r="4.5" fill="' + (!on ? "var(--mint)" : "none") + '" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += ryTxt(316, 194, "NC", "start", 10, !on ? "var(--mint)" : dim);
+    s += '<rect x="340" y="92" width="110" height="44" fill="none" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += ryTxt(395, 112, "LAMP", "middle", 10, ink);
+    s += ryTxt(395, 128, on ? "ON" : "OFF", "middle", 10, on ? "var(--mint)" : dim);
+    s += '<line x1="304" y1="114" x2="340" y2="114" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<rect x="340" y="168" width="110" height="44" fill="none" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += ryTxt(395, 188, "NC LOAD", "middle", 10, ink);
+    s += ryTxt(395, 204, !on ? "ON" : "OFF", "middle", 10, !on ? "var(--mint)" : dim);
+    s += '<line x1="304" y1="190" x2="340" y2="190" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += ryTxt(16, 296, on ? "COIL ENERGIZED \u00B7 NO CLOSED \u00B7 NC OPEN" : "COIL DEAD \u00B7 NO OPEN \u00B7 NC CLOSED",
+      "start", 11, on ? "var(--mint)" : dim);
+    return s + "</svg>";
+  }
+  function ryTimingSVG(diodeOn, phase) {
+    var W = 520, H = 370, L = 104, R = 16, T = 34;
+    var rows = [
+      { label: "COIL V", y0: 48, y1: 108 },
+      { label: "COIL I", y0: 124, y1: 184 },
+      { label: "NO CLOSED", y0: 200, y1: 260 },
+      { label: "DRIVER V", y0: 276, y1: 336 }
+    ];
+    function X(t) { return (L + (t / 2) * (W - L - R)).toFixed(1); }
+    function Y(r, v) { return (r.y1 - v * (r.y1 - r.y0)).toFixed(1); }
+    function rowPath(r, pts, color, width) {
+      return '<polyline points="' + pts.map(function (pt) { return X(pt[0]) + "," + Y(r, pt[1]); }).join(" ") +
+        '" fill="none" stroke="' + color + '" stroke-width="' + (width || 2) + '"/>';
+    }
+    var s = '<svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="Relay switching-state diagram" style="width:100%;height:auto;display:block">';
+    s += ryTxt(16, 24, "SWITCHING STATES: " + (phase === "opened" ? "COIL OPENED" : "COIL ENERGIZED") +
+      (phase === "opened" ? (diodeOn ? " \u00B7 DIODE FITTED" : " \u00B7 NO DIODE") : ""), "start", 11, "var(--steel)");
+    rows.forEach(function (r) {
+      s += ryTxt(16, (r.y0 + r.y1) / 2 + 4, r.label, "start", 10, "var(--steel)");
+      s += '<line x1="' + L + '" y1="' + r.y1 + '" x2="' + (W - R) + '" y2="' + r.y1 + '" stroke="var(--line)" stroke-width="1"/>';
+    });
+    [0.4, 1.3].forEach(function (t, ix) {
+      s += '<line x1="' + X(t) + '" y1="' + rows[0].y0 + '" x2="' + X(t) + '" y2="' + rows[3].y1 +
+        '" stroke="var(--steel)" stroke-width="1" stroke-dasharray="3 3"/>';
+      s += ryTxt(X(t), rows[0].y0 - 6, ix === 0 ? "ENERGIZE" : "OPEN", "middle", 9, "var(--steel)");
+    });
+    s += rowPath(rows[0], [[0, 0], [0.4, 0], [0.4, 1], [1.3, 1], [1.3, 0], [2, 0]], "var(--paper)");
+    s += rowPath(rows[1], [[0, 0], [0.4, 0], [0.7, 1], [1.3, 1], [1.5, 0], [2, 0]], "var(--paper)");
+    s += rowPath(rows[2], [[0, 0], [0.55, 0], [0.55, 1], [1.4, 1], [1.4, 0], [2, 0]], "var(--mint)");
+    if (phase === "opened") {
+      if (diodeOn) {
+        s += rowPath(rows[3], [[0, 0], [1.3, 0], [1.34, 0.18], [1.42, 0], [2, 0]], "var(--mint)");
+        s += ryTxt(X(1.42) + 6, +Y(rows[3], 0.18) + 4, "0.7 V CLAMPED", "start", 10, "var(--mint)");
+      } else {
+        s += rowPath(rows[3], [[0, 0], [1.3, 0], [1.34, 1], [1.42, 0], [2, 0]], "var(--ember)");
+        s += ryTxt(X(1.42) + 6, +Y(rows[3], 1) + 4, "90 V SPIKE", "start", 10, "var(--ember)");
+      }
+    } else {
+      s += rowPath(rows[3], [[0, 0], [2, 0]], "var(--paper)");
+      s += ryTxt(X(1.7), +Y(rows[3], 0) - 8, "COIL STILL CLOSED: NO SPIKE YET", "middle", 9, "var(--steel)");
+    }
+    return s + "</svg>";
+  }
+  function ryVizDoFirst(el, state) {
+    el.innerHTML = ryRelaySVG({ coilV: 12 }, 12, state, false);
+  }
+  function ryVizT1(el, part, selV, v) {
+    var state = (v && (v.ok || v.cooks)) ? "on" : "dead";
+    el.innerHTML = ryRelaySVG(part, selV, state, false);
+  }
+  function ryVizT3(el, diodeOn, phase) {
+    el.innerHTML = ryRelaySVG({ coilV: 12 }, 12, phase === "opened" && !diodeOn ? "dead" : "on", diodeOn) +
+      ryTimingSVG(diodeOn, phase);
+  }
+
   /* ---------- do-first card: consequence-free relay ---------- */
   function ryDoFirstCard() {
     var card = ryEl("div", "ry-card");
@@ -39347,6 +40199,10 @@ if (typeof module !== "undefined" && module.exports) {
     var read = ryEl("p", "ry-read", "The coil is dead. The resting state is NC closed, NO open.");
     read.id = "ryDoFirst_read";
     card.appendChild(read);
+    var viz = ryEl("div", "ry-viz");
+    viz.id = "ryDoFirst_viz";
+    card.appendChild(viz);
+    ryVizDoFirst(viz, "dead");
     var row = ryEl("div", "ry-row");
     var en = ryEl("button", "ry-btn", "ENERGIZE THE COIL");
     en.type = "button"; en.id = "ryDoFirst_en";
@@ -39355,6 +40211,7 @@ if (typeof module !== "undefined" && module.exports) {
       box.className = "ry-box live";
       box.textContent = "COIL: 12 V, 100 MA \u00B7 NO CLOSED \u00B7 NC OPEN \u00B7 LAMP: ON";
       read.textContent = "CLICK. The armature moved, NO closed, the lamp is on. The control side draws 100 mA; the lamp runs on its own circuit.";
+      ryVizDoFirst(viz, "on");
       ryLog("do-first: coil energized, NO closed, lamp on.", "dim");
       ryPop(card);
     });
@@ -39365,6 +40222,7 @@ if (typeof module !== "undefined" && module.exports) {
       box.className = "ry-box";
       box.textContent = "COIL: DEAD \u00B7 NO OPEN \u00B7 NC CLOSED \u00B7 LAMP: OFF";
       read.textContent = "The coil is dead. NC closed again: the resting state. Nothing about the lamp's circuit changed except the contact.";
+      ryVizDoFirst(viz, "dead");
       ryLog("do-first: coil de-energized, NC closed, resting state.", "dim");
       ryPop(card);
     });
@@ -39423,6 +40281,10 @@ if (typeof module !== "undefined" && module.exports) {
     var read = ryEl("p", "ry-read", "No drive fitted yet.");
     read.id = "ryT1_" + part.id + "_read";
     card.appendChild(read);
+    var viz = ryEl("div", "ry-viz");
+    viz.id = "ryT1_" + part.id + "_viz";
+    card.appendChild(viz);
+    ryVizT1(viz, part, null, null);
     var verdict = ryEl("p", "ry-verdict", "");
     verdict.id = "ryT1_" + part.id + "_verdict";
     card.appendChild(verdict);
@@ -39503,6 +40365,7 @@ if (typeof module !== "undefined" && module.exports) {
         verdict.className = "ry-verdict bad";
         ryLog("trial 1 " + part.id + ": " + selV + " V too weak for the " + part.coilV + " V coil, no pull-in.", "bad");
       }
+      ryVizT1(viz, part, selV, v);
       ryMaybeCertify();
       ryPop(card);
     });
@@ -39672,6 +40535,10 @@ if (typeof module !== "undefined" && module.exports) {
     var read = ryEl("p", "ry-read", "The coil is energized and the flyback diode is fitted. Predict first.");
     read.id = "ryT3_read";
     card.appendChild(read);
+    var viz = ryEl("div", "ry-viz");
+    viz.id = "ryT3_viz";
+    card.appendChild(viz);
+    ryVizT3(viz, true, "energized");
 
     var dRow = ryEl("div", "ry-row");
     var diodeOn = true;
@@ -39687,6 +40554,7 @@ if (typeof module !== "undefined" && module.exports) {
       read.textContent = diodeOn ?
         "The diode gives the spike a safe loop back through the coil: 0.7 V, clamped." :
         "No diode. The spike has nowhere to go but the driver transistor, rated 60 V.";
+      ryVizT3(viz, diodeOn, "energized");
       ryPop(card);
     });
     dRow.appendChild(dBtn);
@@ -39703,6 +40571,7 @@ if (typeof module !== "undefined" && module.exports) {
         box.textContent = "COIL: OPEN \u00B7 SPIKE: 0.7 V CLAMPED \u00B7 TRANSISTOR: ALIVE";
         read.textContent = "The coil opened. The diode caught the field collapse and looped it back: 0.7 V across the transistor, nothing to see. This is why the diode is fitted.";
         ryLog("trial 3: coil opened with the diode fitted, spike clamped at 0.7 V, driver alive.", "ok");
+        ryVizT3(viz, true, "opened");
         if (st.killed) {
           st.refitted = true;
           open.disabled = true;
@@ -39717,6 +40586,7 @@ if (typeof module !== "undefined" && module.exports) {
         box.textContent = "COIL: OPEN \u00B7 SPIKE: 90 V \u00B7 TRANSISTOR: DEAD";
         read.textContent = "The field collapsed with nowhere to go: 90 V across a transistor rated 60 V. It worked once, then never again. Refit the diode and open the coil again.";
         ryLog("trial 3: coil opened with no diode, 90 V spike killed the driver.", "bad");
+        ryVizT3(viz, false, "opened");
         open.disabled = true;
         dBtn.disabled = true;
       }
@@ -40117,7 +40987,13 @@ if (typeof module !== "undefined" && module.exports) {
     "<li><b>INDUCTIVE KICK:</b> a coil's collapsing field hurls a voltage spike at the drain on turn-off. ",
     "Symptom: it worked once, then never again. The fix is a diode across the coil, taught properly in The Relay Room (bench 55).</li>",
     "<li><b>FLOATING GATE:</b> an unconnected gate is an antenna and drifts on by itself. If the driver can go ",
-    "high-impedance, park the gate with a 100 k resistor to ground so off means off.</li></ul></div>"
+    "high-impedance, park the gate with a 100 k resistor to ground so off means off.</li></ul></div>",
+    "<div class=\"mf-card\"><h3>THE CANONICAL VIEWS</h3>",
+    "<p class=\"why\">Three standard pictures carry this room. The low-side N-channel switch: gate drive on the gate, ",
+    "the lamp between the 12 V rail and the drain. The Rds(on) against Vgs curve on a log scale, drawn from the ",
+    "room's own Rds model with the threshold band marked: this is the curve Trial 1 is really about. And the output ",
+    "curves with the 2 ohm load line, where bench A's operating point sits before the fix and after it. The cards ",
+    "below redraw each from the same data the verdicts use.</p></div>"
   ].join("");
   if (typeof module !== "undefined" && module.exports && module.exports.MF) {
     module.exports.MF.introHTML = MF_INTRO_HTML;
@@ -40168,7 +41044,10 @@ if (typeof module !== "undefined" && module.exports) {
     ".mf-box.dead{border-color:var(--ember);color:var(--ember)}",
     ".mf-heat{height:10px;border:1px solid var(--line,var(--line));margin:8px 0 0;max-width:360px}",
     ".mf-heat i{display:block;height:100%;background:var(--ember,var(--ember));width:0%}",
-    ".mf-smoke{font-size:13px;letter-spacing:.2em;color:var(--ember);margin:8px 0 0;min-height:20px}"
+    ".mf-smoke{font-size:13px;letter-spacing:.2em;color:var(--ember);margin:8px 0 0;min-height:20px}",
+    ".mf-viz{margin:12px 0 4px}",
+    ".mf-viz svg{margin:0 0 12px}",
+    ".mf-viz svg:last-child{margin-bottom:0}"
   ].join("\n");
 
   /* ---------- tiny DOM helpers (page-local, prefixed) ---------- */
@@ -40205,6 +41084,147 @@ if (typeof module !== "undefined" && module.exports) {
     if (mfEls && mfEls.banner) mfEls.banner.style.display = mfAllPassed() ? "block" : "none";
   }
 
+  /* ---------- canonical views: low-side switch, Rds(on) vs Vgs, output curves ---------- */
+  function mfTxt(x, y, s, anchor, size, fill) {
+    return '<text x="' + x + '" y="' + y + '" text-anchor="' + (anchor || "start") + '" font-size="' +
+      (size || 11) + '" font-family="\'JetBrains Mono\',monospace" fill="' + (fill || "var(--paper)") + '">' + s + "</text>";
+  }
+  function mfZig(x1, x2, y, peaks) {
+    var d = "M" + x1 + "," + y, i, n = peaks * 2, w = (x2 - x1) / n;
+    for (i = 1; i < n; i++) d += " L" + (x1 + w * i).toFixed(1) + "," + (y + (i % 2 ? -9 : 9));
+    return '<path d="' + d + " L" + x2 + "," + y + '" stroke="var(--paper)" stroke-width="1.5" fill="none"/>';
+  }
+  function mfGround(x, y) {
+    return '<line x1="' + (x - 20) + '" y1="' + y + '" x2="' + (x + 20) + '" y2="' + y +
+      '" stroke="var(--paper)" stroke-width="1.5"/>' +
+      '<line x1="' + (x - 12) + '" y1="' + (y + 6) + '" x2="' + (x + 12) + '" y2="' + (y + 6) +
+      '" stroke="var(--paper)" stroke-width="1.5"/>' +
+      '<line x1="' + (x - 5) + '" y1="' + (y + 12) + '" x2="' + (x + 5) + '" y2="' + (y + 12) +
+      '" stroke="var(--paper)" stroke-width="1.5"/>';
+  }
+  function mfFmtR(r) {
+    return r < 1 ? Math.round(r * 1000) + " m\u03A9" : r.toFixed(2) + " \u03A9";
+  }
+  function mfSchematicSVG(part, load, vgs) {
+    var W = 460, H = 350, ink = "var(--paper)", dim = "var(--steel)";
+    var s = '<svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="Low-side N-channel MOSFET switch schematic" style="width:100%;height:auto;display:block">';
+    s += mfTxt(20, 22, "LOW-SIDE N-CHANNEL SWITCH", "start", 11, dim);
+    s += '<line x1="20" y1="40" x2="440" y2="40" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += mfTxt(28, 34, "+" + load.rail + " V", "start", 10, dim);
+    s += '<rect x="180" y="48" width="80" height="44" fill="none" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += mfTxt(220, 66, load.load, "middle", 11, ink);
+    s += mfTxt(220, 82, load.amps + " A", "middle", 10, dim);
+    s += '<line x1="220" y1="40" x2="220" y2="48" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<line x1="220" y1="92" x2="220" y2="122" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += mfTxt(246, 112, "D", "start", 10, dim);
+    s += '<line x1="220" y1="122" x2="220" y2="138" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<line x1="220" y1="138" x2="220" y2="198" stroke="' + ink + '" stroke-width="3"/>';
+    s += '<line x1="140" y1="168" x2="215" y2="168" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += mfTxt(150, 160, "G", "middle", 10, dim);
+    s += '<line x1="220" y1="198" x2="220" y2="222" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<polygon points="220,216 213,204 227,204" fill="' + ink + '"/>';
+    s += mfTxt(246, 226, "S", "start", 10, dim);
+    s += '<line x1="220" y1="222" x2="220" y2="252" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += mfGround(220, 252);
+    s += '<rect x="60" y="148" width="70" height="40" fill="none" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += mfTxt(95, 166, "DRIVE", "middle", 10, ink);
+    s += mfTxt(95, 180, vgs.toFixed(1) + " V", "middle", 10, dim);
+    s += '<line x1="130" y1="168" x2="140" y2="168" stroke="' + ink + '" stroke-width="1.5"/>';
+    var vals;
+    if (part) {
+      var rds = mfRds(part, vgs), pw = load.amps * load.amps * rds;
+      vals = part.name + " \u00B7 Vgs " + vgs.toFixed(1) + " V \u00B7 Rds(on) " + mfFmtR(rds) +
+        " \u00B7 P = I\u00B2R = " + pw.toFixed(2) + " W";
+    } else {
+      vals = "NO PART FITTED";
+    }
+    s += mfTxt(20, 306, vals, "start", 11, part ? "var(--mint)" : dim);
+    s += mfTxt(20, 324, "GATE DRAWS NO DC CURRENT: VOLTAGE COMMANDS, CURRENT OBEYS", "start", 9, dim);
+    return s + "</svg>";
+  }
+  function mfRdsCurveSVG(part, vDrive, mark) {
+    var W = 500, H = 300, L = 62, R = 14, T = 16, B = 40;
+    function X(v) { return (L + (v / 10) * (W - L - R)).toFixed(1); }
+    function Y(r) {
+      var c = Math.max(0.01, Math.min(10, r));
+      return (H - B - ((Math.log10(c) + 2) / 3) * (H - T - B)).toFixed(1);
+    }
+    var s = '<svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="Rds on against gate voltage, log scale" style="width:100%;height:auto;display:block">';
+    s += mfTxt(20, 22, "Rds(on) VS Vgs (LOG)", "start", 11, "var(--steel)");
+    [0, 2, 4, 6, 8, 10].forEach(function (v) {
+      s += '<line x1="' + X(v) + '" y1="' + T + '" x2="' + X(v) + '" y2="' + (H - B) + '" stroke="var(--line)" stroke-width="1"/>';
+      s += mfTxt(X(v), H - B + 16, v + " V", "middle", 10, "var(--steel)");
+    });
+    [[0.01, "10 m\u03A9"], [0.1, "100 m\u03A9"], [1, "1 \u03A9"], [10, "10 \u03A9"]].forEach(function (g) {
+      s += '<line x1="' + L + '" y1="' + Y(g[0]) + '" x2="' + (W - R) + '" y2="' + Y(g[0]) + '" stroke="var(--line)" stroke-width="1"/>';
+      s += mfTxt(L - 6, +Y(g[0]) + 4, g[1], "end", 10, "var(--steel)");
+    });
+    if (part) {
+      s += '<rect x="' + X(part.vgsth[0]) + '" y="' + T + '" width="' + (+X(part.vgsth[1]) - +X(part.vgsth[0])).toFixed(1) +
+        '" height="' + (H - B - T) + '" fill="var(--ember)" opacity="0.12"/>';
+      s += mfTxt((+X(part.vgsth[0]) + +X(part.vgsth[1])) / 2, T + 12, "Vgs(th)", "middle", 9, "var(--ember)");
+      var pts = [], v;
+      for (v = 0.2; v <= 10.001; v += 0.2) pts.push(X(v) + "," + Y(mfRds(part, v)));
+      s += '<polyline points="' + pts.join(" ") + '" fill="none" stroke="var(--mint)" stroke-width="2"/>';
+      part.rds.forEach(function (pr) {
+        s += '<circle cx="' + X(pr[0]) + '" cy="' + Y(pr[1]) + '" r="3.5" fill="var(--paper)" stroke="var(--ink)" stroke-width="1"/>';
+      });
+      s += '<line x1="' + X(vDrive) + '" y1="' + T + '" x2="' + X(vDrive) + '" y2="' + (H - B) +
+        '" stroke="var(--steel)" stroke-width="1" stroke-dasharray="3 3"/>';
+      var rd = mfRds(part, vDrive);
+      s += '<circle cx="' + X(vDrive) + '" cy="' + Y(rd) + '" r="4.5" fill="var(--ember)" stroke="var(--ink)" stroke-width="1"/>';
+      s += mfTxt(X(vDrive), +Y(rd) - 10, mark + " \u00B7 " + mfFmtR(rd), "middle", 10, "var(--ember)");
+      s += mfTxt(20, H - 24, part.name + " \u00B7 ROOM Rds MODEL, DOTS ARE THE SPEC POINTS", "start", 9, "var(--steel)");
+    } else {
+      s += mfTxt((W + L) / 2, (H - B + T) / 2, "PICK A PART FROM THE TRAY", "middle", 11, "var(--steel)");
+    }
+    return s + "</svg>";
+  }
+  function mfOutputCurveSVG() {
+    var part = mfPart("mC"), W = 500, H = 300, L = 58, R = 14, T = 16, B = 40;
+    function X(v) { return (L + (v / 12) * (W - L - R)).toFixed(1); }
+    function Y(a) { return (H - B - (a / 7) * (H - T - B)).toFixed(1); }
+    var s = '<svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="MOSFET output curves with load line" style="width:100%;height:auto;display:block">';
+    s += mfTxt(20, 22, "OUTPUT CURVES + 2 \u03A9 LOAD LINE (BENCH A)", "start", 11, "var(--steel)");
+    [0, 3, 6, 9, 12].forEach(function (v) {
+      s += '<line x1="' + X(v) + '" y1="' + T + '" x2="' + X(v) + '" y2="' + (H - B) + '" stroke="var(--line)" stroke-width="1"/>';
+      s += mfTxt(X(v), H - B + 16, v + " V", "middle", 10, "var(--steel)");
+    });
+    [0, 2, 4, 6].forEach(function (a) {
+      s += '<line x1="' + L + '" y1="' + Y(a) + '" x2="' + (W - R) + '" y2="' + Y(a) + '" stroke="var(--line)" stroke-width="1"/>';
+      s += mfTxt(L - 6, +Y(a) + 4, a + " A", "end", 10, "var(--steel)");
+    });
+    [2.5, 3.3, 5, 10].forEach(function (vg) {
+      var pts = [], v;
+      for (v = 0; v <= 12.001; v += 0.25) pts.push(X(v) + "," + Y(Math.min(7, v / mfRds(part, vg))));
+      s += '<polyline points="' + pts.join(" ") + '" fill="none" stroke="var(--steel)" stroke-width="1" opacity="0.6"/>';
+      s += mfTxt(X(11.4), +Y(Math.min(7, 11.4 / mfRds(part, vg))) - 4, "Vgs " + vg, "start", 9, "var(--steel)");
+    });
+    s += '<line x1="' + X(0) + '" y1="' + Y(6) + '" x2="' + X(12) + '" y2="' + Y(0) + '" stroke="var(--ember)" stroke-width="2"/>';
+    s += mfTxt(X(7.4), +Y((12 - 7.4) / 2) - 8, "LOAD LINE", "middle", 10, "var(--ember)");
+    var a = mfBenchA(), f = mfBenchAFixed();
+    s += '<circle cx="' + X(a.vds) + '" cy="' + Y(a.amps) + '" r="4.5" fill="var(--ember)" stroke="var(--ink)" stroke-width="1"/>';
+    s += mfTxt(X(a.vds) + 8, +Y(a.amps) - 6, "AS FOUND", "start", 10, "var(--ember)");
+    s += '<circle cx="' + X(f.vds) + '" cy="' + Y(f.amps) + '" r="4.5" fill="none" stroke="var(--mint)" stroke-width="2"/>';
+    s += mfTxt(X(f.vds) + 8, +Y(f.amps) + 12, "AFTER FIX", "start", 10, "var(--mint)");
+    s += mfTxt((W + L) / 2, H - 6, "Vds (V)", "middle", 11, "var(--steel)");
+    s += mfTxt(20, H - 24, "TEACHING CURVES FROM THE ROOM Rds MODEL, NOT DATASHEET CURVES", "start", 9, "var(--steel)");
+    return s + "</svg>";
+  }
+  function mfVizDoFirst(el, on) {
+    var load = { rail: 12, amps: 6, load: "12 V LAMP" };
+    el.innerHTML = mfSchematicSVG(MF_PARTS[0], load, on ? 10 : 0);
+  }
+  function mfVizT1(el, load, part) {
+    el.innerHTML = mfSchematicSVG(part, load, load.vDrive) + mfRdsCurveSVG(part, load.vDrive, "DRIVE " + load.vDrive.toFixed(1) + " V");
+  }
+  function mfVizT3(el, vDrive, mark) {
+    el.innerHTML = mfRdsCurveSVG(mfPart("mB"), vDrive, mark);
+  }
+
   /* ---------- do-first card: consequence-free gate drive ---------- */
   function mfDoFirstCard() {
     var card = mfEl("div", "mf-card");
@@ -40219,6 +41239,10 @@ if (typeof module !== "undefined" && module.exports) {
     var read = mfEl("p", "mf-read", "Vgs 0 V \u00B7 GATE CURRENT 0.0 mA \u00B7 LAMP OFF \u00B7 COOL");
     read.id = "mfDoFirst_read";
     card.appendChild(read);
+    var viz = mfEl("div", "mf-viz");
+    viz.id = "mfDoFirst_viz";
+    card.appendChild(viz);
+    mfVizDoFirst(viz, false);
     var row = mfEl("div", "mf-row");
     var hi = mfEl("button", "mf-btn solid", "GATE TO 10 V");
     hi.type = "button"; hi.id = "mfDoFirst_hi";
@@ -40227,6 +41251,7 @@ if (typeof module !== "undefined" && module.exports) {
       box.className = "mf-box live";
       box.textContent = "GATE 10 V \u00B7 CHANNEL OPEN \u00B7 LAMP ON";
       read.textContent = "Vgs 10 V \u00B7 Rds 20 m\u03A9 \u00B7 LAMP 6 A \u00B7 0.72 W \u00B7 GATE CURRENT 0.0 mA \u00B7 WARM";
+      mfVizDoFirst(viz, true);
       mfLog("do-first: gate at 10 V, lamp on, gate current 0.0 mA.", "dim");
       mfPop(card);
     });
@@ -40238,6 +41263,7 @@ if (typeof module !== "undefined" && module.exports) {
       box.textContent = "GATE 0 V \u00B7 CHANNEL CLOSED \u00B7 LAMP OFF";
       read.textContent = "Vgs 0 V \u00B7 GATE CURRENT 0.0 mA \u00B7 LAMP OFF \u00B7 COOL";
       mfLog("do-first: gate at 0 V, lamp off.", "dim");
+      mfVizDoFirst(viz, false);
       mfPop(card);
     });
     row.appendChild(hi); row.appendChild(lo);
@@ -40269,6 +41295,7 @@ if (typeof module !== "undefined" && module.exports) {
         sel = p;
         btns.forEach(function (x) { x.classList.remove("sel"); });
         b.classList.add("sel");
+        mfVizT1(viz, load, p);
       });
       btns.push(b); tray.appendChild(b);
     });
@@ -40276,6 +41303,10 @@ if (typeof module !== "undefined" && module.exports) {
     var read = mfEl("p", "mf-read", "No part fitted yet.");
     read.id = "mfT1_" + load.id + "_read";
     card.appendChild(read);
+    var viz = mfEl("div", "mf-viz");
+    viz.id = "mfT1_" + load.id + "_viz";
+    card.appendChild(viz);
+    mfVizT1(viz, load, null);
     var commit = mfEl("button", "mf-btn solid", "COMMIT SIZING");
     commit.type = "button"; commit.id = "mfT1_" + load.id + "_commit";
     commit.setAttribute("aria-label", "Commit the MOSFET sizing for " + load.load);
@@ -40354,6 +41385,10 @@ if (typeof module !== "undefined" && module.exports) {
     probe("mfT2_a_pCard", "READ PART CARD", "IRF540-CLASS \u00B7 STANDARD-LEVEL \u00B7 Vgs(th) 2.0 to 4.0 V \u00B7 Rds(on) 44 m\u03A9 at Vgs = 10 V. Note where Rds(on) is specified: 10 V, not 3.3 V.");
     card.appendChild(probes);
     card.appendChild(notes);
+    var viz = mfEl("div", "mf-viz");
+    viz.id = "mfT2_a_viz";
+    card.appendChild(viz);
+    viz.innerHTML = mfOutputCurveSVG();
 
     var vRow = mfEl("div", "mf-row");
     var vSel = null, vBtns = [];
@@ -40619,6 +41654,10 @@ if (typeof module !== "undefined" && module.exports) {
     var read = mfEl("p", "mf-read", "GATE 1.5 V \u00B7 no power applied yet.");
     read.id = "mfT3_read";
     card.appendChild(read);
+    var viz = mfEl("div", "mf-viz");
+    viz.id = "mfT3_viz";
+    card.appendChild(viz);
+    mfVizT3(viz, 1.5, "PARKED 1.5 V");
     var heat = mfEl("div", "mf-heat", "");
     heat.id = "mfT3_heat";
     heat.style.display = "none";
@@ -40729,6 +41768,7 @@ if (typeof module !== "undefined" && module.exports) {
         return;
       }
       var v = mfFixT3(fixSel);
+      mfVizT3(viz, fixSel, "DRIVE " + fixSel.toFixed(1) + " V");
       if (v.ok) {
         st.fixed = true;
         read.textContent = "GATE " + fixSel.toFixed(1) + " V \u00B7 LAMP 6 A \u00B7 " +
@@ -41687,7 +42727,12 @@ if (typeof module !== "undefined" && module.exports) {
     "<li><b>THE LIAR:</b> sense taps that share load current add the copper's resistance to the reading. 5 m\u03A9 of ",
     "trace at 2 A reads 10 mV high: a phantom 10 percent of current. Trial 2 is that lie on purpose.</li>",
     "<li><b>THE TRIP:</b> park the overcurrent threshold low and the protector reboots the rail under normal peaks. ",
-    "Park it high and the downstream fuse eats the fault first. The comparator only knows the sense voltage.</li></ul></div>"
+    "Park it high and the downstream fuse eats the fault first. The comparator only knows the sense voltage.</li></ul></div>",
+    "<div class=\"sn-card\"><h3>THE CANONICAL VIEWS</h3>",
+    "<p class=\"why\">Two standard pictures carry this room. The do-first card draws the shunt in its 5 V rail: source, ",
+    "shunt, load, and the sense meter across the shunt, because the reading IS the burden. Trial 2 draws the Kelvin ",
+    "diagram for both benches: four wires, the sense taps either on the pads or outboard spanning the shared copper. ",
+    "Move the taps and watch the lie leave the drawing.</p></div>"
   ].join("");
   if (typeof module !== "undefined" && module.exports && module.exports.SN) {
     module.exports.SN.introHTML = SN_INTRO_HTML;
@@ -41736,7 +42781,10 @@ if (typeof module !== "undefined" && module.exports) {
     ".sn-pop{animation:snPop 200ms ease-out}",
     "@keyframes snPop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
     "@media (prefers-reduced-motion:reduce){.sn-pop{animation:none}}",
-    "@media (max-width:640px){.sn-panel{padding:48px 14px 100px}.sn-num{width:100%}}"
+    "@media (max-width:640px){.sn-panel{padding:48px 14px 100px}.sn-num{width:100%}}",
+    ".sn-viz{margin:12px 0 4px}",
+    ".sn-viz svg{margin:0 0 12px}",
+    ".sn-viz svg:last-child{margin-bottom:0}"
   ].join("\n");
 
   /* ---------- dom helpers ---------- */
@@ -41783,6 +42831,95 @@ if (typeof module !== "undefined" && module.exports) {
     }
   }
 
+  /* ---------- canonical views: shunt in the rail, Kelvin four-wire diagram ---------- */
+  function snTxt(x, y, s, anchor, size, fill) {
+    return '<text x="' + x + '" y="' + y + '" text-anchor="' + (anchor || "start") + '" font-size="' +
+      (size || 11) + '" font-family="\'JetBrains Mono\',monospace" fill="' + (fill || "var(--paper)") + '">' + s + "</text>";
+  }
+  function snZig(x1, x2, y, peaks) {
+    var d = "M" + x1 + "," + y, i, n = peaks * 2, w = (x2 - x1) / n;
+    for (i = 1; i < n; i++) d += " L" + (x1 + w * i).toFixed(1) + "," + (y + (i % 2 ? -9 : 9));
+    return '<path d="' + d + " L" + x2 + "," + y + '" stroke="var(--paper)" stroke-width="2.5" fill="none"/>';
+  }
+  function snGround(x, y) {
+    return '<line x1="' + (x - 20) + '" y1="' + y + '" x2="' + (x + 20) + '" y2="' + y +
+      '" stroke="var(--paper)" stroke-width="1.5"/>' +
+      '<line x1="' + (x - 12) + '" y1="' + (y + 6) + '" x2="' + (x + 12) + '" y2="' + (y + 6) +
+      '" stroke="var(--paper)" stroke-width="1.5"/>' +
+      '<line x1="' + (x - 5) + '" y1="' + (y + 12) + '" x2="' + (x + 5) + '" y2="' + (y + 12) +
+      '" stroke="var(--paper)" stroke-width="1.5"/>';
+  }
+  function snDoFirstSchematicSVG(load) {
+    var W = 520, H = 270, ink = "var(--paper)", dim = "var(--steel)";
+    var burden = snBurden(0.020, load), amps = burden / 0.020;
+    var s = '<svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="Shunt resistor in the 5 volt rail" style="width:100%;height:auto;display:block">';
+    s += snTxt(16, 22, "SHUNT IN THE 5 V RAIL", "start", 11, dim);
+    s += '<rect x="16" y="100" width="70" height="60" fill="none" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += snTxt(51, 126, "+5 V", "middle", 11, ink);
+    s += snTxt(51, 142, "RAIL", "middle", 10, dim);
+    s += '<line x1="86" y1="130" x2="120" y2="130" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += snZig(120, 200, 130, 3);
+    s += snTxt(160, 114, "20 m\u03A9", "middle", 10, dim);
+    s += '<line x1="200" y1="130" x2="250" y2="130" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<rect x="250" y="100" width="90" height="60" fill="none" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += snTxt(295, 126, "LOAD", "middle", 11, ink);
+    s += snTxt(295, 142, load + " A", "middle", 10, dim);
+    s += '<line x1="340" y1="130" x2="420" y2="130" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<line x1="420" y1="130" x2="420" y2="190" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<line x1="51" y1="160" x2="51" y2="190" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<line x1="51" y1="190" x2="420" y2="190" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += snGround(235, 190);
+    s += '<line x1="140" y1="130" x2="140" y2="80" stroke="var(--ice)" stroke-width="1"/>';
+    s += '<line x1="180" y1="130" x2="180" y2="80" stroke="var(--ice)" stroke-width="1"/>';
+    s += '<rect x="120" y="40" width="120" height="40" fill="none" stroke="var(--ice)" stroke-width="1.5"/>';
+    s += snTxt(180, 58, "SENSE", "middle", 10, "var(--ice)");
+    s += snTxt(180, 72, snFmtMv(burden), "middle", 10, "var(--ice)");
+    s += snTxt(16, 236, "SENSE " + snFmtMv(burden) + " = I x R \u00B7 CURRENT " + snFmtA(amps) +
+      " \u00B7 THE READING IS THE BURDEN", "start", 11, "var(--mint)");
+    return s + "</svg>";
+  }
+  function snKelvinSVG(fixed) {
+    var W = 560, H = 400, ink = "var(--paper)", dim = "var(--steel)";
+    var t = snT2Truth();
+    var s = '<svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="Kelvin four-wire sense diagram" style="width:100%;height:auto;display:block">';
+    function row(y, title, tapsOnPads, va, ia) {
+      var g = "";
+      g += snTxt(20, y - 92, title, "start", 11, dim);
+      g += '<line x1="40" y1="' + y + '" x2="520" y2="' + y + '" stroke="' + ink + '" stroke-width="4"/>';
+      g += snTxt(60, y - 22, "I = " + SN_T2_I.toFixed(2) + " A", "start", 10, "var(--ice)");
+      if (!tapsOnPads) {
+        g += '<line x1="200" y1="' + y + '" x2="250" y2="' + y + '" stroke="var(--ember)" stroke-width="4"/>';
+        g += '<line x1="330" y1="' + y + '" x2="380" y2="' + y + '" stroke="' + ink + '" stroke-width="4"/>';
+        g += '<line x1="330" y1="' + y + '" x2="380" y2="' + y + '" stroke="var(--ember)" stroke-width="4"/>';
+        g += snTxt(225, y + 24, "5 m\u03A9 Cu", "middle", 9, "var(--ember)");
+        g += snTxt(355, y + 24, "5 m\u03A9 Cu", "middle", 9, "var(--ember)");
+      }
+      g += snZig(250, 330, y, 3);
+      g += snTxt(290, y + 24, (SN_T2_R * 1000).toFixed(0) + " m\u03A9 SHUNT", "middle", 10, dim);
+      var tx = tapsOnPads ? [250, 330] : [200, 380];
+      g += '<line x1="' + tx[0] + '" y1="' + y + '" x2="' + tx[0] + '" y2="' + (y - 44) + '" stroke="var(--ice)" stroke-width="1"/>';
+      g += '<line x1="' + tx[1] + '" y1="' + y + '" x2="' + tx[1] + '" y2="' + (y - 44) + '" stroke="var(--ice)" stroke-width="1"/>';
+      var mx = tapsOnPads ? 235 : 185, mw = tapsOnPads ? 110 : 210;
+      g += '<rect x="' + mx + '" y="' + (y - 86) + '" width="' + mw + '" height="42" fill="none" stroke="var(--ice)" stroke-width="1.5"/>';
+      g += snTxt(mx + mw / 2, y - 68, va.toFixed(1) + " mV", "middle", 10, "var(--ice)");
+      g += snTxt(mx + mw / 2, y - 52, "\u2192 " + ia.toFixed(2) + " A", "middle", 10, "var(--ice)");
+      g += snTxt(mx + mw / 2, y - 96, tapsOnPads ? "SENSE: SHUNT ONLY" : "SENSE: SHUNT + COPPER", "middle", 9, dim);
+      return g;
+    }
+    s += row(150, "BENCH A: TAPS ON THE PADS", true, t.va, t.ia);
+    s += row(330, fixed ? "BENCH B: TAPS MOVED TO THE PADS" : "BENCH B: TAPS OUTBOARD", fixed, t.vb, t.ib);
+    s += snTxt(20, 386, "KELVIN RULE: SENSE TAPS TOUCH THE SHUNT PADS AND CARRY NO LOAD CURRENT", "start", 10, dim);
+    return s + "</svg>";
+  }
+  function snVizDoFirst(el, load) {
+    el.innerHTML = snDoFirstSchematicSVG(load);
+  }
+  function snVizT2(el, fixed) {
+    el.innerHTML = snKelvinSVG(fixed);
+  }
+
   /* ---------- do-first card: meter the rail, free ---------- */
   function snDoFirstCard() {
     var card = snEl("div", "sn-card");
@@ -41815,8 +42952,13 @@ if (typeof module !== "undefined" && module.exports) {
     var read = snEl("div", "sn-read", "LOAD 4 A \u00B7 press METER THE RAIL");
     read.id = "snDoFirst_read";
     card.appendChild(read);
+    var viz = snEl("div", "sn-viz");
+    viz.id = "snDoFirst_viz";
+    card.appendChild(viz);
+    snVizDoFirst(viz, 4);
     run.addEventListener("click", function () {
       var r = 0.020, burden = snBurden(r, st.load), loadV = SN_RAIL - burden;
+      snVizDoFirst(viz, st.load);
       read.textContent = "SENSE " + snFmtMv(burden) + " \u00B7 CURRENT " + snFmtA(burden / r) +
         "\nBURDEN " + snFmtMv(burden) + " \u00B7 LOAD SEES " + snFmtV(loadV) +
         "\nThe sense is the burden: the same drop you read is the drop you stole.";
@@ -41946,6 +43088,10 @@ if (typeof module !== "undefined" && module.exports) {
       "A: SENSE 100.0 mV \u00B7 2.00 A (Kelvin taps)\nB: SENSE 110.0 mV \u00B7 2.20 A (taps as wired)");
     box.id = "snT2_box";
     card.appendChild(box);
+    var viz = snEl("div", "sn-viz");
+    viz.id = "snT2_viz";
+    card.appendChild(viz);
+    snVizT2(viz, false);
 
     var row = snEl("div", "sn-row");
     var pA = snEl("button", "sn-btn", "PROBE A PADS");
@@ -42035,6 +43181,7 @@ if (typeof module !== "undefined" && module.exports) {
       notes.textContent += "\nTAPS MOVED: B's sense wires now touch the shunt pads. Re-probe B to confirm.";
       verdict.textContent = "Taps moved. PROBE B PADS again to confirm the reading.";
       verdict.className = "sn-verdict";
+      snVizT2(viz, true);
       snLog("t2: taps moved to the pads. Re-probe to confirm.", "dim");
       snPop(card);
     });
@@ -42469,7 +43616,13 @@ if (typeof module !== "undefined" && module.exports) {
     "<li><b>WRONG WAY:</b> a Zener fitted forward clamps at 0.7 V, a diode doing diode things. Probe before ",
     "you trust.</li>",
     "<li><b>THE BIG RAIL:</b> this circuit tops out at milliamps of load. For the 700 mA rail, the series ",
-    "answer lives in The LDO Room: same job, a transistor burns the difference instead of the resistor.</li></ul></div>"
+    "answer lives in The LDO Room: same job, a transistor burns the difference instead of the resistor.</li></ul></div>",
+    "<div class=\"zn-card\"><h3>THE CANONICAL VIEWS</h3>",
+    "<p class=\"why\">Three standard pictures carry this room. The shunt-regulator schematic: feed resistor, clamp ",
+    "diode, load, and the three currents that must sum at the node. The diode I-V with the reverse-breakdown knee at ",
+    "Vz, idealized at the room's 2 mA knee: this is the room model, not measured data. And the regulator load line, ",
+    "where the feed line crosses the Vz line exactly when the feed survives the load. The cards below redraw all ",
+    "three from the same simulation the verdicts use.</p></div>"
   ].join("");
   if (typeof module !== "undefined" && module.exports && module.exports.ZN) {
     module.exports.ZN.introHTML = ZN_INTRO_HTML;
@@ -42518,7 +43671,10 @@ if (typeof module !== "undefined" && module.exports) {
     ".zn-pop{animation:znPop 200ms ease-out}",
     "@keyframes znPop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
     "@media (prefers-reduced-motion:reduce){.zn-pop{animation:none}}",
-    "@media (max-width:640px){.zn-panel{padding:48px 14px 100px}.zn-num{width:100%}}"
+    "@media (max-width:640px){.zn-panel{padding:48px 14px 100px}.zn-num{width:100%}}",
+    ".zn-viz{margin:12px 0 4px}",
+    ".zn-viz svg{margin:0 0 12px}",
+    ".zn-viz svg:last-child{margin-bottom:0}"
   ].join("\n");
 
   /* ---------- dom helpers ---------- */
@@ -42563,6 +43719,121 @@ if (typeof module !== "undefined" && module.exports) {
     }
   }
 
+  /* ---------- canonical views: shunt regulator, diode I-V, regulator load line ---------- */
+  function znTxt(x, y, s, anchor, size, fill) {
+    return '<text x="' + x + '" y="' + y + '" text-anchor="' + (anchor || "start") + '" font-size="' +
+      (size || 11) + '" font-family="\'JetBrains Mono\',monospace" fill="' + (fill || "var(--paper)") + '">' + s + "</text>";
+  }
+  function znZig(x1, x2, y, peaks) {
+    var d = "M" + x1 + "," + y, i, n = peaks * 2, w = (x2 - x1) / n;
+    for (i = 1; i < n; i++) d += " L" + (x1 + w * i).toFixed(1) + "," + (y + (i % 2 ? -9 : 9));
+    return '<path d="' + d + " L" + x2 + "," + y + '" stroke="var(--paper)" stroke-width="1.5" fill="none"/>';
+  }
+  function znGround(x, y) {
+    return '<line x1="' + (x - 20) + '" y1="' + y + '" x2="' + (x + 20) + '" y2="' + y +
+      '" stroke="var(--paper)" stroke-width="1.5"/>' +
+      '<line x1="' + (x - 12) + '" y1="' + (y + 6) + '" x2="' + (x + 12) + '" y2="' + (y + 6) +
+      '" stroke="var(--paper)" stroke-width="1.5"/>' +
+      '<line x1="' + (x - 5) + '" y1="' + (y + 12) + '" x2="' + (x + 5) + '" y2="' + (y + 12) +
+      '" stroke="var(--paper)" stroke-width="1.5"/>';
+  }
+  function znSchematicSVG(r, load) {
+    var W = 520, H = 330, ink = "var(--paper)", dim = "var(--steel)";
+    var s = '<svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="Shunt regulator schematic" style="width:100%;height:auto;display:block">';
+    s += znTxt(16, 22, "SHUNT REGULATOR", "start", 11, dim);
+    s += znTxt(20, 46, "+" + ZN_VIN.toFixed(0) + " V", "start", 10, dim);
+    s += '<line x1="40" y1="52" x2="180" y2="52" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += znZig(180, 260, 52, 3);
+    s += znTxt(220, 38, znFeedSpec(r), "middle", 10, dim);
+    s += '<line x1="260" y1="52" x2="420" y2="52" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<line x1="420" y1="52" x2="420" y2="100" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<rect x="380" y="100" width="80" height="44" fill="none" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += znTxt(420, 118, "LOAD", "middle", 11, ink);
+    s += znTxt(420, 134, load.toFixed(1) + " mA", "middle", 10, dim);
+    s += '<line x1="420" y1="144" x2="420" y2="220" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += znGround(420, 220);
+    s += '<line x1="300" y1="52" x2="300" y2="120" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<polygon points="300,132 310,152 290,152" fill="none" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<line x1="290" y1="152" x2="310" y2="152" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += znTxt(316, 148, "Vz " + ZN_VZ + " V", "start", 10, dim);
+    s += '<line x1="300" y1="152" x2="300" y2="220" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += znGround(300, 220);
+    var sim = znSim(r, load);
+    s += znTxt(20, 280, "I feed " + znFmtMa(sim.is) + " \u00B7 I load " + znFmtMa(load) + " mA \u00B7 Iz " +
+      znFmtMa(sim.iz) + " \u00B7 RAIL " + znFmtV(sim.vout) + (sim.regulated ? " \u00B7 CLAMPED" : " \u00B7 NOT REGULATED"),
+      "start", 11, sim.regulated ? "var(--mint)" : "var(--ember)");
+    s += znTxt(20, 298, "IZ MUST COVER THE KNEE: " + ZN_IZ_KNEE.toFixed(0) + " mA", "start", 9, dim);
+    return s + "</svg>";
+  }
+  function znIVCurveSVG(r, load) {
+    var W = 500, H = 300, L = 58, R = 14, T = 16, B = 40;
+    function X(v) { return (L + ((v + 2) / 15) * (W - L - R)).toFixed(1); }
+    function Y(a) { return (H - B - ((a + 10) / 45) * (H - T - B)).toFixed(1); }
+    var s = '<svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="Zener diode I-V curve with breakdown region" style="width:100%;height:auto;display:block">';
+    s += znTxt(20, 22, "DIODE I-V, IDEALIZED KNEE AT " + ZN_VZ + " V", "start", 11, "var(--steel)");
+    [-2, 0, 2, 4, 6, 8, 10, 12].forEach(function (v) {
+      s += '<line x1="' + X(v) + '" y1="' + T + '" x2="' + X(v) + '" y2="' + (H - B) + '" stroke="var(--line)" stroke-width="1"/>';
+      s += znTxt(X(v), H - B + 16, v + " V", "middle", 10, "var(--steel)");
+    });
+    [-10, -5, 0, 5, 10, 15, 20, 25, 30].forEach(function (a) {
+      s += '<line x1="' + L + '" y1="' + Y(a) + '" x2="' + (W - R) + '" y2="' + Y(a) + '" stroke="var(--line)" stroke-width="1"/>';
+      s += znTxt(L - 6, +Y(a) + 4, a + " mA", "end", 10, "var(--steel)");
+    });
+    var pts = [], v;
+    for (v = -2; v <= -ZN_VZ; v += 0.25) pts.push(X(v) + "," + Y(0));
+    pts.push(X(-ZN_VZ) + "," + Y(0));
+    pts.push(X(-ZN_VZ) + "," + Y(35));
+    var sim = znSim(r, load);
+    pts.push(X(-ZN_VZ) + "," + Y(Math.min(35, sim.iz)));
+    s += '<polyline points="' + pts.join(" ") + '" fill="none" stroke="var(--mint)" stroke-width="2"/>';
+    s += '<line x1="' + X(-ZN_VZ) + '" y1="' + T + '" x2="' + X(-ZN_VZ) + '" y2="' + (H - B) +
+      '" stroke="var(--steel)" stroke-width="1" stroke-dasharray="3 3"/>';
+    s += znTxt(X(-ZN_VZ) + 6, T + 12, "-Vz", "start", 10, "var(--steel)");
+    s += '<line x1="' + X(-ZN_VZ) + '" y1="' + Y(ZN_IZ_KNEE) + '" x2="' + (W - R) + '" y2="' + Y(ZN_IZ_KNEE) +
+      '" stroke="var(--ember)" stroke-width="1" stroke-dasharray="3 3"/>';
+    s += znTxt(W - R - 4, Y(ZN_IZ_KNEE) - 6, "KNEE " + ZN_IZ_KNEE.toFixed(0) + " mA", "end", 10, "var(--ember)");
+    s += '<circle cx="' + X(-sim.vout) + '" cy="' + Y(Math.min(35, sim.iz)) + '" r="4.5" fill="' +
+      (sim.regulated ? "var(--mint)" : "var(--ember)") + '" stroke="var(--ink)" stroke-width="1"/>';
+    s += znTxt(X(-sim.vout) - 8, +Y(Math.min(35, sim.iz)) + 20, "OPERATING POINT", "end", 10,
+      sim.regulated ? "var(--mint)" : "var(--ember)");
+    s += znTxt(20, H - 24, "ROOM MODEL: IDEALIZED KNEE, NOT MEASURED DATA", "start", 9, "var(--steel)");
+    return s + "</svg>";
+  }
+  function znLoadLineSVG(r, load) {
+    var W = 500, H = 300, L = 58, R = 14, T = 16, B = 40;
+    function X(a) { return (L + (a / 40) * (W - L - R)).toFixed(1); }
+    function Y(v) { return (H - B - (v / 14) * (H - T - B)).toFixed(1); }
+    var s = '<svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="Regulator load line" style="width:100%;height:auto;display:block">';
+    s += znTxt(20, 22, "REGULATOR LOAD LINE: FEED " + znFeedSpec(r), "start", 11, "var(--steel)");
+    [0, 10, 20, 30, 40].forEach(function (a) {
+      s += '<line x1="' + X(a) + '" y1="' + T + '" x2="' + X(a) + '" y2="' + (H - B) + '" stroke="var(--line)" stroke-width="1"/>';
+      s += znTxt(X(a), H - B + 16, a + " mA", "middle", 10, "var(--steel)");
+    });
+    [0, 3, 6, 9, 12].forEach(function (v) {
+      s += '<line x1="' + L + '" y1="' + Y(v) + '" x2="' + (W - R) + '" y2="' + Y(v) + '" stroke="var(--line)" stroke-width="1"/>';
+      s += znTxt(L - 6, +Y(v) + 4, v + " V", "end", 10, "var(--steel)");
+    });
+    s += '<line x1="' + X(0) + '" y1="' + Y(ZN_VIN) + '" x2="' + X(Math.min(40, ZN_VIN * 1000 / r)) + '" y2="' + Y(0) +
+      '" stroke="var(--ember)" stroke-width="2"/>';
+    s += znTxt(X(Math.min(40, ZN_VIN * 1000 / r) * 0.5) + 8, +Y(ZN_VIN * 0.5) - 8, "FEED LOAD LINE", "start", 10, "var(--ember)");
+    s += '<line x1="' + X(0) + '" y1="' + Y(ZN_VZ) + '" x2="' + (W - R) + '" y2="' + Y(ZN_VZ) +
+      '" stroke="var(--mint)" stroke-width="1" stroke-dasharray="4 3"/>';
+    s += znTxt(W - R - 4, +Y(ZN_VZ) - 8, "Vz", "end", 10, "var(--mint)");
+    var sim = znSim(r, load);
+    s += '<circle cx="' + X(Math.min(40, load)) + '" cy="' + Y(Math.min(14, sim.vout)) + '" r="4.5" fill="' +
+      (sim.regulated ? "var(--mint)" : "var(--ember)") + '" stroke="var(--ink)" stroke-width="1"/>';
+    s += znTxt(X(Math.min(40, load)) + 8, +Y(Math.min(14, sim.vout)) - 6, "OPERATING POINT", "start", 10,
+      sim.regulated ? "var(--mint)" : "var(--ember)");
+    s += znTxt(20, H - 6, "I feed (mA)", "middle", 11, "var(--steel)");
+    return s + "</svg>";
+  }
+  function znViz(el, r, load) {
+    el.innerHTML = znSchematicSVG(r, load) + znIVCurveSVG(r, load) + znLoadLineSVG(r, load);
+  }
+
   /* ---------- do-first card: meter the holding rail, free ---------- */
   function znDoFirstCard() {
     var card = znEl("div", "zn-card");
@@ -42596,8 +43867,13 @@ if (typeof module !== "undefined" && module.exports) {
     var read = znEl("div", "zn-read", "LOAD 2 mA \u00B7 press METER THE RAIL");
     read.id = "znDoFirst_read";
     card.appendChild(read);
+    var viz = znEl("div", "zn-viz");
+    viz.id = "znDoFirst_viz";
+    card.appendChild(viz);
+    znViz(viz, 1000, 2);
     run.addEventListener("click", function () {
       var s = znSim(1000, st.load);
+      znViz(viz, 1000, st.load);
       read.textContent = "RAIL " + znFmtV(s.vout) + " \u00B7 FEED " + znFmtMa(s.is) +
         " \u00B7 ZENER " + znFmtMa(s.iz) +
         "\n" + (s.regulated
@@ -42626,6 +43902,7 @@ if (typeof module !== "undefined" && module.exports) {
       b.setAttribute("aria-label", "Fit the " + znFeedSpec(r) + " feed resistor");
       b.addEventListener("click", function () {
         znState.t1.feed = i;
+        znViz(viz, ZN_T1_TRAY[i], ZN_T1_LOAD);
         znState.t1.predicted = false;
         znState.t1.passed = false;
         znRefreshCert();
@@ -42664,6 +43941,10 @@ if (typeof module !== "undefined" && module.exports) {
     var read = znEl("div", "zn-read", "");
     read.id = "znT1_read";
     card.appendChild(read);
+    var viz = znEl("div", "zn-viz");
+    viz.id = "znT1_viz";
+    card.appendChild(viz);
+    znViz(viz, ZN_T1_TRAY[znState.t1.feed === null ? 2 : znState.t1.feed], ZN_T1_LOAD);
     var verdict = znEl("div", "zn-verdict", "Pick a feed from the tray.");
     verdict.id = "znT1_verdict";
     verdict.setAttribute("aria-live", "polite");
@@ -42734,6 +44015,10 @@ if (typeof module !== "undefined" && module.exports) {
     var box = znEl("div", "zn-box", cfg.name + ": " + cfg.spec);
     box.id = "znT2" + which + "_box";
     card.appendChild(box);
+    var viz = znEl("div", "zn-viz");
+    viz.id = "znT2_viz";
+    card.appendChild(viz);
+    znViz(viz, cfg.feed, cfg.load);
 
     var row = znEl("div", "zn-row");
     var pRail = znEl("button", "zn-btn", "PROBE RAIL");
@@ -42833,6 +44118,7 @@ if (typeof module !== "undefined" && module.exports) {
       notes.textContent += "\nFEED REFITTED: " + znFeedSpec(cfg.fixFeed) +
         " now feeds the rail. Re-probe the RAIL to confirm.";
       verdict.textContent = "Feed refitted. PROBE RAIL again to confirm the reading.";
+      znViz(viz, cfg.fixFeed, cfg.load);
       verdict.className = "zn-verdict";
       znLog("t2" + which + ": feed refitted to " + znFeedSpec(cfg.fixFeed) + ". Re-probe to confirm.", "dim");
       znPop(card);
@@ -43181,7 +44467,12 @@ if (typeof module !== "undefined" && module.exports) {
     "<li><b>COLLAPSE:</b> skip the buffer and a 2.50 V sensor behind 100k reads 0.02 V into a 1k load. The sensor ",
     "is fine, the divider math is honest, the reading is garbage. Trial 2 is that collapse on purpose.</li>",
     "<li><b>COPIED GARBAGE:</b> the follower cannot fix a wrong input. Amplify a collapsed 0.02 V by 10 and you get ",
-    "a louder 0.25 V, still wrong. Fix the loading first, amplify second.</li></ul></div>"
+    "a louder 0.25 V, still wrong. Fix the loading first, amplify second.</li></ul></div>",
+    "<div class=\"oa-card\"><h3>THE CANONICAL VIEWS</h3>",
+    "<p class=\"why\">Three standard pictures carry this room. The schematic: non-inverting amp or follower, Rf and ",
+    "Rg drawn, the feedback wired. The transfer curve with the two horizontal rails, where the line bends exactly ",
+    "where the asked voltage outruns 4.9 V. And the asked-versus-output pair, outline against solid, flat where the ",
+    "clip eats the waveform. The cards below redraw all three from the same gain and rail constants the verdicts use.</p></div>"
   ].join("");
   if (typeof module !== "undefined" && module.exports && module.exports.OP) {
     module.exports.OP.introHTML = OP_INTRO_HTML;
@@ -43231,7 +44522,10 @@ if (typeof module !== "undefined" && module.exports) {
     "@keyframes oaPop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
     "@media (prefers-reduced-motion:reduce){.oa-pop{animation:none}}",
     "@media (max-width:640px){.oa-panel{padding:48px 14px 100px}.oa-num{width:100%}}",
-    "input[type=range].oa-range{min-height:48px;flex:1;min-width:180px;accent-color:var(--ember,var(--ember))}"
+    "input[type=range].oa-range{min-height:48px;flex:1;min-width:180px;accent-color:var(--ember,var(--ember))}",
+    ".oa-viz{margin:12px 0 4px}",
+    ".oa-viz svg{margin:0 0 12px}",
+    ".oa-viz svg:last-child{margin-bottom:0}"
   ].join("\n");
 
   /* ---------- dom helpers ---------- */
@@ -43275,6 +44569,139 @@ if (typeof module !== "undefined" && module.exports) {
     } else {
       opEls.banner.style.display = "none";
     }
+  }
+
+  /* ---------- canonical views: non-inverting amp, follower, transfer curve, waveforms ---------- */
+  function opTxt(x, y, s, anchor, size, fill) {
+    return '<text x="' + x + '" y="' + y + '" text-anchor="' + (anchor || "start") + '" font-size="' +
+      (size || 11) + '" font-family="\'JetBrains Mono\',monospace" fill="' + (fill || "var(--paper)") + '">' + s + "</text>";
+  }
+  function opGround(x, y) {
+    return '<line x1="' + (x - 20) + '" y1="' + y + '" x2="' + (x + 20) + '" y2="' + y +
+      '" stroke="var(--paper)" stroke-width="1.5"/>' +
+      '<line x1="' + (x - 12) + '" y1="' + (y + 6) + '" x2="' + (x + 12) + '" y2="' + (y + 6) +
+      '" stroke="var(--paper)" stroke-width="1.5"/>' +
+      '<line x1="' + (x - 5) + '" y1="' + (y + 12) + '" x2="' + (x + 5) + '" y2="' + (y + 12) +
+      '" stroke="var(--paper)" stroke-width="1.5"/>';
+  }
+  function opTriangle(cx, cy, w, h, gain) {
+    var s = '<polygon points="' + cx + "," + (cy - h / 2) + " " + cx + "," + (cy + h / 2) + " " + (cx + w) + "," + cy +
+      '" fill="none" stroke="var(--paper)" stroke-width="1.5"/>';
+    s += opTxt(cx + 12, cy - h / 2 + 34, "-", "start", 13, "var(--paper)");
+    s += opTxt(cx + 12, cy + h / 2 - 22, "+", "start", 13, "var(--paper)");
+    s += opTxt(cx + w + 6, cy + 4, "x" + gain.toFixed(1), "start", 10, "var(--steel)");
+    return s;
+  }
+  function opAmpSchematicSVG(gain, rf, rg) {
+    var W = 520, H = 300, ink = "var(--paper)", dim = "var(--steel)";
+    var s = '<svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="Non-inverting op-amp schematic" style="width:100%;height:auto;display:block">';
+    s += opTxt(16, 22, "NON-INVERTING AMP, GAIN " + gain.toFixed(1), "start", 11, dim);
+    var cx = 200, cy = 160, w = 130, h = 100;
+    s += opTriangle(cx, cy, w, h, gain);
+    s += '<line x1="' + (cx + w) + '" y1="' + cy + '" x2="' + (cx + w + 90) + '" y2="' + cy + '" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += opTxt(cx + w + 60, cy - 8, "OUT", "start", 10, dim);
+    s += '<line x1="60" y1="' + (cy + h / 2 - 30) + '" x2="' + cx + '" y2="' + (cy + h / 2 - 30) + '" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += opTxt(90, cy + h / 2 - 38, "IN", "start", 10, dim);
+    s += '<line x1="250" y1="' + (cy - h / 2 + 30) + '" x2="250" y2="' + (cy - h / 2 - 40) + '" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<line x1="250" y1="' + (cy - h / 2 - 40) + '" x2="' + (cx + w + 50) + '" y2="' + (cy - h / 2 - 40) + '" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<line x1="' + (cx + w + 50) + '" y1="' + (cy - h / 2 - 40) + '" x2="' + (cx + w + 50) + '" y2="' + cy + '" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<rect x="300" y="' + (cy - h / 2 - 62) + '" width="44" height="22" fill="none" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += opTxt(322, cy - h / 2 - 46, "Rf", "middle", 10, ink);
+    s += '<line x1="250" y1="' + (cy - h / 2 + 30) + '" x2="250" y2="' + (cy + 40) + '" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<rect x="228" y="' + (cy + 40) + '" width="44" height="22" fill="none" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += opTxt(250, cy + 56, "Rg", "middle", 10, ink);
+    s += '<line x1="250" y1="' + (cy + 62) + '" x2="250" y2="' + (cy + 76) + '" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += opGround(250, cy + 76);
+    s += opTxt(16, 274, "GAIN = 1 + Rf/Rg = 1 + " + rf + "/" + rg + " \u00B7 RAILS 0.1 TO 4.9 V", "start", 10, dim);
+    return s + "</svg>";
+  }
+  function opFollowerSchematicSVG(vs, sourceR, adcR) {
+    var W = 520, H = 320, ink = "var(--paper)", dim = "var(--steel)";
+    var s = '<svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="Voltage follower buffering the sensor" style="width:100%;height:auto;display:block">';
+    s += opTxt(16, 22, "FOLLOWER: SENSOR, BUFFER, ADC", "start", 11, dim);
+    s += '<rect x="30" y="120" width="90" height="60" fill="none" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += opTxt(75, 146, "SENSOR", "middle", 10, ink);
+    s += opTxt(75, 162, opFmtV(vs) + " \u00B7 " + sourceR + " SOURCE", "middle", 9, dim);
+    var cx = 210, cy = 150, w = 100, h = 80;
+    s += '<line x1="120" y1="150" x2="' + cx + '" y2="' + (cy + h / 2 - 25) + '" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += opTriangle(cx, cy, w, h, 1);
+    s += '<line x1="' + (cx + w) + '" y1="' + cy + '" x2="' + cx + '" y2="' + (cy - h / 2 + 25) + '" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<line x1="' + (cx + w) + '" y1="' + cy + '" x2="' + (cx + w + 60) + '" y2="' + cy + '" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += '<rect x="' + (cx + w + 60) + '" y="' + (cy - 20) + '" width="70" height="40" fill="none" stroke="' + ink + '" stroke-width="1.5"/>';
+    s += opTxt(cx + w + 95, cy - 2, "ADC", "middle", 10, ink);
+    s += opTxt(cx + w + 95, cy + 12, adcR, "middle", 9, dim);
+    s += opTxt(16, 270, "THE INPUT DRAWS NO CURRENT: THE 100k SEES NOTHING", "start", 10, dim);
+    s += opTxt(16, 288, "THE LOAD CURRENT COMES FROM THE 5 V RAIL", "start", 10, dim);
+    return s + "</svg>";
+  }
+  function opTransferSVG(gain, markVins) {
+    var W = 500, H = 300, L = 58, R = 14, T = 16, B = 40;
+    function X(v) { return (L + (v / 0.65) * (W - L - R)).toFixed(1); }
+    function Y(v) { return (H - B - (v / 5.5) * (H - T - B)).toFixed(1); }
+    var s = '<svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="Op-amp transfer curve with rail limits" style="width:100%;height:auto;display:block">';
+    s += opTxt(20, 22, "TRANSFER CURVE, GAIN " + gain.toFixed(1), "start", 11, "var(--steel)");
+    [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6].forEach(function (v) {
+      s += '<line x1="' + X(v) + '" y1="' + T + '" x2="' + X(v) + '" y2="' + (H - B) + '" stroke="var(--line)" stroke-width="1"/>';
+      s += opTxt(X(v), H - B + 16, v.toFixed(1) + " V", "middle", 10, "var(--steel)");
+    });
+    [0, 1, 2, 3, 4, 5].forEach(function (v) {
+      s += '<line x1="' + L + '" y1="' + Y(v) + '" x2="' + (W - R) + '" y2="' + Y(v) + '" stroke="var(--line)" stroke-width="1"/>';
+      s += opTxt(L - 6, +Y(v) + 4, v + " V", "end", 10, "var(--steel)");
+    });
+    [OP_RAIL_LO, OP_RAIL_HI].forEach(function (r) {
+      s += '<line x1="' + L + '" y1="' + Y(r) + '" x2="' + (W - R) + '" y2="' + Y(r) + '" stroke="var(--ember)" stroke-width="1" stroke-dasharray="4 3"/>';
+    });
+    s += opTxt(W - R - 4, +Y(OP_RAIL_HI) - 8, "4.9 V", "end", 10, "var(--ember)");
+    s += opTxt(W - R - 4, +Y(OP_RAIL_LO) + 14, "0.1 V", "end", 10, "var(--ember)");
+    var pts = [], v;
+    for (v = 0; v <= 0.651; v += 0.01) pts.push(X(v) + "," + Y(opOut(gain, v)));
+    s += '<polyline points="' + pts.join(" ") + '" fill="none" stroke="var(--mint)" stroke-width="2"/>';
+    markVins.forEach(function (mv) {
+      s += '<circle cx="' + X(mv) + '" cy="' + Y(opOut(gain, mv)) + '" r="4" fill="' +
+        (opClip(gain, mv) ? "var(--ember)" : "var(--mint)") + '" stroke="var(--ink)" stroke-width="1"/>';
+    });
+    s += opTxt((W + L) / 2, H - 6, "VIN (V)", "middle", 11, "var(--steel)");
+    return s + "</svg>";
+  }
+  function opWaveSVG(gain, vins) {
+    var W = 500, H = 150, L = 62, R = 14, T = 14, B = 40;
+    function X(v) { return (L + (v / 5.5) * (W - L - R)).toFixed(1); }
+    var s = '<svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="Asked versus clamped output" style="width:100%;height:auto;display:block">';
+    s += opTxt(20, 22, "ASKED VS OUTPUT", "start", 11, "var(--steel)");
+    s += '<line x1="' + X(OP_RAIL_HI) + '" y1="' + T + '" x2="' + X(OP_RAIL_HI) + '" y2="' + (H - B) +
+      '" stroke="var(--ember)" stroke-width="1" stroke-dasharray="4 3"/>';
+    s += opTxt(X(OP_RAIL_HI), H - B + 16, "4.9 V RAIL", "middle", 10, "var(--ember)");
+    vins.forEach(function (vin, i) {
+      var y = T + 10 + i * 32, asked = opAsked(gain, vin), out = opOut(gain, vin);
+      s += opTxt(L - 6, y + 11, opFmtV(vin) + " IN", "end", 10, "var(--steel)");
+      s += '<rect x="' + X(0) + '" y="' + y + '" width="' + (+X(asked) - +X(0)).toFixed(1) + '" height="10" fill="none" stroke="var(--steel)" stroke-width="1"/>';
+      s += '<rect x="' + X(0) + '" y="' + (y + 14) + '" width="' + (+X(out) - +X(0)).toFixed(1) + '" height="10" fill="' +
+        (opClip(gain, vin) ? "var(--ember)" : "var(--mint)") + '"/>';
+    });
+    s += opTxt(20, H - 4, "OUTLINE: ASKED \u00B7 SOLID: OUTPUT (FLAT = CLIPPED)", "start", 9, "var(--steel)");
+    return s + "</svg>";
+  }
+  function opVizDoFirst(el, vin, load) {
+    el.innerHTML = opFollowerSchematicSVG(vin, "1k", load ? "1k LOAD" : "ADC 1k") + opWaveSVG(1, [vin]);
+  }
+  function opVizT1(el, p) {
+    if (!p) { el.innerHTML = ""; return; }
+    var gain = opGain(p.rf, p.rg);
+    el.innerHTML = opAmpSchematicSVG(gain, p.rf, p.rg) + opTransferSVG(gain, OP_T3_INS) + opWaveSVG(gain, OP_T3_INS);
+  }
+  function opVizT2(el, follower) {
+    el.innerHTML = opFollowerSchematicSVG(OP_T2_VS, "100k", "ADC 1k") +
+      (follower
+        ? opWaveSVG(1, [opT2Truth(), OP_T2_VS])
+        : '<svg viewBox="0 0 500 150" role="img" aria-label="Divider collapse" style="width:100%;height:auto;display:block">' +
+          opTxt(20, 22, "THE COLLAPSE", "start", 11, "var(--steel)") +
+          opTxt(20, 60, "SENSOR 2.50 V \u00B7 ADC READS " + opT2Truth().toFixed(3) + " V", "start", 11, "var(--ember)") +
+          opTxt(20, 84, "2.5 x 1k/(100k + 1k): THE DIVIDER IS HONEST AND THE READING IS GARBAGE", "start", 9, "var(--steel)") +
+          "</svg>");
   }
 
   /* ---------- do-first card: drive the follower, free ---------- */
@@ -43321,6 +44748,10 @@ if (typeof module !== "undefined" && module.exports) {
     var read = opEl("div", "oa-read", "VIN 2.50 V \u00B7 press DRIVE");
     read.id = "oaDoFirst_read";
     card.appendChild(read);
+    var viz = opEl("div", "oa-viz");
+    viz.id = "oaDoFirst_viz";
+    card.appendChild(viz);
+    opVizDoFirst(viz, st.vin, st.load);
     run.addEventListener("click", function () {
       var out = opOut(1, st.vin);
       var ima = st.load ? out / 1 : 0;
@@ -43329,6 +44760,7 @@ if (typeof module !== "undefined" && module.exports) {
         "\nThe copy holds. The slider is a whisper; the rails do the lifting.";
       opLog("do-first: drove " + opFmtV(st.vin) + ", output " + opFmtV(out) +
         (st.load ? ", 1k load held." : "."), "dim");
+      opVizDoFirst(viz, st.vin, st.load);
       opPop(card);
     });
     return card;
@@ -43351,6 +44783,7 @@ if (typeof module !== "undefined" && module.exports) {
       b.addEventListener("click", function () {
         if (opState.t1.passed) { opState.t1.passed = false; opRefreshCert(); }
         opState.t1.pair = i;
+        opVizT1(viz, p);
         opState.t1.called = false;
         opState.t1.ran = false;
         pBtns.forEach(function (x, j) { x.classList.toggle("sel", j === i); });
@@ -43389,6 +44822,10 @@ if (typeof module !== "undefined" && module.exports) {
     var read = opEl("div", "oa-read", "");
     read.id = "oaT1_read";
     card.appendChild(read);
+    var viz = opEl("div", "oa-viz");
+    viz.id = "oaT1_viz";
+    card.appendChild(viz);
+    opVizT1(viz, opState.t1.pair === null ? null : OP_T1_PAIRS[opState.t1.pair]);
     var verdict = opEl("div", "oa-verdict", "Pick a resistor pair from the tray.");
     verdict.id = "oaT1_verdict";
     verdict.setAttribute("aria-live", "polite");
@@ -43428,6 +44865,7 @@ if (typeof module !== "undefined" && module.exports) {
       var asked = opAsked(gain, OP_T1_VIN);
       var out = opOut(gain, OP_T1_VIN);
       var clean = !opClip(gain, OP_T1_VIN);
+      opVizT1(viz, p);
       opState.t1.ran = true;
       read.textContent = "GAIN " + gain.toFixed(1) + " \u00B7 ASKED " + opFmtV(asked) + " \u00B7 OUTPUT " + opFmtV(out);
       if (clean) {
@@ -43482,6 +44920,10 @@ if (typeof module !== "undefined" && module.exports) {
     var read = opEl("div", "oa-read", "");
     read.id = "oaT2_read";
     card.appendChild(read);
+    var viz = opEl("div", "oa-viz");
+    viz.id = "oaT2_viz";
+    card.appendChild(viz);
+    opVizT2(viz, false);
 
     var vrow = opEl("div", "oa-row");
     vrow.appendChild(opEl("span", "oa-lab", "FIX"));
@@ -43561,6 +45003,7 @@ if (typeof module !== "undefined" && module.exports) {
       if (!opState.t2.committed) return;
       opState.t2.fixed = true;
       box.textContent = "SENSOR 2.50 V \u00B7 100k SOURCE\nFOLLOWER \u00B7 ADC INPUT 1k";
+      opVizT2(viz, true);
       fix.disabled = true;
       read.textContent = "SENSOR 2.50 V \u00B7 ADC READS " + opFmtV(opOut(1, OP_T2_VS)) +
         "\nThe follower copies the 2.50 V and the 1k load's 2.5 mA comes from the 5 V rail. Trial 2 passes.";
@@ -43606,6 +45049,10 @@ if (typeof module !== "undefined" && module.exports) {
     var read = opEl("div", "oa-read", "");
     read.id = "oaT3_read";
     card.appendChild(read);
+    var viz = opEl("div", "oa-viz");
+    viz.id = "oaT3_viz";
+    card.appendChild(viz);
+    viz.innerHTML = opAmpSchematicSVG(OP_T3_GAIN, 100, 10) + opTransferSVG(OP_T3_GAIN, OP_T3_INS) + opWaveSVG(OP_T3_GAIN, OP_T3_INS);
     var verdict = opEl("div", "oa-verdict", "Call all three inputs first.");
     verdict.id = "oaT3_verdict";
     verdict.setAttribute("aria-live", "polite");
@@ -43623,6 +45070,7 @@ if (typeof module !== "undefined" && module.exports) {
     }
     run.addEventListener("click", function () {
       var done = OP_T3_INS.every(function (x) { return opState.t3.pred[String(x)] !== null; });
+      viz.innerHTML = opAmpSchematicSVG(OP_T3_GAIN, 100, 10) + opTransferSVG(OP_T3_GAIN, OP_T3_INS) + opWaveSVG(OP_T3_GAIN, OP_T3_INS);
       if (!done) return;
       var right = 0;
       var lines = OP_T3_INS.map(function (vin) {
@@ -44859,8 +46307,10 @@ if (typeof module !== "undefined" && module.exports) {
     ".in-input:disabled{opacity:.35}",
     ".in-neon{display:inline-block;min-width:120px;text-align:center;padding:10px 14px;border:1px solid var(--line,var(--line));font-size:13px;letter-spacing:.1em}",
     ".in-neon.struck{border-color:var(--ember,var(--ember));color:var(--ember,var(--ember))}",
-    ".in-bar{height:8px;background:var(--line);margin:10px 0;position:relative}",
-    ".in-bar i{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--ember,var(--ember))}",
+    ".in-scope{margin:10px 0}",
+    ".in-scope svg{width:100%;height:auto;display:block}",
+    ".in-scope text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}",
+    ".in-scap{font-size:11px;color:var(--dim);margin:6px 0 0;line-height:1.6}",
     ".in-banner{border:1px solid var(--ember,var(--ember));padding:18px;margin:18px 0;display:none}",
     ".in-banner.show{display:block}",
     ".in-banner h3{font-family:'Space Grotesk',sans-serif;font-size:15px;letter-spacing:.14em;margin:0 0 8px;color:var(--ember,var(--ember))}",
@@ -44940,6 +46390,145 @@ if (typeof module !== "undefined" && module.exports) {
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
   }
 
+  /* ---------- inductor scope (view-only): i(t) ramp, flyback waveform, freewheel schematic ----------
+     Every number comes from the existing in* sim functions; this draws only.
+     o = { l, iNow, frac, kick (volts or null), iOpen, switchOpen }. */
+  var IN_INK = "#c9cdd3", IN_DIM = "#868e98", IN_REF = "#d8b24a";
+  function inSvg(tag, attrs) {
+    var e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+  function inSvgT(x, y, s, anchor, fill, size) {
+    var t = inSvg("text", { x: x, y: y, "text-anchor": anchor || "start",
+      "font-size": size || 11, fill: fill || IN_INK });
+    t.textContent = s;
+    return t;
+  }
+  function inFrame(title, x, y, W, H, x0, x1, y0, y1) {
+    var m = { l: 46, r: 12, t: 20, b: 28 };
+    var g = inSvg("g", {});
+    function px(v) { return x + m.l + (W - m.l - m.r) * (v - x0) / (x1 - x0); }
+    function py(v) { return y + H - m.b - (H - m.t - m.b) * (v - y0) / (y1 - y0); }
+    g.appendChild(inSvg("line", { x1: x + m.l, y1: y + m.t, x2: x + m.l, y2: y + H - m.b,
+      stroke: IN_INK, "stroke-width": 1.5 }));
+    g.appendChild(inSvg("line", { x1: x + m.l, y1: y + H - m.b, x2: x + W - m.r, y2: y + H - m.b,
+      stroke: IN_INK, "stroke-width": 1.5 }));
+    g.appendChild(inSvgT(x + m.l, y + 13, title, "start", IN_DIM, 10));
+    return { g: g, px: px, py: py };
+  }
+  function inGnd(x, y) {
+    var g = inSvg("g", { stroke: IN_INK, "stroke-width": 2 });
+    g.appendChild(inSvg("line", { x1: x - 12, y1: y, x2: x + 12, y2: y }));
+    g.appendChild(inSvg("line", { x1: x - 8, y1: y + 5, x2: x + 8, y2: y + 5 }));
+    g.appendChild(inSvg("line", { x1: x - 4, y1: y + 10, x2: x + 4, y2: y + 10 }));
+    return g;
+  }
+  function inScopeSVG(o, iFull, tFull) {
+    var W = 360, H = 430;
+    var svg = inSvg("svg", { viewBox: "0 0 " + W + " " + H, role: "img",
+      "aria-label": "Inductor current ramp, flyback waveform, and freewheel diode schematic" });
+    /* ---- plot 1: current vs time under 12 V ---- */
+    var P1 = inFrame("COIL CURRENT vs TIME", 0, 0, W, 150, 0, tFull, 0, iFull * 1.15);
+    P1.g.appendChild(inSvg("line", { x1: P1.px(0), y1: P1.py(0), x2: P1.px(tFull), y2: P1.py(iFull),
+      stroke: IN_INK, "stroke-width": 2 }));
+    P1.g.appendChild(inSvg("line", { x1: P1.px(0), y1: P1.py(iFull), x2: P1.px(tFull), y2: P1.py(iFull),
+      stroke: IN_DIM, "stroke-width": 1, "stroke-dasharray": "5 4" }));
+    P1.g.appendChild(inSvgT(P1.px(tFull), P1.py(iFull) - 6, inFmtI(iFull), "end", IN_DIM, 10));
+    P1.g.appendChild(inSvgT(P1.px(0), P1.py(-iFull * 0.09), "0", "middle", IN_DIM, 10));
+    P1.g.appendChild(inSvgT(P1.px(tFull / 2), P1.py(-iFull * 0.09), inFmtMs(tFull / 2), "middle", IN_DIM, 10));
+    P1.g.appendChild(inSvgT(P1.px(tFull), P1.py(-iFull * 0.09), inFmtMs(tFull), "end", IN_DIM, 10));
+    var mx = P1.px(o.frac * tFull), my = P1.py(o.iNow);
+    P1.g.appendChild(inSvg("circle", { cx: mx, cy: my, r: 4.5, fill: IN_REF }));
+    P1.g.appendChild(inSvgT(mx, my - 10, inFmtI(o.iNow), "middle", IN_REF, 10));
+    svg.appendChild(P1.g);
+    /* ---- plot 2: flyback at switch-open ---- */
+    var ymax = o.kick != null ? Math.max(o.kick, 1) : 1;
+    var P2 = inFrame("FLYBACK AT SWITCH-OPEN", 0, 160, W, 130, 0, 5, 0, ymax);
+    if (o.kick != null) {
+      var kx = P2.px(1);
+      P2.g.appendChild(inSvg("path", { d: "M" + P2.px(0) + " " + P2.py(0) +
+        "L" + P2.px(0) + " " + P2.py(o.kick) + "L" + kx + " " + P2.py(o.kick) + "L" + kx + " " + P2.py(0),
+        fill: "none", stroke: IN_INK, "stroke-width": 2 }));
+      P2.g.appendChild(inSvgT(kx + 4, P2.py(o.kick), "no diode: " + inFmtV(o.kick) + " peak",
+        "start", IN_INK, 10));
+    }
+    P2.g.appendChild(inSvg("line", { x1: P2.px(0), y1: P2.py(0.7), x2: P2.px(5), y2: P2.py(0.7),
+      stroke: IN_DIM, "stroke-width": 1.5, "stroke-dasharray": "5 4" }));
+    P2.g.appendChild(inSvgT(P2.px(5), P2.py(0.7) - 6, "diode clamps 0.7 V", "end", IN_DIM, 10));
+    P2.g.appendChild(inSvgT(P2.px(0), P2.py(-ymax * 0.09), "0", "middle", IN_DIM, 10));
+    P2.g.appendChild(inSvgT(P2.px(5), P2.py(-ymax * 0.09), "t (us)", "end", IN_DIM, 10));
+    svg.appendChild(P2.g);
+    /* ---- schematic: supply, coil, switch, freewheel diode, neon ---- */
+    var S = inSvg("g", {});
+    S.appendChild(inSvgT(20, 316, "RELAY COIL + FREEWHEEL DIODE", "start", IN_DIM, 10));
+    S.appendChild(inSvg("line", { x1: 40, y1: 340, x2: 40, y2: 355, stroke: IN_INK, "stroke-width": 2 }));
+    S.appendChild(inSvg("line", { x1: 30, y1: 355, x2: 50, y2: 355, stroke: IN_INK, "stroke-width": 3 }));
+    S.appendChild(inSvg("line", { x1: 35, y1: 363, x2: 45, y2: 363, stroke: IN_INK, "stroke-width": 3 }));
+    S.appendChild(inSvg("line", { x1: 40, y1: 363, x2: 40, y2: 410, stroke: IN_INK, "stroke-width": 2 }));
+    S.appendChild(inSvgT(56, 360, "+12 V", "start", IN_INK, 10));
+    S.appendChild(inSvg("line", { x1: 40, y1: 340, x2: 80, y2: 340, stroke: IN_INK, "stroke-width": 2 }));
+    S.appendChild(inSvg("line", { x1: 144, y1: 340, x2: 250, y2: 340, stroke: IN_INK, "stroke-width": 2 }));
+    S.appendChild(inSvg("line", { x1: 40, y1: 410, x2: 250, y2: 410, stroke: IN_INK, "stroke-width": 2 }));
+    S.appendChild(inSvg("line", { x1: 250, y1: 340, x2: 250, y2: 400, stroke: IN_INK, "stroke-width": 2 }));
+    S.appendChild(inGnd(250, 400));
+    S.appendChild(inSvg("path", { d: "M80 340 a8 8 0 0 1 16 0 a8 8 0 0 1 16 0 a8 8 0 0 1 16 0 a8 8 0 0 1 16 0",
+      fill: "none", stroke: IN_INK, "stroke-width": 2 }));
+    S.appendChild(inSvgT(112, 322, "L " + inFmtL(o.l), "middle", IN_INK, 10));
+    S.appendChild(inSvg("circle", { cx: 180, cy: 340, r: 2.5, fill: IN_INK }));
+    S.appendChild(inSvg("circle", { cx: 220, cy: 340, r: 2.5, fill: IN_INK }));
+    if (o.switchOpen) {
+      S.appendChild(inSvg("line", { x1: 180, y1: 340, x2: 208, y2: 322, stroke: IN_INK, "stroke-width": 2 }));
+    } else {
+      S.appendChild(inSvg("line", { x1: 180, y1: 340, x2: 220, y2: 340, stroke: IN_INK, "stroke-width": 2.5 }));
+    }
+    S.appendChild(inSvgT(200, 332, "SW", "middle", IN_DIM, 10));
+    S.appendChild(inSvg("line", { x1: 162, y1: 340, x2: 162, y2: 352, stroke: IN_INK, "stroke-width": 2 }));
+    S.appendChild(inSvg("polygon", { points: "162,352 154,366 170,366", fill: "none",
+      stroke: IN_INK, "stroke-width": 2 }));
+    S.appendChild(inSvg("line", { x1: 152, y1: 370, x2: 172, y2: 370, stroke: IN_INK, "stroke-width": 3 }));
+    S.appendChild(inSvg("line", { x1: 162, y1: 370, x2: 162, y2: 388, stroke: IN_INK, "stroke-width": 2 }));
+    S.appendChild(inSvg("line", { x1: 162, y1: 388, x2: 80, y2: 388, stroke: IN_INK, "stroke-width": 2 }));
+    S.appendChild(inSvg("line", { x1: 80, y1: 388, x2: 80, y2: 340, stroke: IN_INK, "stroke-width": 2 }));
+    S.appendChild(inSvgT(178, 368, "D", "start", IN_INK, 10));
+    S.appendChild(inSvgT(178, 382, "cathode up", "start", IN_DIM, 9));
+    var struck = o.kick != null && o.kick >= IN_NEON;
+    S.appendChild(inSvg("line", { x1: 180, y1: 340, x2: 180, y2: 372, stroke: IN_INK, "stroke-width": 1.5 }));
+    S.appendChild(inSvg("line", { x1: 180, y1: 372, x2: 190, y2: 380, stroke: IN_INK, "stroke-width": 1.5 }));
+    S.appendChild(inSvg("circle", { cx: 200, cy: 380, r: 10, fill: "none",
+      stroke: struck ? IN_REF : IN_INK, "stroke-width": struck ? 2.5 : 1.5 }));
+    S.appendChild(inSvg("line", { x1: 210, y1: 380, x2: 220, y2: 372, stroke: IN_INK, "stroke-width": 1.5 }));
+    S.appendChild(inSvg("line", { x1: 220, y1: 372, x2: 220, y2: 340, stroke: IN_INK, "stroke-width": 1.5 }));
+    S.appendChild(inSvgT(200, 404, "NEON 90 V" + (struck ? ": STRUCK" : ""), "middle",
+      struck ? IN_REF : IN_DIM, 10));
+    S.appendChild(inSvg("line", { x1: 52, y1: 340, x2: 70, y2: 340, stroke: IN_DIM, "stroke-width": 1.5 }));
+    S.appendChild(inSvg("path", { d: "M70 340 l-8 -4 v8 z", fill: IN_DIM }));
+    S.appendChild(inSvgT(61, 330, inFmtI(o.iNow), "middle", IN_DIM, 10));
+    svg.appendChild(S);
+    return svg;
+  }
+  /* iFull: the full-scale current for the ramp plot (do-first: IN_DF_I). */
+  function inScope(iFull) {
+    var root = inEl("div", "in-scope");
+    function update(o) {
+      var tFull = inRampAny(o.l, iFull, IN_V_SUP);
+      root.innerHTML = "";
+      root.appendChild(inScopeSVG(o, iFull, tFull));
+      var cap;
+      if (o.kick != null) {
+        cap = "Switch opened with " + inFmtI(o.iOpen) + " flowing: the coil made " +
+          inFmtV(o.kick) + " for 1 us with no diode; the freewheel diode clamps it to 0.7 V.";
+      } else if (o.frac >= 1) {
+        cap = "Full current " + inFmtI(iFull) + " after " + inFmtMs(tFull) + ". Open the switch.";
+      } else {
+        cap = "Charging at di/dt = 12 V / " + inFmtL(o.l) + ". Time stretched x40 so your eyes can follow.";
+      }
+      root.appendChild(inEl("div", "in-scap", cap));
+    }
+    root._inUpdate = update;
+    return { root: root, update: update };
+  }
+
   /* ---------- do-first card: the coil refuses ---------- */
   var inDf = { l: 1, iNow: 0, target: IN_DF_I, timer: null, raf: null };
   function inDfStop() {
@@ -44973,7 +46562,7 @@ if (typeof module !== "undefined" && module.exports) {
           var e = document.getElementById("inDfL_" + j);
           if (e) e.classList.toggle("sel", j === idx);
         });
-        if (inEls.dfBar) inEls.dfBar.style.width = "0";
+        if (inEls.dfScope) inEls.dfScope._inUpdate({ l: IN_DF_L[idx], iNow: 0, frac: 0, kick: null, iOpen: 0, switchOpen: false });
         if (inEls.dfNeon) { inEls.dfNeon.classList.remove("struck"); inEls.dfNeon.textContent = "NEON: DARK"; }
         if (inEls.dfRead) inEls.dfRead.textContent = inDfReadout();
         inLog("do-first coil fitted: " + inFmtL(l));
@@ -44991,12 +46580,11 @@ if (typeof module !== "undefined" && module.exports) {
     neon.setAttribute("aria-live", "polite");
     row2.appendChild(closeB); row2.appendChild(openB); row2.appendChild(neon);
     card.appendChild(row2);
-    var bar = inEl("div", "in-bar");
-    var fill = inEl("i", null, null);
-    fill.id = "inDf_bar";
-    bar.appendChild(fill);
-    card.appendChild(bar);
-    inEls.dfBar = fill;
+    var scope = inScope(IN_DF_I);
+    scope.root.id = "inDf_plot";
+    card.appendChild(scope.root);
+    inEls.dfScope = scope;
+    scope.update({ l: IN_DF_L[inDf.l], iNow: 0, frac: 0, kick: null, iOpen: 0, switchOpen: false });
     var read = inEl("div", "in-read", inDfReadout());
     read.id = "inDf_read";
     read.setAttribute("aria-live", "polite");
@@ -45014,7 +46602,7 @@ if (typeof module !== "undefined" && module.exports) {
       var tFull = inRampAny(l, IN_DF_I, IN_V_SUP);
       if (reduced) {
         inDf.iNow = IN_DF_I;
-        fill.style.width = "100%";
+        inEls.dfScope._inUpdate({ l: l, iNow: IN_DF_I, frac: 1, kick: null, iOpen: 0, switchOpen: false });
         read.textContent = inDfReadout() + "\nFull current. Open the switch whenever you like.";
         inLog("switch closed (reduced motion): coil at full current, " + inFmtMs(tFull) + " ramp skipped.");
         return;
@@ -45026,7 +46614,7 @@ if (typeof module !== "undefined" && module.exports) {
         var el = (Date.now() - t0) / 1000;
         var frac = Math.min(el / shown, 1);
         inDf.iNow = IN_DF_I * frac;
-        fill.style.width = (frac * 100).toFixed(1) + "%";
+        inEls.dfScope._inUpdate({ l: l, iNow: inDf.iNow, frac: frac, kick: null, iOpen: 0, switchOpen: false });
         read.textContent = inDfReadout() + "\nTime stretched x40 so your eyes can follow.";
         if (frac >= 1) {
           inDfStop();
@@ -45041,8 +46629,8 @@ if (typeof module !== "undefined" && module.exports) {
       closeB.disabled = false; openB.disabled = true;
       var l = IN_DF_L[inDf.l];
       var iNow = inDf.iNow;
-      fill.style.width = "0";
       var kick = inKick(l, iNow);
+      if (inEls.dfScope) inEls.dfScope._inUpdate({ l: l, iNow: 0, frac: 0, kick: kick, iOpen: iNow, switchOpen: true });
       inDf.iNow = 0;
       if (kick >= IN_NEON) {
         neon.classList.add("struck"); neon.textContent = "NEON: STRUCK";
@@ -45127,6 +46715,10 @@ if (typeof module !== "undefined" && module.exports) {
     verdict.id = "inT1_verdict"; verdict.setAttribute("aria-live", "polite");
     card.appendChild(verdict);
     inEls.t1verdict = verdict; inEls.t1run = runB;
+    var t1scope = inScope(2.0);
+    card.appendChild(t1scope.root);
+    inEls.t1scope = t1scope;
+    t1scope.update({ l: IN_T1_L[inSt.t1.l], iNow: 0, frac: 0, kick: null, iOpen: 0, switchOpen: false });
     callB.addEventListener("click", function () {
       var p = inParseVolts(pred.value);
       var l = IN_T1_L[inSt.t1.l], i = IN_T1_I[inSt.t1.i];
@@ -45162,6 +46754,7 @@ if (typeof module !== "undefined" && module.exports) {
       verdict.textContent = "Measured: the coil kept " + inFmtI(i) + " moving for 1 us and made " +
         inFmtV(k) + ". Stored energy behind it: " + inFmtE(e) + ".\nTrial 1 passes: the kick is real, and you called it before power flowed.";
       inLog("t1 measured: kick " + inFmtV(k) + " at " + inFmtL(l) + " / " + inFmtI(i) + ". PASS.");
+      if (inEls.t1scope) inEls.t1scope._inUpdate({ l: l, iNow: 0, frac: 0, kick: k, iOpen: i, switchOpen: true });
       inCheckCert();
     });
     return card;
@@ -45223,6 +46816,10 @@ if (typeof module !== "undefined" && module.exports) {
     verdict.id = "inT2_verdict"; verdict.setAttribute("aria-live", "polite");
     card.appendChild(verdict);
     inEls.t2verdict = verdict; inEls.t2run = runB;
+    var t2scope = inScope(IN_T2_PULLIN);
+    card.appendChild(t2scope.root);
+    inEls.t2scope = t2scope;
+    t2scope.update({ l: IN_T2_L[inSt.t2.l], iNow: 0, frac: 0, kick: null, iOpen: 0, switchOpen: false });
     callB.addEventListener("click", function () {
       var p = inParseMs(pred.value);
       var l = IN_T2_L[inSt.t2.l];
@@ -45252,6 +46849,7 @@ if (typeof module !== "undefined" && module.exports) {
     runB.addEventListener("click", function () {
       var l = IN_T2_L[inSt.t2.l];
       var key = inT2Key(l);
+      if (inEls.t2scope) inEls.t2scope._inUpdate({ l: l, iNow: IN_T2_PULLIN, frac: 1, kick: null, iOpen: 0, switchOpen: false });
       inSt.t2.ran = true;
       runB.disabled = true;
       if (inSt.t2.callOk && key.ok) {
