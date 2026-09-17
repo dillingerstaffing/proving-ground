@@ -3106,6 +3106,19 @@ if (typeof module !== "undefined" && module.exports) {
     ".cf-scorebar .txt{font-size:12px;color:var(--paper);line-height:1.6;}",
     ".cf-toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:var(--panel);border:1px solid var(--acid);color:var(--acid);font-family:var(--font-m);font-size:12px;padding:10px 18px;z-index:200;opacity:0;pointer-events:none;transition:opacity .1s;}",
     ".cf-toast.show{opacity:1;}",
+    ".cf03-bits{display:flex;border:1px solid var(--line);margin:8px 0 4px;font-family:var(--font-m);}",
+    ".cf03-seg{border-right:1px solid var(--line);padding:6px 4px;text-align:center;min-width:0;overflow:hidden;}",
+    ".cf03-seg:last-child{border-right:none;}",
+    ".cf03-seg .bn{font-size:9px;letter-spacing:.12em;color:var(--cyan);margin-bottom:2px;}",
+    ".cf03-seg .bv{font-size:11px;color:var(--paper);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}",
+    ".cf03-seg .bb{font-size:9px;color:var(--steel);margin-top:2px;}",
+    ".cf03-org td{text-align:center;vertical-align:middle;}",
+    ".cf03-org .waycell{font-size:11px;line-height:1.5;}",
+    ".cf03-org .waycell .m{font-size:9px;color:var(--steel);letter-spacing:.06em;}",
+    ".cf03-org .waycell.empty .t{color:var(--steel);}",
+    ".cf03-org tr.cf03-set td{background:rgba(51,82,122,.10);}",
+    ".cf03-org td.cf03-hit{outline:2px solid var(--cyan);outline-offset:-2px;}",
+    ".cf03-org td.cf03-miss{outline:2px solid var(--orange);outline-offset:-2px;}",
     "@media (max-width:900px){.cf-panel{padding:14px;}.cf-way{grid-template-columns:52px 1fr auto;}}"
   ].join("\n");
 
@@ -3246,8 +3259,22 @@ if (typeof module !== "undefined" && module.exports) {
     ex.brk = cfEl("div", "cf-break", '<span class="lbl">LAST LOAD</span><br>press STEP or RUN');
     p.appendChild(ex.brk);
 
-    /* set grid */
-    var gb = cfEl("div", "cf-gridbox", "<h4>Set occupancy (one cell per set, brighter = fuller)</h4>");
+    /* canonical organization diagram: sets as rows, ways as columns (headline) */
+    var ob = cfEl("div", "cf-gridbox", "<h4>Set-associative organization (sets as rows, ways as columns)</h4>");
+    var osc = cfEl("div", "bp-scrollx");
+    ex.orgT = cfEl("table", "bp-table cf03-org");
+    osc.appendChild(ex.orgT);
+    ob.appendChild(osc);
+    var oleg = cfEl("div", "cf-legend",
+      '<span><i style="background:var(--cyan)"></i>last hit</span>' +
+      '<span><i style="background:var(--orange)"></i>last miss</span>' +
+      '<span>V = valid bit, LRU = recency rank (0 = most recent)</span>' +
+      '<span>no stores in the traces, so there is no dirty bit</span>');
+    ob.appendChild(oleg);
+    p.appendChild(ob);
+
+    /* set grid: kept as a supplement below the organization diagram */
+    var gb = cfEl("div", "cf-gridbox", "<h4>Supplement: set occupancy (one cell per set, brighter = fuller)</h4>");
     ex.grid = cfEl("div", "cf-grid");
     gb.appendChild(ex.grid);
     var leg = cfEl("div", "cf-legend",
@@ -3297,6 +3324,7 @@ if (typeof module !== "undefined" && module.exports) {
     ex.traceDesc.innerHTML = "<b>" + cfEsc(CF_TRACES[ex.traceKey].label) + "</b>: " +
       cfEsc(CF_TRACES[ex.traceKey].desc) + " (" + ex.trace.length + " loads)";
     cfRenderGrid();
+    cfRenderOrg();
     cfRenderStats();
     ex.brk.innerHTML = '<span class="lbl">LAST LOAD</span><br>press STEP or RUN';
     ex.ways.innerHTML = '<p class="cf-sub">No load yet.</p>';
@@ -3346,9 +3374,18 @@ if (typeof module !== "undefined" && module.exports) {
     var d = cfDecompose(addr, ex.cfg.blockB, ex.cache.sets);
     var tagHex = cfHex(d.tag, Math.max(1, Math.ceil(d.tagB / 4)));
     var kind = res.hit ? '<span class="hit">HIT</span>' : '<span class="miss">MISS</span>';
+    function seg(label, val, bits) {
+      return '<div class="cf03-seg" style="flex:' + bits + '">' +
+        '<div class="bn">' + label + '</div><div class="bv">' + val + '</div><div class="bb">' + bits + "b</div></div>";
+    }
     ex.brk.innerHTML =
       '<span class="lbl">LAST LOAD</span> ' + kind + "<br>" +
-      cfHex(addr, 8) + " = tag " + tagHex + " | set " + d.set + " | offset " + d.offset + "<br>" +
+      cfHex(addr, 8) +
+      '<div class="cf03-bits" aria-label="Address bit fields">' +
+      seg("TAG", tagHex, d.tagB) +
+      seg("INDEX", "set " + d.set, d.idxB) +
+      seg("OFFSET", d.offset + " B", d.offB) +
+      "</div>" +
       '<span class="lbl">ADDRESS SPLIT</span> tag ' + d.tagB + "b | index " + d.idxB + "b | offset " + d.offB + "b" +
       (res.hit ? "" : ' &nbsp;<span class="lbl">EVICTED WAY ' + res.way + (res.evicted >= 0 ? " (tag " + cfHex(res.evicted, 4) + ")" : " (empty slot)") + "</span>");
   }
@@ -3367,6 +3404,57 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 
+  /* Canonical P&H-style organization diagram: one row per set, one cell per way.
+     Driven entirely by existing sim state: ex.cache.lines[set][way] = {tag, age},
+     ex.cfg.assoc, and the {hit, set, way} result object from cfAccess. */
+  function cfOrgVictim(setIdx) {
+    var ways = ex.cache.lines[setIdx];
+    var lru = 0;
+    for (var k = 1; k < ways.length; k++) if (ways[k].age < ways[lru].age) lru = k;
+    return lru;
+  }
+  function cfOrgRank(setIdx) {
+    var ways = ex.cache.lines[setIdx];
+    var idx = ways.map(function (w, i) { return i; });
+    idx.sort(function (a, b) { return ways[b].age - ways[a].age; });
+    var rank = new Array(ways.length);
+    for (var r = 0; r < idx.length; r++) rank[idx[r]] = r;
+    return rank;
+  }
+  function cfOrgRowHtml(setIdx, hitSet, hitWay, hitKind) {
+    var rank = cfOrgRank(setIdx);
+    var ways = ex.cache.lines[setIdx];
+    var cells = "";
+    for (var w = 0; w < ways.length; w++) {
+      var cls = "waycell" + (ways[w].tag < 0 ? " empty" : "");
+      if (setIdx === hitSet && w === hitWay) cls += (hitKind === "hit" ? " cf03-hit" : " cf03-miss");
+      var tagTxt = ways[w].tag < 0 ? "----" : cfHex(ways[w].tag, 6);
+      var meta = ways[w].tag < 0 ? "V0" : "V1 - LRU" + rank[w];
+      cells += '<td class="' + cls + '"><div class="t">' + tagTxt + '</div><div class="m">' + meta + "</div></td>";
+    }
+    return "<tr" + (setIdx === hitSet ? ' class="cf03-set"' : "") + '><td class="waycell">' + setIdx + "</td>" + cells +
+      '<td class="waycell"><div class="t">W' + cfOrgVictim(setIdx) + "</div></td></tr>";
+  }
+  function cfRenderOrg() {
+    var head = "<tr><th>SET</th>";
+    for (var w = 0; w < ex.cfg.assoc; w++) head += "<th>WAY " + w + "</th>";
+    head += "<th>LRU<br>VICTIM</th></tr>";
+    var body = "";
+    for (var s = 0; s < ex.cache.sets; s++) body += cfOrgRowHtml(s, -1, -1, "");
+    ex.orgT.innerHTML = "<thead>" + head + "</thead><tbody>" + body + "</tbody>";
+    ex.orgLast = -1;
+  }
+  function cfUpdateOrg(setIdx, res) {
+    var tb = ex.orgT.tBodies[0];
+    if (ex.orgLast >= 0) {
+      var oldRow = tb.rows[ex.orgLast];
+      if (oldRow) oldRow.outerHTML = cfOrgRowHtml(ex.orgLast, -1, -1, "");
+    }
+    var row = tb.rows[setIdx];
+    if (row) row.outerHTML = cfOrgRowHtml(setIdx, setIdx, res.way, res.hit ? "hit" : "miss");
+    ex.orgLast = setIdx;
+  }
+
   function cfStep(n) {
     if (ex.pos >= ex.trace.length) { cfToast("Trace exhausted: RESET to forge again"); return; }
     for (var k = 0; k < n && ex.pos < ex.trace.length; k++) {
@@ -3383,6 +3471,7 @@ if (typeof module !== "undefined" && module.exports) {
     }
     var last = ex.last;
     cfPaintOcc(last.res.set, last.res.hit ? "hit" : "miss");
+    cfUpdateOrg(last.res.set, last.res);
     cfRenderStats();
     cfRenderBreak(last.addr, last.res);
     cfRenderWays(last.res.set, last.res);
@@ -4499,18 +4588,23 @@ if (typeof module !== "undefined" && module.exports) {
     ".sb-prog{font-family:var(--font-m);font-size:12px;line-height:1.9;background:var(--black);border:1px solid var(--line);padding:10px 12px;max-height:300px;overflow-y:auto;}",
     ".sb-prog .ln{white-space:pre;color:var(--steel);}",
     ".sb-prog .ln .num{color:var(--steel);margin-right:10px;}",
-    ".sb-prog .ln.live{color:var(--paper);background:rgba(47,107,68,.07);}",
-    ".sb-prog .ln.live .num{color:var(--acid);}",
-    ".sb-ranges{margin-top:10px;border:1px solid var(--line);background:var(--panel-2);padding:10px 12px;}",
-    ".rg-row{display:grid;grid-template-columns:44px 44px minmax(0,1fr);gap:8px;align-items:center;padding:5px 4px;cursor:pointer;border:1px solid transparent;min-height:44px;}",
-    ".rg-row:hover{background:var(--line);}",
-    ".rg-row.sel{border-color:var(--cyan);}",
-    ".rg-lab{font-family:var(--font-m);font-size:12px;color:var(--paper);}",
-    ".rg-cost{font-family:var(--font-m);font-size:10px;color:var(--steel);}",
-    ".rg-bar{position:relative;height:16px;background:var(--line);}",
-    ".rg-fill{position:absolute;top:0;bottom:0;background:var(--line);}",
-    ".rg-row.done .rg-fill{opacity:1;}",
-    ".rg-row.spilled .rg-fill{background:repeating-linear-gradient(45deg,var(--ember),var(--ember) 4px,var(--ember-deep) 4px,var(--ember-deep) 8px);}",
+    ".sb-ranges{overflow-x:auto;border:1px solid var(--line);background:var(--black);margin-top:10px;}",
+    ".sb07-inner{padding:10px 12px;}",
+    ".sb07-row{display:grid;gap:0;align-items:center;border:1px solid transparent;}",
+    ".sb07-row.vr{cursor:pointer;min-height:48px;}",
+    ".sb07-row.vr:hover .sb07-lab{color:var(--acid);}",
+    ".sb07-row.sel{outline:1px solid var(--cyan);outline-offset:-1px;}",
+    ".sb07-lab{font-family:var(--font-m);font-size:12px;color:var(--paper);white-space:nowrap;}",
+    ".sb07-lab .c{color:var(--steel);font-size:10px;}",
+    ".sb07-row.sel .sb07-lab{color:var(--cyan);}",
+    ".sb07-row.spilled .sb07-lab{color:var(--ember);}",
+    ".sb07-hcell{font-family:var(--font-m);font-size:10px;color:var(--steel);border-left:1px solid var(--line);padding-left:4px;height:18px;line-height:18px;}",
+    ".sb07-cell{height:22px;border-left:1px solid var(--line);}",
+    ".sb07-cell.on{background:var(--line);}",
+    ".sb07-row.spilled .sb07-cell.on{background:transparent;outline:1px dashed var(--ember);outline-offset:-1px;}",
+    ".sb07-pcell{font-family:var(--font-m);font-size:10px;color:var(--steel);border-left:1px solid var(--line);padding-left:4px;height:18px;line-height:18px;}",
+    ".sb07-pcell.hot{color:var(--ember);font-weight:700;}",
+    ".sb07-legend{font-family:var(--font-m);font-size:10px;line-height:1.6;color:var(--steel);padding:8px 12px;border-top:1px solid var(--line);}",
     ".sb-graph{border:1px solid var(--line);background:var(--black);padding:6px;}",
     ".sb-graph svg{display:block;width:100%;height:auto;}",
     ".sb-graph .nd{cursor:pointer;}",
@@ -4584,6 +4678,10 @@ if (typeof module !== "undefined" && module.exports) {
       'handful of registers and which wait in memory. Waiting in memory is called a spill, ' +
       'so the allocator spills the cheapest victim it can find. ' +
       'Trial 2 makes it concrete: eleven virtuals, four physical registers, something has to spill. ' +
+      'The live-interval chart shows every value as one horizontal bar across its live instructions, ' +
+      'in linear-scan order. A bar takes its register color as you assign it, a dashed ember bar is ' +
+      'spilled, and the PRESS row marks instruction columns where more values are live than the ' +
+      'register file holds. ' +
       'Each value is a node; two nodes alive at the same time share an edge, and that web of edges ' +
       'is the interference graph. Color it with four colors, or spill the cheapest node to the stack, ' +
       'and stay inside the budget. Free-build in EXPLORE, then qualify on three shifts in TRIALS ' +
@@ -4712,12 +4810,6 @@ if (typeof module !== "undefined" && module.exports) {
     st.vregs.forEach(function (v) { if (st.assign[v] === -1) c += st.costs[v]; });
     return c;
   }
-  function sbIsLive(st, v, i) {
-    var ins = st.cfg.prog[i];
-    return !!(st.live.liveIn[i][v] || st.live.liveOut[i][v] ||
-      ins.d === v || (ins.u || []).indexOf(v) >= 0);
-  }
-
   function sbNewBoard(px, wrap, cfg) {
     var st = {
       px: px, cfg: cfg,
@@ -4737,9 +4829,10 @@ if (typeof module !== "undefined" && module.exports) {
       '<div class="sb-runhead"><h4>' + sbEsc(cfg.name) + '</h4>' +
       '<div class="sb-stats" id="' + px + 'Stats"></div></div>' +
       '<div class="sb-cols">' +
-      '<div class="sb-col"><h5>Program and live ranges (tap a row to select)</h5>' +
-      '<div class="sb-prog" id="' + px + 'Prog"></div>' +
-      '<div class="sb-ranges" id="' + px + 'Ranges"></div></div>' +
+      '<div class="sb-col"><h5>Live intervals, linear-scan order (tap a row to select)</h5>' +
+      '<div class="sb-ranges" id="' + px + 'Ranges"></div>' +
+      '<h5 style="margin-top:14px">Program</h5>' +
+      '<div class="sb-prog" id="' + px + 'Prog"></div></div>' +
       '<div class="sb-col"><h5>Interference graph (tap a node, then a color)</h5>' +
       '<div class="sb-graph" id="' + px + 'Graph"></div></div>' +
       "</div>" +
@@ -4832,33 +4925,78 @@ if (typeof module !== "undefined" && module.exports) {
       var num = (i < 10 ? "0" : "") + i;
       var txt = ins.op + (ins.d ? " " + ins.d : "") +
         (ins.u && ins.u.length ? (ins.d ? ", " : " ") + ins.u.join(", ") : "");
-      var cls = "ln" + (st.sel && sbIsLive(st, st.sel, i) ? " live" : "");
+      var cls = "ln";
       h += '<div class="' + cls + '"><span class="num">' + num + "</span>" + sbEsc(txt) + "</div>";
     });
     sb$(st.px + "Prog").innerHTML = h;
   }
 
+  /* Canonical live-interval bar chart (Poletto & Sarkar linear scan):
+     one horizontal bar per variable across its live instructions on a
+     discrete instruction axis, rows in interval-start order. Bars take
+     the register color as they are assigned; spilled rows are dashed
+     ember; the PRESS row counts live values per instruction and marks
+     columns where more values are live than the register file holds. */
   function sbRenderRanges(st) {
     var box = sb$(st.px + "Ranges");
     box.innerHTML = "";
     var n = st.cfg.prog.length;
-    st.vregs.forEach(function (v) {
-      var r = st.ranges[v];
-      var cls = "rg-row" + (st.sel === v ? " sel" : "") +
-        (st.assign[v] === -1 ? " spilled" : "") +
-        (st.assign[v] >= 0 ? " done" : "");
-      var row = sbEl("div", cls, "");
-      var left = (r.first / n * 100).toFixed(1);
-      var width = ((r.last - r.first + 1) / n * 100).toFixed(1);
-      var col = st.assign[v] >= 0 ? SB_COLORS[st.assign[v]] : "";
-      row.innerHTML =
-        '<span class="rg-lab">' + v + '</span>' +
-        '<span class="rg-cost">' + st.costs[v] + 'u</span>' +
-        '<span class="rg-bar"><span class="rg-fill" style="left:' + left + "%;width:" + width + "%;" +
-        (col ? "background:" + col + ";" : "") + '"></span></span>';
-      row.addEventListener("click", function () { sbSelect(st, v); });
-      box.appendChild(row);
+    var inner = sbEl("div", "sb07-inner", "");
+    inner.style.minWidth = (96 + n * 17) + "px";
+    var tpl = "grid-template-columns:72px repeat(" + n + ",minmax(16px,1fr));";
+
+    var head = sbEl("div", "sb07-row", "");
+    head.style.cssText = tpl;
+    var hh = '<div class="sb07-lab" style="color:var(--steel);font-size:10px">INSTR</div>';
+    for (var i = 0; i < n; i++) {
+      hh += '<div class="sb07-hcell">' + (i < 10 ? "0" : "") + i + "</div>";
+    }
+    head.innerHTML = hh;
+    inner.appendChild(head);
+
+    var order = st.vregs.slice().sort(function (a, b) {
+      var ra = st.ranges[a], rb = st.ranges[b];
+      return (ra.first - rb.first) || (ra.last - rb.last) || (a < b ? -1 : 1);
     });
+    order.forEach(function (v) {
+      var r = st.ranges[v];
+      var cls = "sb07-row vr" + (st.sel === v ? " sel" : "") +
+        (st.assign[v] === -1 ? " spilled" : "");
+      var row = sbEl("div", cls, "");
+      row.style.cssText = tpl;
+      var h = '<div class="sb07-lab">' + v + ' <span class="c">' + st.costs[v] + "u</span></div>";
+      for (var j = 0; j < n; j++) {
+        var live = j >= r.first && j <= r.last;
+        var cc = "sb07-cell" + (live ? " on" : "");
+        var sty = (live && st.assign[v] >= 0)
+          ? ' style="background:' + SB_COLORS[st.assign[v]] + ';"' : "";
+        h += '<div class="' + cc + '"' + sty + "></div>";
+      }
+      row.innerHTML = h;
+      row.addEventListener("click", function () { sbSelect(st, v); });
+      inner.appendChild(row);
+    });
+
+    var press = sbEl("div", "sb07-row", "");
+    press.style.cssText = tpl;
+    var ph = '<div class="sb07-lab" style="color:var(--steel);font-size:10px">PRESS</div>';
+    for (var k = 0; k < n; k++) {
+      var c = 0, m;
+      for (m = 0; m < order.length; m++) {
+        var rr = st.ranges[order[m]];
+        if (k >= rr.first && k <= rr.last) c++;
+      }
+      ph += '<div class="sb07-pcell' + (c > st.cfg.K ? " hot" : "") + '">' + c + "</div>";
+    }
+    press.innerHTML = ph;
+    inner.appendChild(press);
+
+    box.appendChild(inner);
+    box.appendChild(sbEl("div", "sb07-legend",
+      "One bar per value across its live instructions, in linear-scan order. " +
+      "A bar takes its register color as you assign it; a dashed ember bar is spilled to the stack. " +
+      "PRESS counts live values per instruction: ember columns hold more live values than the " +
+      st.cfg.K + " physical registers, so something must spill there."));
   }
 
   function sbRenderGraph(st) {
@@ -6772,20 +6910,28 @@ if (typeof module !== "undefined" && module.exports) {
     ".ll-go:disabled{opacity:.35;cursor:default;}",
     ".ll-go:active:not(:disabled){transform:scale(.96);}",
     ".ll-go.ghost{background:none;color:var(--ember);}",
-    ".ll-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:10px 0;}",
-    "@media(min-width:700px){.ll-grid{grid-template-columns:repeat(8,minmax(0,1fr));}}",
-    ".ll-lane{border:1px solid var(--line);border-radius:3px;padding:8px 6px;background:var(--ink);text-align:center;min-width:0;}",
-    ".ll-lane .ln{display:block;font-family:var(--font-m);font-size:10px;font-weight:700;color:var(--dim);letter-spacing:.08em;}",
-    ".ll-lane .st{display:block;font-family:var(--font-m);font-size:9px;font-weight:700;letter-spacing:.06em;margin-top:4px;color:var(--steel);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}",
-    ".ll-lane .ber{display:block;font-family:var(--font-m);font-size:9px;color:var(--dim);margin-top:2px;}",
-    ".ll-lane.off{opacity:.35;}",
-    ".ll-lane.off .st{color:var(--dim);}",
-    ".ll-lane.busy{border-color:var(--ice);}",
-    ".ll-lane.busy .st{color:var(--ice);}",
-    ".ll-lane.ok{border-color:rgba(47,107,68,.55);}",
-    ".ll-lane.ok .st{color:var(--mint);}",
-    ".ll-lane.bad{border-color:rgba(163,39,30,.6);}",
-    ".ll-lane.bad .st{color:var(--bad);}",
+    ".ll11-sec-note{font-family:var(--font-m);font-size:10px;color:var(--dim);line-height:1.7;margin:6px 0 12px;}",
+    ".ll11-ltssm{display:flex;align-items:stretch;gap:6px;margin:10px 0 0;}",
+    ".ll11-node{flex:1;min-width:0;border:1px solid var(--line);border-radius:3px;padding:8px 6px;background:var(--ink);text-align:center;}",
+    ".ll11-node .nm{display:block;font-family:var(--font-m);font-size:11px;font-weight:700;letter-spacing:.08em;color:var(--dim);}",
+    ".ll11-node .ds{display:block;font-family:var(--font-m);font-size:9px;color:var(--dim);margin-top:5px;line-height:1.6;}",
+    ".ll11-node .tr{display:block;font-family:var(--font-m);font-size:9px;color:var(--dim);margin-top:5px;line-height:1.6;}",
+    ".ll11-node.done{border-color:rgba(47,107,68,.55);}",
+    ".ll11-node.done .nm{color:var(--mint);}",
+    ".ll11-node.cur{border-color:var(--ember);}",
+    ".ll11-node.cur .nm{color:var(--ember);}",
+    ".ll11-hop{flex:none;display:flex;align-items:center;justify-content:center;min-width:22px;color:var(--dim);font-family:var(--font-m);font-size:14px;}",
+    "@media(max-width:560px){.ll11-ltssm{flex-direction:column;}.ll11-hop{min-width:0;min-height:20px;}.ll11-hop .ar{display:inline-block;transform:rotate(90deg);}}",
+    ".ll11-eyes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0 0;}",
+    "@media(min-width:700px){.ll11-eyes{grid-template-columns:repeat(4,minmax(0,1fr));}}",
+    ".ll11-eye{border:1px solid var(--line);border-radius:3px;background:var(--ink);padding:8px 6px 6px;min-width:0;}",
+    ".ll11-eye svg{display:block;width:100%;height:auto;}",
+    ".ll11-eye .cap{display:block;font-family:var(--font-m);font-size:9px;color:var(--dim);margin-top:6px;line-height:1.7;letter-spacing:.04em;}",
+    ".ll11-eye .cap b{font-weight:700;}",
+    ".ll11-eye.ok{border-color:rgba(47,107,68,.55);}",
+    ".ll11-eye.ok .cap b{color:var(--mint);}",
+    ".ll11-eye.bad{border-color:rgba(163,39,30,.6);}",
+    ".ll11-eye.bad .cap b{color:var(--bad);}",
     ".ll-trace{list-style:none;margin:10px 0 0;padding:0;font-family:var(--font-m);font-size:11px;line-height:1.9;color:var(--steel);}",
     ".ll-trace li{border-left:2px solid var(--ember);padding-left:10px;margin-bottom:6px;}",
     ".ll-trace li b{color:var(--paper);}",
@@ -6937,24 +7083,24 @@ if (typeof module !== "undefined" && module.exports) {
     row.appendChild(cert);
     work.appendChild(row);
 
-    var grid = llEl("div", "ll-grid");
-    grid.id = "llGrid-" + id;
-    grid.setAttribute("role", "list");
-    grid.setAttribute("aria-label", "Lane training status");
-    for (var i = 0; i < 16; i++) {
-      var cell = llEl("div", "ll-lane" + (i < st.width ? "" : " off"));
-      cell.id = "llLane-" + id + "-" + i;
-      cell.setAttribute("role", "listitem");
-      cell.appendChild(llEl("span", "ln", "L" + (i < 10 ? "0" + i : i)));
-      var stx = llEl("span", "st", i < st.width ? "IDLE" : "OFF");
-      stx.id = "llLaneSt-" + id + "-" + i;
-      cell.appendChild(stx);
-      var ber = llEl("span", "ber", "");
-      ber.id = "llLaneBer-" + id + "-" + i;
-      cell.appendChild(ber);
-      grid.appendChild(cell);
-    }
-    work.appendChild(grid);
+    work.appendChild(llEl("div", "ll-sec", "LTSSM: LINK TRAINING STATE MACHINE"));
+    llBuildLtssm(work, id);
+    var ltNote = llEl("p", "ll11-sec-note", "");
+    ltNote.textContent = "The four LTSSM states this lab walks, per the PCIe base spec. " +
+      "The spec defines more (L0s, L1, L2, Recovery, Loopback, Hot Reset, Disabled); " +
+      "this lab never trains them, so they are not drawn.";
+    work.appendChild(ltNote);
+
+    work.appendChild(llEl("div", "ll-sec", "RECEIVER EYE PER LANE"));
+    var eyes = llEl("div", "ll11-eyes");
+    eyes.id = "llEye-" + id;
+    eyes.setAttribute("role", "list");
+    eyes.setAttribute("aria-label", "Receiver eye diagram per lane");
+    work.appendChild(eyes);
+    var eyeNote = llEl("p", "ll11-sec-note", "");
+    eyeNote.textContent = "Vertical eye opening at the 1e-12 BER contour, drawn from each lane's " +
+      "margin against the loss budget. A closed eye fails the budget; a flat trace is a hard lane open.";
+    work.appendChild(eyeNote);
 
     var sum = llEl("p", "ll-sum", "");
     sum.id = "llSum-" + id;
@@ -6967,14 +7113,127 @@ if (typeof module !== "undefined" && module.exports) {
     if (st.trained && st.results) llRenderResults(id);
   }
 
-  function llSetLane(id, i, cls, status, ber) {
-    var cell = ll$("llLane-" + id + "-" + i);
-    if (!cell) return;
-    cell.className = "ll-lane" + (cls ? " " + cls : "");
-    var stx = ll$("llLaneSt-" + id + "-" + i);
-    if (stx) stx.textContent = status;
-    var b = ll$("llLaneBer-" + id + "-" + i);
-    if (b) b.textContent = ber || "";
+  /* Canonical LTSSM diagram data. Only the four states the training loop
+     actually walks are drawn: the spec's L0s, L1, L2, Recovery, Loopback,
+     Hot Reset, and Disabled never occur in this lab. Copy is the bench's
+     own training trace vocabulary. */
+  var LL_LTSSM = [
+    { n: "DETECT", d: "Receiver detect on all lanes", tr: "NEXT: POLLING, receiver found" },
+    { n: "POLLING", d: "Bit lock, symbol lock", tr: "NEXT: CONFIGURATION, lock achieved" },
+    { n: "CONFIGURATION", d: "EQ negotiation, lane width agreed", tr: "NEXT: L0, negotiation complete" },
+    { n: "L0", d: "Link up: margin vs 1e-12 BER", tr: "LINK ACTIVE" }
+  ];
+
+  function llBuildLtssm(host, id) {
+    var wrap = llEl("div", "ll11-ltssm");
+    wrap.id = "llLtssm-" + id;
+    wrap.setAttribute("role", "img");
+    wrap.setAttribute("aria-label", "LTSSM training states: Detect, Polling, Configuration, L0");
+    LL_LTSSM.forEach(function (s, i) {
+      if (i > 0) {
+        var hop = llEl("div", "ll11-hop", "");
+        hop.setAttribute("aria-hidden", "true");
+        hop.appendChild(llEl("span", "ar", "→"));
+        wrap.appendChild(hop);
+      }
+      var node = llEl("div", "ll11-node", "");
+      node.setAttribute("data-s", String(i));
+      node.appendChild(llEl("span", "nm", s.n));
+      node.appendChild(llEl("span", "ds", s.d));
+      node.appendChild(llEl("span", "tr", s.tr));
+      wrap.appendChild(node);
+    });
+    host.appendChild(wrap);
+  }
+
+  /* View-only highlight: s is -1 (idle), 0..2 (training phase), or 3 (L0).
+     Driven by the phase loop the sim already runs; changes no sim state. */
+  function llLtssmSet(id, s) {
+    var wrap = ll$("llLtssm-" + id);
+    if (!wrap) return;
+    var nodes = wrap.querySelectorAll(".ll11-node");
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].classList.remove("cur", "done");
+      if (s >= 0) {
+        if (i < s) nodes[i].classList.add("done");
+        else if (i === s) nodes[i].classList.add("cur");
+      }
+    }
+  }
+
+  /* Receiver eye per lane, drawn from the existing per-lane margin. The
+     rectangle marks the vertical eye opening at the 1e-12 BER contour: the
+     lab's margin is dB of headroom against that contour, so the opening
+     scales with margin and pinches shut at 0 dB. Trace jitter is
+     deterministic per lane (pure llMulberry32), view-only. The lab
+     simulates no horizontal (timing) margin, so none is drawn. */
+  function llEyeSVG(r, seed) {
+    var W = 120, H = 84, yT = 16, yB = 68, yM = 42, x0 = 8, x1 = 112, xM = 60;
+    var open01 = r.fault ? 0 : Math.max(0, Math.min(1, r.margin / 5));
+    var open = open01 * (yM - yT) * 0.9;
+    var rng = llMulberry32((seed ^ Math.imul(r.idx + 1, 2654435761)) >>> 0);
+    var jit = 3 + 9 * (1 - open01);
+    var s = [];
+    function ln(a, b, c, d, col, wdt, op) {
+      s.push("<line x1=\"" + a + "\" y1=\"" + b + "\" x2=\"" + c + "\" y2=\"" + d +
+        "\" style=\"stroke:" + col + ";stroke-width:" + wdt + (op ? ";opacity:" + op : "") + "\"/>");
+    }
+    function pl(pts, col, wdt, op) {
+      s.push("<polyline points=\"" + pts + "\" fill=\"none\" style=\"stroke:" + col +
+        ";stroke-width:" + wdt + (op ? ";opacity:" + op : "") + "\"/>");
+    }
+    s.push("<svg viewBox=\"0 0 " + W + " " + H + "\" role=\"img\" aria-label=\"Receiver eye diagram\">");
+    ln(x0, yT, x1, yT, "var(--dim)", 1, 0.7);
+    ln(x0, yB, x1, yB, "var(--dim)", 1, 0.7);
+    if (r.fault) {
+      ln(x0, yM, x1, yM, "var(--dim)", 1, 1);
+    } else {
+      ln(xM, yT, xM, yB, "var(--dim)", 1, 0.5);
+      var k, j1, j2, n1, n2;
+      for (k = 0; k < 5; k++) {
+        j1 = (rng() - 0.5) * jit; j2 = (rng() - 0.5) * jit;
+        n1 = (rng() - 0.5) * 3; n2 = (rng() - 0.5) * 3;
+        pl(x0 + "," + (yT + n1) + " " + (xM + j1) + "," + yM + " " + x1 + "," + (yB + n2),
+          "var(--steel)", 1, 0.85);
+        pl(x0 + "," + (yB + n2) + " " + (xM + j2) + "," + yM + " " + x1 + "," + (yT + n1),
+          "var(--steel)", 1, 0.85);
+      }
+      if (open01 > 0) {
+        var ex = 16, ey = Math.max(1.5, open);
+        s.push("<rect x=\"" + (xM - ex) + "\" y=\"" + (yM - ey) + "\" width=\"" + (ex * 2) +
+          "\" height=\"" + (ey * 2) + "\" fill=\"none\" style=\"stroke:" +
+          (r.pass ? "var(--mint)" : "var(--bad)") + ";stroke-width:1\"/>");
+      }
+    }
+    s.push("</svg>");
+    return s.join("");
+  }
+
+  function llRenderEyes(id, trial) {
+    var st = LL_ST[id];
+    var host = ll$("llEye-" + id);
+    if (!host || !st.results) return;
+    host.innerHTML = "";
+    st.results.forEach(function (r) {
+      var cell = llEl("div", "ll11-eye " + (r.pass ? "ok" : "bad"), "");
+      cell.setAttribute("role", "listitem");
+      var pic = llEl("div", null, "");
+      pic.innerHTML = llEyeSVG(r, trial.seed);
+      cell.appendChild(pic);
+      var label = "L" + (r.idx < 10 ? "0" + r.idx : r.idx);
+      var info = llEl("span", "cap", "");
+      if (r.fault) {
+        info.textContent = label + "  hard open";
+      } else {
+        info.textContent = label + "  " + (r.margin >= 0 ? "+" : "") + r.margin.toFixed(1) +
+          " dB  " + llBerText(r);
+      }
+      cell.appendChild(info);
+      var word = llEl("span", "cap", "");
+      word.appendChild(llEl("b", null, r.pass ? "EYE OPEN" : (r.fault ? "NO LINK" : "EYE CLOSED")));
+      cell.appendChild(word);
+      host.appendChild(cell);
+    });
   }
 
   /* ---------------- training run ---------------- */
@@ -7007,6 +7266,9 @@ if (typeof module !== "undefined" && module.exports) {
     if (trace) trace.innerHTML = "";
     var sum = ll$("llSum-" + id);
     if (sum) sum.innerHTML = "";
+    var eyes0 = ll$("llEye-" + id);
+    if (eyes0) eyes0.innerHTML = "";
+    llLtssmSet(id, -1);
     var certBtn = ll$("llCert-" + id);
     if (certBtn) certBtn.disabled = true;
 
@@ -7017,6 +7279,8 @@ if (typeof module !== "undefined" && module.exports) {
         "Certify again once the new link trains clean.");
     }
 
+    /* Phase names for the LTSSM diagram: the loop below already steps
+       through these in order, so the diagram just mirrors it. */
     var phases = ["DETECT", "POLLING", "CONFIG"];
     var reduced = llReduced();
     var step = reduced ? 0 : 70;
@@ -7025,7 +7289,7 @@ if (typeof module !== "undefined" && module.exports) {
       var i = 0;
       function next() {
         if (i >= st.width) { done(); return; }
-        llSetLane(id, i, "busy", phases[ph], "");
+        if (i === 0) llLtssmSet(id, ph);
         i++;
         if (step) setTimeout(next, step); else next();
       }
@@ -7066,11 +7330,9 @@ if (typeof module !== "undefined" && module.exports) {
       if (!r.fault && r.berExp > worstExp) { worstExp = r.berExp; worstLane = r.idx; }
       if (r.margin < minMargin) { minMargin = r.margin; worstM = r.idx; }
     });
-    st.results.forEach(function (r) {
-      var label = "L" + (r.idx < 10 ? "0" + r.idx : r.idx);
-      llSetLane(id, r.idx, r.pass ? "ok" : "bad", r.fault ? "NO LINK" : (r.pass ? "L0 PASS" : "LANE FAIL"),
-        r.fault ? "open" : llBerText(r));
-    });
+    llRenderEyes(id, t);
+    /* The training walk ends here: Detect, Polling, Configuration done, L0 active. */
+    llLtssmSet(id, 3);
     var speed = LL_SPEEDS[st.speed];
     var sum = ll$("llSum-" + id);
     if (sum) {
@@ -52407,19 +52669,19 @@ if (typeof module !== "undefined" && module.exports) {
         seq: [["A", 1], ["B", 1], ["A", 1], ["A", 0], ["B", 0]]
       },
       loop: {
-        label: "THE COUNTER", sub: "a counted loop with an if inside, four laps",
+        label: "COUNTED LOOP", sub: "a counted loop with an if inside, four laps",
         seq: bpRep(LOOP_ROUND, 4)
       },
       branchy: {
-        label: "THE DISPATCHER", sub: "ten branches with irregular habits, three rounds",
+        label: "MIXED BRANCHES", sub: "ten branches with irregular habits, three rounds",
         seq: bpRep(BRANCHY_ROUND, 3)
       },
       flicker: {
-        label: "THE FLICKER", sub: "one branch that cannot sit still, six events",
+        label: "ALTERNATING BRANCH", sub: "one branch alternating taken, not taken; six events",
         seq: FLICKER_SEQ.slice()
       },
       crowd: {
-        label: "THE CROWD", sub: "four hot branches, a two-entry BTB",
+        label: "BTB PRESSURE", sub: "four hot branches share a two-entry BTB",
         seq: CROWD_SEQ.slice()
       }
     },
@@ -52568,6 +52830,9 @@ if (typeof module !== "undefined" && module.exports) {
     "<p class=\"bp-p\">Your CPU reads instructions in order, but an <b>if</b> or a loop can jump somewhere else. The CPU does not wait to find out where: it keeps reading ahead on a guess. A wrong guess means the instructions it already started get thrown away, and it starts over from the right place. Those wasted cycles are the whole cost of a mispredicted branch.</p>",
     "<p class=\"bp-p\">Every guess has two parts: <b>WHERE</b> the branch jumps to, and <b>WHETHER</b> it jumps at all. The <b>BTB</b> (branch target buffer) is a small table that remembers the jump target each branch used last time: that is the WHERE. The <b>direction predictor</b> is a separate small table that votes taken or not taken for each branch: that is the WHETHER. In this bench's five-stage model, each wrong guess costs 2 cycles: the two instructions the CPU had already started reading. That 2-cycle number belongs to this model, not to every real CPU.</p>",
     "<p class=\"bp-p\">The two parts fail for different reasons and need different fixes. One redirect count cannot tell you which part failed. Bench 02 taught you that predictors learn; here you open the predictor and meet its two halves.</p>",
+    "<div class=\"bp-sec\">WHERE THIS LIVES IN RISC-V</div>",
+    "<p class=\"bp-p\">Every conditional branch instruction does this. A C <b>for</b> loop compiles to a backward branch: jump back to the top while the counter runs. A C <b>if</b> compiles to a forward branch: skip over the body when the condition is false. In RISC-V those are instructions like <b>beq</b> (jump if two registers are equal) and <b>bne</b> (jump if not equal); the beq in the pipeline table below is one. Each time the CPU fetches one, it makes the two guesses: the BTB supplies where it went last time, the direction predictor votes whether it goes this time.</p>",
+    "<p class=\"bp-p\">The traces in this bench are branch histories shaped like the ones small programs produce. The letters (A, B, C...) stand in for branch instructions sitting at different addresses: A is one branch, B is another. COUNTED LOOP is a counted loop with an if inside. MIXED BRANCHES is ten irregular branches. ALTERNATING BRANCH is one branch flipping taken, not taken, which no predictor can learn. BTB PRESSURE is four hot branches sharing a two-entry BTB, so entries evict each other.</p>",
     "<div class=\"bp-sec\">THE BTB</div>",
     "<p class=\"bp-p\">The BTB is consulted in the fetch stage, before the CPU even knows the instruction is a branch. That timing is why the lookup uses the program counter alone: the table is indexed by PC, each entry holds a tag (which branch was here last) and the target it used. The tag check is required, because two different branches can land in the same entry.</p>",
     "<div class=\"bp-scrollx\"><table class=\"bp-table\" aria-label=\"BTB lookup walk\">",
@@ -53014,7 +53279,7 @@ if (typeof module !== "undefined" && module.exports) {
       bpEls.s2Check.disabled = true;
       bpEls.s2Msg.innerHTML =
         "<span class=\"w\">ALL " + total + " REDIRECTS CLASSIFIED.</span> " +
-        "Now the repair: which fix does this waveform justify?";
+        "Now the repair: which fix does this trace justify?";
       bpEls.repairRow.style.display = "";
       bpProgress();
     } else {
@@ -53033,7 +53298,7 @@ if (typeof module !== "undefined" && module.exports) {
       s2.repairDone = true;
       var names = { btb: "BTB CAPACITY / TARGET-SIDE REPAIR", dir: "DIRECTION-PREDICTOR REPAIR" };
       bpEls.s2RepairMsg.innerHTML =
-        "<span class=\"w\">RIGHT.</span> The waveform shows " + s2.r.btbMisses +
+        "<span class=\"w\">RIGHT.</span> The trace shows " + s2.r.btbMisses +
         " BTB misses against " + s2.r.dirMisses + " direction mispredicts, so " +
         names[right] + " is the evidence-backed fix.";
       bpCheckWin();
@@ -53041,7 +53306,7 @@ if (typeof module !== "undefined" && module.exports) {
       bpEls.s2RepairMsg.innerHTML =
         "<span class=\"v\">NOT QUITE.</span> Count your classifications: " +
         s2.r.btbMisses + " BTB misses versus " + s2.r.dirMisses +
-        " direction mispredicts. Which side dominates the waveform? Try again.";
+        " direction mispredicts. Which side dominates the trace? Try again.";
     }
   }
 
@@ -53130,15 +53395,15 @@ if (typeof module !== "undefined" && module.exports) {
 
     /* controls */
     panel.appendChild(bpEl("div", "bp-sec", "THE CONTROLS"));
-    panel.appendChild(bpEl("p", "bp-p", "Pick a trace, size the BTB, choose the predictor, and run. The verdict names the dominant failure and the fix it wants. The two short traces are the stage-2 deals; run them here to check your work."));
+    panel.appendChild(bpEl("p", "bp-p", "Pick a trace, size the BTB, choose the predictor, and run. Each trace is named for the program shape behind it. The verdict names the dominant failure and the fix it wants. The two short traces are the stage-2 deals; run them here to check your work."));
     var g1 = bpEl("div", "bp-group", "");
     g1.appendChild(bpEl("span", "bp-lbl", "TRACE"));
     var row1 = bpEl("div", "bp-row", "");
     var traceBtns = [
-      ["bpTraceLoop", "THE COUNTER", "loop", true],
-      ["bpTraceBranchy", "THE DISPATCHER", "branchy", false],
-      ["bpTraceFlicker", "THE FLICKER", "flicker", false],
-      ["bpTraceCrowd", "THE CROWD", "crowd", false]
+      ["bpTraceLoop", "COUNTED LOOP", "loop", true],
+      ["bpTraceBranchy", "MIXED BRANCHES", "branchy", false],
+      ["bpTraceFlicker", "ALTERNATING BRANCH", "flicker", false],
+      ["bpTraceCrowd", "BTB PRESSURE", "crowd", false]
     ];
     traceBtns.forEach(function (cfg) {
       var btn = bpBtn(cfg[1], "bp-btn" + (cfg[3] ? " picked" : ""));
@@ -53240,7 +53505,7 @@ if (typeof module !== "undefined" && module.exports) {
     deal2.addEventListener("click", bpS2Deal);
     panel.appendChild(deal2);
     bpEls.s2Deal = deal2;
-    var waveCap = bpEl("div", "bp-out", "No waveform dealt yet.");
+    var waveCap = bpEl("div", "bp-out", "No trace dealt yet.");
     waveCap.id = "bpWaveCap";
     panel.appendChild(waveCap);
     bpEls.waveCap = waveCap;
