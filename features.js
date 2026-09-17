@@ -52377,9 +52377,9 @@ if (typeof module !== "undefined" && module.exports) {
    already started, but each needs its own fix: BTB misses want more entries,
    direction misses want a smarter predictor.
    The mystery has two stages. Stage 1 shows only the aggregate and teaches
-   that one number cannot name the repair. Stage 2 opens the waveform, and the
-   player classifies every redirect from the signals, then names the repair
-   the waveform justifies.
+   that one number cannot name the repair. Stage 2 opens the state trace, and
+   the player classifies every mispredict from the trace, then names the repair
+   the trace justifies.
    Pure sim hooks live in BP for the smoke test; the DOM engine below drives
    the same code. */
 (function () {
@@ -52435,7 +52435,7 @@ if (typeof module !== "undefined" && module.exports) {
        learns taken branches (a not-taken branch needs no target). Attribution
        is exclusive: a taken branch with a BTB miss counts as a BTB miss and
        the direction vote is not consulted; a BTB hit with a wrong vote counts
-       as a direction mispredict. Each step carries the waveform signals:
+       as a direction mispredict. Each step carries the event fields:
        tgt is KNOWN when the BTB held the target, ?? when the target was
        unknown, and not needed when the branch fell through. */
     trace: function (traceKey, btbEntries, dirKind) {
@@ -52539,7 +52539,7 @@ if (typeof module !== "undefined" && module.exports) {
       out.sort(function (x, y) { return x.total - y.total; });
       return out;
     },
-    /* Stage-2 deals: short waveforms with a strict majority, few enough rows
+    /* Stage-2 deals: short traces with a strict majority, few enough rows
        to classify each redirect by hand. */
     stage2Deals: function () {
       return [
@@ -52568,12 +52568,74 @@ if (typeof module !== "undefined" && module.exports) {
     "<p class=\"bp-p\">Your CPU reads instructions in order, but an <b>if</b> or a loop can jump somewhere else. The CPU does not wait to find out where: it keeps reading ahead on a guess. A wrong guess means the instructions it already started get thrown away, and it starts over from the right place. Those wasted cycles are the whole cost of a mispredicted branch.</p>",
     "<p class=\"bp-p\">Every guess has two parts: <b>WHERE</b> the branch jumps to, and <b>WHETHER</b> it jumps at all. The <b>BTB</b> (branch target buffer) is a small table that remembers the jump target each branch used last time: that is the WHERE. The <b>direction predictor</b> is a separate small table that votes taken or not taken for each branch: that is the WHETHER. In this bench's five-stage model, each wrong guess costs 2 cycles: the two instructions the CPU had already started reading. That 2-cycle number belongs to this model, not to every real CPU.</p>",
     "<p class=\"bp-p\">The two parts fail for different reasons and need different fixes. One redirect count cannot tell you which part failed. Bench 02 taught you that predictors learn; here you open the predictor and meet its two halves.</p>",
+    "<div class=\"bp-sec\">THE BTB</div>",
+    "<p class=\"bp-p\">The BTB is consulted in the fetch stage, before the CPU even knows the instruction is a branch. That timing is why the lookup uses the program counter alone: the table is indexed by PC, each entry holds a tag (which branch was here last) and the target it used. The tag check is required, because two different branches can land in the same entry.</p>",
+    "<div class=\"bp-scrollx\"><table class=\"bp-table\" aria-label=\"BTB lookup walk\">",
+    "<thead><tr><th>#</th><th>BR</th><th>SLOT</th><th>TAG HELD</th><th>MATCH?</th><th>BTB SAYS</th></tr></thead>",
+    "<tbody id=\"bpBtbBody\"></tbody></table></div>",
+    "<p class=\"bp-p\">Five events, a 2-entry BTB, filled by the simulator. Slot is the branch id mod 2; a real BTB uses the low bits of the fetch PC. The output is a multiplexer: predicted PC = (TAG == BR) ? TARGET : PC+4. The direction vote then picks: vote taken, fetch what the BTB says; vote not taken, fetch PC+4.</p>",
+    "<div class=\"bp-sec\">THE DIRECTION PREDICTOR</div>",
+    "<p class=\"bp-p\">The direction vote comes from a 2-bit saturating counter, one per branch. The counter's most significant bit is the prediction. Taken steps it up, not taken steps it down, and it saturates at both ends: one odd outcome cannot flip the vote. That resistance is called hysteresis, and it is the whole reason for the second bit.</p>",
+    "<svg class=\"bp-fsm\" viewBox=\"0 0 500 152\" role=\"img\" aria-label=\"2-bit saturating counter: 11 strongly taken, 10 weakly taken, 01 weakly not-taken, 00 strongly not-taken. A taken outcome steps the counter up, not taken steps it down.\">",
+    "<defs><marker id=\"bpArr\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" markerWidth=\"6.5\" markerHeight=\"6.5\" orient=\"auto\"><path d=\"M0,0 L10,5 L0,10 z\" fill=\"var(--dim)\"></path></marker></defs>",
+    "<g font-family=\"IBM Plex Mono, monospace\" text-anchor=\"middle\">",
+    "<line x1=\"104\" y1=\"50\" x2=\"156\" y2=\"50\" stroke=\"var(--dim)\" marker-end=\"url(#bpArr)\"/>",
+    "<line x1=\"224\" y1=\"50\" x2=\"276\" y2=\"50\" stroke=\"var(--dim)\" marker-end=\"url(#bpArr)\"/>",
+    "<line x1=\"344\" y1=\"50\" x2=\"396\" y2=\"50\" stroke=\"var(--dim)\" marker-end=\"url(#bpArr)\"/>",
+    "<text x=\"130\" y=\"44\" font-size=\"10\" fill=\"var(--dim)\">T</text>",
+    "<text x=\"250\" y=\"44\" font-size=\"10\" fill=\"var(--dim)\">T</text>",
+    "<text x=\"370\" y=\"44\" font-size=\"10\" fill=\"var(--dim)\">T</text>",
+    "<line x1=\"156\" y1=\"130\" x2=\"104\" y2=\"130\" stroke=\"var(--dim)\" marker-end=\"url(#bpArr)\"/>",
+    "<line x1=\"276\" y1=\"130\" x2=\"224\" y2=\"130\" stroke=\"var(--dim)\" marker-end=\"url(#bpArr)\"/>",
+    "<line x1=\"396\" y1=\"130\" x2=\"344\" y2=\"130\" stroke=\"var(--dim)\" marker-end=\"url(#bpArr)\"/>",
+    "<text x=\"130\" y=\"144\" font-size=\"10\" fill=\"var(--dim)\">N</text>",
+    "<text x=\"250\" y=\"144\" font-size=\"10\" fill=\"var(--dim)\">N</text>",
+    "<text x=\"370\" y=\"144\" font-size=\"10\" fill=\"var(--dim)\">N</text>",
+    "<path d=\"M 458 68 C 486 68 486 112 458 112\" fill=\"none\" stroke=\"var(--dim)\" marker-end=\"url(#bpArr)\"/>",
+    "<text x=\"492\" y=\"94\" font-size=\"10\" fill=\"var(--dim)\">T</text>",
+    "<path d=\"M 42 112 C 14 112 14 68 42 68\" fill=\"none\" stroke=\"var(--dim)\" marker-end=\"url(#bpArr)\"/>",
+    "<text x=\"8\" y=\"94\" font-size=\"10\" fill=\"var(--dim)\">N</text>",
+    "<circle cx=\"70\" cy=\"90\" r=\"30\" fill=\"none\" stroke=\"var(--dim)\"/>",
+    "<circle cx=\"190\" cy=\"90\" r=\"30\" fill=\"none\" stroke=\"var(--dim)\"/>",
+    "<circle cx=\"310\" cy=\"90\" r=\"30\" fill=\"none\" stroke=\"var(--dim)\"/>",
+    "<circle cx=\"430\" cy=\"90\" r=\"30\" fill=\"none\" stroke=\"var(--dim)\"/>",
+    "<text x=\"70\" y=\"86\" font-size=\"15\" font-weight=\"700\" fill=\"var(--paper)\">00</text>",
+    "<text x=\"190\" y=\"86\" font-size=\"15\" font-weight=\"700\" fill=\"var(--paper)\">01</text>",
+    "<text x=\"310\" y=\"86\" font-size=\"15\" font-weight=\"700\" fill=\"var(--paper)\">10</text>",
+    "<text x=\"430\" y=\"86\" font-size=\"15\" font-weight=\"700\" fill=\"var(--paper)\">11</text>",
+    "<text x=\"70\" y=\"102\" font-size=\"8.5\" fill=\"var(--dim)\">STRONGLY</text>",
+    "<text x=\"70\" y=\"114\" font-size=\"8.5\" fill=\"var(--dim)\">NOT-TAKEN</text>",
+    "<text x=\"190\" y=\"102\" font-size=\"8.5\" fill=\"var(--dim)\">WEAKLY</text>",
+    "<text x=\"190\" y=\"114\" font-size=\"8.5\" fill=\"var(--dim)\">NOT-TAKEN</text>",
+    "<text x=\"310\" y=\"102\" font-size=\"8.5\" fill=\"var(--dim)\">WEAKLY</text>",
+    "<text x=\"310\" y=\"114\" font-size=\"8.5\" fill=\"var(--dim)\">TAKEN</text>",
+    "<text x=\"430\" y=\"102\" font-size=\"8.5\" fill=\"var(--dim)\">STRONGLY</text>",
+    "<text x=\"430\" y=\"114\" font-size=\"8.5\" fill=\"var(--dim)\">TAKEN</text>",
+    "</g></svg>",
+    "<p class=\"bp-p\">The standard names: 11 strongly taken, 10 weakly taken, 01 weakly not-taken, 00 strongly not-taken. A 1-bit predictor is the degenerate 2-state version: one odd outcome flips it immediately, which is why loops defeat it.</p>",
     "<div class=\"bp-sec\">THE WORKED EXAMPLE</div>",
-    "<p class=\"bp-p\">Five branches, a 2-entry BTB, a 1-bit direction predictor. A is a loop branch, B is an if inside it. Predict-then-verify: cover the RESULT column, guess each row, then check yourself against the simulator.</p>",
-    "<div class=\"bp-scrollx\"><table class=\"bp-table\" aria-label=\"Worked example steps\">",
-    "<thead><tr><th>#</th><th>BR</th><th>TOOK?</th><th>BTB</th><th>VOTE</th><th>RESULT</th><th>CYC</th></tr></thead>",
-    "<tbody id=\"bpWorkedBody\"></tbody></table></div>",
-    "<p class=\"bp-p\">Totals: 5 branches, 2 BTB misses, 2 direction mispredicts, 8 modeled cycles lost. With no BTB at all, the 3 taken branches all redirect: 3 misses, 6 modeled cycles, and the direction predictor's vote changes nothing.</p>"
+    "<p class=\"bp-p\">One loop branch, nine laps: taken eight times, not taken once. The loop is already running, so the counters start where the last lap left them: the 1-bit predictor at N, the 2-bit counter at 10 weakly taken. The STATE column uses the standard counter names; * marks a mispredict. Predict-then-verify: cover the * column, walk each row yourself, then check against the simulator.</p>",
+    "<p class=\"bp-p\"><b>1-bit predictor</b></p>",
+    "<div class=\"bp-scrollx\"><table class=\"bp-table\" aria-label=\"State trace, 1-bit predictor\">",
+    "<thead><tr><th>#</th><th>STATE</th><th>PRED</th><th>ACTUAL</th><th>*</th><th>CYC</th></tr></thead>",
+    "<tbody id=\"bpW1Body\"></tbody></table></div>",
+    "<p class=\"bp-p\"><b>2-bit predictor</b></p>",
+    "<div class=\"bp-scrollx\"><table class=\"bp-table\" aria-label=\"State trace, 2-bit predictor\">",
+    "<thead><tr><th>#</th><th>STATE</th><th>PRED</th><th>ACTUAL</th><th>*</th><th>CYC</th></tr></thead>",
+    "<tbody id=\"bpW2Body\"></tbody></table></div>",
+    "<div class=\"bp-out\" id=\"bpWTot\" aria-live=\"polite\"></div>",
+    "<div class=\"bp-sec\">THE COST OF A WRONG GUESS</div>",
+    "<p class=\"bp-p\">This bench models a five-stage pipe: IF ID EX MEM WB. The branch resolves in EX, and by then two instructions are already in flight on the wrong path. They are flushed; the two lost cycles are the branch misprediction penalty in this model.</p>",
+    "<div class=\"bp-scrollx\"><table class=\"bp-table\" aria-label=\"Pipeline space-time diagram of a mispredict\">",
+    "<thead><tr><th></th><th>C1</th><th>C2</th><th>C3</th><th>C4</th><th>C5</th><th>C6</th><th>C7</th><th>C8</th></tr></thead>",
+    "<tbody>",
+    "<tr><td>beq</td><td>IF</td><td>ID</td><td>EX</td><td>MEM</td><td>WB</td><td></td><td></td><td></td></tr>",
+    "<tr><td>add (wrong path)</td><td></td><td>IF</td><td class=\"bp-flush\">X</td><td></td><td></td><td></td><td></td><td></td></tr>",
+    "<tr><td>sub (wrong path)</td><td></td><td></td><td class=\"bp-flush\">X</td><td></td><td></td><td></td><td></td><td></td></tr>",
+    "<tr><td>target</td><td></td><td></td><td></td><td>IF</td><td>ID</td><td>EX</td><td>MEM</td><td>WB</td></tr>",
+    "</tbody></table></div>",
+    "<p class=\"bp-p\">The branch resolves in EX during cycle 3. The two in-flight instructions are discarded, and the correct target is fetched in cycle 4. Counting the flushed cells is the whole penalty: it equals the pipeline depth at the resolution point.</p>",
+    "<div class=\"bp-out\">CPI = 1 + (mispredicts / instructions) x (penalty / mispredict)\n\nWorked: branches are 1 instruction in 5, the predictor misses 1 branch in 4,\nand the penalty is 2 cycles:\nCPI = 1 + (1/5) x (1/4) x 2 = 1.10\nAccuracy and pipeline depth multiply: a better predictor and an earlier\nresolve point attack different factors of the same product.</div>"
   ].join("\n");
 
   BP.FAILURES_HTML = [
@@ -52583,7 +52645,18 @@ if (typeof module !== "undefined" && module.exports) {
     "<li>A BTB miss on a not-taken branch costs nothing. Fall-through is the next sequential instruction; no target is needed.</li>",
     "<li>An alternating branch (taken, not taken, taken, not taken...) defeats 1-bit and 2-bit predictors alike. The pattern has no majority to learn.</li>",
     "<li>More BTB entries never fix direction mispredicts, and a smarter predictor never fixes BTB misses. Each fix only fixes its own failure. That is the whole diagnostic.</li>",
-    "</ul>"
+    "</ul>",
+    "<div class=\"bp-sec\">BTB MISS VS DIRECTION MISSPREDICT</div>",
+    "<p class=\"bp-p\">One table separates the two failure causes, the way course lectures teach it:</p>",
+    "<div class=\"bp-scrollx\"><table class=\"bp-table\" aria-label=\"BTB result crossed with direction prediction\">",
+    "<thead><tr><th>BTB</th><th>PREDICTED</th><th>NEXT PC</th></tr></thead>",
+    "<tbody>",
+    "<tr><td>HIT</td><td>taken</td><td>BTB target</td></tr>",
+    "<tr><td>HIT</td><td>not taken</td><td>PC+4</td></tr>",
+    "<tr><td>MISS</td><td>taken</td><td>PC+4</td></tr>",
+    "<tr><td>MISS</td><td>not taken</td><td>PC+4</td></tr>",
+    "</tbody></table></div>",
+    "<p class=\"bp-p\">Read it as fetch behavior: when the predictor votes taken but the BTB cannot supply a target, fetch still goes to PC+4, and the redirect happens later when the branch resolves. A BTB miss on a taken branch always costs, even with a perfect direction vote; a direction mispredict always costs, even with a perfect BTB.</p>"
   ].join("\n");
 
   BP.STAGE1_HTML = [
@@ -52592,14 +52665,14 @@ if (typeof module !== "undefined" && module.exports) {
   ].join("\n");
 
   BP.STAGE2_HTML = [
-    "<div class=\"bp-sec\">STAGE 2: READ THE WAVEFORM</div>",
-    "<p class=\"bp-p\">A design can expose separate counters or waveform signals. Here is the waveform: one row per branch event, carrying the signals a tool like WAL would read. <b>BR</b> is the branch. <b>BTB</b> is HIT or MISS. <b>VOTE</b> is the direction predictor's guess, <b>ACTUAL</b> is what the branch did. <b>TARGET</b> is KNOWN when the BTB held it, ?? when the target was unknown, n/a when no target was needed. <b>REDIRECT</b> marks the events where fetch changed course.</p>",
-    "<p class=\"bp-p\">Classify every redirect: a <b>BTB target miss</b> means the target was unknown; a <b>direction misprediction</b> means the vote was wrong. Then name the repair the waveform justifies.</p>"
+    "<div class=\"bp-sec\">STAGE 2: READ THE TRACE</div>",
+    "<p class=\"bp-p\">This is the state-trace table, the same per-event view the textbooks use. <b>STATE</b> is the predictor's counter before the event, in the standard names from the diagram above. <b>PRED</b> is the vote, the counter's most significant bit. <b>ACTUAL</b> is what the branch did, and <b>*</b> marks a mispredict. <b>BTB</b> is HIT when the target was known, MISS when it was not. The 1-bit predictor below is the degenerate 2-state version: states T and N, one odd outcome flips it.</p>",
+    "<p class=\"bp-p\">Classify every <b>*</b> row: a <b>BTB target miss</b> means the target was unknown; a <b>direction misprediction</b> means the vote was wrong. Then name the repair the trace justifies.</p>"
   ].join("\n");
 
   BP.DEPTH_HTML = [
     "<div class=\"bp-sec\">OPTIONAL DEPTH</div>",
-    "<p class=\"bp-p\">A design can expose separate counters or waveform signals: one counts BTB misses, another counts direction mispredicts, so a slowdown can be blamed precisely instead of guessed at. Waveform tools answer the same question from signals, cycle by cycle: did fetch redirect because the target was unknown, or because the direction vote was wrong? The aggregate shows the symptom, the signals name the cause.</p>"
+    "<p class=\"bp-p\">A design can expose separate counters: one counts BTB misses, another counts direction mispredicts, so a slowdown can be blamed precisely instead of guessed at. The state trace answers the same question event by event: did fetch redirect because the target was unknown, or because the direction vote was wrong? The aggregate shows the symptom, the trace names the cause.</p>"
   ].join("\n");
 
   if (typeof module !== "undefined" && module.exports) {
@@ -52665,6 +52738,8 @@ if (typeof module !== "undefined" && module.exports) {
     ".bp-table td.hot{color:var(--ember);}",
     ".bp-table tr.bp-ok td{background:rgba(120,200,120,.08);}",
     ".bp-table tr.bp-bad td{background:rgba(220,90,90,.10);}",
+    ".bp-table td.bp-flush{color:var(--ember);font-weight:700;}",
+    ".bp-fsm{width:100%;max-width:560px;height:auto;display:block;margin:0 0 12px;}",
     ".bp-class-btn{font-family:'IBM Plex Mono',monospace;font-size:11px;min-height:48px;min-width:52px;margin:2px;padding:8px 6px;background:transparent;color:var(--dim);border:1px solid var(--line);cursor:pointer;}",
     ".bp-class-btn.picked{border-color:var(--ember);color:var(--ember);}",
     ".bp-banner{border:1px solid var(--ember);padding:18px;margin:0 0 16px;display:none;}",
@@ -52673,13 +52748,51 @@ if (typeof module !== "undefined" && module.exports) {
     ".bp-cert{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:var(--dim);margin:0 0 12px;white-space:pre-wrap;}"
   ].join("\n");
 
-  function bpWorkedRows() {
-    var r = BP.trace("worked", 2, "1bit");
-    return r.steps.map(function (s) {
-      return "<tr><td>" + s.n + "</td><td>" + s.br + "</td><td>" + (s.took ? "T" : "NT") + "</td>" +
-        "<td>" + (s.hit ? "HIT" : "MISS") + "</td><td>" + (s.voteT ? "T" : "N") + "</td>" +
-        "<td>" + bpEsc(s.why) + "</td><td class=\"" + (s.cost ? "hot" : "") + "\">" + s.cost + "</td></tr>";
-    }).join("");
+  function bpStateName(kind, d) {
+    if (kind === "2bit") {
+      return ["00 strongly not-taken", "01 weakly not-taken",
+              "10 weakly taken", "11 strongly taken"][d];
+    }
+    return d === 1 ? "T taken" : "N not taken";
+  }
+
+  /* Canonical loop walk: one branch, eight takens, one not-taken, walked
+     through the frozen pure hooks so the table can never drift from the sim.
+     The loop is already running, so the counters start where the last lap
+     left them (steady state, as in the textbook tables): 1-bit at N, 2-bit
+     at 10 weakly taken. 1-bit mispredicts twice per lap (first and last);
+     2-bit mispredicts once (last only). */
+  function bpLoopWalk(kind, seed) {
+    var outcomes = [1, 1, 1, 1, 1, 1, 1, 1, 0];
+    var d = (seed === undefined) ? BP.dirInit(kind) : seed, rows = [], misses = 0, i;
+    for (i = 0; i < outcomes.length; i++) {
+      var taken = outcomes[i] === 1;
+      var vote = BP.dirVote(kind, d);
+      var miss = vote !== taken;
+      if (miss) misses++;
+      rows.push("<tr><td>" + (i + 1) + "</td><td>" + bpStateName(kind, d) + "</td>" +
+        "<td>" + (vote ? "T" : "N") + "</td><td>" + (taken ? "T" : "N") + "</td>" +
+        "<td class=\"" + (miss ? "hot" : "") + "\">" + (miss ? "*" : "") + "</td>" +
+        "<td class=\"" + (miss ? "hot" : "") + "\">" + (miss ? BP.PENALTY : 0) + "</td></tr>");
+      d = BP.dirNext(kind, d, taken);
+    }
+    return { rows: rows.join(""), misses: misses };
+  }
+
+  /* BTB lookup walk over the worked trace: slot, tag check, and the
+     hit-to-target / miss-to-PC+4 mux, replaying the sim's own rule. */
+  function bpBtbRows() {
+    var seq = BP.TRACES.worked.seq, tags = ["-", "-"], rows = [], i;
+    for (i = 0; i < seq.length; i++) {
+      var name = seq[i][0], taken = seq[i][1] === 1;
+      var slot = BP.BID[name] % 2;
+      var match = tags[slot] === name;
+      rows.push("<tr><td>" + (i + 1) + "</td><td>" + name + "</td><td>" + slot + "</td>" +
+        "<td>" + tags[slot] + "</td><td>" + (match ? "HIT" : "MISS") + "</td>" +
+        "<td>" + (match ? "TARGET" : "PC+4") + "</td></tr>");
+      if (taken) tags[slot] = name;
+    }
+    return rows.join("");
   }
 
   function bpDescribeConfig() {
@@ -52741,7 +52854,7 @@ if (typeof module !== "undefined" && module.exports) {
       bpEls.cert.textContent =
         "THE TWO GUESSES, BENCH 71, THE PROVING GROUND\n" +
         "Stage 1: called the aggregate unknowable.\n" +
-        "Stage 2: classified every redirect from the waveform and named the evidence-backed repair.\n" +
+        "Stage 2: classified every mispredict from the state trace and named the evidence-backed repair.\n" +
         "The holder separates BTB misses from direction mispredicts.";
       if (bpEls.overlay.scrollTo) bpEls.overlay.scrollTo(0, bpEls.overlay.scrollHeight);
     }
@@ -52811,7 +52924,7 @@ if (typeof module !== "undefined" && module.exports) {
       bpEls.s1Msg.innerHTML =
         "<span class=\"w\">RIGHT.</span> Same symptom, " + s1.group.variants.length +
         " different interiors. The aggregate shows the symptom, not which predictor " +
-        "component needs repair. Stage 2 opens the waveform so you can see the split directly.";
+        "component needs repair. Stage 2 opens the state trace so you can see the split directly.";
       [bpEls.s1Btb, bpEls.s1Dir, bpEls.s1Unknown].forEach(function (b) { b.disabled = true; });
       bpCheckWin();
       return;
@@ -52823,35 +52936,43 @@ if (typeof module !== "undefined" && module.exports) {
       "What can you actually conclude from totals alone? Try again.";
   }
 
-  /* ---------- stage 2: read the waveform ---------- */
+  /* ---------- stage 2: read the trace ---------- */
   function bpS2Deal() {
     var deals = BP.stage2Deals();
     var cfg = deals[Math.floor(Math.random() * deals.length)];
     var r = BP.trace(cfg.trace, cfg.btb, cfg.dir);
     bpSt.s2 = { deal: cfg, r: r, classes: {}, classDone: false, repairDone: false };
     var t = BP.TRACES[cfg.trace];
+    var dir = {};
     var html = r.steps.map(function (s) {
-      var clsCell;
+      var id = BP.BID[s.br];
+      var d = (dir[id] === undefined) ? BP.dirInit(cfg.dir) : dir[id];
+      var clsCell, star;
       if (s.redirect) {
         clsCell = "<button type=\"button\" class=\"bp-class-btn\" data-n=\"" + s.n +
           "\" data-k=\"btb\">BTB</button>" +
           "<button type=\"button\" class=\"bp-class-btn\" data-n=\"" + s.n +
           "\" data-k=\"dir\">DIR</button>";
+        star = "*";
       } else {
         clsCell = "n/a";
+        star = "";
       }
-      return "<tr data-n=\"" + s.n + "\"><td>" + s.n + "</td><td>" + s.br + "</td>" +
-        "<td>" + (s.hit ? "HIT" : "MISS") + "</td>" +
+      var row = "<tr data-n=\"" + s.n + "\"><td>" + s.n + "</td><td>" + s.br + "</td>" +
+        "<td>" + bpStateName(cfg.dir, d) + "</td>" +
         "<td>" + (s.voteT ? "T" : "N") + "</td>" +
         "<td>" + (s.took ? "T" : "NT") + "</td>" +
-        "<td>" + bpEsc(s.tgt) + "</td>" +
-        "<td class=\"" + (s.redirect ? "hot" : "") + "\">" + (s.redirect ? ">>" : "--") + "</td>" +
+        "<td class=\"" + (s.redirect ? "hot" : "") + "\">" + star + "</td>" +
+        "<td>" + (s.hit ? "HIT" : "MISS") + "</td>" +
+        "<td class=\"" + (s.redirect ? "hot" : "") + "\">" + s.cost + "</td>" +
         "<td>" + clsCell + "</td></tr>";
+      dir[id] = BP.dirNext(cfg.dir, d, s.took);
+      return row;
     }).join("");
     bpEls.waveBody.innerHTML = html;
     bpEls.waveCap.innerHTML =
       "Trace: <span class=\"w\">" + t.label + "</span> (" + t.sub + "). " +
-      "Setup hidden. Classify every <span class=\"v\">&gt;&gt;</span> row.";
+      "Setup hidden. Classify every <span class=\"v\">*</span> row.";
     bpEls.s2Msg.textContent = "";
     bpEls.s2RepairMsg.textContent = "";
     bpEls.repairRow.style.display = "none";
@@ -52900,7 +53021,7 @@ if (typeof module !== "undefined" && module.exports) {
       bpEls.s2Msg.innerHTML =
         "<span class=\"v\">" + wrong + " OF " + total + " NEED ANOTHER LOOK.</span> " +
         "Rule of thumb: BTB MISS with a taken branch means the target was unknown. " +
-        "BTB HIT with VOTE different from ACTUAL means the vote was wrong. Re-tap and check again.";
+        "BTB HIT with PRED different from ACTUAL means the vote was wrong. Re-tap and check again.";
     }
   }
 
@@ -52983,7 +53104,10 @@ if (typeof module !== "undefined" && module.exports) {
     var intro = bpEl("div", "", "");
     intro.innerHTML = BP.INTRO_HTML;
     panel.appendChild(intro);
-    bpEls.workedBody = intro.querySelector("#bpWorkedBody");
+    bpEls.btbBody = intro.querySelector("#bpBtbBody");
+    bpEls.w1Body = intro.querySelector("#bpW1Body");
+    bpEls.w2Body = intro.querySelector("#bpW2Body");
+    bpEls.wTot = intro.querySelector("#bpWTot");
 
     /* progress */
     var prog = bpEl("div", "bp-out", "STAGE 1: OPEN | STAGE 2: OPEN");
@@ -53006,7 +53130,7 @@ if (typeof module !== "undefined" && module.exports) {
 
     /* controls */
     panel.appendChild(bpEl("div", "bp-sec", "THE CONTROLS"));
-    panel.appendChild(bpEl("p", "bp-p", "Pick a trace, size the BTB, choose the predictor, and run. The verdict names the dominant failure and the fix it wants. The two short traces are the stage-2 waveforms; run them here to check your work."));
+    panel.appendChild(bpEl("p", "bp-p", "Pick a trace, size the BTB, choose the predictor, and run. The verdict names the dominant failure and the fix it wants. The two short traces are the stage-2 deals; run them here to check your work."));
     var g1 = bpEl("div", "bp-group", "");
     g1.appendChild(bpEl("span", "bp-lbl", "TRACE"));
     var row1 = bpEl("div", "bp-row", "");
@@ -53111,7 +53235,7 @@ if (typeof module !== "undefined" && module.exports) {
     var s2 = bpEl("div", "", "");
     s2.innerHTML = BP.STAGE2_HTML;
     panel.appendChild(s2);
-    var deal2 = bpBtn("DEAL THE WAVEFORM", "bp-btn solid");
+    var deal2 = bpBtn("DEAL THE TRACE", "bp-btn solid");
     deal2.id = "bpS2Deal";
     deal2.addEventListener("click", bpS2Deal);
     panel.appendChild(deal2);
@@ -53123,11 +53247,11 @@ if (typeof module !== "undefined" && module.exports) {
     var waveWrap = bpEl("div", "bp-scrollx", "");
     waveWrap.id = "bpWaveWrap";
     var waveTbl = bpEl("table", "bp-table", "");
-    waveTbl.setAttribute("aria-label", "Branch predictor waveform");
+    waveTbl.setAttribute("aria-label", "Branch predictor state trace");
     waveTbl.id = "bpWaveTable";
     var wthead = bpEl("thead", "", "");
     var whr = bpEl("tr", "", "");
-    ["#", "BR", "BTB", "VOTE", "ACTUAL", "TARGET", "REDIRECT", "CLASS"].forEach(function (h) {
+    ["#", "BR", "STATE", "PRED", "ACTUAL", "*", "BTB", "CYC", "CLASS"].forEach(function (h) {
       whr.appendChild(bpEl("th", "", h));
     });
     wthead.appendChild(whr);
@@ -53190,8 +53314,15 @@ if (typeof module !== "undefined" && module.exports) {
     ov.appendChild(panel);
     document.body.appendChild(ov);
 
-    /* fill the worked-example table from the sim itself, so copy can never drift */
-    if (bpEls.workedBody) bpEls.workedBody.innerHTML = bpWorkedRows();
+    /* fill the canonical tables from the sim itself, so copy can never drift */
+    if (bpEls.btbBody) bpEls.btbBody.innerHTML = bpBtbRows();
+    var bpW1 = bpLoopWalk("1bit", 0), bpW2 = bpLoopWalk("2bit", 2);
+    if (bpEls.w1Body) bpEls.w1Body.innerHTML = bpW1.rows;
+    if (bpEls.w2Body) bpEls.w2Body.innerHTML = bpW2.rows;
+    if (bpEls.wTot) bpEls.wTot.innerHTML =
+      "Totals from the simulator: 1-bit, <span class=\"v\">" + bpW1.misses + "</span> mispredicts; " +
+      "2-bit, <span class=\"v\">" + bpW2.misses + "</span> mispredict per lap. The 1-bit predictor falls for " +
+      "the first lap and the last; the 2-bit predictor only the last. The extra bit is hysteresis.";
     bpProgress();
   }
 
