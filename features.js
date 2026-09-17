@@ -52612,9 +52612,9 @@ if (typeof module !== "undefined" && module.exports) {
     "<text x=\"430\" y=\"102\" font-size=\"8.5\" fill=\"var(--dim)\">STRONGLY</text>",
     "<text x=\"430\" y=\"114\" font-size=\"8.5\" fill=\"var(--dim)\">TAKEN</text>",
     "</g></svg>",
-    "<p class=\"bp-p\">The standard names: 11 strongly taken, 10 weakly taken, 01 weakly not-taken, 00 strongly not-taken. A 1-bit predictor is the degenerate 2-state version: one odd outcome flips it immediately, which is why loops defeat it.</p>",
+    "<p class=\"bp-p\">The names: 11 strongly taken, 10 weakly taken, 01 weakly not-taken, 00 strongly not-taken. A 1-bit predictor is the degenerate 2-state version: one odd outcome flips it immediately, which is why loops defeat it.</p>",
     "<div class=\"bp-sec\">THE WORKED EXAMPLE</div>",
-    "<p class=\"bp-p\">One loop branch, nine laps: taken eight times, not taken once. The loop is already running, so the counters start where the last lap left them: the 1-bit predictor at N, the 2-bit counter at 10 weakly taken. The STATE column uses the standard counter names; * marks a mispredict. Predict-then-verify: cover the * column, walk each row yourself, then check against the simulator.</p>",
+    "<p class=\"bp-p\">One loop branch, nine laps: taken eight times, not taken once. The loop is already running, so the counters start where the last lap left them: the 1-bit predictor at N, the 2-bit counter at 10 weakly taken. The STATE column uses the counter names from the diagram; * marks a mispredict. Predict-then-verify: cover the * column, walk each row yourself, then check against the simulator.</p>",
     "<p class=\"bp-p\"><b>1-bit predictor</b></p>",
     "<div class=\"bp-scrollx\"><table class=\"bp-table\" aria-label=\"State trace, 1-bit predictor\">",
     "<thead><tr><th>#</th><th>STATE</th><th>PRED</th><th>ACTUAL</th><th>*</th><th>CYC</th></tr></thead>",
@@ -52647,7 +52647,7 @@ if (typeof module !== "undefined" && module.exports) {
     "<li>More BTB entries never fix direction mispredicts, and a smarter predictor never fixes BTB misses. Each fix only fixes its own failure. That is the whole diagnostic.</li>",
     "</ul>",
     "<div class=\"bp-sec\">BTB MISS VS DIRECTION MISSPREDICT</div>",
-    "<p class=\"bp-p\">One table separates the two failure causes, the way course lectures teach it:</p>",
+    "<p class=\"bp-p\">One table separates the two failure causes:</p>",
     "<div class=\"bp-scrollx\"><table class=\"bp-table\" aria-label=\"BTB result crossed with direction prediction\">",
     "<thead><tr><th>BTB</th><th>PREDICTED</th><th>NEXT PC</th></tr></thead>",
     "<tbody>",
@@ -52666,7 +52666,7 @@ if (typeof module !== "undefined" && module.exports) {
 
   BP.STAGE2_HTML = [
     "<div class=\"bp-sec\">STAGE 2: READ THE TRACE</div>",
-    "<p class=\"bp-p\">This is the state-trace table, the same per-event view the textbooks use. <b>STATE</b> is the predictor's counter before the event, in the standard names from the diagram above. <b>PRED</b> is the vote, the counter's most significant bit. <b>ACTUAL</b> is what the branch did, and <b>*</b> marks a mispredict. <b>BTB</b> is HIT when the target was known, MISS when it was not. The 1-bit predictor below is the degenerate 2-state version: states T and N, one odd outcome flips it.</p>",
+    "<p class=\"bp-p\">This is the state-trace table. <b>STATE</b> is the predictor's counter before the event, in the names from the diagram above. <b>PRED</b> is the vote, the counter's most significant bit. <b>ACTUAL</b> is what the branch did, and <b>*</b> marks a mispredict. <b>BTB</b> is HIT when the target was known, MISS when it was not. The 1-bit predictor below is the degenerate 2-state version: states T and N, one odd outcome flips it.</p>",
     "<p class=\"bp-p\">Classify every <b>*</b> row: a <b>BTB target miss</b> means the target was unknown; a <b>direction misprediction</b> means the vote was wrong. Then name the repair the trace justifies.</p>"
   ].join("\n");
 
