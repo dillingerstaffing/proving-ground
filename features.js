@@ -17454,7 +17454,7 @@ if (typeof module !== "undefined" && module.exports) {
       "<b>opcode table</b>, and reassemble the immediate. " +
       "The drill, worked once: 0x002081B3 is <b>add x3, x1, x2</b>. Bits 6-0 read 0110011, opcode 51, the OP family. " +
       "Bits 11-7 name rd = 3, bits 19-15 name rs1 = 1, bits 24-20 name rs2 = 2, and funct3 and funct7 are both zero, " +
-      "which the opcode table reads as add. Immediates are the trap: the bits are scattered across four slices " +
+      "which the opcode table reads as add. Immediates are the hard part: the bits are scattered across four slices " +
       "in B-type, and the top bit extends the sign, so a negative offset stays negative. " +
       "Decode all three words with zero field errors to qualify.";
     panel.appendChild(sub);
