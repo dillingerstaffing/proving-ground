@@ -99,7 +99,7 @@ function rvBuild() {
   if (!box || $("rvAnvilBtn")) return;
 
   var css = [
-    ".rv-overlay{position:fixed;inset:0;z-index:9999;background:rgba(4,8,8,.92);display:none;align-items:center;justify-content:center;padding:16px;}",
+    ".rv-overlay{position:fixed;inset:0;z-index:9999;background:rgba(var(--scrim-rgb),.92);display:none;align-items:center;justify-content:center;padding:16px;}",
     ".rv-overlay.open{display:flex;}",
     ".rv-panel{width:min(860px,100%);max-height:94vh;overflow-y:auto;background:#0a1416;border:1px solid var(--acid);padding:16px;}",
     ".rv-panel h3{margin:0 0 4px;font-family:var(--font-d);text-transform:uppercase;letter-spacing:.02em;}",
@@ -20683,7 +20683,7 @@ if (typeof module !== "undefined" && module.exports) {
   /* ---------------- css ---------------- */
 
   var I2_CSS = [
-    ".i2-overlay{position:fixed;inset:0;background:rgba(4,7,7,.94);z-index:90;display:none;overflow-y:auto;padding:18px 12px;}",
+    ".i2-overlay{position:fixed;inset:0;background:rgba(var(--scrim-rgb),.94);z-index:90;display:none;overflow-y:auto;padding:18px 12px;}",
     ".i2-overlay.open{display:block;}",
     ".i2-panel{max-width:1020px;margin:0 auto;background:var(--panel);border:1px solid var(--line);padding:20px;}",
     ".i2-panel h3{font-family:var(--font-d);font-size:22px;letter-spacing:.02em;margin:0 0 4px;text-transform:uppercase;}",
@@ -43710,7 +43710,7 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
   var T5_CSS = [
-    ".t5-overlay{position:fixed;inset:0;z-index:90;background:rgba(8,8,10,.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
+    ".t5-overlay{position:fixed;inset:0;z-index:90;background:rgba(var(--scrim-rgb),.86);display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}",
     ".t5-overlay.open{display:block}",
     ".t5-panel{max-width:880px;margin:0 auto;padding:64px 20px 120px;color:var(--paper,#f2ede4);font-family:'IBM Plex Mono',monospace}",
     ".t5-kicker{font-size:12px;letter-spacing:.22em;color:var(--ember,#ff5a1f);margin-bottom:10px}",
