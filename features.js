@@ -3849,7 +3849,7 @@ if (typeof module !== "undefined" && module.exports) {
     ".mb-panel h3{font-family:var(--font-d);font-size:26px;margin:0 0 4px;text-transform:uppercase;letter-spacing:.02em;color:var(--acid);}",
     ".mb-sub{font-size:12px;line-height:1.65;color:var(--steel);margin:0 0 14px;max-width:82ch;}",
     ".mb-sub a{color:var(--cyan);text-decoration:none;border-bottom:1px dotted var(--cyan);}",
-    ".mb-close{float:right;background:var(--panel-2);border:1px solid var(--line);color:var(--paper);font:inherit;font-size:12px;padding:10px 16px;cursor:pointer;min-height:44px;}",
+    ".mb-close{float:right;background:var(--panel-2);border:1px solid var(--line);color:var(--paper);font:inherit;font-size:12px;padding:10px 16px;cursor:pointer;min-height:48px;}",
     ".mb-deck{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px;}",
     ".mb-mod{border:1px solid var(--line);background:var(--panel-2);padding:12px 14px;cursor:pointer;min-height:44px;}",
     ".mb-mod h4{margin:0 0 4px;font-family:var(--font-d);font-size:16px;color:var(--paper);}",
@@ -44754,8 +44754,8 @@ if (typeof module !== "undefined" && module.exports) {
       g += snTxt(mx + mw / 2, y - 96, tapsOnPads ? "SENSE: SHUNT ONLY" : "SENSE: SHUNT + COPPER", "middle", 9, dim);
       return g;
     }
-    s += row(150, "BENCH A: TAPS ON THE PADS", true, t.va, t.ia);
-    s += row(330, fixed ? "BENCH B: TAPS MOVED TO THE PADS" : "BENCH B: TAPS OUTBOARD", fixed, t.vb, t.ib);
+    s += row(150, "BENCH A: TAPS ON THE PADS", true, t.aMv, SN_T2_I);
+    s += row(330, fixed ? "BENCH B: TAPS MOVED TO THE PADS" : "BENCH B: TAPS OUTBOARD", fixed, fixed ? t.aMv : t.bMv, SN_T2_I);
     s += snTxt(20, 386, "KELVIN RULE: SENSE TAPS TOUCH THE SHUNT PADS AND CARRY NO LOAD CURRENT", "start", 10, dim);
     return s + "</svg>";
   }

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260917-pg105">
+<meta name="build-version" content="v20260917-pg106">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -1266,7 +1266,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-17-pg105";
+var PG_REV = "2026-09-17-pg106";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
@@ -1627,7 +1627,7 @@ function pgSlashKey() {
    class changes re-trigger the observer forever and hang the tab. */
 (function pgOverlayWatcher() {
   function isOverlay(t) {
-    return t && t.classList && t.className && t.className.indexOf("-overlay") !== -1;
+    return t && t.classList && typeof t.className === "string" && t.className.indexOf("-overlay") !== -1;
   }
   function refreshLock() {
     var ovs = document.querySelectorAll('div[class*="-overlay"]');
@@ -1723,7 +1723,7 @@ function pgCloseAllOverlays() {
 
   document.addEventListener("click", function (e) {
     var t = e.target;
-    if (t && t.classList && t.className.indexOf("-overlay") !== -1 &&
+    if (t && t.classList && typeof t.className === "string" && t.className.indexOf("-overlay") !== -1 &&
         t.classList.contains("open")) {
       t.classList.remove("open");
     }
@@ -1883,9 +1883,9 @@ if ('serviceWorker' in navigator) {
   apply(current());
 })();
 </script>
-<script src="rvcore.js?v=7ae1b2a24a" defer></script>
-<script src="rvdata.js?v=7ae1b2a24a" defer></script>
-<script src="riscv-lab.js?v=7ae1b2a24a" defer></script>
-<script src="features.js?v=7ae1b2a24a" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=32453d01b5" defer></script>
+<script src="rvdata.js?v=32453d01b5" defer></script>
+<script src="riscv-lab.js?v=32453d01b5" defer></script>
+<script src="features.js?v=32453d01b5" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
