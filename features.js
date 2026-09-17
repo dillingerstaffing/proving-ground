@@ -3773,19 +3773,19 @@ if (typeof module !== "undefined" && module.exports) {
     function issueCmd(t, e) {
       var bk = t.bank;
       if (t.phase === "pre") {
-        if (trace) trace.push({ c: "P", bank: bk });
+        if (trace) trace.push({ c: "P", bank: bk, e: e });
         openRow[bk] = -1;
         tAct[bk] = e + tim.tRP;
         t.phase = "act";
       } else if (t.phase === "act") {
-        if (trace) trace.push({ c: "A", bank: bk });
+        if (trace) trace.push({ c: "A", bank: bk, e: e });
         lastAct[bk] = e;
         tCol[bk] = e + tim.tRCD;
         openRow[bk] = t.row;
         t.didAct = true;
         t.phase = "col";
       } else {
-        if (trace) trace.push({ c: t.wr ? "W" : "R", bank: bk });
+        if (trace) trace.push({ c: t.wr ? "W" : "R", bank: bk, e: e });
         if (!t.didAct) rowHits++;
         if (!t.wr) { latSum += (e + tim.tCL) - t.issue; reads++; }
         t.phase = "done";
@@ -3878,9 +3878,11 @@ if (typeof module !== "undefined" && module.exports) {
     ".mb-bank.open{border-color:var(--cyan);color:var(--paper);}",
     ".mb-tracebox{border:1px solid var(--line);background:var(--panel);padding:12px;margin-bottom:12px;}",
     ".mb-tracebox h4{margin:0 0 8px;font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--cyan);font-weight:600;}",
-    ".mb-trace{display:flex;flex-wrap:wrap;gap:2px;min-height:26px;}",
-    ".mb-c{width:14px;height:22px;display:inline-block;border:1px solid var(--line);font-family:var(--font-m);font-size:9px;line-height:22px;text-align:center;color:var(--ink);}",
-    ".mb-c.A{background:var(--acid);}.mb-c.R{background:var(--cyan);}.mb-c.W{background:var(--orange);}.mb-c.P{background:var(--line);color:var(--ink);}",
+    ".mb-wave{overflow-x:auto;border:1px solid var(--line);background:var(--panel);min-height:120px;}",
+    ".mb-wave svg{display:block;font-family:var(--font-m);}",
+    ".mb-wave .wl{font-size:9px;fill:var(--steel);letter-spacing:.08em;}",
+    ".mb-wave .ax{font-size:8px;fill:var(--steel);}",
+    ".mb-wave .cl{font-size:9px;font-weight:700;}",
     ".mb-legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:10px;color:var(--steel);letter-spacing:.06em;}",
     ".mb-legend i{display:inline-block;width:10px;height:10px;margin-right:4px;vertical-align:-1px;}",
     ".mb-verdict{border:1px solid var(--line);padding:14px 16px;margin-bottom:12px;font-family:var(--font-m);font-size:13px;line-height:1.7;display:none;}",
@@ -3926,9 +3928,10 @@ if (typeof module !== "undefined" && module.exports) {
       "Your four knobs are waits in cycles between the steps of a memory access: tCL (CAS latency), tRCD (RAS to CAS), tRP (precharge), tRAS (row active). " +
       "Each die hides a floor per timing; set one below its floor and errors flood the command bus. " +
       "The scheduler is FR-FCFS (first-ready, first-come-first-served): from the waiting transactions it issues whichever command can fire earliest, so tighter timings also let it pack more work into every cycle. " +
-      "Probe the bus live " +
-      "(<b style='color:var(--acid)'>A</b>=activate, <b style='color:var(--cyan)'>R</b>=read, " +
-      "<b style='color:var(--orange)'>W</b>=write, <b style='color:var(--steel)'>P</b>=precharge), " +
+      "Probe the bus live: CS#, RAS#, CAS#, WE# drawn as JEDEC timing waveforms, " +
+      "ACT/RD/WR/PRE commands riding the shared command bus with bank and row/column " +
+      "on the address bus, and the tRCD (RAS to CAS) and tRAS (row active) intervals " +
+      "dimensioned on one bank's activate-column-precharge triple, " +
       "then qualify: 4000 deterministic transactions, zero luck, errors inside the ECC budget (error-correcting code: 2 correctable errors per run, no more) and bandwidth on target. " +
       "On the entry die the safe timings run clean but only reach 38.3 GB/s against a 38.5 target; tightening to 25/25/22/46 clears 39.5 GB/s for a grade B, while pushing tCL to 22 alone floods 27 errors against the budget of 2. " +
       "Your grade is pure silicon margin: cycles of headroom over the die's hidden floor. " +
@@ -4014,15 +4017,17 @@ if (typeof module !== "undefined" && module.exports) {
       ui.banks.push(bk);
     }
 
-    /* trace */
-    var tbox = mbEl("div", "mb-tracebox", "<h4>COMMAND BUS TRACE</h4>");
-    var tr = mbEl("div", "mb-trace");
+    /* command bus timing diagram */
+    var tbox = mbEl("div", "mb-tracebox", "<h4>COMMAND BUS TIMING</h4>");
+    var tr = mbEl("div", "mb-wave bp-scrollx");
     tbox.appendChild(tr);
     var leg = mbEl("div", "mb-legend",
-      '<span><i style="background:var(--acid)"></i>A activate</span>' +
-      '<span><i style="background:var(--cyan)"></i>R read</span>' +
-      '<span><i style="background:var(--orange)"></i>W write</span>' +
-      '<span><i style="background:var(--line)"></i>P precharge</span>');
+      '<span><i style="background:var(--acid)"></i>ACT</span>' +
+      '<span><i style="background:var(--cyan)"></i>RD</span>' +
+      '<span><i style="background:var(--orange)"></i>WR</span>' +
+      '<span><i style="background:var(--steel)"></i>PRE</span>' +
+      '<span>CS#/RAS#/CAS#/WE# active low, CS# low on every command</span>' +
+      '<span>dimension arrows: minimum legal tRCD / tRAS on the marked bank</span>');
     tbox.appendChild(leg);
     panel.appendChild(tbox);
     ui.trace = tr;
@@ -4104,33 +4109,187 @@ if (typeof module !== "undefined" && module.exports) {
     if (probeTimer) { clearInterval(probeTimer); probeTimer = null; }
   }
 
+  /* ---------------- JEDEC command-bus timing view ----------------
+     Canonical DRAM timing diagram (Jacob/Ng/Wang "Memory Systems",
+     vendor SDRAM datasheets): CLK plus CS#, RAS#, CAS#, WE# as step
+     waveforms, the command bus as labeled boxes, bank + row/column on
+     the address bus, and the tRCD / tRAS intervals drawn as dimension
+     arrows over one bank's ACT -> column -> PRE triple.
+     Pin encoding is active low: ACT = RAS low; RD = CAS low;
+     WR = CAS + WE low; PRE = RAS + WE low. CS# is low on every
+     command cycle, high (deselect) when the bus is idle. */
+  var MB_PINS = {
+    A: { ras: 0, cas: 1, we: 1, tag: "ACT", col: "var(--acid)" },
+    R: { ras: 1, cas: 0, we: 1, tag: "RD",  col: "var(--cyan)" },
+    W: { ras: 1, cas: 0, we: 0, tag: "WR",  col: "var(--orange)" },
+    P: { ras: 0, cas: 1, we: 0, tag: "PRE", col: "var(--steel)" }
+  };
+
+  /* per-cycle command map from the probe trace */
+  function mbWaveModel(trace) {
+    var cmds = [], maxE = -1;
+    for (var i = 0; i < trace.length; i++) {
+      var t = trace[i];
+      cmds[t.e] = { c: t.c, bank: t.bank };
+      if (t.e > maxE) maxE = t.e;
+    }
+    return { cmds: cmds, n: maxE + 3 };
+  }
+
+  /* first bank with a complete ACT -> RD/WR -> PRE triple */
+  function mbWaveDims(trace) {
+    var per = {};
+    for (var i = 0; i < trace.length; i++) {
+      var t = trace[i];
+      (per[t.bank] = per[t.bank] || []).push(t);
+    }
+    for (var b = 0; b < MB_BANKS; b++) {
+      var seq = per[b];
+      if (!seq) continue;
+      var act = -1, col = -1, pre = -1;
+      for (var j = 0; j < seq.length; j++) {
+        if (seq[j].c === "A" && act < 0) act = j;
+        else if ((seq[j].c === "R" || seq[j].c === "W") && act >= 0 && col < 0) col = j;
+        else if (seq[j].c === "P" && act >= 0) { pre = j; break; }
+      }
+      if (act >= 0 && col >= 0 && pre >= 0)
+        return { bank: b, actE: seq[act].e, colE: seq[col].e, preE: seq[pre].e };
+    }
+    return null;
+  }
+
+  function mbWaveSVG(model, tim, reveal, dim) {
+    var CW = 30, LW = 58, n = Math.min(reveal, model.n);
+    var rows = [
+      { h: 36 },
+      { h: 16 },
+      { h: 28 },
+      { h: 18 },
+      { h: 20, pin: "cs" },
+      { h: 20, pin: "ras" },
+      { h: 20, pin: "cas" },
+      { h: 20, pin: "we" },
+      { h: 16 }
+    ];
+    var names = ["", "CLK", "CMD", "ADDR", "CS#", "RAS#", "CAS#", "WE#", ""];
+    var y = 0, i, e;
+    for (i = 0; i < rows.length; i++) { rows[i].y = y; y += rows[i].h + 6; }
+    var H = y, W = LW + Math.max(n, 1) * CW + 10;
+    function X(cyc) { return LW + cyc * CW; }
+    function pinAt(pin, cyc) {
+      var c = model.cmds[cyc];
+      if (!c) return 1;
+      if (pin === "cs") return 0;
+      return MB_PINS[c.c][pin];
+    }
+    function wavePath(row, pin) {
+      var d = "", lv, prev = -1;
+      var yHi = row.y + 3, yLo = row.y + row.h - 3;
+      for (var cyc = 0; cyc < n; cyc++) {
+        lv = pinAt(pin, cyc);
+        if (prev < 0) d += "M" + X(cyc) + " " + (lv ? yHi : yLo);
+        else if (lv !== prev) d += " L" + X(cyc) + " " + (lv ? yHi : yLo);
+        d += " L" + X(cyc + 1) + " " + (lv ? yHi : yLo);
+        prev = lv;
+      }
+      return d;
+    }
+    function clkPath(row) {
+      var d = "", yHi = row.y + 3, yLo = row.y + row.h - 3;
+      for (var k = 0; k <= n * 2; k++)
+        d += (k ? " L" : "M") + (LW + k * CW / 2) + " " + ((k % 2 === 0) ? yHi : yLo);
+      return d;
+    }
+    function dimArrow(yLane, e1, e2, label) {
+      var x1 = X(e1), x2 = X(e2), d2 = "";
+      d2 += '<line x1="' + x1 + '" y1="' + yLane + '" x2="' + x2 + '" y2="' + yLane +
+        '" style="stroke:var(--steel);stroke-width:1"/>';
+      d2 += '<path d="M' + x1 + " " + yLane + " L" + (x1 + 7) + " " + (yLane - 3) +
+        " L" + (x1 + 7) + " " + (yLane + 3) + ' z" style="fill:var(--steel)"/>';
+      d2 += '<path d="M' + x2 + " " + yLane + " L" + (x2 - 7) + " " + (yLane - 3) +
+        " L" + (x2 - 7) + " " + (yLane + 3) + ' z" style="fill:var(--steel)"/>';
+      var dropBot = rows[2].y + rows[2].h;
+      d2 += '<line x1="' + x1 + '" y1="' + (yLane - 5) + '" x2="' + x1 + '" y2="' + dropBot +
+        '" style="stroke:var(--steel);stroke-width:1;stroke-dasharray:3 3" opacity="0.5"/>';
+      d2 += '<line x1="' + x2 + '" y1="' + (yLane - 5) + '" x2="' + x2 + '" y2="' + dropBot +
+        '" style="stroke:var(--steel);stroke-width:1;stroke-dasharray:3 3" opacity="0.5"/>';
+      d2 += '<text class="ax" x="' + ((x1 + x2) / 2) + '" y="' + (yLane - 6) +
+        '" text-anchor="middle">' + mbEsc(label) + "</text>";
+      return d2;
+    }
+    var s = '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="DRAM command bus timing diagram">';
+    for (i = 0; i < rows.length; i++) {
+      if (names[i])
+        s += '<text class="wl" x="4" y="' + (rows[i].y + rows[i].h / 2 + 3) +
+          '">' + names[i] + "</text>";
+    }
+    for (e = 0; e <= n; e += 8) {
+      s += '<line x1="' + X(e) + '" y1="' + rows[1].y + '" x2="' + X(e) + '" y2="' +
+        (rows[7].y + rows[7].h) + '" style="stroke:var(--line);stroke-width:1" opacity="0.35"/>';
+      s += '<text class="ax" x="' + X(e) + '" y="' + (rows[8].y + 11) + '">' + e + "</text>";
+    }
+    s += '<path d="' + clkPath(rows[1]) + '" fill="none" style="stroke:var(--steel);stroke-width:1"/>';
+    var pins = ["cs", "ras", "cas", "we"];
+    for (i = 0; i < 4; i++)
+      s += '<path d="' + wavePath(rows[4 + i], pins[i]) +
+        '" fill="none" style="stroke:var(--paper);stroke-width:1.5"/>';
+    for (e = 0; e < n; e++) {
+      var c = model.cmds[e];
+      if (!c) continue;
+      var p = MB_PINS[c.c], bx = X(e) + 1, cy = rows[2].y, ay = rows[3].y;
+      s += '<rect x="' + bx + '" y="' + (cy + 4) + '" width="' + (CW - 2) +
+        '" height="20" fill="none" style="stroke:' + p.col + ';stroke-width:1"/>';
+      s += '<text class="cl" x="' + (bx + 4) + '" y="' + (cy + 18) + '" style="fill:' +
+        p.col + '">' + p.tag + '<tspan style="font-size:7px" dy="3">' + c.bank + "</tspan></text>";
+      var at = c.c === "A" ? "B" + c.bank + ":ROW" : "B" + c.bank + ":COL";
+      s += '<text class="ax" x="' + (bx + 3) + '" y="' + (ay + 13) +
+        '" style="font-size:7px">' + at + "</text>";
+    }
+    if (dim) {
+      s += '<text class="wl" x="4" y="' + (rows[0].y + 20) + '">BANK ' + dim.bank + "</text>";
+      if (reveal > dim.colE)
+        s += dimArrow(rows[0].y + 28, dim.actE, dim.colE, "tRCD >= " + tim.tRCD + " cyc");
+      if (reveal > dim.preE)
+        s += dimArrow(rows[0].y + 12, dim.actE, dim.preE, "tRAS >= " + tim.tRAS + " cyc");
+    }
+    return s + "</svg>";
+  }
+
   function mbProbe() {
     mbBuild();
     mbStopProbe();
     var m = MB_MODULES[ui.modIdx];
-    var res = mbSim(m, mbTimings(), 240, true);
+    var tim = mbTimings();
+    var res = mbSim(m, tim, 240, true);
     var trace = res.trace;
-    ui.trace.innerHTML = "";
+    ui.verdict.classList.remove("show");
     ui.banks.forEach(function (bk) {
       bk.classList.remove("open");
       bk.querySelector("span").textContent = "IDLE";
     });
-    ui.verdict.classList.remove("show");
-    var openRows = {};
-    var idx = 0;
+    var model = mbWaveModel(trace);
+    var dim = mbWaveDims(trace);
+    var idx = 0, reveal = 0;
+    function draw() {
+      ui.trace.innerHTML = mbWaveSVG(model, tim, reveal, dim);
+      ui.trace.scrollLeft = ui.trace.scrollWidth;
+    }
+    draw();
     probeTimer = setInterval(function () {
       var n = Math.min(idx + 24, trace.length);
       for (; idx < n; idx++) {
         var t = trace[idx];
-        var c = mbEl("span", "mb-c " + t.c, t.c);
-        ui.trace.appendChild(c);
-        while (ui.trace.children.length > 160) ui.trace.removeChild(ui.trace.firstChild);
+        if (t.e + 1 > reveal) reveal = t.e + 1;
         var bk = ui.banks[t.bank];
-        if (t.c === "A") { bk.classList.add("open"); openRows[t.bank] = true; bk.querySelector("span").textContent = "ROW OPEN"; }
-        if (t.c === "P") { bk.classList.remove("open"); delete openRows[t.bank]; bk.querySelector("span").textContent = "IDLE"; }
+        if (t.c === "A") { bk.classList.add("open"); bk.querySelector("span").textContent = "ROW OPEN"; }
+        if (t.c === "P") { bk.classList.remove("open"); bk.querySelector("span").textContent = "IDLE"; }
       }
+      draw();
       if (idx >= trace.length) {
         mbStopProbe();
+        reveal = model.n;
+        draw();
         mbSetTiles(res);
         mbLog("probe " + mbEsc(m.sku) + ": " + res.gbs.toFixed(1) + " GB/s, " +
           res.errors + " errors, margin " + (res.margin >= 0 ? "+" : "") + res.margin);
@@ -8543,7 +8702,37 @@ var BTB_CSS = [
   ".bb-cert h4{font-family:'Space Grotesk',sans-serif;letter-spacing:.1em;font-size:14px;margin:0 0 8px;color:var(--ember);}",
   ".bb-cert p{font-size:13px;color:var(--dim);line-height:1.6;margin:0 0 12px;}",
   "@media (max-width:640px){.bb-cards{grid-template-columns:1fr;}.bb-body{padding:14px;}.bb-table th:nth-child(3),.bb-table td:nth-child(3){display:none;}}",
-  "@media (prefers-reduced-motion: reduce){.bb-btn,.bb-card,.bb-close{transition:none !important;}}"
+  "@media (prefers-reduced-motion: reduce){.bb-btn,.bb-card,.bb-close{transition:none !important;}}",
+  ".bb13-chain{display:flex;align-items:stretch;margin:0 0 6px;}",
+  ".bb13-stage{flex:1 1 0;min-width:0;border:1px solid var(--line);background:var(--panel);padding:12px 14px;}",
+  ".bb13-stage.cur{border-color:var(--ember);box-shadow:inset 3px 0 0 var(--ember);}",
+  ".bb13-sname{font-family:'Space Grotesk',sans-serif;font-size:12px;font-weight:700;letter-spacing:.1em;margin-bottom:8px;}",
+  ".bb13-sname .tag{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;color:var(--ember);margin-left:8px;font-weight:400;}",
+  ".bb13-smeta{font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.7;color:var(--dim);margin:0 0 4px;}",
+  ".bb13-arrow{display:flex;align-items:center;gap:8px;flex:0 0 118px;padding:0 10px;}",
+  ".bb13-alab{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;color:var(--dim);white-space:nowrap;}",
+  ".bb13-aline{flex:1;height:1px;background:var(--dim);position:relative;}",
+  ".bb13-aline::after{content:\"\";position:absolute;right:0;top:-3px;border:4px solid transparent;border-left-color:var(--dim);}",
+  ".bb13-reg{border:1px solid var(--line);margin-bottom:8px;}",
+  ".bb13-reg.res{border-style:dashed;}",
+  ".bb13-regrow{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:10px 12px 2px;}",
+  ".bb13-regname{font-family:'Space Grotesk',sans-serif;font-size:12px;font-weight:700;letter-spacing:.1em;}",
+  ".bb13-regname .lk{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;margin-left:8px;font-weight:400;}",
+  ".bb13-regname .lk.on{color:var(--mint);}",
+  ".bb13-regname .lk.off{color:var(--ember);}",
+  ".bb13-regaddr{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--dim);white-space:nowrap;}",
+  ".bb13-regsub{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--dim);padding:0 12px 10px;}",
+  ".bb13-foot{border:1px solid var(--line);padding:12px;margin:0 0 4px;}",
+  ".bb13-note{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.06em;color:var(--dim);margin:0 0 8px;}",
+  ".bb13-track{position:relative;height:66px;margin:4px 0;}",
+  ".bb13-bar{position:absolute;height:20px;border:1px solid var(--ink);background:var(--black);overflow:hidden;}",
+  ".bb13-bar.l1{top:4px;}",
+  ".bb13-bar.l2{top:38px;}",
+  ".bb13-bar .bl{position:absolute;left:6px;top:50%;transform:translateY(-50%);font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.06em;color:var(--ink);white-space:nowrap;}",
+  ".bb13-over{position:absolute;top:4px;height:54px;border:1px dashed var(--ember);pointer-events:none;}",
+  ".bb13-axis{display:flex;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--dim);margin:0 0 8px;}",
+  ".bb13-cap{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.06em;color:var(--ember);margin:8px 0 0;}",
+  "@media (max-width:640px){.bb13-chain{flex-direction:column;}.bb13-arrow{flex-direction:column;flex:none;padding:10px 0;}.bb13-aline{width:1px;height:26px;flex:none;}.bb13-aline::after{right:-3px;top:auto;bottom:0;border:4px solid transparent;border-top-color:var(--dim);}.bb13-regrow{flex-direction:column;align-items:flex-start;gap:4px;}}"
 ];
 
 var BTB_ST = { t1: { passed: false }, t2: { passed: false }, t3: { passed: false } };
@@ -8592,84 +8781,97 @@ function btbOpenTrial(id) {
   var blurb = btbEl("p", "bb-sub", t.blurb);
   work.appendChild(blurb);
 
-  /* stage manifest */
-  work.appendChild(btbEl("h3", "bb-h", "STAGE MANIFEST"));
+  /* chain of trust: the canonical boot-stage flow diagram. Boxes in load
+     order; each arrow marks the stage that verifies and loads the next (ARM
+     Trusted Board Boot convention: each stage authenticates everything it
+     loads). Verify/reflash buttons live inside their stage boxes, driven by
+     the same state as before. */
+  work.appendChild(btbEl("h3", "bb-h", "CHAIN OF TRUST"));
   var im = btbImages(t);
-  var tbl = btbEl("table", "bb-table");
-  var thead = btbEl("thead");
-  var hr = btbEl("tr");
-  ["STAGE", "SIZE", "MANIFEST", "CHECK"].forEach(function (h) {
-    hr.appendChild(btbEl("th", null, h));
-  });
-  thead.appendChild(hr); tbl.appendChild(thead);
-  var tb = btbEl("tbody");
+  var chain = btbEl("div", "bb13-chain");
+  chain.id = "bbChain";
+  work.appendChild(chain);
 
-  function stageRow(name, sizeLabel, claimed, imgBytes, vkey) {
-    var tr = btbEl("tr");
-    var tdN = btbEl("td"); tdN.appendChild(btbEl("div", null, name));
-    var tdS = btbEl("td", "bb-mono", sizeLabel);
-    var tdM = btbEl("td", "bb-mono", btbHex(claimed));
-    var tdC = btbEl("td");
-    var stat = btbEl("span", "bb-vstat idle", "NOT VERIFIED");
-    stat.id = "bbV" + vkey;
-    tdC.appendChild(stat);
-    tr.appendChild(tdN); tr.appendChild(tdS); tr.appendChild(tdM); tr.appendChild(tdC);
-    return tr;
+  function btbStageBox(idx, name, sizeLabel, manifestLabel, vkey, addBtns) {
+    var box = btbEl("div", "bb13-stage");
+    var nm = btbEl("div", "bb13-sname", name);
+    var tag = btbEl("span", "tag", "[ CURRENT ]");
+    tag.id = "bbCur" + idx;
+    tag.style.display = "none";
+    nm.appendChild(tag);
+    box.appendChild(nm);
+    var meta = btbEl("p", "bb13-smeta", "");
+    meta.innerHTML = "SIZE " + sizeLabel + "<br>MANIFEST " + manifestLabel;
+    box.appendChild(meta);
+    if (vkey === "0") {
+      box.appendChild(btbEl("span", "bb-vstat ok", "TRUSTED"));
+      box.appendChild(btbEl("div", "bb-hint", "immutable, baked at tapeout"));
+    } else {
+      var stat = btbEl("span", "bb-vstat idle", "NOT VERIFIED");
+      stat.id = "bbV" + vkey;
+      box.appendChild(stat);
+    }
+    box.appendChild(document.createElement("br"));
+    if (addBtns) addBtns(box);
+    return box;
   }
 
-  var tr0 = btbEl("tr");
-  var td0n = btbEl("td"); td0n.appendChild(btbEl("div", null, "STAGE0 ROM"));
-  var note0 = btbEl("div", "bb-hint", "immutable, baked at tapeout");
-  td0n.appendChild(note0);
-  tr0.appendChild(td0n);
-  tr0.appendChild(btbEl("td", "bb-mono", "64 KB"));
-  tr0.appendChild(btbEl("td", "bb-mono", "baked"));
-  var td0c = btbEl("td");
-  td0c.appendChild(btbEl("span", "bb-vstat ok", "TRUSTED"));
-  tr0.appendChild(td0c);
-  tb.appendChild(tr0);
+  function btbChainArrow() {
+    var a = btbEl("div", "bb13-arrow");
+    a.appendChild(btbEl("span", "bb13-alab", "VERIFY + LOAD"));
+    a.appendChild(btbEl("div", "bb13-aline"));
+    return a;
+  }
 
-  var r1 = stageRow("STAGE1 loader", "48 KB", im.claimed1, im.img1, "1");
-  var vb1 = btbEl("button", "bb-btn", "VERIFY STAGE1");
-  vb1.type = "button";
-  vb1.addEventListener("click", function () {
-    var v = btbVerify(im.img1, im.claimed1);
-    BTB_UI.v1 = v.match;
-    btbPaintVStat("1", v);
-  });
-  r1.lastChild.appendChild(document.createElement("br"));
-  r1.lastChild.appendChild(vb1);
-  tb.appendChild(r1);
+  chain.appendChild(btbStageBox(0, "STAGE0 ROM", "64 KB", "baked", "0", null));
+  chain.appendChild(btbChainArrow());
+  chain.appendChild(btbStageBox(1, "STAGE1 LOADER", "48 KB", btbHex(im.claimed1), "1", function (box) {
+    var vb1 = btbEl("button", "bb-btn", "VERIFY STAGE1");
+    vb1.type = "button";
+    vb1.addEventListener("click", function () {
+      var v = btbVerify(im.img1, im.claimed1);
+      BTB_UI.v1 = v.match;
+      btbPaintVStat("1", v);
+    });
+    box.appendChild(vb1);
+  }));
+  chain.appendChild(btbChainArrow());
+  chain.appendChild(btbStageBox(2, "STAGE2 KERNEL", "96 KB", btbHex(im.claimed2), "2", function (box) {
+    var vb2 = btbEl("button", "bb-btn", "VERIFY STAGE2");
+    vb2.type = "button";
+    vb2.addEventListener("click", function () {
+      var bytes = (BTB_UI.reflashed && t.corrupt)
+        ? btbMakeImage(t.seed ^ 0x9E37, BTB_S2_SIZE) : im.img2;
+      var v = btbVerify(bytes, im.claimed2);
+      BTB_UI.v2 = v.match;
+      btbPaintVStat("2", v);
+    });
+    box.appendChild(vb2);
+    var rf = btbEl("button", "bb-btn", "REFLASH FROM GOLDEN");
+    rf.type = "button";
+    rf.id = "bbReflash";
+    rf.addEventListener("click", function () {
+      BTB_UI.reflashed = true;
+      BTB_UI.v2 = null;
+      btbPaintVStat("2", null);
+      try { toast("Stage 2 reflashed from the golden image in ROM."); } catch (e) {}
+    });
+    box.appendChild(rf);
+  }));
 
-  var r2 = stageRow("STAGE2 kernel", "96 KB", im.claimed2, im.img2, "2");
-  var vb2 = btbEl("button", "bb-btn", "VERIFY STAGE2");
-  vb2.type = "button";
-  vb2.addEventListener("click", function () {
-    var bytes = (BTB_UI.reflashed && t.corrupt)
-      ? btbMakeImage(t.seed ^ 0x9E37, BTB_S2_SIZE) : im.img2;
-    var v = btbVerify(bytes, im.claimed2);
-    BTB_UI.v2 = v.match;
-    btbPaintVStat("2", v);
-  });
-  r2.lastChild.appendChild(document.createElement("br"));
-  r2.lastChild.appendChild(vb2);
-  var rf = btbEl("button", "bb-btn", "REFLASH FROM GOLDEN");
-  rf.type = "button";
-  rf.id = "bbReflash";
-  rf.addEventListener("click", function () {
-    BTB_UI.reflashed = true;
-    BTB_UI.v2 = null;
-    btbPaintVStat("2", null);
-    try { toast("Stage 2 reflashed from the golden image in ROM."); } catch (e) {}
-  });
-  r2.lastChild.appendChild(rf);
-  tb.appendChild(r2);
-
-  tbl.appendChild(tb);
-  work.appendChild(tbl);
-
-  /* memory map */
+  /* memory map: the canonical stacked-block address-space view (SoC
+     reference manual convention). Fixed regions as address-ordered blocks
+     with base addresses, then a zoomed stage-footprint strip where both
+     stage blocks are drawn on one shared address scale, so an overlap is
+     seen, not inferred. The hex inputs stay as the data-entry layer under
+     the map. */
   work.appendChild(btbEl("h3", "bb-h", "MEMORY MAP"));
+  var stack = btbEl("div", null, "");
+  stack.id = "bbMapStack";
+  work.appendChild(stack);
+  var foot = btbEl("div", "bb13-foot");
+  foot.id = "bbFoot";
+  work.appendChild(foot);
   function addrField(labelText, val, key) {
     var f = btbEl("div", "bb-field");
     var lab = btbEl("label", null, labelText);
@@ -8688,6 +8890,7 @@ function btbOpenTrial(id) {
       }
       if (key === "A1") BTB_UI.a1 = parsed; else BTB_UI.a2 = parsed;
       inp.value = btbHex(parsed);
+      btbPaintMap();
     });
     f.appendChild(lab); f.appendChild(inp);
     return f;
@@ -8709,6 +8912,7 @@ function btbOpenTrial(id) {
     inp.setAttribute("aria-label", labelText);
     inp.addEventListener("change", function () {
       if (key === "rom") BTB_UI.romLock = inp.checked; else BTB_UI.fwLock = inp.checked;
+      btbPaintMap();
     });
     var sp = btbEl("span");
     sp.appendChild(btbEl("b", null, labelText));
@@ -8751,6 +8955,8 @@ function btbOpenTrial(id) {
   banner.id = "bbBanner";
   work.appendChild(banner);
 
+  btbPaintChain();
+  btbPaintMap();
   btbMaybeCert();
 }
 
@@ -8760,6 +8966,91 @@ function btbPaintVStat(key, v) {
   el.className = "bb-vstat " + (v === null ? "idle" : (v.match ? "ok" : "bad"));
   el.textContent = v === null ? "NOT VERIFIED"
     : (v.match ? "MATCH " + btbHex(v.computed) : "MISMATCH " + btbHex(v.computed));
+  btbPaintChain();
+}
+
+/* Highlight the current stage of the chain from existing UI state: you are
+   the ROM until stage 1 verifies, stage 1 until stage 2 verifies, then
+   stage 2 holds the machine. */
+function btbPaintChain() {
+  var chain = btb$("bbChain");
+  if (!chain || !BTB_UI) return;
+  var cur = BTB_UI.v1 !== true ? 0 : (BTB_UI.v2 !== true ? 1 : 2);
+  var boxes = chain.querySelectorAll(".bb13-stage");
+  for (var i = 0; i < boxes.length; i++) {
+    var on = i === cur;
+    boxes[i].className = "bb13-stage" + (on ? " cur" : "");
+    var tag = btb$("bbCur" + i);
+    if (tag) tag.style.display = on ? "" : "none";
+  }
+}
+
+/* Stacked-block address-space map, repainted live from BTB_UI. Fixed
+   regions in address order, then a zoomed strip of the two stage
+   footprints on one shared address scale so overlaps are drawn. */
+function btbPaintMap() {
+  var stack = btb$("bbMapStack");
+  var foot = btb$("bbFoot");
+  if (!stack || !foot || !BTB_UI) return;
+  var a1 = BTB_UI.a1, a2 = BTB_UI.a2;
+  stack.innerHTML = "";
+
+  function region(name, sizeLabel, base, end, lock) {
+    var r = btbEl("div", "bb13-reg" + (name === "RESERVED" ? " res" : ""));
+    var row = btbEl("div", "bb13-regrow");
+    var nm = btbEl("div", "bb13-regname", name);
+    if (lock !== undefined) {
+      nm.appendChild(btbEl("span", "lk " + (lock ? "on" : "off"),
+        lock ? "[ LOCKED ]" : "[ UNLOCKED ]"));
+    }
+    row.appendChild(nm);
+    row.appendChild(btbEl("div", "bb13-regaddr", btbHex(base) + ".." + btbHex(end)));
+    r.appendChild(row);
+    r.appendChild(btbEl("div", "bb13-regsub", sizeLabel));
+    stack.appendChild(r);
+  }
+  region("ROM", "64 KB, immutable", 0, BTB_ROM_END - 1, BTB_UI.romLock);
+  region("MAILBOX", "4 KB", BTB_ROM_END, BTB_MBOX_END - 1);
+  region("RESERVED", "not addressable, off limits", BTB_MBOX_END, BTB_DRAM_BASE - 1);
+  region("DRAM", "128 MB", BTB_DRAM_BASE, BTB_DRAM_END - 1, BTB_UI.fwLock);
+
+  foot.innerHTML = "";
+  foot.appendChild(btbEl("div", "bb13-note", "STAGE FOOTPRINTS, ZOOMED TO THE STAGES"));
+  var e1 = a1 + BTB_S1_SIZE, e2 = a2 + BTB_S2_SIZE;
+  var lo = Math.min(a1, a2), hi = Math.max(e1, e2);
+  if (hi <= lo) hi = lo + 1;
+  var track = btbEl("div", "bb13-track");
+  function bar(lane, label, start, end) {
+    var b = btbEl("div", "bb13-bar " + lane);
+    b.style.left = ((start - lo) / (hi - lo) * 100) + "%";
+    b.style.width = (Math.max(end - start, 1) / (hi - lo) * 100) + "%";
+    b.setAttribute("aria-label", label + " " + btbHex(start) + " to " + btbHex(end));
+    b.appendChild(btbEl("span", "bl", label));
+    track.appendChild(b);
+  }
+  bar("l1", "STAGE1", a1, e1);
+  bar("l2", "STAGE2", a2, e2);
+  var over = a1 < e2 && a2 < e1;
+  if (over) {
+    var os = Math.max(a1, a2), oe = Math.min(e1, e2);
+    var ov = btbEl("div", "bb13-over");
+    ov.style.left = ((os - lo) / (hi - lo) * 100) + "%";
+    ov.style.width = (Math.max(oe - os, 1) / (hi - lo) * 100) + "%";
+    track.appendChild(ov);
+  }
+  foot.appendChild(track);
+  var axis = btbEl("div", "bb13-axis");
+  axis.appendChild(btbEl("span", null, btbHex(lo)));
+  axis.appendChild(btbEl("span", null, btbHex(hi)));
+  foot.appendChild(axis);
+  foot.appendChild(btbEl("p", "bb13-note",
+    "\u25A0 STAGE1 " + btbHex(a1) + ".." + btbHex(e1) +
+    "   \u25A0 STAGE2 " + btbHex(a2) + ".." + btbHex(e2)));
+  if (over) {
+    foot.appendChild(btbEl("p", "bb13-cap",
+      "OVERLAP " + btbHex(Math.max(a1, a2)) + ".." + btbHex(Math.min(e1, e2)) +
+      ": two stages claim the same bytes."));
+  }
 }
 
 function btbRunBoot(t) {
@@ -16451,9 +16742,10 @@ if (typeof module !== "undefined" && module.exports) {
  * share memory and the silicon may complete their accesses out of order.
  * Each trial is a litmus program with one forbidden outcome. Place FENCE
  * instructions in the slots, run the outcome explorer (which enumerates
- * every possible execution under three stated rules and checks the order
- * graph for cycles), and certify the trial when the forbidden outcome is
- * unreachable.
+ * every possible execution under three stated rules, draws each candidate
+ * as an execution graph (nodes are memory events, edges are po, fence,
+ * rf, fr, and co), and keeps only the acyclic ones), and certify the
+ * trial when the forbidden outcome is unreachable.
  *
  * The explorer's rules (a stated simplification of RVWMO's core):
  *   1. Same address: program order never breaks.
@@ -16768,7 +17060,18 @@ if (typeof module !== "undefined" && module.exports) {
     "@keyframes flpop{0%{transform:scale(.96);}100%{transform:scale(1);}}",
     ".fl-pop{animation:flpop 200ms ease-out;}",
     "@media (prefers-reduced-motion: reduce){.fl-pop{animation:none;}}",
-    ".fl-panel button:focus-visible,.fl-panel select:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}"
+    ".fl-panel button:focus-visible,.fl-panel select:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".fl25-legend{font-family:var(--font-m);font-size:10.5px;letter-spacing:.06em;color:var(--dim);line-height:2.1;margin:0 0 8px;}",
+    ".fl25-legend .sw{display:inline-block;width:20px;vertical-align:middle;margin:0 5px 0 12px;border-top:2px solid #6b7480;}",
+    ".fl25-legend .sw.fence{border-top-color:#ff5a1f;}",
+    ".fl25-legend .sw.rf{border-top:2px dashed #f2ede3;}",
+    ".fl25-legend .sw.fr{border-top:2px dotted #9aa3ad;}",
+    ".fl25-legend .sw.co{border-top:1px dotted #6b7480;}",
+    ".fl25-graph{margin:2px 0 12px;padding:10px 0 0;border-top:1px solid var(--line);}",
+    ".fl25-cap{font-family:var(--font-m);font-size:10.5px;color:var(--dim);line-height:1.7;margin:8px 0 0;}",
+    ".fl25-cycle{font-family:var(--font-m);font-size:10.5px;color:var(--ember);line-height:1.7;margin:6px 0 0;overflow-wrap:break-word;}",
+    ".fl25-killed{border:1px solid var(--line);padding:12px;margin:12px 0 2px;}",
+    ".fl25-killed h6{font-family:var(--font-m);font-size:11px;letter-spacing:.14em;color:var(--paper);margin:0 0 6px;font-weight:600;}"
   ];
 
   function flEl(tag, cls, text) {
@@ -16892,6 +17195,325 @@ if (typeof module !== "undefined" && module.exports) {
     w.appendChild(flRenderOut(ti));
   }
 
+  /* ---------------- execution graphs (view-only) ----------------
+     Rule 3 speaks of the order graph, so the bench now draws it: each
+     candidate execution is rendered as an execution graph, the standard
+     visual for memory-model reasoning (herd7/memalloy style). Nodes are
+     memory events (one per access, plus the initial writes); edges are
+     po (program order, same address), fence (FENCE order edges), rf
+     (reads-from), fr (from-reads), and co (coherence order). This is pure
+     view code: it reads the engine's state (trial, fences, outcome regs)
+     and never changes trial generation, simulation, scoring, or state. */
+
+  var fl25Seq = 0;
+
+  /* Order edges with kinds tagged (mirrors flBuildGraph; view-only). */
+  function fl25OrderEdges(trial, fences, idx) {
+    var edges = [], seen = {}, h, i, j, s, q;
+    function add(a, b, kind, label) {
+      var k = a + ">" + b;
+      if (seen[k]) {
+        if (kind === "fence")
+          for (q = 0; q < edges.length; q++)
+            if (edges[q].a === a && edges[q].b === b) { edges[q].kind = "fence"; edges[q].label = label; }
+        return;
+      }
+      seen[k] = 1;
+      edges.push({ a: a, b: b, kind: kind, label: label });
+    }
+    for (h = 0; h < trial.harts.length; h++) {
+      var ops = trial.harts[h].ops;
+      for (i = 0; i < ops.length; i++)
+        for (j = i + 1; j < ops.length; j++)
+          if (ops[i].addr === ops[j].addr) add(idx[h + ":" + i], idx[h + ":" + j], "po", "po");
+      var fs = fences[h] || [];
+      for (s = 0; s < fs.length; s++) {
+        var F = FL_FENCES[fs[s]];
+        if (!F) continue;
+        for (i = 0; i <= s; i++) {
+          if (!F.pred[flOpType(ops[i].t)]) continue;
+          for (j = s + 1; j < ops.length; j++) {
+            if (!F.succ[flOpType(ops[j].t)]) continue;
+            add(idx[h + ":" + i], idx[h + ":" + j], "fence", F.label);
+          }
+        }
+      }
+    }
+    return edges;
+  }
+
+  /* The engine's exact edge set for one reads-from assignment (mirrors
+     the candidate() check inside flExplore; view-only). */
+  function fl25EngineEdges(g, stores, coPos, loads, order, rfAssign) {
+    var edges = order.slice(), k, ln, st, p;
+    for (k = 0; k < loads.length; k++) {
+      ln = g.nodes[loads[k]]; st = rfAssign[k];
+      if (st.h === ln.h && st.i > ln.i) return null; /* load reading a po-later store: impossible */
+      if (st.h >= 0 && st.h !== ln.h)
+        edges.push({ a: g.idx[st.h + ":" + st.i], b: loads[k], kind: "rf", label: "rf" });
+    }
+    for (k = 0; k < loads.length; k++) {
+      ln = g.nodes[loads[k]]; st = rfAssign[k];
+      p = coPos[ln.addr + "|" + st.h + ":" + st.i];
+      stores[ln.addr].forEach(function (s2) {
+        if (s2.h < 0) return;
+        if (coPos[ln.addr + "|" + s2.h + ":" + s2.i] > p)
+          edges.push({ a: loads[k], b: g.idx[s2.h + ":" + s2.i], kind: "fr", label: "fr" });
+      });
+    }
+    return edges;
+  }
+
+  /* One execution producing the given register values: the first
+     reads-from assignment, in the engine's enumeration order, that the
+     engine's own cycle check accepts. */
+  function fl25Witness(trial, fences, regs) {
+    var g = flBuildGraph(trial, fences);
+    var stores = flStores(trial);
+    var coPos = {};
+    Object.keys(stores).forEach(function (a) {
+      stores[a].forEach(function (st, p) { coPos[a + "|" + st.h + ":" + st.i] = p; });
+    });
+    var loads = [];
+    g.nodes.forEach(function (n, k) { if (n.t === "ld") loads.push(k); });
+    var order = fl25OrderEdges(trial, fences, g.idx);
+    var cand = new Array(loads.length), result = null;
+    (function rec(li) {
+      if (result) return;
+      var s, list, edges;
+      if (li === loads.length) {
+        edges = fl25EngineEdges(g, stores, coPos, loads, order, cand);
+        if (edges && !flHasCycle(g.nodes.length, edges.map(function (e) { return [e.a, e.b]; })))
+          result = { g: g, stores: stores, coPos: coPos, loads: loads, rf: cand.slice(), edges: edges };
+        return;
+      }
+      list = stores[g.nodes[loads[li]].addr];
+      for (s = 0; s < list.length; s++) {
+        if (list[s].val !== regs[g.nodes[loads[li]].reg]) continue;
+        cand[li] = list[s];
+        rec(li + 1);
+        if (result) return;
+      }
+    })(0);
+    return result;
+  }
+
+  /* A cycle in the edge set, as node indices in cycle order (v0..vk, v0). */
+  function fl25FindCycle(n, pairs) {
+    var adj = [], i;
+    for (i = 0; i < n; i++) adj.push([]);
+    pairs.forEach(function (p) { adj[p[0]].push(p[1]); });
+    var color = new Array(n).fill(0), stack = [], found = null;
+    function dfs(v) {
+      var k, w;
+      color[v] = 1;
+      stack.push(v);
+      for (k = 0; k < adj[v].length && !found; k++) {
+        w = adj[v][k];
+        if (color[w] === 1) { found = stack.slice(stack.indexOf(w)).concat([w]); return; }
+        if (color[w] === 0) dfs(w);
+      }
+      stack.pop();
+      color[v] = 2;
+    }
+    for (i = 0; i < n && !found; i++)
+      if (color[i] === 0) dfs(i);
+    return found;
+  }
+
+  /* Drawing edges: the engine's edges, plus initial-write reads-from and
+     coherence-order chains (canonical graph furniture; not part of the
+     engine's cycle check). Node keys are "h:i" op ids or "init:<addr>". */
+  function fl25DrawEdges(trial, g, stores, coPos, loads, rfAssign, engineEdges) {
+    var draw = [], k, ln, st, a, b, c;
+    engineEdges.forEach(function (e) {
+      draw.push({ a: g.nodes[e.a].id, b: g.nodes[e.b].id, kind: e.kind, label: e.label });
+    });
+    for (k = 0; k < loads.length; k++) {
+      ln = g.nodes[loads[k]]; st = rfAssign[k];
+      if (st.h < 0) draw.push({ a: "init:" + ln.addr, b: ln.id, kind: "rf", label: "rf" });
+    }
+    var poPairs = {};
+    draw.forEach(function (e) { if (e.kind === "po") poPairs[e.a + ">" + e.b] = 1; });
+    Object.keys(stores).forEach(function (addr) {
+      var list = stores[addr];
+      for (c = 0; c + 1 < list.length; c++) {
+        a = list[c].h < 0 ? "init:" + addr : list[c].h + ":" + list[c].i;
+        b = list[c + 1].h < 0 ? "init:" + addr : list[c + 1].h + ":" + list[c + 1].i;
+        if (!poPairs[a + ">" + b]) draw.push({ a: a, b: b, kind: "co", label: "co" });
+      }
+    });
+    return draw;
+  }
+
+  function fl25EventLabel(g, regs, v) {
+    var n = g.nodes[v];
+    if (n.t === "st") return "W " + n.addr + " " + n.val;
+    return "R " + n.addr + " = " + regs[n.reg];
+  }
+
+  /* Inline SVG execution graph. Columns are INIT / HART 0 / HART 1,
+     program order runs top to bottom. viewBox scales to any width, so no
+     horizontal scrolling on phones. */
+  function fl25SVG(trial, g, regs, draw, cycleKeys) {
+    fl25Seq++;
+    var seq = "q" + fl25Seq;
+    var addrs = [];
+    trial.harts.forEach(function (hart) {
+      hart.ops.forEach(function (op) { if (addrs.indexOf(op.addr) < 0) addrs.push(op.addr); });
+    });
+    addrs.sort();
+    var M = 8, PX = 92, NW = 76, NH = 26, PY = 46, HEAD = 24;
+    var cols = 1 + trial.harts.length, maxOps = 0;
+    trial.harts.forEach(function (hart) { maxOps = Math.max(maxOps, hart.ops.length); });
+    var rows = Math.max(addrs.length, maxOps);
+    var W = 2 * M + (cols - 1) * PX + NW;
+    var H = HEAD + rows * PY + M;
+    var pos = {}, label = {}, isInit = {};
+    addrs.forEach(function (a, ri) {
+      var k = "init:" + a;
+      pos[k] = { x: M, y: HEAD + ri * PY };
+      label[k] = "W " + a + " 0";
+      isInit[k] = 1;
+    });
+    trial.harts.forEach(function (hart, hh) {
+      hart.ops.forEach(function (op, ii) {
+        var k = hh + ":" + ii;
+        pos[k] = { x: M + (hh + 1) * PX, y: HEAD + ii * PY };
+        label[k] = fl25EventLabel(g, regs, g.idx[k]);
+      });
+    });
+    var s = "<svg viewBox=\"0 0 " + W + " " + H + "\" role=\"img\" aria-label=\"Execution graph\" " +
+      "style=\"display:block;width:100%;height:auto;font-family:var(--font-m);\">";
+    var kcols = { po: "#6b7480", fence: "#ff5a1f", rf: "#f2ede3", fr: "#9aa3ad", co: "#6b7480" };
+    s += "<defs>";
+    ["po", "fence", "rf", "fr", "co"].forEach(function (kd) {
+      s += "<marker id=\"fl25" + seq + kd + "\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" " +
+        "markerWidth=\"6.5\" markerHeight=\"6.5\" orient=\"auto-start-reverse\">" +
+        "<path d=\"M0,0L10,5L0,10z\" fill=\"" + kcols[kd] + "\"></path></marker>";
+    });
+    s += "<marker id=\"fl25" + seq + "cyc\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" " +
+      "markerWidth=\"7.5\" markerHeight=\"7.5\" orient=\"auto-start-reverse\">" +
+      "<path d=\"M0,0L10,5L0,10z\" fill=\"#ff5a1f\"></path></marker></defs>";
+    var hdrs = ["INIT"];
+    trial.harts.forEach(function (hart) { hdrs.push(hart.name); });
+    hdrs.forEach(function (t, ci) {
+      s += "<text x=\"" + (M + ci * PX + NW / 2) + "\" y=\"14\" text-anchor=\"middle\" font-size=\"9\" " +
+        "letter-spacing=\"2\" fill=\"#6b7480\">" + t + "</text>";
+    });
+    var dashes = { po: "", fence: "", rf: "5 3", fr: "7 2 2 2", co: "2 3" };
+    var widths = { po: 1, fence: 1.5, rf: 1, fr: 1, co: 1 };
+    draw.forEach(function (e) {
+      var A = pos[e.a], B = pos[e.b];
+      if (!A || !B) return;
+      var cyc = cycleKeys && cycleKeys[e.a + ">" + e.b];
+      var sx = A.x + NW / 2, sy = A.y + NH / 2, tx = B.x + NW / 2, ty = B.y + NH / 2;
+      var dir = ty >= sy ? 1 : -1;
+      var x1 = sx, y1 = sy + dir * (NH / 2 + 2), x2 = tx, y2 = ty - dir * (NH / 2 + 2);
+      var bend = 18 * dir;
+      var col = cyc ? "#ff5a1f" : kcols[e.kind];
+      var mk = cyc ? "cyc" : e.kind;
+      s += "<path d=\"M" + x1 + "," + y1 + " C" + x1 + "," + (y1 + bend) + " " + x2 + "," + (y2 - bend) +
+        " " + x2 + "," + y2 + "\" fill=\"none\" stroke=\"" + col + "\" stroke-width=\"" +
+        (cyc ? 2.5 : widths[e.kind]) + "\"" +
+        ((!cyc && dashes[e.kind]) ? " stroke-dasharray=\"" + dashes[e.kind] + "\"" : "") +
+        " marker-end=\"url(#fl25" + seq + mk + ")\"/>";
+      var mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      if (x1 === x2) {
+        s += "<text x=\"" + (x1 + 5) + "\" y=\"" + (my + 3) + "\" font-size=\"9\" fill=\"" + col + "\">" + e.label + "</text>";
+      } else {
+        s += "<text x=\"" + mx + "\" y=\"" + (my - 5) + "\" text-anchor=\"middle\" font-size=\"9\" fill=\"" + col + "\">" + e.label + "</text>";
+      }
+    });
+    Object.keys(pos).forEach(function (k) {
+      var p = pos[k];
+      s += "<rect x=\"" + p.x + "\" y=\"" + p.y + "\" width=\"" + NW + "\" height=\"" + NH + "\" fill=\"#0a0c0e\" " +
+        "stroke=\"rgba(242,237,227,0.25)\" stroke-width=\"1\"" + (isInit[k] ? " stroke-dasharray=\"4 2\"" : "") + "/>";
+      s += "<text x=\"" + (p.x + NW / 2) + "\" y=\"" + (p.y + NH / 2) + "\" text-anchor=\"middle\" " +
+        "dominant-baseline=\"central\" font-size=\"10\" fill=\"#f2ede3\">" + label[k] + "</text>";
+    });
+    s += "</svg>";
+    return s;
+  }
+
+  /* Execution graph under one reachable outcome row. */
+  function fl25OutcomeBox(trial, fences, o, isF) {
+    var box = flEl("div", "fl25-graph", null);
+    var wit = fl25Witness(trial, fences, o.regs);
+    if (!wit) {
+      box.appendChild(flEl("p", "fl25-cap", "No execution of this outcome to draw."));
+      return box;
+    }
+    var draw = fl25DrawEdges(trial, wit.g, wit.stores, wit.coPos, wit.loads, wit.rf, wit.edges);
+    var holder = flEl("div", null);
+    holder.innerHTML = fl25SVG(trial, wit.g, o.regs, draw, null);
+    box.appendChild(holder);
+    box.appendChild(flEl("p", "fl25-cap",
+      "Execution graph of this candidate: nodes are memory events, edges are po / fence / rf / fr / co. " +
+      (isF ? "This is the forbidden outcome, reached here by an acyclic execution."
+           : "Acyclic, so rule 3 allows it.")));
+    return box;
+  }
+
+  /* The forbidden execution, drawn with the cycle that rules it out. */
+  function fl25KilledBox(trial, fences) {
+    var box = flEl("div", "fl25-killed", null);
+    box.appendChild(flEl("h6", null, "FORBIDDEN EXECUTION, RULED OUT"));
+    var regs = {};
+    trial.forbidden.forEach(function (p) { regs[p[0]] = p[1]; });
+    var g = flBuildGraph(trial, fences);
+    var stores = flStores(trial);
+    var coPos = {};
+    Object.keys(stores).forEach(function (a) {
+      stores[a].forEach(function (st, p) { coPos[a + "|" + st.h + ":" + st.i] = p; });
+    });
+    var loads = [];
+    g.nodes.forEach(function (n, k) { if (n.t === "ld") loads.push(k); });
+    var order = fl25OrderEdges(trial, fences, g.idx);
+    var cand = new Array(loads.length), ok = true, k, s;
+    loads.forEach(function (lk, li) {
+      var ln = g.nodes[lk], found = null, list = stores[ln.addr];
+      for (s = 0; s < list.length && !found; s++)
+        if (list[s].val === regs[ln.reg] && !(list[s].h === ln.h && list[s].i > ln.i)) found = list[s];
+      if (!found) ok = false; else cand[li] = found;
+    });
+    var note = flEl("p", "fl25-cap", null);
+    if (!ok) {
+      note.textContent = "No execution can even produce these register values under rule 1.";
+      box.appendChild(note);
+      return box;
+    }
+    var edges = fl25EngineEdges(g, stores, coPos, loads, order, cand);
+    var cycle = edges ? fl25FindCycle(g.nodes.length, edges.map(function (e) { return [e.a, e.b]; })) : null;
+    var draw = fl25DrawEdges(trial, g, stores, coPos, loads, cand, edges || order);
+    note.textContent = "One execution that would produce " +
+      trial.forbidden.map(function (p) { return p[0] + " = " + p[1]; }).join(", ") +
+      (cycle ? ". Its graph has a cycle, so rule 3 forbids it:"
+             : ". The rules admit no execution producing it.");
+    box.appendChild(note);
+    var holder = flEl("div", null);
+    if (cycle) {
+      var cycKeys = {}, parts = [];
+      for (k = 0; k + 1 < cycle.length; k++) {
+        var ka = g.nodes[cycle[k]].id, kb = g.nodes[cycle[k + 1]].id;
+        cycKeys[ka + ">" + kb] = 1;
+        var ek = null;
+        draw.forEach(function (e) { if (!ek && e.a === ka && e.b === kb) ek = e; });
+        parts.push(fl25EventLabel(g, regs, cycle[k]) + " --" + (ek ? ek.label : "?") + "-->");
+      }
+      parts.push(fl25EventLabel(g, regs, cycle[0]));
+      holder.innerHTML = fl25SVG(trial, g, regs, draw, cycKeys);
+      box.appendChild(holder);
+      var cp = flEl("p", "fl25-cycle", null);
+      cp.textContent = "CYCLE: " + parts.join(" ");
+      box.appendChild(cp);
+    } else {
+      holder.innerHTML = fl25SVG(trial, g, regs, draw, null);
+      box.appendChild(holder);
+    }
+    return box;
+  }
+
   function flRenderOut(ti) {
     var trial = FL_TRIALS[ti];
     var ts = flS.trials[ti];
@@ -16904,6 +17526,13 @@ if (typeof module !== "undefined" && module.exports) {
     }
     var r = ts.result;
     box.appendChild(flEl("h5", null, "OUTCOME EXPLORER · " + r.outcomes.length + " REACHABLE OUTCOME" + (r.outcomes.length === 1 ? "" : "S")));
+    var leg = flEl("div", "fl25-legend", null);
+    leg.innerHTML = "EXECUTION GRAPH KEY<span class=\"sw po\"></span>po: program order, same address" +
+      "<span class=\"sw fence\"></span>fence: FENCE order edge" +
+      "<span class=\"sw rf\"></span>rf: reads-from" +
+      "<span class=\"sw fr\"></span>fr: from-reads" +
+      "<span class=\"sw co\"></span>co: coherence order";
+    box.appendChild(leg);
     r.outcomes.forEach(function (o) {
       var isF = trial.forbidden.every(function (p) { return o.regs[p[0]] === p[1]; });
       var row = flEl("div", "fl-row", null);
@@ -16911,6 +17540,7 @@ if (typeof module !== "undefined" && module.exports) {
       row.appendChild(txt);
       row.appendChild(flEl("span", "fl-tag " + (isF ? "bad" : "ok"), isF ? "FORBIDDEN OUTCOME" : "reachable"));
       box.appendChild(row);
+      if (!ts.dirty) box.appendChild(fl25OutcomeBox(trial, ts.fences, o, isF));
     });
     var v = flEl("p", "fl-verdict" + (r.forbiddenReachable ? " bad" : ""), null);
     if (ts.dirty) {
@@ -16921,6 +17551,7 @@ if (typeof module !== "undefined" && module.exports) {
       v.innerHTML = "<b>FORBIDDEN OUTCOME IMPOSSIBLE</b> under the explorer's rules. This trial is ready to certify.";
     }
     box.appendChild(v);
+    if (!ts.dirty && !r.forbiddenReachable) box.appendChild(fl25KilledBox(trial, ts.fences));
     return box;
   }
 
@@ -17102,7 +17733,11 @@ if (typeof module !== "undefined" && module.exports) {
     rules.innerHTML = "<b>THE EXPLORER'S RULES</b> (the core of RVWMO, stated plainly)<br>" +
       "1. Same address: program order never breaks.<br>" +
       "2. Different addresses: any order, unless a fence forbids it.<br>" +
-      "3. An outcome is possible only if every order edge forms no cycle.";
+      "3. An outcome is possible only if its execution graph has no cycle.<br>" +
+      "Every outcome below is drawn as an execution graph: nodes are memory events " +
+      "(one per access, plus the initial writes); edges are <b>po</b> (program order, " +
+      "same address), <b>fence</b> (FENCE order edges), <b>rf</b> (reads-from), " +
+      "<b>fr</b> (from-reads), and <b>co</b> (coherence order).";
     panel.appendChild(rules);
 
     flEls.tabs = flEl("div", "fl-tabs", null);
@@ -21695,7 +22330,10 @@ if (typeof module !== "undefined" && module.exports) {
     ".dc-btn.primary{background:var(--ember,var(--ember));border:none;color:var(--ink)}",
     ".dc-refhint{border:1px dashed var(--ember,var(--ember));border-radius:8px;padding:10px 12px;font-size:12.5px;line-height:1.6;color:var(--dim);margin-bottom:12px}",
     ".dc-refhint code{font-family:'IBM Plex Mono',monospace;color:var(--ember,var(--ember));font-size:12px}",
-    ".dc-panel button:focus-visible,.dc-panel input:focus-visible{outline:2px solid var(--ember,var(--ember));outline-offset:2px}"
+    ".dc-panel button:focus-visible,.dc-panel input:focus-visible{outline:2px solid var(--ember,var(--ember));outline-offset:2px}",
+    ".db32-sec{border:1px solid var(--line,var(--line));border-radius:8px;padding:10px 12px;margin-bottom:12px}",
+    ".db32-sec h4{margin:0 0 6px;font-size:13px;letter-spacing:.06em}",
+    ".db32-cap{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--dim);line-height:1.6;margin:8px 0 0}"
   ];
 
   /* ---- physics constants (shared with the node test hook) ---- */
@@ -21716,9 +22354,9 @@ if (typeof module !== "undefined" && module.exports) {
     { id: "BLK-1000U", C: 1000e-6, ESL: 10e-9,  ESR: 30e-3, role: "bulk, slowest" }
   ];
   var DC_ZONES = [
-    { id: "NEAR", label: "NEAR", sub: "on the package, 0.05 nH path", L: 0.05e-9, max: 6 },
-    { id: "MID",  label: "MID",  sub: "board, close, 0.5 nH path",   L: 0.5e-9,  max: 6 },
-    { id: "FAR",  label: "FAR",  sub: "board edge, 4 nH path",       L: 4e-9,    max: 4 }
+    { id: "NEAR", label: "NEAR", sub: "on the package, next to the die", L: 0.05e-9, max: 6 },
+    { id: "MID",  label: "MID",  sub: "on the board, a short run from the die", L: 0.5e-9, max: 6 },
+    { id: "FAR",  label: "FAR",  sub: "at the board edge", L: 4e-9, max: 4 }
   ];
   var DC_TOTAL_MAX = 16;
 
@@ -21937,6 +22575,12 @@ if (typeof module !== "undefined" && module.exports) {
 
     dcEls.zones = dcEl("div", "dc-zones");
     body.appendChild(dcEls.zones);
+    dcEls.boardSec = dcEl("div", "db32-sec");
+    dcEls.boardSec.style.display = "none";
+    body.appendChild(dcEls.boardSec);
+    dcEls.impSec = dcEl("div", "db32-sec");
+    dcEls.impSec.style.display = "none";
+    body.appendChild(dcEls.impSec);
     dcEls.refHint = dcEl("div", "dc-refhint");
     dcEls.refHint.style.display = "none";
     body.appendChild(dcEls.refHint);
@@ -22036,9 +22680,10 @@ if (typeof module !== "undefined" && module.exports) {
     var locked = tr.certified;
     DC_ZONES.forEach(function (zd) {
       var panel = dcEl("div", "dc-zone");
-      panel.appendChild(dcEl("h4", null, zd.label + " ZONE"));
+      panel.appendChild(dcEl("h4", null, zd.label + " POSITION"));
       panel.appendChild(dcEl("div", "dc-zsub",
-        zd.sub + "  |  " + dcZoneCount(tr, zd.id) + "/" + zd.max + " placed"));
+        "loop L " + (zd.L * 1e9).toFixed(2) + " nH: " + zd.sub + "  |  " +
+        dcZoneCount(tr, zd.id) + "/" + zd.max + " placed"));
       var chips = dcEl("div", "dc-chips");
       var any = false;
       DC_CAPS.forEach(function (c) {
@@ -22075,6 +22720,8 @@ if (typeof module !== "undefined" && module.exports) {
       panel.appendChild(addrow);
       z.appendChild(panel);
     });
+    dcDrawBoardSec(tr);
+    dcDrawImpSec(tr);
     /* reference hint */
     if (tr.refShown && !tr.certified) {
       dcEls.refHint.style.display = "";
@@ -22134,6 +22781,266 @@ if (typeof module !== "undefined" && module.exports) {
     dcLog("<span class='dim'>Reference network loaded. Predict the droop and run it: " +
       "watch how the near ceramics take the edge while the bulk covers the tail.</span>", null);
     dcRenderAll();
+  }
+
+  /* ---- canonical views: board placement loops and the impedance-vs-frequency
+     target-impedance plot (Bogatin, Signal and Power Integrity Simplified).
+     Views only: they read placement and the existing sim constants. ---- */
+  var DC_TYPE_COLORS = {
+    "CER-1U": "#7fd67f",
+    "CER-10U": "#ff5a1f",
+    "TAN-47U": "#9aa3ad",
+    "ELY-220U": "#e5484d",
+    "BLK-1000U": "#ffb38a"
+  };
+  function dcTypeColor(id) {
+    return DC_TYPE_COLORS[id] || "#f2efe9";
+  }
+  function dcImax(ti) {
+    var f = DC_TRIALS[ti].iload, m = 0;
+    for (var i = 0; i <= 2000; i++) {
+      var v = f((i / 2000) * DC_T);
+      if (v > m) m = v;
+    }
+    return m;
+  }
+  function dcFmtHz(f) {
+    if (f >= 1e9) return (f / 1e9).toFixed(2) + " GHz";
+    if (f >= 1e6) return (f / 1e6).toFixed(1) + " MHz";
+    if (f >= 1e3) return (f / 1e3).toFixed(1) + " kHz";
+    return f.toFixed(0) + " Hz";
+  }
+  function dcFmtZ(z) {
+    if (z >= 1) return z.toFixed(2) + " ohm";
+    return (z * 1000).toFixed(1) + " mOhm";
+  }
+  function dcLoopL(cd, zd) { return cd.ESL + zd.L; }
+  function dcSrf(cd, zd) {
+    return 1 / (2 * Math.PI * Math.sqrt(dcLoopL(cd, zd) * cd.C));
+  }
+  function dcZcap(cd, lpath, f) {
+    var w = 2 * Math.PI * f;
+    var x = w * (cd.ESL + lpath) - 1 / (w * cd.C);
+    return Math.sqrt(cd.ESR * cd.ESR + x * x);
+  }
+  function dcZpdn(placement, f) {
+    var w = 2 * Math.PI * f, gr = 0, gi = w * DC_CDIE, k, cd, zd, rr, xx, d;
+    for (k = 0; k < placement.length; k++) {
+      cd = dcCapDef(placement[k].type); zd = dcZoneDef(placement[k].zone);
+      rr = cd.ESR; xx = w * (cd.ESL + zd.L) - 1 / (w * cd.C);
+      d = rr * rr + xx * xx;
+      gr += rr / d; gi += -xx / d;
+    }
+    return 1 / Math.sqrt(gr * gr + gi * gi);
+  }
+  function dcDrawBoard(cv, tr) {
+    var dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+    var W = cv.clientWidth || 600, H = 240;
+    cv.width = W * dpr; cv.height = H * dpr;
+    var ctx = cv.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+    var x0 = 12, y0 = 30, x1 = W - 12, y1 = H - 12;
+    var cx = (x0 + x1) / 2 + 34, cy = (y0 + y1) / 2 + 4;
+    ctx.strokeStyle = pgC("#2a2a2e"); ctx.lineWidth = 1;
+    ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, y1 - y0 - 1);
+    ctx.fillStyle = pgC("#6d6961"); ctx.font = "9px 'IBM Plex Mono',monospace";
+    ctx.fillText("BOARD", x0 + 6, y0 + 13);
+    /* regulator: too slow to answer the edge, drawn for honesty */
+    var vx = x0 + 8, vw = 40, vh = 52;
+    ctx.strokeStyle = pgC("#6e6b64");
+    ctx.strokeRect(vx + 0.5, cy - vh / 2 + 0.5, vw - 1, vh - 1);
+    ctx.fillStyle = pgC("#a9a49a");
+    ctx.fillText("VRM", vx + 13, cy - 2);
+    ctx.fillStyle = pgC("#6d6961");
+    ctx.fillText((DC_VRM_DELAY * 1e9).toFixed(0) + " ns delay", vx + 2, cy + vh / 2 + 13);
+    var dh = 22;
+    ctx.strokeStyle = pgC("#6e6b64");
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(vx + vw, cy + 0.5); ctx.lineTo(cx - dh, cy + 0.5); ctx.stroke();
+    ctx.setLineDash([]);
+    /* die */
+    ctx.strokeStyle = pgC("#f2efe9");
+    ctx.strokeRect(cx - dh + 0.5, cy - dh + 0.5, dh * 2 - 1, dh * 2 - 1);
+    ctx.fillStyle = pgC("#f2efe9"); ctx.font = "10px 'IBM Plex Mono',monospace";
+    ctx.fillText("DIE", cx - 10, cy + 3);
+    /* the three current loops, drawn from the die, inductance labeled */
+    var loops = [
+      { zid: "NEAR", col: "#7fd67f", fr: 0.18 },
+      { zid: "MID", col: "#9aa3ad", fr: 0.5 },
+      { zid: "FAR", col: "#e5484d", fr: 1.0 }
+    ];
+    var maxHW = Math.min((x1 - cx) - 8, (cx - x0) - 8, 150);
+    var maxHH = Math.min((y1 - cy) - 6, (cy - y0) - 18);
+    ctx.font = "9px 'IBM Plex Mono',monospace";
+    for (var li = 0; li < loops.length; li++) {
+      var zd = dcZoneDef(loops[li].zid);
+      var hw = Math.max(dh + 10, maxHW * loops[li].fr);
+      var hh = Math.max(dh + 10, maxHH * loops[li].fr);
+      ctx.strokeStyle = pgC(loops[li].col); ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(cx - hw + 0.5, cy - hh + 0.5, hw * 2 - 1, hh * 2 - 1);
+      ctx.setLineDash([]);
+      ctx.fillStyle = pgC(loops[li].col);
+      ctx.fillText(zd.label + " LOOP " + (zd.L * 1e9).toFixed(2) + " nH",
+        cx - hw + 4, cy - hh - 5);
+      var items = [];
+      for (var k = 0; k < tr.placement.length; k++)
+        if (tr.placement[k].zone === zd.id) items.push(tr.placement[k].type);
+      for (var m = 0; m < items.length; m++) {
+        var px = cx - hw + (hw * 2) * (m + 0.5) / items.length;
+        var py = cy - hh + 9;
+        ctx.fillStyle = pgC(dcTypeColor(items[m]));
+        ctx.fillRect(px - 4, py - 4, 8, 8);
+        ctx.strokeStyle = pgC("#f2efe9"); ctx.lineWidth = 1;
+        ctx.strokeRect(px - 4 + 0.5, py - 4 + 0.5, 7, 7);
+      }
+    }
+  }
+  function dcDrawImp(cv, tr, zt) {
+    var dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+    var W = cv.clientWidth || 600, H = 260;
+    cv.width = W * dpr; cv.height = H * dpr;
+    var ctx = cv.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    var mL = 46, mR = 12, mT = 12, mB = 26;
+    var f0 = 4, f1 = 9, z0 = -3, z1 = 0;
+    function X(f) { return mL + ((Math.log10(f) - f0) / (f1 - f0)) * (W - mL - mR); }
+    function Y(z) { return H - mB - ((Math.log10(z) - z0) / (z1 - z0)) * (H - mT - mB); }
+    ctx.clearRect(0, 0, W, H);
+    ctx.font = "9px 'IBM Plex Mono',monospace";
+    var fl = ["10k", "100k", "1M", "10M", "100M", "1G"], fi, gx;
+    for (fi = 0; fi <= 5; fi++) {
+      gx = X(Math.pow(10, f0 + fi));
+      ctx.strokeStyle = pgC("#2a2a2e"); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(gx + 0.5, mT); ctx.lineTo(gx + 0.5, H - mB); ctx.stroke();
+      ctx.fillStyle = pgC("#6d6961");
+      ctx.fillText(fl[fi], gx - 8, H - mB + 13);
+    }
+    var zl = ["1m", "10m", "100m", "1"], zi, gy;
+    for (zi = 0; zi <= 3; zi++) {
+      gy = Y(Math.pow(10, z0 + zi));
+      ctx.strokeStyle = pgC("#2a2a2e"); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(mL, gy + 0.5); ctx.lineTo(W - mR, gy + 0.5); ctx.stroke();
+      ctx.fillStyle = pgC("#6d6961");
+      ctx.fillText(zl[zi], 10, gy + 3);
+    }
+    ctx.fillStyle = pgC("#6d6961");
+    ctx.fillText("FREQUENCY (Hz)", mL, H - 6);
+    ctx.save();
+    ctx.translate(12, H - mB - 44); ctx.rotate(-Math.PI / 2);
+    ctx.fillText("|Z| (ohm)", 0, 0);
+    ctx.restore();
+    /* one impedance curve per placed capacitor type and mounting position */
+    var seen = [], k, key, s2;
+    for (k = 0; k < tr.placement.length; k++) {
+      key = tr.placement[k].type + "|" + tr.placement[k].zone;
+      if (seen.indexOf(key) < 0) seen.push(key);
+    }
+    for (s2 = 0; s2 < seen.length; s2++) {
+      var parts = seen[s2].split("|");
+      var cd = dcCapDef(parts[0]), zd = dcZoneDef(parts[1]);
+      ctx.strokeStyle = pgC(dcTypeColor(cd.id)); ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (var p = 0; p <= 120; p++) {
+        var f = Math.pow(10, f0 + (f1 - f0) * p / 120);
+        var lz = Math.log10(dcZcap(cd, zd.L, f));
+        var cy2 = Y(Math.pow(10, Math.max(z0 - 0.3, Math.min(z1 + 0.2, lz))));
+        if (p === 0) ctx.moveTo(X(f), cy2); else ctx.lineTo(X(f), cy2);
+      }
+      ctx.stroke();
+    }
+    /* the combined PDN profile: everything placed, in parallel */
+    ctx.strokeStyle = pgC("#f2efe9"); ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (var q = 0; q <= 160; q++) {
+      var f2 = Math.pow(10, f0 + (f1 - f0) * q / 160);
+      var lz2 = Math.log10(dcZpdn(tr.placement, f2));
+      var qy = Y(Math.pow(10, Math.max(z0 - 0.3, Math.min(z1 + 0.2, lz2))));
+      if (q === 0) ctx.moveTo(X(f2), qy); else ctx.lineTo(X(f2), qy);
+    }
+    ctx.stroke();
+    /* the target impedance line: droop budget over this trial's peak current */
+    var ztl = Math.max(z0 - 0.3, Math.min(z1 + 0.2, Math.log10(zt)));
+    var zy = Y(Math.pow(10, ztl));
+    ctx.strokeStyle = pgC("#ff5a1f"); ctx.lineWidth = 1;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath(); ctx.moveTo(mL, zy + 0.5); ctx.lineTo(W - mR, zy + 0.5); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = pgC("#ff5a1f");
+    ctx.fillText("Ztarget " + dcFmtZ(zt), W - mR - 120, zy - 6);
+  }
+  function dcDrawBoardSec(tr) {
+    var s = dcEls.boardSec;
+    s.style.display = "";
+    s.innerHTML = "";
+    s.appendChild(dcEl("h4", null, "PLACEMENT ON THE BOARD: THE CURRENT LOOP"));
+    var cv = document.createElement("canvas");
+    cv.className = "dc-wave";
+    cv.style.height = "240px";
+    cv.setAttribute("aria-label", "Board diagram with current loops drawn and loop inductance labeled");
+    s.appendChild(cv);
+    s.appendChild(dcEl("p", "db32-cap",
+      "Each loop runs from the die, out through the power plane to the capacitor, and back " +
+      "through ground. Loop area is inductance: the NEAR loop is 0.05 nH of path, the FAR loop " +
+      "spans the board at 4 nH. Every capacitor adds its own ESL in series, so loop L = ESL + path. " +
+      "Above its self-resonant frequency a capacitor is just its loop inductance."));
+    dcDrawBoard(cv, tr);
+  }
+  function dcDrawImpSec(tr) {
+    var s = dcEls.impSec;
+    s.style.display = "";
+    s.innerHTML = "";
+    var imax = dcImax(dcS.cur);
+    var zt = (DC_DROOP_BUDGET / 1000) / imax;
+    s.appendChild(dcEl("h4", null, "PDN IMPEDANCE VS FREQUENCY"));
+    var cv = document.createElement("canvas");
+    cv.className = "dc-wave";
+    cv.style.height = "260px";
+    cv.setAttribute("aria-label", "Impedance versus frequency with the target impedance line");
+    s.appendChild(cv);
+    var wrap = dcEl("div", "bp-scrollx");
+    var leg = dcEl("table", "dc-legend");
+    leg.setAttribute("aria-label", "Capacitor impedance curves");
+    var trh = dcEl("tr");
+    ["CAPACITOR", "LOOP L", "SELF-RESONANCE"].forEach(function (h) {
+      trh.appendChild(dcEl("th", null, h));
+    });
+    leg.appendChild(trh);
+    var seen = {}, order = [], k, key;
+    for (k = 0; k < tr.placement.length; k++) {
+      key = tr.placement[k].type + "|" + tr.placement[k].zone;
+      if (seen[key]) { seen[key].n++; continue; }
+      seen[key] = { n: 1, cd: dcCapDef(tr.placement[k].type), zd: dcZoneDef(tr.placement[k].zone) };
+      order.push(key);
+    }
+    if (order.length === 0) {
+      var tr0 = dcEl("tr");
+      var td0 = dcEl("td", null, "no capacitors placed: the profile is the bare die");
+      td0.colSpan = 3;
+      tr0.appendChild(td0);
+      leg.appendChild(tr0);
+    }
+    for (var oi = 0; oi < order.length; oi++) {
+      var e = seen[order[oi]];
+      var r = dcEl("tr");
+      var c0 = dcEl("td", null, (e.n > 1 ? e.n + "x " : "") + e.cd.id + " @ " + e.zd.label);
+      c0.style.color = dcTypeColor(e.cd.id);
+      r.appendChild(c0);
+      r.appendChild(dcEl("td", null, (dcLoopL(e.cd, e.zd) * 1e9).toFixed(2) + " nH"));
+      r.appendChild(dcEl("td", null, dcFmtHz(dcSrf(e.cd, e.zd))));
+      leg.appendChild(r);
+    }
+    wrap.appendChild(leg);
+    s.appendChild(wrap);
+    s.appendChild(dcEl("p", "db32-cap",
+      "Each capacitor is a series RLC: capacitive below its self-resonant frequency, inductive " +
+      "above it. The heavy line is everything you placed in parallel: the target-impedance view " +
+      "from Bogatin. Target " + dcFmtZ(zt) + " = 100 mV / " + imax.toFixed(0) + " A for this trial. " +
+      "Pull the heavy line under the dashed line, then run the transient to confirm."));
+    dcDrawImp(cv, tr, zt);
   }
 
   /* ---- run + verdict ---- */
@@ -22276,6 +23183,7 @@ if (typeof module !== "undefined" && module.exports) {
     if (!dcEls.overlay) dcBuild();
     dcEls.overlay.classList.add("open");
     document.body.style.overflow = "hidden";
+    dcRenderZones(); /* repaint the board and impedance views at real width */
   }
   function dcClose() {
     if (dcEls.overlay) dcEls.overlay.classList.remove("open");
@@ -27339,7 +28247,32 @@ if (typeof module !== "undefined" && module.exports) {
     ".gt-pop{animation:gtPop .2s ease-out;}",
     "@keyframes gtPop{0%{transform:scale(.96);}100%{transform:scale(1);}}",
     "@media (prefers-reduced-motion: reduce){.gt-pop{animation:none;}}",
-    "button.gt-btn{min-width:48px;}"
+    "button.gt-btn{min-width:48px;}",
+    ".gr39-schem{position:relative;max-width:560px;margin:6px 0 4px;}",
+    ".gr39-schem svg{display:block;width:100%;height:auto;}",
+    ".gr39-wire{fill:none;stroke:var(--paper);stroke-width:2;}",
+    ".gr39-wire.hi{opacity:1;}",
+    ".gr39-wire.lo{opacity:.3;}",
+    ".gr39-wire.unwired{opacity:.55;stroke-dasharray:5 4;}",
+    ".gr39-wire.bad{stroke:var(--ember);stroke-dasharray:6 4;opacity:1;}",
+    ".gr39-sym{fill:var(--panel);stroke:var(--paper);stroke-width:2;}",
+    ".gr39-txt{fill:var(--paper);font-family:'IBM Plex Mono',monospace;font-size:10px;}",
+    ".gr39-txt.small{font-size:9px;}",
+    ".gr39-txt.dim{opacity:.65;}",
+    ".gr39-node{fill:var(--ink);stroke:var(--paper);stroke-width:2;cursor:pointer;}",
+    ".gr39-node.armed{stroke:var(--ember);}",
+    ".gr39-pin{fill:var(--paper);}",
+    ".gr39-tap{fill:transparent;stroke:none;cursor:pointer;}",
+    ".gr39-tap.armed{stroke:var(--ember);stroke-width:1;}",
+    ".gr39-menu{position:absolute;z-index:6;min-width:210px;max-width:270px;background:var(--panel);border:1px solid var(--line);}",
+    ".gr39-menu button{display:block;width:100%;min-height:48px;text-align:left;background:transparent;border:0;border-bottom:1px solid var(--line);color:var(--paper);font-family:'IBM Plex Mono',monospace;font-size:13px;padding:10px 12px;cursor:pointer;}",
+    ".gr39-menu button:last-child{border-bottom:0;}",
+    ".gr39-menu button.cur{color:var(--ember);font-weight:600;}",
+    ".gr39-empty{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--paper);opacity:.7;margin:8px 0;line-height:1.6;}",
+    ".gr39-note{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.06em;color:var(--paper);opacity:.75;margin:10px 0;line-height:1.6;}",
+    ".gr39-pbtns{display:flex;flex-direction:column;gap:4px;justify-content:center;align-items:flex-start;}",
+    ".gr39-primer{width:150px;height:120px;flex:none;}",
+    "@media (max-width:480px){.gr39-primer{width:118px;height:94px;}}"
   ].join("\n");
 
   /* ---------------- DOM helpers and state ---------------- */
@@ -27433,26 +28366,36 @@ if (typeof module !== "undefined" && module.exports) {
     intro.innerHTML = gtIntroHTML();
     head.appendChild(intro);
     head.appendChild(gtEl("p", "gt-how",
-      "HOW: toggle the trial inputs, wire NAND gates with the dropdowns, predict the probe row, " +
+      "HOW: toggle the trial inputs, wire NAND gates on the schematic (tap a pin, then tap " +
+      "a signal, or tap a pin to pick from the list), predict the probe row, " +
       "RUN the full truth table, and match every row inside the gate budget."));
     wrap.appendChild(head);
 
-    /* the one gate: do-before-explain primer */
+    /* the one gate: do-before-explain primer, drawn as a real schematic */
     wrap.appendChild(gtEl("p", "gt-sec", "THE ONE GATE, LIVE"));
     var primer = gtEl("div", "gt-primer");
     var grow = gtEl("div", "gt-gate");
-    grow.appendChild(gtEl("span", "gt-cap", "A"));
+    var pbtns = gtEl("div", "gr39-pbtns");
+    pbtns.appendChild(gtEl("span", "gt-cap", "A"));
     var pa = gtEl("button", "gt-tbtn", "0");
     pa.id = "gtPrimerA";
     pa.setAttribute("aria-pressed", "false");
     pa.setAttribute("aria-label", "Primer input A, toggle 0 or 1");
-    grow.appendChild(pa);
-    grow.appendChild(gtEl("span", "gt-cap", "B"));
+    pbtns.appendChild(pa);
+    pbtns.appendChild(gtEl("span", "gt-cap", "B"));
     var pb = gtEl("button", "gt-tbtn", "0");
     pb.id = "gtPrimerB";
     pb.setAttribute("aria-pressed", "false");
     pb.setAttribute("aria-label", "Primer input B, toggle 0 or 1");
-    grow.appendChild(pb);
+    pbtns.appendChild(pb);
+    grow.appendChild(pbtns);
+    var psvg = gtSvg("svg", { viewBox: "0 0 150 120", "class": "gr39-primer", role: "img",
+      "aria-label": "One NAND gate, distinctive-shape symbol" });
+    grow.appendChild(psvg);
+    var wireA = gtSvg("path", { d: "M4,36 L44,36", "class": "gr39-wire lo" }, psvg);
+    var wireB = gtSvg("path", { d: "M4,84 L44,84", "class": "gr39-wire lo" }, psvg);
+    gtNandSym(psvg, 52, 60, null);
+    var wireO = gtSvg("path", { d: "M140,60 L146,60", "class": "gr39-wire hi" }, psvg);
     grow.appendChild(gtEl("span", "gt-cap", "NAND"));
     var pl = gtEl("span", "gt-lamp", "1");
     pl.id = "gtPrimerOut";
@@ -27463,6 +28406,7 @@ if (typeof module !== "undefined" && module.exports) {
       "Everything below is built from copies of this gate."));
     wrap.appendChild(primer);
     gtEls.primerA = pa; gtEls.primerB = pb; gtEls.primerOut = pl;
+    gtEls.primerWireA = wireA; gtEls.primerWireB = wireB; gtEls.primerWireO = wireO;
     pa.addEventListener("click", function () { gtTogglePrimer("a"); });
     pb.addEventListener("click", function () { gtTogglePrimer("b"); });
 
@@ -27522,6 +28466,11 @@ if (typeof module !== "undefined" && module.exports) {
     var o = gtNand(p.a, p.b);
     gtEls.primerOut.textContent = String(o);
     gtEls.primerOut.classList.toggle("hot", o === 1);
+    if (gtEls.primerWireA) {
+      gtEls.primerWireA.setAttribute("class", "gr39-wire " + (p.a ? "hi" : "lo"));
+      gtEls.primerWireB.setAttribute("class", "gr39-wire " + (p.b ? "hi" : "lo"));
+      gtEls.primerWireO.setAttribute("class", "gr39-wire " + (o ? "hi" : "lo"));
+    }
   }
 
   /* ---------------- trial cards ---------------- */
@@ -27570,24 +28519,10 @@ if (typeof module !== "undefined" && module.exports) {
     var gatesBox = gtEl("div", null, null);
     card.appendChild(gatesBox);
 
-    /* required outputs */
-    var orow = gtEl("div", "gt-ctlrow");
-    orow.appendChild(gtEl("span", "gt-cap", "CIRCUIT OUTPUTS"));
-    var outSels = {};
-    for (var k = 0; k < t.outs.length; k++) (function (name) {
-      orow.appendChild(gtEl("span", "gt-cap", name));
-      var s = gtEl("select", "gt-sel");
-      s.setAttribute("aria-label", "Trial " + t.n + " output " + name + " source");
-      s.addEventListener("change", function () {
-        gtState.trials[ti].outs[name] = s.value;
-        gtState.trials[ti].passed = false;
-        gtInvalidateRun(ti);
-        gtRefresh(ti);
-      });
-      orow.appendChild(s);
-      outSels[name] = s;
-    })(t.outs[k]);
-    card.appendChild(orow);
+    /* required outputs: each is a sink node on the schematic below. Tap a sink,
+       then tap a signal, or tap a sink to pick its source from the list. */
+    card.appendChild(gtEl("p", "gr39-note",
+      "CIRCUIT OUTPUTS (" + t.outs.join(", ") + ") are the sink nodes on the right of the schematic."));
 
     /* predict-then-verify */
     var prow = gtEl("div", "gt-pred");
@@ -27626,7 +28561,7 @@ if (typeof module !== "undefined" && module.exports) {
     card.appendChild(verdict);
 
     gtEls.cards[ti] = { card: card, ta: ta, tb: tb, budget: budget, add: add,
-      rem: rem, gatesBox: gatesBox, outSels: outSels, predBtns: predBtns,
+      rem: rem, gatesBox: gatesBox, predBtns: predBtns,
       run: run, commit: commit, tres: tres, verdict: verdict };
     gtRefresh(ti);
     return card;
@@ -27705,43 +28640,9 @@ if (typeof module !== "undefined" && module.exports) {
     C.add.disabled = st.gates.length >= t.budget || st.committed;
     C.rem.disabled = !st.gates.length || st.committed;
 
-    /* gate rows */
-    C.gatesBox.innerHTML = "";
-    var opts = gtSigOptions(t);
-    var live = gtLiveVals(t, st);
-    for (var g = 0; g < st.gates.length; g++) (function (gi) {
-      var row = gtEl("div", "gt-gaterow");
-      row.appendChild(gtEl("span", "gt-gid", "G" + (gi + 1)));
-      var s1 = gtEl("select", "gt-sel");
-      s1.setAttribute("aria-label", "Trial " + t.n + " gate G" + (gi + 1) + " input 1");
-      gtFillSelect(s1, opts, st.gates[gi].i1);
-      s1.addEventListener("change", function () {
-        st.gates[gi].i1 = s1.value; st.passed = false; gtInvalidateRun(ti); gtRefresh(ti);
-      });
-      row.appendChild(s1);
-      row.appendChild(gtEl("span", null, "NAND"));
-      var s2 = gtEl("select", "gt-sel");
-      s2.setAttribute("aria-label", "Trial " + t.n + " gate G" + (gi + 1) + " input 2");
-      gtFillSelect(s2, opts, st.gates[gi].i2);
-      s2.addEventListener("change", function () {
-        st.gates[gi].i2 = s2.value; st.passed = false; gtInvalidateRun(ti); gtRefresh(ti);
-      });
-      row.appendChild(s2);
-      row.appendChild(gtEl("span", null, "->"));
-      var lamp = gtEl("span", "gt-lamp", "?");
-      if (!live.error && live.vals["G" + (gi + 1)] !== undefined) {
-        var v = live.vals["G" + (gi + 1)];
-        lamp.textContent = String(v);
-        lamp.classList.toggle("hot", v === 1);
-      } else {
-        lamp.textContent = live.error === "LOOP" ? "LOOP" : "?";
-        lamp.classList.add("dim");
-      }
-      row.appendChild(lamp);
-      C.gatesBox.appendChild(row);
-    })(g);
-
-    for (var on in C.outSels) gtFillSelect(C.outSels[on], opts, st.outs[on]);
+    /* schematic: IEEE Std 91 distinctive-shape NAND symbols with drawn wires,
+       driven by the same state the dropdown rows used */
+    gtSchemRender(t, ti, st, C);
 
     for (var pn in C.predBtns) {
       var pv = st.pred ? st.pred[pn] : null;
@@ -27755,6 +28656,297 @@ if (typeof module !== "undefined" && module.exports) {
         " NAND gate(s), every truth-table row matches.";
       C.verdict.classList.add("pass");
     }
+  }
+
+  /* ---------------- schematic view ---------------- */
+  /* IEEE Std 91 / 91a distinctive-shape NAND symbol: the AND distinctive
+     shape (flat input side, semicircular output side) with the inversion
+     bubble on the output, as in Mano and Ciletti and Harris and Harris.
+     Wires are drawn as lines; the interaction (one signal choice per
+     input, one source per output) is unchanged, only the view. */
+
+  var GT_SVGNS = "http://www.w3.org/2000/svg";
+  var gtArm = {};
+  var gtMenuDoc = null;
+
+  function gtSvg(tag, attrs, parent) {
+    var e = document.createElementNS(GT_SVGNS, tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+
+  function gtSvgText(parent, x, y, s, cls, anchor) {
+    var t = gtSvg("text", { x: x, y: y, "class": cls || "gr39-txt",
+      "text-anchor": anchor || "middle" }, parent);
+    t.textContent = s;
+    return t;
+  }
+
+  /* One distinctive-shape NAND symbol. x = left edge of the body,
+     yc = vertical center. Inputs enter at the left, the bubbled output
+     leaves at the right. */
+  function gtNandSym(parent, x, yc, label) {
+    var g = gtSvg("g", {}, parent);
+    gtSvg("path", { d: "M" + x + "," + (yc - 26) +
+      " L" + (x + 32) + "," + (yc - 26) +
+      " A26,26 0 0 1 " + (x + 32) + "," + (yc + 26) +
+      " L" + x + "," + (yc + 26) + " Z", "class": "gr39-sym" }, g);
+    gtSvg("line", { x1: x - 8, y1: yc - 24, x2: x, y2: yc - 24,
+      "class": "gr39-sym" }, g);
+    gtSvg("line", { x1: x - 8, y1: yc + 24, x2: x, y2: yc + 24,
+      "class": "gr39-sym" }, g);
+    gtSvg("circle", { cx: x - 8, cy: yc - 24, r: 3, "class": "gr39-pin" }, g);
+    gtSvg("circle", { cx: x - 8, cy: yc + 24, r: 3, "class": "gr39-pin" }, g);
+    gtSvg("circle", { cx: x + 63, cy: yc, r: 5, "class": "gr39-sym" }, g);
+    gtSvg("line", { x1: x + 68, y1: yc, x2: x + 88, y2: yc,
+      "class": "gr39-sym" }, g);
+    if (label) gtSvgText(g, x + 15, yc + 4, label, "gr39-txt");
+    return g;
+  }
+
+  function gtWireClass(v) {
+    if (v === 1) return "gr39-wire hi";
+    if (v === 0) return "gr39-wire lo";
+    if (v === "LOOP") return "gr39-wire bad";
+    return "gr39-wire unwired";
+  }
+
+  function gtValText(v) {
+    if (v === 1) return "1";
+    if (v === 0) return "0";
+    if (v === "LOOP") return "L";
+    return "?";
+  }
+
+  /* Live display value of a signal name: 0/1, "?" when unwired or
+     floating, "LOOP" when the bench reports a combinational loop. */
+  function gtSrcVal(src, st, live) {
+    if (src === "A") return st.a;
+    if (src === "B") return st.b;
+    if (src === "1") return 1;
+    var m = /^G(\d+)$/.exec(src || "");
+    if (m) {
+      var gi = parseInt(m[1], 10) - 1;
+      if (live.error) return live.error === "LOOP" ? "LOOP" : "?";
+      if (gi >= 0 && gi < st.gates.length &&
+          live.vals["G" + (gi + 1)] !== undefined)
+        return live.vals["G" + (gi + 1)];
+      return "?";
+    }
+    return "?";
+  }
+
+  function gtCloseMenu() {
+    var m = document.querySelector(".gr39-menu");
+    if (m && m.parentNode) m.parentNode.removeChild(m);
+    if (gtMenuDoc) {
+      document.removeEventListener("click", gtMenuDoc, true);
+      gtMenuDoc = null;
+    }
+  }
+
+  /* Commit one wiring choice: the same state change the dropdowns made. */
+  function gtSetWire(ti, kind, gi, which, sig) {
+    var st = gtState.trials[ti];
+    if (kind === "out") st.outs[which] = sig;
+    else st.gates[gi][which] = sig;
+    st.passed = false;
+    gtCloseMenu();
+    gtInvalidateRun(ti);
+    gtRefresh(ti);
+  }
+
+  /* Tap-a-pin source picker: the full gtSigOptions list the dropdowns
+     offered, as 48px buttons. Unplaced gate references are labeled. */
+  function gtOpenMenu(t, ti, kind, gi, which, wrap, ev) {
+    gtCloseMenu();
+    var st = gtState.trials[ti];
+    var cur = (kind === "out") ? st.outs[which] : st.gates[gi][which];
+    var menu = gtEl("div", "gr39-menu");
+    menu.setAttribute("role", "menu");
+    var opts = gtSigOptions(t);
+    for (var i = 0; i < opts.length; i++) (function (sig) {
+      var b = gtEl("button", sig === cur ? "cur" : null, null);
+      var label = (sig === "?") ? "(unwired)" : sig;
+      var m = /^G(\d+)$/.exec(sig);
+      if (m && parseInt(m[1], 10) > st.gates.length)
+        label = sig + " (not placed)";
+      b.textContent = label;
+      b.setAttribute("role", "menuitem");
+      b.addEventListener("click", function (e) {
+        e.stopPropagation();
+        gtSetWire(ti, kind, gi, which, sig);
+      });
+      menu.appendChild(b);
+    })(opts[i]);
+    var r = wrap.getBoundingClientRect();
+    var mx = ev.clientX - r.left + 10, my = ev.clientY - r.top + 10;
+    if (mx > r.width - 240) mx = Math.max(8, r.width - 240);
+    menu.style.left = mx + "px";
+    menu.style.top = my + "px";
+    wrap.appendChild(menu);
+    var first = menu.querySelector("button");
+    if (first) first.focus();
+    gtMenuDoc = function (e) { if (!menu.contains(e.target)) gtCloseMenu(); };
+    setTimeout(function () {
+      document.addEventListener("click", gtMenuDoc, true);
+    }, 0);
+    menu.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") gtCloseMenu();
+    });
+  }
+
+  /* Pin/sink tap: with an armed source, wire it directly; otherwise open
+     the source picker. */
+  function gtPinTap(t, ti, kind, gi, which, wrap, ev) {
+    if (gtArm[ti]) {
+      var src = gtArm[ti];
+      gtArm[ti] = null;
+      gtSetWire(ti, kind, gi, which, src);
+      return;
+    }
+    gtOpenMenu(t, ti, kind, gi, which, wrap, ev);
+  }
+
+  function gtArmSrc(ti, src) {
+    gtArm[ti] = (gtArm[ti] === src) ? null : src;
+    gtRefresh(ti);
+  }
+
+  /* Render one trial card as a schematic. Left rail: A, B, 1 and one tap
+     per placed gate output. One distinctive-shape NAND symbol per gate.
+     Right: sink nodes for the required outputs. All values and wires are
+     read from existing state (st.gates, st.outs, gtLiveVals); nothing in
+     the sim is touched. */
+  function gtSchemRender(t, ti, st, C) {
+    gtCloseMenu();
+    var box = C.gatesBox;
+    box.innerHTML = "";
+    var wrap = gtEl("div", "gr39-schem");
+    box.appendChild(wrap);
+    var n = st.gates.length;
+    if (!n) {
+      wrap.appendChild(gtEl("p", "gr39-empty",
+        "No gates placed. ADD GATE to put a NAND symbol on the schematic, " +
+        "then tap its input pins to wire them."));
+      return;
+    }
+    var live = gtLiveVals(t, st);
+    var xs = 200, y0 = 120, rowH = 132, yTop = 64;
+    var yc = function (i) { return y0 + i * rowH; };
+    var pinY = function (i, p) { return yc(i) + (p === "i1" ? -24 : 24); };
+    var txA = 34, txB = 50, tx1 = t.useB ? 66 : 50;
+    var txG = function (i) { return 96 + i * 16; };
+    var vx = function (i) { return 306 + i * 8; };
+    var yRetB = y0 + (n - 1) * rowH + 84;
+    var yRet = function (i) { return yRetB + i * 12; };
+    var sinkY = function (k) { return yRetB + (n - 1) * 12 + 46 + k * 48; };
+    var H = sinkY(t.outs.length - 1) + 42;
+    var svg = gtSvg("svg", { viewBox: "0 0 380 " + H, role: "img",
+      "aria-label": "Trial " + t.n + " NAND schematic" }, wrap);
+
+    var sources = [{ name: "A", x: txA }];
+    if (t.useB) sources.push({ name: "B", x: txB });
+    sources.push({ name: "1", x: tx1 });
+    for (var i = 0; i < n; i++)
+      sources.push({ name: "G" + (i + 1), x: txG(i), gate: i });
+
+    var validSrc = function (sig) {
+      if (sig === "A" || sig === "B" || sig === "1") return true;
+      var m = /^G(\d+)$/.exec(sig || "");
+      return !!(m && parseInt(m[1], 10) >= 1 && parseInt(m[1], 10) <= n);
+    };
+
+    /* trunks, stubs, and source nodes */
+    for (var s = 0; s < sources.length; s++) (function (src) {
+      var pts = [], g, k, q;
+      for (g = 0; g < n; g++) {
+        if (st.gates[g].i1 === src.name)
+          pts.push({ y: pinY(g, "i1"), x2: xs - 8 });
+        if (st.gates[g].i2 === src.name)
+          pts.push({ y: pinY(g, "i2"), x2: xs - 8 });
+      }
+      for (k = 0; k < t.outs.length; k++)
+        if (st.outs[t.outs[k]] === src.name) pts.push({ y: sinkY(k), x2: 344 });
+      var v = gtSrcVal(src.name, st, live), wc = gtWireClass(v);
+      var maxY = yTop;
+      for (q = 0; q < pts.length; q++) if (pts[q].y > maxY) maxY = pts[q].y;
+      if (src.gate !== undefined && yRet(src.gate) > maxY) maxY = yRet(src.gate);
+      gtSvg("line", { x1: src.x, y1: yTop, x2: src.x, y2: maxY,
+        "class": wc }, svg);
+      for (q = 0; q < pts.length; q++)
+        gtSvg("line", { x1: src.x, y1: pts[q].y, x2: pts[q].x2, y2: pts[q].y,
+          "class": wc }, svg);
+      var armed = gtArm[ti] === src.name;
+      gtSvg("circle", { cx: src.x, cy: yTop, r: 9,
+        "class": "gr39-node" + (armed ? " armed" : "") }, svg);
+      gtSvgText(svg, src.x, yTop - 16, src.name, "gr39-txt dim");
+      gtSvgText(svg, src.x, yTop + 3.5, gtValText(v), "gr39-txt small");
+      var tap = gtSvg("rect", { x: src.x - 24, y: yTop - 24, width: 48,
+        height: 48, "class": "gr39-tap" + (armed ? " armed" : "") }, svg);
+      tap.setAttribute("aria-label", "Wire source " + src.name);
+      tap.addEventListener("click", function () { gtArmSrc(ti, src.name); });
+    })(sources[s]);
+
+    /* gate symbols, output returns, input pins */
+    for (var gi = 0; gi < n; gi++) (function (i) {
+      var y = yc(i), gn = "G" + (i + 1);
+      gtNandSym(svg, xs, y, gn);
+      var gv = gtSrcVal(gn, st, live), gwc = gtWireClass(gv);
+      gtSvg("line", { x1: xs + 88, y1: y, x2: vx(i), y2: y,
+        "class": gwc }, svg);
+      gtSvg("line", { x1: vx(i), y1: y, x2: vx(i), y2: yRet(i),
+        "class": gwc }, svg);
+      gtSvg("line", { x1: vx(i), y1: yRet(i), x2: txG(i), y2: yRet(i),
+        "class": gwc }, svg);
+      gtSvg("circle", { cx: xs + 88, cy: y, r: 5,
+        "class": "gr39-node" + (gtArm[ti] === gn ? " armed" : "") }, svg);
+      gtSvgText(svg, xs + 96, y - 8, gtValText(gv), "gr39-txt small", "start");
+      var otap = gtSvg("rect", { x: xs + 64, y: y - 24, width: 48,
+        height: 48, "class": "gr39-tap" }, svg);
+      otap.setAttribute("aria-label", "Wire source " + gn);
+      otap.addEventListener("click", function () { gtArmSrc(ti, gn); });
+      var pins = ["i1", "i2"];
+      for (var p = 0; p < pins.length; p++) (function (pn) {
+        var py = pinY(i, pn), sig = st.gates[i][pn];
+        if (!validSrc(sig)) {
+          gtSvg("line", { x1: xs - 8, y1: py, x2: xs - 40, y2: py,
+            "class": "gr39-wire unwired" }, svg);
+          gtSvgText(svg, xs - 46, py + 3.5,
+            (!sig || sig === "?") ? "?" : sig + "?", "gr39-txt dim", "end");
+        }
+        var tap = gtSvg("rect", { x: xs - 34, y: py - 24, width: 42,
+          height: 48, "class": "gr39-tap" }, svg);
+        tap.setAttribute("aria-label", "Trial " + t.n + " gate " + gn +
+          " input " + (pn === "i1" ? "1" : "2"));
+        tap.addEventListener("click", function (ev) {
+          gtPinTap(t, ti, "pin", i, pn, wrap, ev);
+        });
+      })(pins[p]);
+    })(gi);
+
+    /* required-output sink nodes */
+    for (var k = 0; k < t.outs.length; k++) (function (name, kk) {
+      var sy = sinkY(kk), sig = st.outs[name];
+      if (!validSrc(sig)) {
+        gtSvg("line", { x1: 344, y1: sy, x2: 316, y2: sy,
+          "class": "gr39-wire unwired" }, svg);
+        gtSvgText(svg, 310, sy + 3.5, (!sig || sig === "?") ? "?" : sig + "?",
+          "gr39-txt dim", "end");
+      }
+      gtSvg("circle", { cx: 352, cy: sy, r: 9, "class": "gr39-node" }, svg);
+      gtSvgText(svg, 352, sy - 16, name, "gr39-txt dim");
+      gtSvgText(svg, 352, sy + 3.5, gtValText(gtSrcVal(sig, st, live)),
+        "gr39-txt small");
+      var tap = gtSvg("rect", { x: 328, y: sy - 24, width: 48, height: 48,
+        "class": "gr39-tap" }, svg);
+      tap.setAttribute("aria-label", "Trial " + t.n + " output " + name +
+        " source");
+      tap.addEventListener("click", function (ev) {
+        gtPinTap(t, ti, "out", -1, name, wrap, ev);
+      });
+    })(t.outs[k], k);
   }
 
   /* ---------------- run, verify, certify ---------------- */
@@ -27842,7 +29034,9 @@ if (typeof module !== "undefined" && module.exports) {
       tr.appendChild(gtEl("td", null, row.ok ? "MATCH" : "DIFF"));
       tab.appendChild(tr);
     }
-    C.tres.appendChild(tab);
+    var scroller = gtEl("div", "bp-scrollx");
+    scroller.appendChild(tab);
+    C.tres.appendChild(scroller);
   }
 
   function gtCommit(ti) {
@@ -29072,7 +30266,41 @@ if (typeof module !== "undefined" && module.exports) {
     ".cr-foot{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0 0;}",
     ".cr-pop{animation:crPop .2s ease-out;}",
     "@keyframes crPop{0%{transform:scale(.985);}100%{transform:scale(1);}}",
-    "@media (prefers-reduced-motion: reduce){.cr-pop{animation:none;}}"
+    "@media (prefers-reduced-motion: reduce){.cr-pop{animation:none;}}",
+    ".cr41-cap{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:var(--ember);margin:14px 0 6px;}",
+    ".cr41-sub{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.1em;color:var(--dim);margin:10px 0 6px;}",
+    ".cr41-chain{display:flex;align-items:stretch;min-width:max-content;padding:2px;}",
+    ".cr41-fa{border:1px solid var(--line);background:var(--panel);padding:6px 8px;text-align:center;font-family:'IBM Plex Mono',monospace;color:var(--paper);min-width:76px;}",
+    ".cr41-fa .cr41-bits{font-size:10px;color:var(--dim);white-space:nowrap;}",
+    ".cr41-fa .cr41-nm{font-size:11px;font-weight:600;letter-spacing:.08em;margin:3px 0;}",
+    ".cr41-fa .cr41-sum{font-size:11px;white-space:nowrap;}",
+    ".cr41-fa.lit{border-color:var(--ember);}",
+    ".cr41-fa.lit .cr41-sum{color:var(--ember);}",
+    ".cr41-blk{border:1px solid var(--line);background:var(--panel);padding:6px 8px;text-align:center;font-family:'IBM Plex Mono',monospace;color:var(--paper);min-width:110px;}",
+    ".cr41-blk .cr41-nm{font-size:11px;font-weight:600;letter-spacing:.08em;margin:0 0 3px;}",
+    ".cr41-blk .cr41-bits{font-size:10px;color:var(--dim);white-space:nowrap;}",
+    ".cr41-blk .cr41-sum{font-size:11px;white-space:nowrap;}",
+    ".cr41-blk.lit{border-color:var(--ember);}",
+    ".cr41-blk.lit .cr41-sum{color:var(--ember);}",
+    ".cr41-cw{display:flex;flex-direction:column;justify-content:center;align-items:center;min-width:56px;padding:4px 2px;font-family:'IBM Plex Mono',monospace;border-top:1px solid var(--line);border-bottom:1px solid var(--line);align-self:center;}",
+    ".cr41-cw.cr41-term{min-width:64px;}",
+    ".cr41-cw .cr41-cl{font-size:10px;color:var(--dim);white-space:nowrap;}",
+    ".cr41-cw .cr41-cv{font-size:13px;color:var(--paper);}",
+    ".cr41-cw.settled{border-color:var(--ember);}",
+    ".cr41-cw.settled .cr41-cl,.cr41-cw.settled .cr41-cv{color:var(--ember);}",
+    ".cr41-eq{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.8;color:var(--paper);background:var(--ink);border:1px solid var(--line);padding:10px 12px;margin:0 0 6px;white-space:pre;min-width:max-content;}",
+    ".cr41-lvl{display:flex;gap:6px;min-width:max-content;margin:0 0 4px;}",
+    ".cr41-node{border:1px solid var(--line);background:var(--panel);padding:6px 8px;font-family:'IBM Plex Mono',monospace;color:var(--paper);text-align:center;min-width:72px;}",
+    ".cr41-node .cr41-t{display:block;font-size:10px;color:var(--dim);white-space:nowrap;}",
+    ".cr41-node .cr41-v{font-size:12px;white-space:nowrap;}",
+    ".cr41-node.lit{border-color:var(--ember);}",
+    ".cr41-node.lit .cr41-v{color:var(--ember);}",
+    ".cr41-dt{border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--paper);margin:6px 0 4px;min-width:max-content;}",
+    ".cr41-dt td{padding:6px 12px 6px 0;border-bottom:1px solid var(--line);vertical-align:top;}",
+    ".cr41-dt tr:last-child td{border-bottom:none;}",
+    ".cr41-dt .cr41-ms{color:var(--dim);white-space:nowrap;}",
+    ".cr41-dt .cr41-dim{color:var(--dim);}",
+    ".cr41-dt tr.lit .cr41-ms{color:var(--ember);}"
   ].join("\n");
 
   /* ---------------- DOM helpers ---------------- */
@@ -29137,6 +30365,8 @@ if (typeof module !== "undefined" && module.exports) {
   function crPrimerFrame(t) {
     var P = crState.primer, C = crEls.primer;
     if (!C || !C.cells) return;
+    P.t = t;
+    cr41PrimerRefresh();
     var c = crCarries(P.a, P.b, 8);
     for (var i = 0; i <= 8; i++) {
       var settled = crResolved8(P.arch, i, t);
@@ -29159,6 +30389,388 @@ if (typeof module !== "undefined" && module.exports) {
       "<span class='k'>SETTLES IN </span><span class='v'>" + crDelayOf8("ripple8") +
       "</span><span class='k'> (RIPPLE-8) vs </span><span class='v'>" + crDelayOf8("cla8") +
       "</span><span class='k'> (CLA-8)</span>";
+  }
+  /* ---------------- canonical diagrams (cr41) ---------------- */
+  /* The ripple-carry block diagram and the CLA equation/block hierarchy,
+     driven live by the bench's existing sim state. The old carry strip
+     stays below as an auxiliary readout. */
+
+  function cr41Resolved(arch, i, t) {
+    if (arch === "ripple8" || arch === "cla8") return crResolved8(arch, i, t);
+    return crResolved(arch, i, t);
+  }
+
+  function cr41Wire(label, term) {
+    var w = crEl("div", "cr41-cw" + (term ? " cr41-term" : ""));
+    var cl = crEl("div", "cr41-cl", label);
+    var cv = crEl("div", "cr41-cv", "?");
+    w.appendChild(cl); w.appendChild(cv);
+    return { box: w, val: cv };
+  }
+
+  function cr41SetWire(w, text, settled) {
+    w.val.textContent = text;
+    w.box.classList.toggle("settled", !!settled);
+  }
+
+  /* Ripple chain: bits full-adder blocks with carry wires c0..c(bits). */
+  function cr41BuildRipple(host, bits) {
+    var chain = crEl("div", "cr41-chain");
+    chain.setAttribute("role", "img");
+    chain.setAttribute("aria-label", "Ripple-carry block diagram: " + bits +
+      " full adders chained, carry in to carry out");
+    var N = { fa: [], cw: [] }, i;
+    for (i = 0; i <= bits; i++) {
+      var w = cr41Wire(i === 0 ? "c0 IN" : (i === bits ? "c" + bits + " OUT" : "c" + i),
+        i === 0 || i === bits);
+      chain.appendChild(w.box);
+      N.cw.push(w);
+      if (i < bits) {
+        (function (k) {
+          var fa = crEl("div", "cr41-fa");
+          var be = crEl("div", "cr41-bits", "a" + k + " b" + k);
+          var nm = crEl("div", "cr41-nm", "FA" + k);
+          var sm = crEl("div", "cr41-sum", "s" + k);
+          fa.appendChild(be); fa.appendChild(nm); fa.appendChild(sm);
+          chain.appendChild(fa);
+          N.fa.push({ box: fa, bits: be, sum: sm });
+        })(i);
+      }
+    }
+    host.appendChild(chain);
+    return N;
+  }
+
+  function cr41RefreshRipple(N, a, b, bits, arch, t, sampled) {
+    var c = crCarries(a, b, bits), i, k;
+    for (i = 0; i <= bits; i++) {
+      var st = sampled && cr41Resolved(arch, i, t);
+      cr41SetWire(N.cw[i], sampled ? String(st ? c[i] : 0) : "?", st);
+    }
+    for (k = 0; k < bits; k++) {
+      var F = N.fa[k], ai = (a >>> k) & 1, bi = (b >>> k) & 1;
+      F.bits.textContent = "a" + k + "=" + ai + " b" + k + "=" + bi;
+      var ci = (sampled && cr41Resolved(arch, k, t)) ? c[k] : 0;
+      F.sum.textContent = sampled ? ("s" + k + "=" + ((ai ^ bi) ^ ci)) : ("s" + k + "=?");
+      F.box.classList.toggle("lit", sampled && cr41Resolved(arch, k + 1, t));
+    }
+  }
+
+  /* Delay analysis table: rows are [milestone, what settles, note, litAt(t)]. */
+  function cr41DelayTable(rows) {
+    var tab = crEl("table", "cr41-dt");
+    tab.setAttribute("aria-label", "Delay analysis");
+    var tb = crEl("tbody", null, null);
+    var trs = [];
+    for (var r = 0; r < rows.length; r++) {
+      (function (row) {
+        var tr = crEl("tr", null, null);
+        tr.appendChild(crEl("td", "cr41-ms", row[0]));
+        tr.appendChild(crEl("td", null, row[1]));
+        tr.appendChild(crEl("td", "cr41-dim", row[2]));
+        tb.appendChild(tr);
+        trs.push({ tr: tr, lit: row[3] });
+      })(rows[r]);
+    }
+    tab.appendChild(tb);
+    return { tab: tab, rows: trs };
+  }
+
+  function cr41DelayTick(D, t, sampled) {
+    for (var r = 0; r < D.rows.length; r++) {
+      var R = D.rows[r];
+      R.tr.classList.toggle("lit", !!sampled && R.lit(t));
+    }
+  }
+
+  /* Bit generate/propagate and block generate/propagate for block k. */
+  function cr41BlockGP(a, b, k) {
+    var g = [], p = [], j, ai, bi;
+    for (j = 0; j < 4; j++) {
+      ai = (a >>> (4 * k + j)) & 1; bi = (b >>> (4 * k + j)) & 1;
+      g[j] = ai & bi; p[j] = ai ^ bi;
+    }
+    return {
+      g: g, p: p,
+      P: p[0] & p[1] & p[2] & p[3],
+      G: g[3] | (p[3] & g[2]) | (p[3] & p[2] & g[1]) | (p[3] & p[2] & p[1] & g[0])
+    };
+  }
+
+  /* One labeled row of nodes inside the diagram scroll area. */
+  function cr41Level(host, cap, n, labelfn) {
+    host.appendChild(crEl("p", "cr41-sub", cap));
+    var row = crEl("div", "cr41-lvl");
+    var nodes = [];
+    for (var i = 0; i < n; i++) {
+      (function (k) {
+        var nd = crEl("div", "cr41-node");
+        nd.appendChild(crEl("span", "cr41-t", labelfn(k)));
+        var v = crEl("div", "cr41-v", "?");
+        nd.appendChild(v);
+        row.appendChild(nd);
+        nodes.push({ box: nd, val: v });
+      })(i);
+    }
+    host.appendChild(row);
+    return nodes;
+  }
+
+  /* ---------------- primer diagrams ---------------- */
+
+  function cr41PrimerBuild() {
+    var P = crState.primer, C = crEls.primer;
+    if (!C || !C.diag) return;
+    C.diag.innerHTML = "";
+    if (P.arch === "ripple8") {
+      C.diagCap.textContent = "BLOCK DIAGRAM: RIPPLE-8, THE CARRY PATH";
+      var N = cr41BuildRipple(C.diag, 8);
+      var D = cr41DelayTable([
+        ["t = 2i", "carry c_i settles", "one 2-delay AND-OR stage per bit",
+          function (t) { return t >= 16; }],
+        ["t = 17", "sums s[7:0] settle", "1 delay after the last carry",
+          function (t) { return t >= 17; }]
+      ]);
+      C.diag.appendChild(D.tab);
+      C.diagN = { kind: "ripple", N: N, D: D, bits: 8, arch: "ripple8" };
+    } else {
+      C.diagCap.textContent = "BLOCK DIAGRAM: CLA-8, LOOKAHEAD";
+      C.diagN = cr41BuildCla8(C.diag);
+    }
+    cr41PrimerRefresh();
+  }
+
+  function cr41PrimerRefresh() {
+    var P = crState.primer, C = crEls.primer;
+    if (!C || !C.diagN) return;
+    var t = P.t || 0, D = C.diagN;
+    if (D.kind === "ripple") {
+      cr41RefreshRipple(D.N, P.a, P.b, D.bits, D.arch, t, true);
+      cr41DelayTick(D.D, t, true);
+    } else {
+      cr41RefreshCla8(D, P.a, P.b, t);
+    }
+  }
+
+  function cr41BuildCla8(host) {
+    host.appendChild(crEl("div", "cr41-eq",
+      "g[i] = a[i] AND b[i]       generate: this bit makes a carry\n" +
+      "p[i] = a[i] XOR b[i]       propagate: this bit passes a carry through\n" +
+      "c[i+1] = g[i] + p[i] AND c[i]\n" +
+      "s[i] = p[i] XOR c[i]"));
+    var D = { kind: "cla8" };
+    D.gp = cr41Level(host, "BIT GENERATE / PROPAGATE (t = 1)", 8,
+      function (k) { return "bit " + k; });
+    host.appendChild(crEl("p", "cr41-sub", "LOOKAHEAD CARRIES c1..c8, ALL FROM c0 (t = 3)"));
+    var cw = crEl("div", "cr41-lvl");
+    D.cw = [];
+    for (var j = 0; j <= 8; j++) {
+      (function (k) {
+        var w = cr41Wire(k === 0 ? "c0 IN" : (k === 8 ? "c8 OUT" : "c" + k),
+          k === 0 || k === 8);
+        cw.appendChild(w.box);
+        D.cw.push(w);
+      })(j);
+    }
+    host.appendChild(cw);
+    D.sm = cr41Level(host, "SUMS s[i] = p[i] XOR c[i] (t = 4)", 8,
+      function (k) { return "s" + k; });
+    D.dt = cr41DelayTable([
+      ["t = 1", "g[7:0], p[7:0] settle", "1 delay from a, b",
+        function (t) { return t >= 1; }],
+      ["t = 3", "c1..c8 settle", "one AND-OR stage from c0",
+        function (t) { return t >= 3; }],
+      ["t = 4", "s[7:0] settle", "1 delay after carry-in",
+        function (t) { return t >= 4; }]
+    ]);
+    host.appendChild(D.dt.tab);
+    return D;
+  }
+
+  function cr41RefreshCla8(D, a, b, t) {
+    var c = crCarries(a, b, 8), k;
+    for (k = 0; k < 8; k++) {
+      var ai = (a >>> k) & 1, bi = (b >>> k) & 1;
+      var g = ai & bi, p = ai ^ bi;
+      D.gp[k].val.textContent = "g=" + g + " p=" + p;
+      D.gp[k].box.classList.toggle("lit", t >= 1);
+      var st = t >= 3;
+      cr41SetWire(D.cw[k + 1], String(st ? c[k + 1] : 0), st);
+      D.sm[k].val.textContent = "s" + k + "=" + (p ^ (st ? c[k] : 0));
+      D.sm[k].box.classList.toggle("lit", t >= 4);
+    }
+    cr41SetWire(D.cw[0], "0", true);
+    cr41DelayTick(D.dt, t, true);
+  }
+
+  /* ---------------- trial diagrams ---------------- */
+
+  function cr41TrialCaption(arch) {
+    if (arch === "ripple") return "BLOCK DIAGRAM: RIPPLE-32, THE CARRY PATH";
+    if (arch === "grouped") return "BLOCK DIAGRAM: GROUPED, EIGHT 4-BIT LOOKAHEAD BLOCKS";
+    return "BLOCK DIAGRAM: FULL LOOKAHEAD, TWO-LEVEL TREE";
+  }
+
+  function cr41TrialDiagram(ti) {
+    var C = crEls.cards[ti];
+    if (!C || !C.diag) return;
+    var arch = crSelectedArch(ti);
+    C.diagCap.textContent = cr41TrialCaption(arch);
+    C.diag.innerHTML = "";
+    if (arch === "ripple") {
+      var N = cr41BuildRipple(C.diag, 32);
+      var D = cr41DelayTable([
+        ["t = 2i", "carry c_i settles", "one 2-delay AND-OR stage per bit",
+          function (t) { return t >= 64; }],
+        ["t = 65", "sum s31 settles", "1 delay after the last carry",
+          function (t) { return t >= 65; }]
+      ]);
+      C.diag.appendChild(D.tab);
+      C.diagN = { kind: "ripple", N: N, D: D, bits: 32, arch: "ripple" };
+    } else if (arch === "grouped") {
+      C.diagN = cr41BuildGrouped(C.diag);
+    } else {
+      C.diagN = cr41BuildFull(C.diag);
+    }
+    cr41TrialRefresh(ti, false);
+  }
+
+  function cr41TrialRefresh(ti, sampled) {
+    var t = CR_TRIALS[ti], C = crEls.cards[ti];
+    if (!C || !C.diagN) return;
+    var D = C.diagN, budget = t.budget;
+    if (D.kind === "ripple") {
+      cr41RefreshRipple(D.N, t.a, t.b, D.bits, D.arch, budget, sampled);
+      cr41DelayTick(D.D, budget, sampled);
+    } else if (D.kind === "grouped") {
+      cr41RefreshGrouped(D, t.a, t.b, budget, sampled);
+    } else {
+      cr41RefreshFull(D, t.a, t.b, budget, sampled);
+    }
+  }
+
+  function cr41BuildGrouped(host) {
+    var chain = crEl("div", "cr41-chain");
+    chain.setAttribute("role", "img");
+    chain.setAttribute("aria-label",
+      "Grouped carry-lookahead block diagram: eight 4-bit lookahead blocks chained");
+    var N = { blk: [], cw: [] }, k;
+    for (k = 0; k <= 8; k++) {
+      var w = cr41Wire(k === 0 ? "c0 IN" : (k === 8 ? "c32 OUT" : "c" + (4 * k)),
+        k === 0 || k === 8);
+      chain.appendChild(w.box);
+      N.cw.push(w);
+      if (k < 8) {
+        (function (kk) {
+          var b = crEl("div", "cr41-blk");
+          b.appendChild(crEl("div", "cr41-nm", "CLA-4 B" + kk));
+          b.appendChild(crEl("div", "cr41-bits", "bits " + (4 * kk) + "-" + (4 * kk + 3)));
+          var cv = crEl("div", "cr41-sum", "?");
+          b.appendChild(cv);
+          chain.appendChild(b);
+          N.blk.push({ box: b, car: cv });
+        })(k);
+      }
+    }
+    host.appendChild(chain);
+    var D = cr41DelayTable([
+      ["t = 2*ceil(i/4)", "carry c_i settles", "one AND-OR stage per 4-bit block",
+        function (t) { return t >= 16; }],
+      ["t = 17", "sums s[31:0] settle", "1 delay after the last block carry",
+        function (t) { return t >= 17; }]
+    ]);
+    host.appendChild(D.tab);
+    return { kind: "grouped", N: N, D: D };
+  }
+
+  function cr41RefreshGrouped(D, a, b, t, sampled) {
+    var c = crCarries(a, b, 32), k, j;
+    for (k = 0; k <= 8; k++) {
+      var st = sampled && crResolved("grouped", 4 * k, t);
+      cr41SetWire(D.N.cw[k], sampled ? String(st ? c[4 * k] : 0) : "?", st);
+    }
+    for (k = 0; k < 8; k++) {
+      var B = D.N.blk[k];
+      var bst = sampled && crResolved("grouped", 4 * k + 4, t);
+      if (!sampled) {
+        B.car.textContent = "c" + (4 * k + 1) + "..c" + (4 * k + 4) + " ?";
+      } else {
+        var s = "";
+        for (j = 1; j <= 4; j++) s += (j > 1 ? " " : "") + (bst ? c[4 * k + j] : 0);
+        B.car.textContent = "c" + (4 * k + 1) + "-" + (4 * k + 4) + ": " + s;
+      }
+      B.box.classList.toggle("lit", bst);
+    }
+    cr41DelayTick(D.D, t, sampled);
+  }
+
+  function cr41BuildFull(host) {
+    host.appendChild(crEl("div", "cr41-eq",
+      "g[i] = a[i] AND b[i]                    p[i] = a[i] XOR b[i]\n" +
+      "c[i+1] = g[i] + p[i] AND c[i]            s[i] = p[i] XOR c[i]\n" +
+      "BLOCK k:  P[k] = p[4k+3] AND p[4k+2] AND p[4k+1] AND p[4k]\n" +
+      "          G[k] = g[4k+3] + p[4k+3] AND g[4k+2]\n" +
+      "               + p[4k+3] AND p[4k+2] AND g[4k+1]\n" +
+      "               + p[4k+3] AND p[4k+2] AND p[4k+1] AND g[4k]"));
+    var D = { kind: "full" };
+    D.gp = cr41Level(host, "LEVEL 0, t = 1: BIT GENERATE / PROPAGATE", 8,
+      function (k) { return "B" + k + " g/p"; });
+    D.GP = cr41Level(host, "LEVEL 1, t = 3: BLOCK GENERATE / PROPAGATE", 8,
+      function (k) { return "G" + k + " P" + k; });
+    D.gc = cr41Level(host, "LEVEL 2, t = 5: GROUP CARRIES, SECOND LOOKAHEAD", 9,
+      function (k) { return k === 0 ? "c0 IN" : (k === 8 ? "c32 OUT" : "C" + (4 * k)); });
+    D.wb = cr41Level(host, "LEVEL 3, t = 7: WITHIN-BLOCK CARRIES", 8,
+      function (k) { return "B" + k + " c1..c3"; });
+    D.sm = cr41Level(host, "LEVEL 4, t = 8: SUMS", 1,
+      function () { return "S[31:0]"; });
+    D.dt = cr41DelayTable([
+      ["t = 1", "bit g[i], p[i] settle", "1 delay from a, b",
+        function (t) { return t >= 1; }],
+      ["t = 3", "block G[k], P[k] settle; block 0 carries c1..c3 settle",
+        "one AND-OR stage over bit g/p",
+        function (t) { return t >= 3; }],
+      ["t = 5", "group carries c4, c8, .., c32 settle",
+        "second-level lookahead, one AND-OR stage",
+        function (t) { return t >= 5; }],
+      ["t = 7", "within-block carries settle",
+        "one AND-OR stage from the group carry-in",
+        function (t) { return t >= 7; }],
+      ["t = 8", "sums s[31:0] settle", "1 delay after carry-in",
+        function (t) { return t >= 8; }]
+    ]);
+    host.appendChild(D.dt.tab);
+    return D;
+  }
+
+  function cr41RefreshFull(D, a, b, t, sampled) {
+    var c = crCarries(a, b, 32), k, j;
+    var sm = sampled ? crSample("full", a, b, t) : null;
+    for (k = 0; k < 8; k++) {
+      var gp = cr41BlockGP(a, b, k);
+      var gs = "", ps = "";
+      for (j = 3; j >= 0; j--) { gs += gp.g[j]; ps += gp.p[j]; }
+      D.gp[k].val.textContent = sampled ? ("g" + gs + " p" + ps) : "?";
+      D.gp[k].box.classList.toggle("lit", sampled && t >= 1);
+      D.GP[k].val.textContent = sampled ? ("G=" + gp.G + " P=" + gp.P) : "?";
+      D.GP[k].box.classList.toggle("lit", sampled && t >= 3);
+      var ws = "";
+      for (j = 1; j <= 3; j++) {
+        ws += (j > 1 ? " " : "") +
+          (sampled ? (crResolved("full", 4 * k + j, t) ? c[4 * k + j] : 0) : "?");
+      }
+      D.wb[k].val.textContent = ws;
+      D.wb[k].box.classList.toggle("lit",
+        sampled && crResolved("full", 4 * k + 3, t));
+    }
+    for (k = 0; k <= 8; k++) {
+      var gk = 4 * k;
+      var st = sampled && crResolved("full", gk, t);
+      D.gc[k].val.textContent = sampled ? String(st ? c[gk] : 0) : "?";
+      D.gc[k].box.classList.toggle("lit", st);
+    }
+    D.sm[0].val.textContent = sampled ? crHex(sm.sum, 8) : "?";
+    D.sm[0].box.classList.toggle("lit", sampled && t >= 8);
+    cr41DelayTick(D.dt, t, sampled);
   }
 
   function crPrimerRun() {
@@ -29219,6 +30831,8 @@ if (typeof module !== "undefined" && module.exports) {
           for (var q = 0; q < all.length; q++) all[q].classList.remove("on");
           lab.classList.add("on");
           crState.primer.arch = def[0];
+          cr41PrimerBuild();
+          crPrimerFrame(crState.primer.t || 0);
         });
         lab.appendChild(inp);
         lab.appendChild(document.createTextNode(def[1]));
@@ -29233,6 +30847,18 @@ if (typeof module !== "undefined" && module.exports) {
     primer.appendChild(run);
     C.run = run;
 
+    var dcap = crEl("p", "cr41-cap", "BLOCK DIAGRAM: RIPPLE-8, THE CARRY PATH");
+    dcap.id = "crPrmDiagCap";
+    primer.appendChild(dcap);
+    var dscroll = crEl("div", "bp-scrollx");
+    dscroll.setAttribute("aria-label", "Carry block diagram");
+    var din = crEl("div", null, null);
+    din.id = "crPrmDiag";
+    dscroll.appendChild(din);
+    primer.appendChild(dscroll);
+    C.diagCap = dcap; C.diag = din;
+
+    primer.appendChild(crEl("p", "cr41-sub", "AUXILIARY READOUT: CARRY CELLS"));
     var cells = crEl("div", "cr-cells");
     cells.id = "crPrmCells";
     cells.setAttribute("role", "img");
@@ -29257,11 +30883,14 @@ if (typeof module !== "undefined" && module.exports) {
     primer.appendChild(res);
     C.res = res;
     primer.appendChild(crEl("p", "cr-thint",
-      "Run RIPPLE-8 first and watch the wave crawl across the nine carries, one stage " +
-      "per 2 delays. Then CLA-8: every carry settles at t = 3. A carry that has not " +
-      "arrived reads as 0. That assumption is the entire timing-miss story in trial 2."));
+      "Run RIPPLE-8 first: the carry path lights left to right across the eight full " +
+      "adders, one 2-delay stage per bit. Then CLA-8: the lookahead settles every " +
+      "carry at t = 3, and the delay table ticks through t = 1, 3, 4. A carry that " +
+      "has not arrived reads as 0. That assumption is the entire timing-miss story " +
+      "in trial 2."));
     wrap.appendChild(primer);
     crEls.primer = C;
+    cr41PrimerBuild();
     crPrimerFrame(0);
   }
 
@@ -29287,6 +30916,7 @@ if (typeof module !== "undefined" && module.exports) {
         "Carry c" + i + ": reads " + read + ", true value " + c[i] + ", " +
         (settled ? "settled" : "pending"));
     }
+    cr41TrialRefresh(ti, true);
   }
 
   function crCheckPred(ti) {
@@ -29414,7 +31044,8 @@ if (typeof module !== "undefined" && module.exports) {
     C.tres.innerHTML = "";
     C.verdict.textContent = "No run yet.";
     C.verdict.className = "cr-verdict";
-    C.res.textContent = "Press RUN ADDER to sample the carry wave at the clock tick.";
+    C.res.textContent = "Press RUN ADDER to sample the carry path at the clock tick.";
+    cr41TrialRefresh(ti, false);
     for (var i = 0; i <= 32; i++) {
       var cell = C.cells[i];
       cell.val.textContent = "?";
@@ -29496,7 +31127,7 @@ if (typeof module !== "undefined" && module.exports) {
     var C = { card: card, tres: crEl("div", null, null),
               verdict: crEl("p", "cr-verdict", "No run yet."),
               res: crEl("div", "cr-res",
-                "Press RUN ADDER to sample the carry wave at the clock tick."),
+                "Press RUN ADDER to sample the carry path at the clock tick."),
               cert: crEl("button", "cr-btn primary", "CERTIFY TRIAL " + t.n) };
     C.res.id = "crT" + ti + "Res";
 
@@ -29535,6 +31166,7 @@ if (typeof module !== "undefined" && module.exports) {
           var all = agroup.querySelectorAll(".cr-arch");
           for (var q = 0; q < all.length; q++) all[q].classList.remove("on");
           lab.classList.add("on");
+          cr41TrialDiagram(ti);
         });
         lab.appendChild(inp);
         lab.appendChild(document.createTextNode(
@@ -29551,6 +31183,18 @@ if (typeof module !== "undefined" && module.exports) {
     rrow.appendChild(run);
     card.appendChild(rrow);
 
+    var tdcap = crEl("p", "cr41-cap", "BLOCK DIAGRAM: THE CARRY PATH");
+    tdcap.id = "crT" + ti + "DiagCap";
+    card.appendChild(tdcap);
+    var tdscroll = crEl("div", "bp-scrollx");
+    tdscroll.setAttribute("aria-label", "Trial carry block diagram");
+    var tdin = crEl("div", null, null);
+    tdin.id = "crT" + ti + "Diag";
+    tdscroll.appendChild(tdin);
+    card.appendChild(tdscroll);
+    C.diagCap = tdcap; C.diag = tdin;
+
+    card.appendChild(crEl("p", "cr41-sub", "AUXILIARY READOUT: CARRY CELLS"));
     var cells = crEl("div", "cr-cells");
     cells.id = "crT" + ti + "Strip";
     cells.setAttribute("role", "img");
@@ -29583,6 +31227,7 @@ if (typeof module !== "undefined" && module.exports) {
     card.appendChild(C.verdict);
     card.appendChild(C.tres);
     crEls.cards[ti] = C;
+    cr41TrialDiagram(ti);
     return card;
   }
 
@@ -29623,8 +31268,9 @@ if (typeof module !== "undefined" && module.exports) {
     intro.innerHTML = crIntroHTML();
     head.appendChild(intro);
     head.appendChild(crEl("p", "cr-how",
-      "HOW: run the 8-bit primer and watch the carry wave, predict the ripple's " +
-      "32-bit delay, then run each trial's add under its clock budget and certify."));
+      "HOW: run the 8-bit primer and watch the carry cross the block diagram, " +
+      "predict the ripple's 32-bit delay, then run each trial's add under its " +
+      "clock budget and certify."));
     wrap.appendChild(head);
 
     crBuildPrimer(wrap);
@@ -30650,7 +32296,9 @@ if (typeof module !== "undefined" && module.exports) {
     ".bw-btn[aria-pressed=true]{background:var(--ember,var(--ember));color:var(--ink)}",
     ".bw-verdict{font-size:14px;font-weight:600;letter-spacing:.06em;margin:10px 0 0;min-height:22px}",
     ".bw-verdict.pass{color:var(--mint)}.bw-verdict.miss{color:var(--ember,var(--ember))}",
-    ".bw-note{font-size:12px;color:var(--dim);line-height:1.6;margin:8px 0 0;max-width:68ch}",
+    ".bw-note{font-size:12px;color:var(--dim);line-height:1.6;margin:8px 0 0;max-width:68ch;white-space:pre-wrap}",
+    ".bw-col{font-family:inherit;font-size:12px;line-height:1.7;color:var(--paper);margin:8px 0 0;overflow-x:auto;white-space:pre}",
+    ".bw-sch{font-family:inherit;font-size:12px;line-height:1.7;color:var(--dim);margin:0;padding:12px 14px}",
     ".bw-log{border:1px solid var(--line,var(--line));border-radius:8px;background:var(--panel);padding:10px 14px;font-size:12px;line-height:1.7;max-height:150px;overflow-y:auto;margin:0 0 16px;color:var(--dim)}",
     ".bw-log .ok{color:var(--mint)}.bw-log .bad{color:var(--ember,var(--ember))}",
     ".bw-banner{display:none;border:1px solid var(--ember,var(--ember));border-radius:10px;padding:16px;margin:0 0 16px;background:rgba(140,63,34,.07)}",
@@ -30681,6 +32329,32 @@ if (typeof module !== "undefined" && module.exports) {
 
   /* Full intro copy (no element ids) for tests and single-source copy checks. */
   var BW_INTRO_HTML = BW_INTRO_A + BW_INTRO_B + BW_INTRO_C;
+
+  /* One bit slice of the adder/subtractor, plain-text schematic.
+     The carry chains left to the next slice; the borrow is the
+     carry out flipped, derived fresh at each column. */
+  var BW_SCHEM_ASCII =
+    "                         SUB=1 for subtract\n" +
+    "                               |\n" +
+    "        a[i]        b[i]       v\n" +
+    "          |           |      +---+\n" +
+    "          +----------------->|XOR|----> ~b[i] (b inverted while SUB=1)\n" +
+    "                |            +---+\n" +
+    "                |              |\n" +
+    "                +--------------|\n" +
+    "                        |\n" +
+    "                 +------+-------+\n" +
+    "                 |  FULL ADDER  |\n" +
+    "  carry in c[i] >|              |> carry out c[i+1] -+-> NOT --> borrow_out\n" +
+    "                 |              |                    |       (to the slice\n" +
+    "                 +------+-------+                    |        on the left)\n" +
+    "                        |                            |\n" +
+    "                        +--> s[i] (sum bit)          +--> c[i+1] chains left\n" +
+    "                                                    as the next slice's carry in\n" +
+    "\n" +
+    "        borrow_in[i]  = NOT c[i]     (the top row of the hand layout)\n" +
+    "        borrow_out[i] = NOT c[i+1]   (the bit SLTU reports)\n" +
+    "        c[0] is forced to 1: that forced 1 is the +1 of two's complement";
 
   var BW_STEPS = [
     "<span class='k'>a = </span><span class='v'>0x35</span><span class='k'> (53), b = </span><span class='v'>0x27</span><span class='k'> (39). The adder is about to add, not subtract.</span>",
@@ -30771,13 +32445,51 @@ if (typeof module !== "undefined" && module.exports) {
     return parseInt(s, 16);
   }
 
+  /* One row of bits for the columnar layout: 8 bits, MSB on the left. */
+  function bwBitRow(u) {
+    var out = [];
+    for (var i = 7; i >= 0; i--) out.push(((((u >>> i) & 1) === 1) ? "1" : "0"));
+    return out.join(" ");
+  }
+
+  /* The columnar borrow trace, driven live by the sim state.
+     Two views of the same subtract, both vertical and columnar.
+     HAND is the paper layout: minuend over subtrahend, borrow row
+     across the top, result below the line (Buffalo CSE111).
+     SILICON is the adder's view: a plus ~b with the carry-in forced
+     to 1, carry row across the top. The borrow into column i is NOT
+     the carry into column i, so the borrow row is the carry row
+     flipped, and the borrow out is the carry out flipped. */
   function bwWorkOf(a, b) {
+    a = a & 0xff; b = b & 0xff;
     var r = bwSub8(a, b);
-    return "a=" + bwHex(a, 2) + " b=" + bwHex(b, 2) +
-      " | ~b=" + bwHex(r.inv, 2) + " | ~b+1=" + bwHex(r.plus1, 2) +
-      " | a+(~b+1)=" + bwHex(r.s9, 3) + " keep " + bwHex(r.diff, 2) +
-      " | carry=" + r.carry + " borrow=" + r.borrow +
-      " | check: " + a + "-" + b + "=" + (a - b);
+    var cin = [1];
+    for (var i = 0; i < 8; i++) {
+      var s = ((a >>> i) & 1) + ((r.inv >>> i) & 1) + cin[i];
+      cin.push((s >>> 1) & 1);
+    }
+    var brow = [], crow = [];
+    for (var j = 7; j >= 0; j--) {
+      brow.push(cin[j] ? "0" : "1");
+      crow.push(cin[j] ? "1" : "0");
+    }
+    var bar = "------------------------";
+    return "HAND (paper layout: minuend over subtrahend)\n" +
+      "  col:     7 6 5 4 3 2 1 0\n" +
+      "  borrow:  " + brow.join(" ") + "\n" +
+      "       a:  " + bwBitRow(a) + "\n" +
+      "       b:  " + bwBitRow(b) + "\n" +
+      "  " + bar + "\n" +
+      "  result:  " + bwBitRow(r.diff) + "\n" +
+      "SILICON (the adder's view: a + ~b, carry-in forced to 1)\n" +
+      "  carry:   " + crow.join(" ") + "\n" +
+      "       a:  " + bwBitRow(a) + "\n" +
+      "      ~b:  " + bwBitRow(r.inv) + "\n" +
+      "  " + bar + "\n" +
+      "  result:  " + bwBitRow(r.diff) +
+      "   borrow = NOT carry-out = " + r.borrow + "\n" +
+      "c0 is forced to 1 (the +1 of two's complement); " +
+      "check: " + a + " - " + b + " = " + (a - b);
   }
 
   /* ---------------- trial builders (state-driven, rebuildable) ---------------- */
@@ -30974,7 +32686,7 @@ if (typeof module !== "undefined" && module.exports) {
           st.strikes++;
           var why = [];
           if (!okLo) why.push("low lane is " + bwHex(r.lo.diff, 2) + " with borrow-out " + r.lo.borrow +
-            " (" + bwWorkOf(r.lo.a, r.lo.b) + ")");
+            ":\n" + bwWorkOf(r.lo.a, r.lo.b));
           if (!okHi) why.push("high lane with borrow-in " + r.lo.borrow + " is " + bwHex(r.hi.diff, 2));
           if (!okIg) why.push("ignoring the borrow-in, the high lane reads " + bwHex(r.hiIgnoredDiff, 2));
           qs.note = "Not yet. " + why.join("; ") + ".";
@@ -31062,7 +32774,8 @@ if (typeof module !== "undefined" && module.exports) {
           var extra = (p.a === 0x80) ?
             " Signed eyes see -128 < 127 and want 1, but SLTU is unsigned: 128 < 127 is false, and the borrow agrees." : "";
           qs.note = "Not yet. The borrow of " + bwHex(p.a, 2) + "-" + bwHex(p.b, 2) +
-            " is " + r.borrow + " (" + bwWorkOf(p.a, p.b) + "), so SLTU writes " + want + "." + extra;
+            " is " + r.borrow + ", so SLTU writes " + want + ". The lanes:\n" +
+            bwWorkOf(p.a, p.b) + extra;
           u.note.textContent = qs.note; u.note.style.color = pgC("#ff5a1f");
           bwLog("Trial 3 Q" + (i + 1) + " missed: SLTU(" + bwHex(p.a, 2) + "," + bwHex(p.b, 2) +
             ") = " + want + ".", "bad");
@@ -31246,6 +32959,22 @@ if (typeof module !== "undefined" && module.exports) {
     introC.innerHTML = BW_INTRO_C;
     stepCard.appendChild(introC);
 
+    /* Bit-slice schematic card: how each column's borrow is produced. */
+    var schemCard = bwEl("div", "bw-card", "");
+    schemCard.appendChild(bwEl("h3", null, "HOW EACH COLUMN MAKES ITS BORROW"));
+    schemCard.appendChild(bwEl("p", "why",
+      "One bit slice, repeated eight times. The SUB control inverts b[i]; the full adder adds " +
+      "a[i], the inverted b[i], and the carry in. The borrow is never computed directly: it is " +
+      "the carry out, flipped. The carry is what chains left to the next slice; the borrow is " +
+      "derived fresh at each column, and the final flipped carry is the bit SLTU reports."));
+    var schemScroll = bwEl("div", "bp-scrollx", "");
+    schemScroll.appendChild(bwEl("pre", "bw-sch", BW_SCHEM_ASCII));
+    schemCard.appendChild(schemScroll);
+    schemCard.appendChild(bwEl("p", "why",
+      "Read the hand layout's borrow row from this slice: borrow_in[i] is NOT c[i]. " +
+      "The c[0] forced to 1 is the +1 of two's complement."));
+    panel.appendChild(schemCard);
+
     var banner = bwEl("div", "bw-banner");
     banner.appendChild(bwEl("h3", null, "BENCH CERTIFIED"));
     banner.appendChild(bwEl("p", null,
@@ -31288,7 +33017,13 @@ if (typeof module !== "undefined" && module.exports) {
       d.innerHTML = "<span class='k'>STEP " + (bwState.step + 1) + ": </span>" + BW_STEPS[bwState.step];
       stepper.appendChild(d);
       bwState.step++;
-      if (bwState.step >= BW_STEPS.length) stepBtn.disabled = true;
+      if (bwState.step >= BW_STEPS.length) {
+        var fin = bwEl("div", null, "");
+        fin.innerHTML = "<span class='k'>The whole subtract as one columnar trace, straight from the sim state:</span>";
+        fin.appendChild(bwEl("pre", "bw-col", bwWorkOf(0x35, 0x27)));
+        stepper.appendChild(fin);
+        stepBtn.disabled = true;
+      }
       bwPop(stepper);
     });
     stepReset.addEventListener("click", function () {
@@ -31313,6 +33048,7 @@ if (typeof module !== "undefined" && module.exports) {
       BW: {
         TRIALS1: BW_T1, TRIALS2: BW_T2, TRIALS3: BW_T3,
         sub8: bwSub8, sub8cin: bwSub8Cin, sub16: bwSub16, sltu: bwSltu,
+        workOf: bwWorkOf, bitRow: bwBitRow,
         hex: bwHex, introHTML: BW_INTRO_HTML, steps: BW_STEPS,
         grade: bwGrade,
         ui: {
@@ -31554,9 +33290,11 @@ if (typeof module !== "undefined" && module.exports) {
     ".wd-banner{display:none;border:1px solid var(--ember,var(--ember));border-radius:10px;padding:16px;margin:0 0 16px;background:rgba(140,63,34,.07)}",
     ".wd-banner h3{font-family:'Space Grotesk',sans-serif;color:var(--ember,var(--ember));margin:0 0 6px;font-size:18px}",
     ".wd-banner p{font-size:13px;color:var(--dim);margin:0 0 10px}",
-    ".wd-petbar{height:18px;border:1px solid var(--line,var(--line));border-radius:9px;background:var(--panel);margin:10px 0;position:relative;overflow:hidden}",
-    ".wd-petfill{position:absolute;left:0;top:0;bottom:0;width:0%;background:var(--ember,var(--ember))}",
-    ".wd-petbite{position:absolute;right:0;top:0;bottom:0;width:2px;background:var(--mint)}",
+    ".wd-scope{border:1px solid var(--line,var(--line));border-radius:8px;background:var(--panel);padding:12px;margin:10px 0}",
+    ".wd-scrollx{overflow-x:auto;margin:0 0 4px;border:1px solid var(--line,var(--line));border-radius:6px;background:var(--ink)}",
+    ".wd-scrollx svg{display:block;min-width:560px;width:100%;height:auto}",
+    ".wd-scope .cap{font-size:11px;letter-spacing:.06em;color:var(--dim);line-height:1.8;padding:2px}",
+    ".wd-scope .cap b{color:var(--paper,var(--paper));font-weight:600}",
     "@media (prefers-reduced-motion:no-preference){.wd-pop{animation:wdpop .2s ease-out}}",
     "@keyframes wdpop{0%{transform:scale(.985)}100%{transform:scale(1)}}",
     "@media (max-width:560px){.wd-panel{padding:56px 14px 110px}.wd-in{width:96px}.wd-val{min-width:70px}}"
@@ -31600,7 +33338,9 @@ if (typeof module !== "undefined" && module.exports) {
   }
   var wdState = {
     trials: [wdNewTrialState(), wdNewTrialState(), wdNewTrialState()],
-    pet: wdPetNew(30), petTimer: null
+    pet: wdPetNew(30), petTimer: null,
+    /* timing-view trace (view only; the pet sim never reads it) */
+    petTrace: { samples: [], kicks: [], bites: [] }
   };
   var wdEls = null;
 
@@ -32016,22 +33756,119 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
   /* pet widget wiring (do-first, live) */
+  function wdTraceRec(kind) {
+    var tr = wdState.petTrace, now = Date.now();
+    if (kind === "tick") {
+      tr.samples.push({ t: now, v: wdState.pet.limit - wdState.pet.count });
+      if (tr.samples.length > 260) tr.samples.splice(0, tr.samples.length - 260);
+    } else if (kind === "kick") {
+      tr.samples.push({ t: now, v: wdState.pet.limit });
+      tr.kicks.push({ t: now, n: wdState.pet.kicks });
+      if (tr.kicks.length > 40) tr.kicks.shift();
+    } else if (kind === "bite") {
+      tr.samples.push({ t: now, v: 0 });
+      tr.bites.push({ t: now });
+      if (tr.bites.length > 40) tr.bites.shift();
+    }
+  }
   function wdPetRender() {
-    if (!wdEls || !wdEls.petFill) return;
+    if (!wdEls || !wdEls.scope) return;
     var pet = wdState.pet;
-    var pct = Math.min(100, (pet.count / pet.limit) * 100);
-    wdEls.petFill.style.width = pct + "%";
-    wdEls.petCount.textContent = pet.count + " / " + pet.limit;
+    wdEls.petCount.textContent = (pet.limit - pet.count) + " / " + pet.limit;
     wdEls.petStatus.textContent = "Bites so far: " + pet.bites + ". Kicks: " + pet.kicks + ".";
+    wdDrawScope();
   }
   function wdPetTickUI() {
     var r = wdPetTick(wdState.pet);
+    wdTraceRec(r === "bite" ? "bite" : "tick");
     if (r === "bite") {
       wdEls.petStatus.textContent = "BITE: the board reset. The counter restarts at zero. Bites so far: " +
         wdState.pet.bites + ".";
       wdLog("Pet widget: you let go, the watchdog bit, the board reset.", "bad");
     }
     wdPetRender();
+  }
+
+  /* Window-watchdog timing diagram: the downcounter against time, live.
+     One declining sawtooth per kick cycle, the allowed refresh window
+     shaded, kicks as reload ticks, bites as reset markers. View code only;
+     it reads the pet widget's existing counters and never touches the sim. */
+  function wdDrawScope() {
+    if (!wdEls || !wdEls.scope) return;
+    var W = 640, H = 260, L = 48, R = 12, T = 16, B = 32;
+    var px0 = L, px1 = W - R, py0 = T, py1 = H - B;
+    var LIM = wdState.pet.limit, WIN = 12000, now = Date.now(), tL = now - WIN;
+    function X(t) { return px0 + (t - tL) / WIN * (px1 - px0); }
+    function Y(v) { return py1 - v / LIM * (py1 - py0); }
+    var tr = wdState.petTrace, i, s;
+    var o = [];
+    o.push("<svg viewBox=\"0 0 " + W + " " + H + "\" role=\"img\" aria-label=\"Window watchdog timing diagram\">");
+    o.push("<line x1=\"" + px0 + "\" y1=\"" + py1 + "\" x2=\"" + px1 + "\" y2=\"" + py1 + "\" stroke=\"var(--dim)\" stroke-width=\"1\"/>");
+    o.push("<line x1=\"" + px0 + "\" y1=\"" + py0 + "\" x2=\"" + px0 + "\" y2=\"" + py1 + "\" stroke=\"var(--dim)\" stroke-width=\"1\"/>");
+    var tk, tx;
+    for (tk = 0; tk <= 4; tk++) {
+      tx = (px0 + tk / 4 * (px1 - px0)).toFixed(1);
+      o.push("<text x=\"" + tx + "\" y=\"" + (py1 + 16) + "\" font-size=\"10\" fill=\"var(--dim)\" text-anchor=\"middle\" font-family=\"'IBM Plex Mono',monospace\">" +
+        (tk === 4 ? "now" : "-" + (12 - tk * 3) + " s") + "</text>");
+    }
+    var lv;
+    for (lv = 0; lv <= LIM; lv += 10) {
+      o.push("<text x=\"" + (px0 - 6) + "\" y=\"" + (Y(lv) + 3).toFixed(1) + "\" font-size=\"10\" fill=\"var(--dim)\" text-anchor=\"end\" font-family=\"'IBM Plex Mono',monospace\">" + lv + "</text>");
+      if (lv > 0) {
+        o.push("<line x1=\"" + px0 + "\" y1=\"" + Y(lv).toFixed(1) + "\" x2=\"" + px1 + "\" y2=\"" + Y(lv).toFixed(1) + "\" stroke=\"var(--line)\" stroke-width=\"1\" stroke-dasharray=\"2 4\"/>");
+      }
+    }
+    o.push("<text x=\"" + (px0 - 6) + "\" y=\"" + (py0 - 4) + "\" font-size=\"10\" fill=\"var(--dim)\" font-family=\"'IBM Plex Mono',monospace\">DOWNCOUNTER</text>");
+    /* allowed refresh window: shade under the counter line per kick cycle */
+    var K = tr.kicks, B = tr.bites, j, tend, nb;
+    for (j = 0; j < K.length; j++) {
+      tend = K[j].t + LIM * 100;
+      if (j + 1 < K.length && K[j + 1].t < tend) tend = K[j + 1].t;
+      for (nb = 0; nb < B.length; nb++) {
+        if (B[nb].t > K[j].t && B[nb].t < tend) { tend = B[nb].t; break; }
+      }
+      if (tend < tL || K[j].t > now) continue;
+      var sx = Math.max(K[j].t, tL), ex = Math.min(tend, now);
+      var band = "M" + X(sx).toFixed(1) + " " + Y(0).toFixed(1) +
+                 "L" + X(sx).toFixed(1) + " " + Y(LIM).toFixed(1);
+      for (i = 0; i < tr.samples.length; i++) {
+        s = tr.samples[i];
+        if (s.t <= sx || s.t > ex) continue;
+        band += "L" + X(s.t).toFixed(1) + " " + Y(s.v).toFixed(1);
+      }
+      band += "L" + X(ex).toFixed(1) + " " + Y(0).toFixed(1) + "Z";
+      o.push("<path d=\"" + band + "\" fill=\"var(--mint)\" fill-opacity=\"0.07\"/>");
+    }
+    /* the downcounter trace */
+    var d = "", started = false;
+    for (i = 0; i < tr.samples.length; i++) {
+      s = tr.samples[i];
+      if (s.t < tL) continue;
+      d += (started ? "L" : "M") + X(s.t).toFixed(1) + " " + Y(s.v).toFixed(1);
+      started = true;
+    }
+    if (d) o.push("<path d=\"" + d + "\" fill=\"none\" stroke=\"var(--paper)\" stroke-width=\"1.5\"/>");
+    /* kick ticks: refresh events that reload the counter */
+    var kx;
+    for (j = 0; j < K.length; j++) {
+      if (K[j].t < tL) continue;
+      kx = X(K[j].t).toFixed(1);
+      o.push("<line x1=\"" + kx + "\" y1=\"" + py0 + "\" x2=\"" + kx + "\" y2=\"" + py1 + "\" stroke=\"var(--mint)\" stroke-width=\"1\" opacity=\"0.4\"/>");
+      o.push("<text x=\"" + kx + "\" y=\"" + (py0 + 10) + "\" font-size=\"10\" fill=\"var(--mint)\" text-anchor=\"middle\" font-family=\"'IBM Plex Mono',monospace\">K" + K[j].n + "</text>");
+    }
+    /* bite markers: the reset, shown where a refresh landed outside the window */
+    var bx;
+    for (nb = 0; nb < B.length; nb++) {
+      if (B[nb].t < tL) continue;
+      bx = X(B[nb].t).toFixed(1);
+      o.push("<line x1=\"" + bx + "\" y1=\"" + py0 + "\" x2=\"" + bx + "\" y2=\"" + py1 + "\" stroke=\"var(--ember)\" stroke-width=\"1.5\"/>");
+      o.push("<rect x=\"" + (X(B[nb].t) - 4).toFixed(1) + "\" y=\"" + (Y(0) - 4).toFixed(1) + "\" width=\"8\" height=\"8\" fill=\"var(--ember)\"/>");
+      o.push("<text x=\"" + bx + "\" y=\"" + (py0 + 24) + "\" font-size=\"10\" fill=\"var(--ember)\" text-anchor=\"middle\" font-family=\"'IBM Plex Mono',monospace\">BITE</text>");
+    }
+    o.push("<text x=\"" + (px1 - 2) + "\" y=\"" + (py1 - 6) + "\" font-size=\"10\" fill=\"var(--dim)\" text-anchor=\"end\" font-family=\"'IBM Plex Mono',monospace\">LATEST REFRESH: before 0</text>");
+    o.push("<text x=\"" + (px1 - 2) + "\" y=\"" + (py0 + 2) + "\" font-size=\"10\" fill=\"var(--dim)\" text-anchor=\"end\" font-family=\"'IBM Plex Mono',monospace\">EARLIEST: any kick lands</text>");
+    o.push("</svg>");
+    wdEls.scope.innerHTML = o.join("");
   }
   function wdPetStart() {
     wdPetStop();
@@ -32080,9 +33917,10 @@ if (typeof module !== "undefined" && module.exports) {
     /* do-first: pet the watchdog (live, consequence-free) */
     var petCard = wdEl("div", "wd-card");
     petCard.appendChild(wdEl("h3", null, "DO FIRST: PET THE WATCHDOG"));
-    var petWhy = wdEl("p", "why", "The counter climbs one step every 100 ms. Press KICK to knock it back to zero. " +
-      "Let it reach 30 and the board bites: it resets. This is the entire contract; the trials just make you size it. " +
-      "Try pressing KICK a few times to hold the counter near zero, then try letting go.");
+    var petWhy = wdEl("p", "why", "The downcounter falls one step every 100 ms, live on the timing diagram below. " +
+      "Press KICK to reload it to 30. Let it reach 0 and the board bites: it resets. The shaded band is the " +
+      "allowed refresh window: every kick must land before the counter hits 0. This is the entire contract; " +
+      "the trials just make you size it. Try pressing KICK a few times to hold the counter near 30, then try letting go.");
     petCard.appendChild(petWhy);
     var petRow = wdEl("div", "wd-row");
     var kickBtn = wdEl("button", "wd-btn solid", "KICK");
@@ -32095,20 +33933,28 @@ if (typeof module !== "undefined" && module.exports) {
     petRow.appendChild(kickBtn);
     petRow.appendChild(petCount);
     petCard.appendChild(petRow);
-    var petBar = wdEl("div", "wd-petbar");
-    var petFill = wdEl("div", "wd-petfill");
-    petFill.id = "wdPetFill";
-    petBar.appendChild(petFill);
-    var petBiteMark = wdEl("div", "wd-petbite");
-    petBiteMark.setAttribute("aria-hidden", "true");
-    petBar.appendChild(petBiteMark);
-    petCard.appendChild(petBar);
+    var scopeBox = wdEl("div", "wd-scope");
+    var scopeScroll = wdEl("div", "wd-scrollx");
+    var scope = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    scope.id = "wdScope";
+    scope.setAttribute("role", "img");
+    scope.setAttribute("aria-label", "Window watchdog timing diagram: downcounter against time");
+    scopeScroll.appendChild(scope);
+    scopeBox.appendChild(scopeScroll);
+    var scopeCap = wdEl("div", "cap");
+    scopeCap.innerHTML = "<b>DOWNCOUNTER</b> against time, live. <b>KICK</b> reloads it to 30. " +
+      "The shaded band is the allowed refresh window: a kick must land before the counter reaches 0, " +
+      "where the <b>BITE</b> resets the board. This is the plain countdown, so the window spans the whole " +
+      "countdown; trial 3 adds the early edge, which cuts the left side off.";
+    scopeBox.appendChild(scopeCap);
+    petCard.appendChild(scopeBox);
     var petStatus = wdEl("p", "wd-note", "Bites so far: 0. Kicks: 0.");
     petStatus.id = "wdPetStatus";
     petCard.appendChild(petStatus);
     panel.appendChild(petCard);
     kickBtn.addEventListener("click", function () {
       wdPetKick(wdState.pet);
+      wdTraceRec("kick");
       wdPetRender();
     });
 
@@ -32147,7 +33993,7 @@ if (typeof module !== "undefined" && module.exports) {
     document.body.appendChild(ov);
 
     wdEls = { overlay: ov, log: log, banner: banner, certAll: certAll, cardHosts: cardHosts,
-              petFill: petFill, petCount: petCount, petStatus: petStatus };
+              scope: scope, petCount: petCount, petStatus: petStatus };
     for (var k = 0; k < 3; k++) wdRebuildCard(k);
     var all = wdState.trials.every(function (s) { return s.committed; });
     wdEls.banner.style.display = all ? "block" : "none";
@@ -53293,6 +55139,8 @@ if (typeof module !== "undefined" && module.exports) {
     return {
       strikes: 0, failed: false, certified: false,
       sim: { baseUs: 0, baseMs: 0, cmpUs: null },
+      /* timing-view trace (view only; the sim never reads it) */
+      tl: { samples: [], fires: [], seq: 0, lastDraw: 0 },
       mode: "idle",
       /* trial 1 */
       t1snap: null, t1a: false, t1b: false, t1cPoll: false, t1cSleep: false,
@@ -53354,8 +55202,16 @@ if (typeof module !== "undefined" && module.exports) {
     ".tmr-readout{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:var(--dim);background:var(--panel);border:1px solid var(--line);padding:12px 14px;margin:0 0 12px;min-height:44px;white-space:pre-wrap;}",
     ".tmr-status{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.08em;color:var(--dim);margin:0 0 12px;line-height:1.7;}",
     ".tmr-status b{color:var(--paper);}",
-    ".tmr-meter{font-family:'IBM Plex Mono',monospace;font-size:15px;letter-spacing:.06em;color:var(--paper);border:1px solid var(--line);background:var(--panel);padding:12px 14px;margin:0 0 12px;}",
-    ".tmr-meter .v{color:var(--ember);}",
+    ".tmr-scope{border:1px solid var(--line);background:var(--panel);padding:12px 12px 6px;margin:0 0 12px;}",
+    ".tmr-scrollx{overflow-x:auto;margin:0 0 4px;border:1px solid var(--line);background:var(--ink);}",
+    ".tmr-scrollx svg{display:block;min-width:560px;width:100%;height:auto;}",
+    ".tmr-nums{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:var(--dim);padding:6px 2px;}",
+    ".tmr-nums .v{color:var(--ember);}",
+    ".tmr-scope .cap{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.06em;color:var(--dim);padding:2px 2px 8px;line-height:1.8;}",
+    ".tmr-scope .cap b{color:var(--paper);font-weight:400;}",
+    ".tmr-drift{border:1px solid var(--line);background:var(--panel);padding:12px;margin:0 0 12px;}",
+    ".tmr-drift .cap{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.06em;color:var(--dim);margin:0 0 6px;line-height:1.7;}",
+    ".tmr-drift .cap b{color:var(--paper);font-weight:400;}",
     ".tmr-lamp{display:flex;align-items:center;gap:12px;margin:0 0 12px;}",
     ".tmr-dot{width:48px;height:48px;border:1px solid var(--line);background:var(--panel);flex:0 0 auto;}",
     ".tmr-dot.on{background:var(--ember);border-color:var(--ember);}",
@@ -53419,13 +55275,136 @@ if (typeof module !== "undefined" && module.exports) {
     return String(Math.floor(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   }
   function trRenderMtime(m) {
-    if (trEls.mtime) trEls.mtime.innerHTML = "";
-    if (!trEls.mtime) return;
-    trEls.mtime.appendChild(trEl("span", "", "MTIME "));
-    trEls.mtime.appendChild(trEl("span", "v", trFmt(m)));
-    trEls.mtime.appendChild(trEl("span", "", "   MTIMECMP "));
-    trEls.mtime.appendChild(trEl("span", "v",
+    if (!trEls.mtimeNums) return;
+    trEls.mtimeNums.innerHTML = "";
+    trEls.mtimeNums.appendChild(trEl("span", "", "MTIME "));
+    trEls.mtimeNums.appendChild(trEl("span", "v", trFmt(m)));
+    trEls.mtimeNums.appendChild(trEl("span", "", "   MTIMECMP "));
+    trEls.mtimeNums.appendChild(trEl("span", "v",
       trSt.sim.cmpUs === null ? "(disarmed)" : trFmt(trSt.sim.cmpUs)));
+  }
+
+  /* Timer-compare timing view: MTIME as a rising trace on a time axis,
+     MTIMECMP as the dashed threshold stepped through re-arms, and the IRQ
+     edge marked where MTIME crossed it. View code only; it reads the
+     samples the pump already takes and never touches the sim. */
+  function trScopeRec(m) {
+    var tl = trSt.tl;
+    tl.samples.push({ t: trNowMs(), m: m, cmp: trSt.sim.cmpUs });
+    if (tl.samples.length > 420) tl.samples.splice(0, tl.samples.length - 420);
+  }
+  function trScopeFire(m) {
+    var tl = trSt.tl;
+    tl.fires.push({ t: trNowMs(), m: m, n: ++tl.seq });
+    if (tl.fires.length > 24) tl.fires.shift();
+  }
+  function trDrawScope() {
+    if (!trEls.scope || !trSt) return;
+    var W = 640, H = 250, L = 58, R = 12, T = 16, B = 30;
+    var px0 = L, px1 = W - R, py0 = T, py1 = H - B;
+    var WIN = 3000, now = trNowMs(), tL = now - WIN;
+    var S = trSt.tl.samples, i, s;
+    var mNow = S.length ? S[S.length - 1].m : trMtimeUs();
+    var m0 = mNow - WIN * 1000, m1 = mNow;
+    for (i = 0; i < S.length; i++) {
+      if (S[i].t >= tL) { m0 = S[i].m; break; }
+    }
+    if (m1 <= m0) m1 = m0 + 1;
+    function X(t) { return px0 + (t - tL) / WIN * (px1 - px0); }
+    function Y(v) { return py1 - (v - m0) / (m1 - m0) * (py1 - py0); }
+    var o = [];
+    o.push("<svg viewBox=\"0 0 " + W + " " + H + "\" role=\"img\" aria-label=\"Timer compare timing view\">");
+    o.push("<line x1=\"" + px0 + "\" y1=\"" + py1 + "\" x2=\"" + px1 + "\" y2=\"" + py1 + "\" stroke=\"var(--dim)\" stroke-width=\"1\"/>");
+    o.push("<line x1=\"" + px0 + "\" y1=\"" + py0 + "\" x2=\"" + px0 + "\" y2=\"" + py1 + "\" stroke=\"var(--dim)\" stroke-width=\"1\"/>");
+    var tk, tx;
+    for (tk = 0; tk <= 3; tk++) {
+      tx = (px0 + tk / 3 * (px1 - px0)).toFixed(1);
+      o.push("<text x=\"" + tx + "\" y=\"" + (py1 + 16) + "\" font-size=\"10\" fill=\"var(--dim)\" text-anchor=\"middle\" font-family=\"'IBM Plex Mono',monospace\">" +
+        (tk === 3 ? "now" : "-" + (3 - tk) + " s") + "</text>");
+    }
+    var vv;
+    for (tk = 0; tk <= 2; tk++) {
+      vv = m0 + tk / 2 * (m1 - m0);
+      o.push("<text x=\"" + (px0 - 6) + "\" y=\"" + (Y(vv) + 3).toFixed(1) + "\" font-size=\"10\" fill=\"var(--dim)\" text-anchor=\"end\" font-family=\"'IBM Plex Mono',monospace\">+" +
+        Math.round((vv - m0) / 1000) + " ms</text>");
+      o.push("<line x1=\"" + px0 + "\" y1=\"" + Y(vv).toFixed(1) + "\" x2=\"" + px1 + "\" y2=\"" + Y(vv).toFixed(1) + "\" stroke=\"var(--line)\" stroke-width=\"1\" stroke-dasharray=\"2 4\"/>");
+    }
+    var d = "", started = false;
+    for (i = 0; i < S.length; i++) {
+      s = S[i];
+      if (s.t < tL) continue;
+      d += (started ? "L" : "M") + X(s.t).toFixed(1) + " " + Y(s.m).toFixed(1);
+      started = true;
+    }
+    if (d) o.push("<path d=\"" + d + "\" fill=\"none\" stroke=\"var(--paper)\" stroke-width=\"1.5\"/>");
+    var cd = "", cur = null, cStarted = false;
+    for (i = 0; i < S.length; i++) {
+      s = S[i];
+      if (s.t < tL) continue;
+      if (typeof s.cmp !== "number") { cur = null; cStarted = false; continue; }
+      if (!cStarted) {
+        cd += "M" + X(s.t).toFixed(1) + " " + Y(s.cmp).toFixed(1);
+        cur = s.cmp; cStarted = true; continue;
+      }
+      if (s.cmp !== cur) {
+        cd += "L" + X(s.t).toFixed(1) + " " + Y(cur).toFixed(1) +
+              "L" + X(s.t).toFixed(1) + " " + Y(s.cmp).toFixed(1);
+        cur = s.cmp;
+      } else {
+        cd += "L" + X(s.t).toFixed(1) + " " + Y(s.cmp).toFixed(1);
+      }
+    }
+    if (cd) o.push("<path d=\"" + cd + "\" fill=\"none\" stroke=\"var(--ember)\" stroke-width=\"1.5\" stroke-dasharray=\"6 4\"/>");
+    var F = trSt.tl.fires, f, fx;
+    for (i = 0; i < F.length; i++) {
+      f = F[i];
+      if (f.t < tL) continue;
+      fx = X(f.t).toFixed(1);
+      o.push("<line x1=\"" + fx + "\" y1=\"" + py0 + "\" x2=\"" + fx + "\" y2=\"" + py1 + "\" stroke=\"var(--mint)\" stroke-width=\"1\" opacity=\"0.55\"/>");
+      o.push("<circle cx=\"" + fx + "\" cy=\"" + Y(f.m).toFixed(1) + "\" r=\"3.5\" fill=\"var(--mint)\"/>");
+      o.push("<text x=\"" + fx + "\" y=\"" + (py0 + 10) + "\" font-size=\"10\" fill=\"var(--mint)\" text-anchor=\"middle\" font-family=\"'IBM Plex Mono',monospace\">IRQ" + f.n + "</text>");
+    }
+    o.push("<text x=\"" + (px1 - 2) + "\" y=\"" + (py0 + 2) + "\" font-size=\"10\" fill=\"var(--paper)\" text-anchor=\"end\" font-family=\"'IBM Plex Mono',monospace\">MTIME</text>");
+    if (trSt.sim.cmpUs === null) {
+      o.push("<text x=\"" + (px1 - 2) + "\" y=\"" + (py0 + 16) + "\" font-size=\"10\" fill=\"var(--dim)\" text-anchor=\"end\" font-family=\"'IBM Plex Mono',monospace\">MTIMECMP: disarmed</text>");
+    } else {
+      o.push("<text x=\"" + (px1 - 2) + "\" y=\"" + (py0 + 16) + "\" font-size=\"10\" fill=\"var(--ember)\" text-anchor=\"end\" font-family=\"'IBM Plex Mono',monospace\">MTIMECMP (dashed)</text>");
+    }
+    o.push("</svg>");
+    trEls.scope.innerHTML = o.join("");
+  }
+
+  /* Trial 2 phase/drift strip: cumulative deviation of the tick train
+     against the 500 ms grid, one dot per tick. Flat is phase-locked;
+     a rising line walks late by the handler cost on every tick.
+     Reads trSt.t2intervals only. */
+  function trDrawDrift() {
+    if (!trEls.drift || !trSt) return;
+    var W = 640, H = 150, L = 58, R = 12, T = 14, B = 26;
+    var px0 = L, px1 = W - R, py0 = T, py1 = H - B;
+    var N = 10, iv = trSt.t2intervals, i, cum = 0, pts = [];
+    for (i = 0; i < iv.length; i++) { cum += iv[i] - 500; pts.push(cum); }
+    var maxA = 1, a;
+    for (i = 0; i < pts.length; i++) { a = Math.abs(pts[i]); if (a > maxA) maxA = a; }
+    var mid = (py0 + py1) / 2;
+    function X(k) { return px0 + (k + 1) / N * (px1 - px0); }
+    function Y(v) { return mid - v / maxA * ((py1 - py0) / 2 - 4); }
+    var o = [];
+    o.push("<svg viewBox=\"0 0 " + W + " " + H + "\" role=\"img\" aria-label=\"Phase drift plot\">");
+    o.push("<line x1=\"" + px0 + "\" y1=\"" + mid + "\" x2=\"" + px1 + "\" y2=\"" + mid + "\" stroke=\"var(--dim)\" stroke-width=\"1\"/>");
+    o.push("<text x=\"" + (px0 - 6) + "\" y=\"" + (mid + 3) + "\" font-size=\"10\" fill=\"var(--dim)\" text-anchor=\"end\" font-family=\"'IBM Plex Mono',monospace\">0</text>");
+    o.push("<text x=\"" + (px0 - 6) + "\" y=\"" + (py0 + 10) + "\" font-size=\"10\" fill=\"var(--dim)\" text-anchor=\"end\" font-family=\"'IBM Plex Mono',monospace\">+" + Math.round(maxA) + " ms</text>");
+    o.push("<text x=\"" + (px0 - 6) + "\" y=\"" + (py1 - 2) + "\" font-size=\"10\" fill=\"var(--dim)\" text-anchor=\"end\" font-family=\"'IBM Plex Mono',monospace\">-" + Math.round(maxA) + " ms</text>");
+    var d = "";
+    for (i = 0; i < pts.length; i++) d += (i ? "L" : "M") + X(i).toFixed(1) + " " + Y(pts[i]).toFixed(1);
+    if (d) o.push("<path d=\"" + d + "\" fill=\"none\" stroke=\"var(--paper)\" stroke-width=\"1.5\"/>");
+    for (i = 0; i < pts.length; i++) {
+      o.push("<circle cx=\"" + X(i).toFixed(1) + "\" cy=\"" + Y(pts[i]).toFixed(1) + "\" r=\"3\" fill=\"var(--paper)\"/>");
+      o.push("<text x=\"" + X(i).toFixed(1) + "\" y=\"" + (py1 + 16) + "\" font-size=\"10\" fill=\"var(--dim)\" text-anchor=\"middle\" font-family=\"'IBM Plex Mono',monospace\">" + (i + 1) + "</text>");
+    }
+    o.push("<text x=\"" + px1 + "\" y=\"" + (py0 + 2) + "\" font-size=\"10\" fill=\"var(--dim)\" text-anchor=\"end\" font-family=\"'IBM Plex Mono',monospace\">CUMULATIVE MS VS 500 MS GRID</text>");
+    o.push("</svg>");
+    trEls.drift.innerHTML = o.join("");
   }
   function trRenderHeart(starved) {
     if (!trEls.heart) return;
@@ -53473,9 +55452,16 @@ if (typeof module !== "undefined" && module.exports) {
       trRenderHeart(true);
     }
     trRenderMtime(m);
+    trScopeRec(m);
+    var nowMs = trNowMs();
+    if (nowMs - trSt.tl.lastDraw >= (trReduced() ? 1000 : 120)) {
+      trSt.tl.lastDraw = nowMs;
+      trDrawScope();
+    }
   }
 
   function trOnFire(m) {
+    trScopeFire(m);
     var mode = trSt.mode;
     var gapUs = trSt.lastFireUs ? (m - trSt.lastFireUs) : 1e12;
     trSt.lastFireUs = m;
@@ -53573,6 +55559,7 @@ if (typeof module !== "undefined" && module.exports) {
       trEls.t2iv.textContent = "LAST INTERVAL " + iv.toFixed(1) + " ms   FIRES " + trSt.t2fires +
         "   MEAN " + (trSt.t2intervals.reduce(function (a, b) { return a + b; }, 0) /
         trSt.t2intervals.length).toFixed(1) + " ms";
+      trDrawDrift();
     }
     trSt.t2lastFireUs = m;
     trSt.t2fires++;
@@ -53786,6 +55773,7 @@ if (typeof module !== "undefined" && module.exports) {
       trSt.t2running = true;
       trSt.t2fires = 0; trSt.t2intervals = []; trSt.t2lastFireUs = 0;
       trEls.t2verdict.textContent = "";
+      trDrawDrift();
       trEls.t2iv.textContent = "RUNNING: 10 ticks at 500 ms, 50 ms of handler work per fire...";
       a.disabled = true; b.disabled = true; c.disabled = true; start.disabled = true;
       trSt.mode = "t2run";
@@ -53800,6 +55788,22 @@ if (typeof module !== "undefined" && module.exports) {
     iv.id = "tmrT2Iv";
     trEls.t2iv = iv;
     card.appendChild(iv);
+    var driftBox = trEl("div", "tmr-drift", "");
+    driftBox.id = "tmrDriftBox";
+    var driftScroll = trEl("div", "tmr-scrollx", "");
+    var drift = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    drift.id = "tmrDrift";
+    drift.setAttribute("role", "img");
+    drift.setAttribute("aria-label", "Phase drift plot: cumulative ms against the 500 ms grid");
+    driftScroll.appendChild(drift);
+    driftBox.appendChild(driftScroll);
+    var driftCap = trEl("div", "cap", "");
+    driftCap.innerHTML = "<b>PHASE DRIFT</b>: cumulative ms against the 500 ms grid, one dot per tick. " +
+      "Flat holds the phase; a rising line walks late by the handler cost on every tick.";
+    driftBox.appendChild(driftCap);
+    trEls.drift = drift;
+    card.appendChild(driftBox);
+    trDrawDrift();
     var verdict = trEl("p", "tmr-status", "");
     verdict.id = "tmrT2Verdict";
     trEls.t2verdict = verdict;
@@ -54121,12 +56125,27 @@ if (typeof module !== "undefined" && module.exports) {
     trEls.strikes = strikes;
     panel.appendChild(strikes);
 
-    /* the machine, always visible */
-    var meter = trEl("div", "tmr-meter", "");
-    meter.id = "tmrMtime";
-    meter.setAttribute("aria-label", "Machine timer readout");
-    trEls.mtime = meter;
-    panel.appendChild(meter);
+    /* the machine, always visible: the timer-compare timing view */
+    var scopeBox = trEl("div", "tmr-scope", "");
+    scopeBox.id = "tmrScopeBox";
+    var scopeScroll = trEl("div", "tmr-scrollx", "");
+    var scope = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    scope.id = "tmrScope";
+    scope.setAttribute("role", "img");
+    scope.setAttribute("aria-label", "Timer compare timing view: MTIME against MTIMECMP");
+    scopeScroll.appendChild(scope);
+    scopeBox.appendChild(scopeScroll);
+    var nums = trEl("div", "tmr-nums", "");
+    nums.id = "tmrNums";
+    scopeBox.appendChild(nums);
+    var scopeCap = trEl("div", "cap", "");
+    scopeCap.innerHTML = "<b>MTIME</b> rises on the time axis; <b>MTIMECMP</b> is the dashed threshold. " +
+      "The hardware raises the machine-timer interrupt the instant MTIME reaches it: each <b>IRQ</b> mark " +
+      "is one crossing. Re-arms show as steps in the dashed line.";
+    scopeBox.appendChild(scopeCap);
+    trEls.scope = scope;
+    trEls.mtimeNums = nums;
+    panel.appendChild(scopeBox);
     var lampRow = trEl("div", "tmr-lamp", "");
     var dot = trEl("div", "tmr-dot", "");
     dot.id = "tmrDot";
