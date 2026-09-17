@@ -32315,7 +32315,7 @@ if (typeof module !== "undefined" && module.exports) {
     "<p class='why'>Every loop bound, every <b>if (a &lt; b)</b>, every memory-bounds check bottoms out in one question: when you take b away from a, does it <b>borrow</b>? " +
     "Here is the part nobody tells you up front: there is no subtract circuit in the ALU. The same adder that adds also subtracts. Feed it the bitwise inverse of b, force the carry-in to 1, " +
     "and the <b>inverted carry-out is the borrow</b>. Learn the borrow and you can read every unsigned comparison a processor ever makes, because SLTU, the unsigned less-than instruction, writes exactly this bit. " +
-    "(Bench 41, The Carry Room, builds the carry this room assumes.)</p></div>";
+    "(<a href=\"#bench=41\" target=\"_blank\" rel=\"noopener\">The Carry Room</a> builds the carry this room assumes.)</p></div>";
 
   var BW_INTRO_B =
     "<div class='bw-card'><h3>WORKED EXAMPLE, CHECK IT BY HAND</h3>" +
@@ -41823,7 +41823,7 @@ if (typeof module !== "undefined" && module.exports) {
     "The load will not turn off, which is the dangerous direction. Contacts have a current rating; believe it.</li>",
     "<li><b>NO FLYBACK DIODE:</b> the collapsing field of an opened coil hurls about 90 V at the driver transistor, ",
     "rated 60 V. Symptom: it worked once, then never again. The fix is a diode across the coil, ",
-    "taught properly in The Diode Room (bench 52).</li>",
+    "taught properly in <a href=\"#bench=52\" target=\"_blank\" rel=\"noopener\">The Diode Room</a>.</li>",
     "<li><b>WRONG CONTACT FOR FAIL-SAFE:</b> the safe state must be the relay's resting state: coil dead, ",
     "NC closed, NO open. Pick the other contact and the load is safe exactly until the controller dies, ",
     "then it does the dangerous thing unattended.</li></ul></div>",
@@ -42560,7 +42560,7 @@ if (typeof module !== "undefined" && module.exports) {
     t3Head.appendChild(ryEl("h3", null, "TRIAL 3: THE NO-DIODE LESSON"));
     t3Head.appendChild(ryEl("p", "why",
       "One coil, one inductor, one driver transistor rated 60 V. Call the spike band before anything moves, " +
-      "open the coil with the diode removed, then refit the diode and open it again. The fix lives in The Diode Room."));
+      "open the coil with the diode removed, then refit the diode and open it again. The fix lives in <a href=\"#bench=52\" target=\"_blank\" rel=\"noopener\">The Diode Room</a>."));
     panel.appendChild(t3Head);
     panel.appendChild(ryT3Card());
 
@@ -42831,7 +42831,7 @@ if (typeof module !== "undefined" && module.exports) {
     "gate resistor takes microseconds, and at 40 kHz PWM those microseconds cost watts: 12 V x 6 A x 7 microseconds x ",
     "40 kHz is 20 W. The same FET is cool at DC. Size the gate resistor for the switching rate.</li>",
     "<li><b>INDUCTIVE KICK:</b> a coil's collapsing field hurls a voltage spike at the drain on turn-off. ",
-    "Symptom: it worked once, then never again. The fix is a diode across the coil, taught properly in The Relay Room (bench 55).</li>",
+    "Symptom: it worked once, then never again. The fix is a diode across the coil, taught properly in <a href=\"#bench=55\" target=\"_blank\" rel=\"noopener\">The Relay Room</a>.</li>",
     "<li><b>FLOATING GATE:</b> an unconnected gate is an antenna and drifts on by itself. If the driver can go ",
     "high-impedance, park the gate with a 100 k resistor to ground so off means off.</li></ul></div>",
     "<div class=\"mf-card\"><h3>THE CANONICAL VIEWS</h3>",
@@ -45458,7 +45458,7 @@ if (typeof module !== "undefined" && module.exports) {
     "thing between you and smoke. 352 mW into a 200 mW part pops in the field, not on your bench.</li>",
     "<li><b>HOT FEED:</b> (Vin - Vz) x Is cooks the resistor too. 250 mW is a promise, not a suggestion.</li>",
     "<li><b>NO RESISTOR:</b> a Zener straight across 12 V tries to drink the whole supply and becomes a fuse. ",
-    "The Diode Room taught the no-resistor kill on the forward side; this is the reverse side.</li>",
+    "<a href=\"#bench=52\" target=\"_blank\" rel=\"noopener\">The Diode Room</a> taught the no-resistor kill on the forward side; this is the reverse side.</li>",
     "<li><b>WRONG WAY:</b> a Zener fitted forward clamps at 0.7 V, a diode doing diode things. Probe before ",
     "you trust.</li>",
     "<li><b>THE BIG RAIL:</b> this circuit tops out at milliamps of load. For the 700 mA rail, the series ",
@@ -56446,7 +56446,7 @@ if (typeof module !== "undefined" && module.exports) {
     "<div class=\"bp-sec\">WHY THIS BENCH EXISTS</div>",
     "<p class=\"bp-p\">Your CPU reads instructions in order, but an <b>if</b> or a loop can jump somewhere else. The CPU does not wait to find out where: it keeps reading ahead on a guess. A wrong guess means the instructions it already started get thrown away, and it starts over from the right place. Those wasted cycles are the whole cost of a mispredicted branch.</p>",
     "<p class=\"bp-p\">Every guess has two parts: <b>WHERE</b> the branch jumps to, and <b>WHETHER</b> it jumps at all. The <b>BTB</b> (branch target buffer) is a small table that remembers the jump target each branch used last time: that is the WHERE. The <b>direction predictor</b> is a separate small table that votes taken or not taken for each branch: that is the WHETHER. In this bench's five-stage model, each wrong guess costs 2 cycles: the two instructions the CPU had already started reading. That 2-cycle number belongs to this model, not to every real CPU.</p>",
-    "<p class=\"bp-p\">The two parts fail for different reasons and need different fixes. One redirect count cannot tell you which part failed. Bench 02 taught you that predictors learn; here you open the predictor and meet its two halves.</p>",
+    "<p class=\"bp-p\">The two parts fail for different reasons and need different fixes. One redirect count cannot tell you which part failed. <a href=\"#bench=02\" target=\"_blank\" rel=\"noopener\">The Pipeline Hazard Lab</a> taught you that predictors learn; here you open the predictor and meet its two halves.</p>",
     "<div class=\"bp-sec\">WHERE THIS LIVES IN RISC-V</div>",
     "<p class=\"bp-p\">Every conditional branch instruction does this. A C <b>for</b> loop compiles to a backward branch: jump back to the top while the counter runs. A C <b>if</b> compiles to a forward branch: skip over the body when the condition is false. In RISC-V those are instructions like <b>beq</b> (jump if two registers are equal) and <b>bne</b> (jump if not equal); the beq in the pipeline table below is one. Each time the CPU fetches one, it makes the two guesses: the BTB supplies where it went last time, the direction predictor votes whether it goes this time.</p>",
     "<p class=\"bp-p\">The traces in this bench are branch histories shaped like the ones small programs produce. The letters (A, B, C...) stand in for branch instructions sitting at different addresses: A is one branch, B is another. COUNTED LOOP is a counted loop with an if inside. MIXED BRANCHES is ten irregular branches. ALTERNATING BRANCH is one branch flipping taken, not taken, which no predictor can learn. BTB PRESSURE is four hot branches sharing a two-entry BTB, so entries evict each other.</p>",
