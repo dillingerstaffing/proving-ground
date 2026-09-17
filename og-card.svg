@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#ece6d5"/>
+  <rect x="24" y="24" width="1152" height="582" fill="none" stroke="#a59b87" stroke-width="2"/>
+  <text x="72" y="100" font-family="'Courier New', monospace" font-size="26" letter-spacing="7" fill="#5d574c">ENGINEERING BENCHES</text>
+  <text x="68" y="235" font-family="Georgia, 'Times New Roman', serif" font-size="88" fill="#241f17">The Proving Ground</text>
+  <rect x="72" y="272" width="300" height="6" fill="#8c3f22"/>
+<text x="72" y="340" font-family="Georgia, 'Times New Roman', serif" font-size="34" fill="#241f17">Real working engineering benches.</text>
+  <text x="72" y="562" font-family="'Courier New', monospace" font-size="24" letter-spacing="2" fill="#5d574c">dillingerstaffing.github.io/proving-ground</text>
+  <g transform="translate(940,205) scale(0.4297)"><path d="M120 176 H340 M120 256 H340 M120 336 H340" stroke="#241f17" stroke-width="22" stroke-linecap="square"/><path d="M392 296 L424 328 L484 252" fill="none" stroke="#8c3f22" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/></g>
+</svg>
