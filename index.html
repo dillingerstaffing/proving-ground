@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260918-pg109">
+<meta name="build-version" content="v20260918-pg110">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -193,6 +193,13 @@ a { color: var(--ember); }
 }
 .wordmark .outline { color: transparent; -webkit-text-stroke: 1.5px var(--paper); }
 @supports not (-webkit-text-stroke: 1px #000) { .wordmark .outline { color: var(--paper); } }
+/* Hero lede: one line that tells a cold visitor what the page is and what
+   standard it holds. Static, theme-aware, wraps clean at 390px. */
+.hero-lede {
+  margin: 20px 0 0; max-width: 64ch;
+  font-family: var(--font-m); font-size: 14px; letter-spacing: 0.015em;
+  color: var(--steel);
+}
 @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
 
 /* ---------- Filter deck (sticky glass; the grid melts beneath it) ---------- */
@@ -774,6 +781,7 @@ body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
       </div>
     </div>
     <h1 class="wordmark"><span class="wl"><span>The Proving</span></span><span class="wl"><span class="outline">Ground</span></span></h1>
+    <p class="hero-lede">Working engineering benches. Every mechanism proved against ground truth.</p>
   </header>
 
   <main id="benches" aria-label="Engineering benches"></main>
@@ -1266,7 +1274,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-18-pg109";
+var PG_REV = "2026-09-18-pg110";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
