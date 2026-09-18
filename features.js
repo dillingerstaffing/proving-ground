@@ -57293,6 +57293,15 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(banner);
     bpEls.banner = banner;
 
+    /* hire line: the crash-triage offer at the foot of the bench. The hire-chooser
+       module binds [data-brief] triggers document-wide, so this button opens the
+       pre-filled triage chooser. Reuses bp-p and bp-btn; no new markup, CSS, or
+       bench logic. Test case for the foot-of-every-bench line. */
+    var hire = bpEl("p", "bp-p", "");
+    hire.innerHTML = "Hitting this exact fault on your real board? " +
+      "<button type=\"button\" class=\"bp-btn\" data-brief=\"triage\">Fixed-price crash triage, $250 per symptom</button>";
+    panel.appendChild(hire);
+
     ov.appendChild(panel);
     document.body.appendChild(ov);
 
