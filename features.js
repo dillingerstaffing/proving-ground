@@ -57299,7 +57299,7 @@ if (typeof module !== "undefined" && module.exports) {
        bench logic. Test case for the foot-of-every-bench line. */
     var hire = bpEl("p", "bp-p", "");
     hire.innerHTML = "Hitting this exact fault on your real board? " +
-      "<button type=\"button\" class=\"bp-btn\" data-brief=\"triage\">Fixed-price crash triage, $250 per symptom</button>";
+      "<button type=\"button\" class=\"bp-btn\" data-brief=\"triage\">Fixed-price crash triage</button>";
     panel.appendChild(hire);
 
     ov.appendChild(panel);
