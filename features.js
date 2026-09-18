@@ -57496,7 +57496,7 @@ if (typeof module !== "undefined" && module.exports) {
     "<p class=\"hs-p\">Read it line by line. Packet 1: the <b>SYN</b> flag says \"I want to connect\"; the seq says \"my first byte will be numbered 1000\". Packet 2: the server sends its own SYN (\"my first byte will be 5000\") <b>plus</b> an ACK: \"I heard your 1000; send me 1001 next.\" An ACK always names the <b>next byte wanted</b>, never the last byte received; that rule runs this whole room. Packet 3: \"Heard your 5000; your next byte is 5001.\" Notice each ACK is the other side's seq <b>plus one</b>: the SYN itself consumes one sequence number. That plus-one is the entire handshake exam.</p>",
     "<div class=\"hs-sec\">THE CANONICAL VIEW</div>",
     "<p class=\"hs-p\">Time runs down. This is the standard time-sequence diagram every networking textbook draws for the handshake: two lifelines, one arrow per packet. The trials below make you fill in its numbers.</p>",
-    "<div class=\"hs-out\" aria-label=\"TCP handshake time-sequence diagram\">CLIENT                                SERVER\n  |                                       |\n  |--- SYN seq=1000 ---------------------->|\n  |                                       |\n  |<- SYN seq=5000, ACK 1001 --------------|\n  |                                       |\n  |--- ACK 5001 -------------------------->|\n  |                                       |</div>",
+    "<div class=\"hs-out hs-diagram\" aria-label=\"TCP handshake time-sequence diagram\">CLIENT                                SERVER\n  |                                       |\n  |--- SYN seq=1000 ---------------------->|\n  |                                       |\n  |<- SYN seq=5000, ACK 1001 --------------|\n  |                                       |\n  |--- ACK 5001 -------------------------->|\n  |                                       |</div>",
     "<div class=\"hs-sec\">THE WORKED EXAMPLE: THE LOST SEGMENT</div>",
     "<p class=\"hs-p\">Six segments of 100 bytes each, numbered 1001 through 1600. The wire eats segment 3 (bytes 1201-1300). Watch what the receipts do:</p>",
     "<div class=\"hs-scrollx\"><table class=\"hs-table\" aria-label=\"Worked lost segment\">",
@@ -57561,7 +57561,7 @@ if (typeof module !== "undefined" && module.exports) {
     ".hs-fail{border:1px solid var(--ember);padding:18px;margin:0 0 16px;display:none;}",
     ".hs-fail.show{display:block;}",
     ".hs-fail h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--ember);margin:0 0 8px;}",
-    "@media (max-width:620px){.hs-title{font-size:27px;}.hs-field{width:100%;}}"
+    "@media (max-width:620px){.hs-title{font-size:27px;}.hs-field{width:100%;}.hs-table th,.hs-table td{white-space:normal;padding:5px 6px;font-size:11px;letter-spacing:0;}.hs-out.hs-diagram{white-space:pre;overflow-x:auto;font-size:11px;}}",
   ].join("\n");
 
   function hsEl(tag, cls, html) {
@@ -57916,7 +57916,7 @@ if (typeof module !== "undefined" && module.exports) {
     ov.setAttribute("aria-label", "The Handshake Room");
     var x = hsBtn("CLOSE", "hs-btn");
     x.id = "hsXBtn";
-    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.style.cssText = "position:fixed;top:calc(12px + env(safe-area-inset-top));right:calc(16px + env(safe-area-inset-right));z-index:95;";
     x.setAttribute("aria-label", "Close The Handshake Room");
     x.addEventListener("click", hsClose);
     ov.appendChild(x);
