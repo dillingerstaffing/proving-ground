@@ -50633,7 +50633,7 @@ if (typeof module !== "undefined" && module.exports) {
        present and future triggers alike. */
     document.addEventListener("click", function (e) {
       var t = e.target && e.target.closest ? e.target.closest("[data-brief]") : null;
-      if (t && document.contains(t)) openChooser(t.getAttribute("data-brief"));
+      if (t && document.contains(t)) openChooser(t.getAttribute("data-brief"), t.getAttribute("data-bench-tag"));
     });
     wbBtns = chooser.querySelectorAll(".ch-wb");
     for (var j = 0; j < wbBtns.length; j++) {
@@ -50641,10 +50641,14 @@ if (typeof module !== "undefined" && module.exports) {
     }
   }
 
-  function applyBrief(key) {
+  function applyBrief(key, benchTag) {
     var b = BRIEFS[key] || BRIEFS.general;
     currentBrief = BRIEFS[key] ? key : "general";
-    var su = encodeURIComponent(b.subject);
+    /* Bench-attributed inquiries: the foot-of-bench hire button passes
+       data-bench-tag, and the tag is appended to the pre-filled subject so a
+       bench-cited inquiry is distinguishable from a generic one. */
+    var subject = benchTag ? b.subject + " (" + benchTag + ")" : b.subject;
+    var su = encodeURIComponent(subject);
     var bd = encodeURIComponent(b.body);
     gmailA.setAttribute("href", "https://mail.google.com/mail/?view=cm&fs=1&to=" +
       encodeURIComponent(EMAIL) + "&su=" + su + "&body=" + bd);
@@ -50656,9 +50660,9 @@ if (typeof module !== "undefined" && module.exports) {
     }
   }
 
-  function openChooser(key) {
+  function openChooser(key, benchTag) {
     if (!chooser) return;
-    applyBrief(key);
+    applyBrief(key, benchTag);
     lastTrigger = document.activeElement;
     chooser.showModal();
   }
@@ -57299,7 +57303,7 @@ if (typeof module !== "undefined" && module.exports) {
        bench logic. Test case for the foot-of-every-bench line. */
     var hire = bpEl("p", "bp-p", "");
     hire.innerHTML = "Hitting this exact fault on your real board? " +
-      "<button type=\"button\" class=\"bp-btn\" data-brief=\"triage\">Fixed-price crash triage</button>";
+      "<button type=\"button\" class=\"bp-btn\" data-brief=\"triage\" data-bench-tag=\"Bench 71: The Two Guesses\">Fixed-price crash triage</button>";
     panel.appendChild(hire);
 
     ov.appendChild(panel);
