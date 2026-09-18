@@ -57339,3 +57339,834 @@ if (typeof module !== "undefined" && module.exports) {
     bpBuild();
   }
 })();
+
+/* Bench 72 staging: The Handshake Room module (appended to features.js at ship time). */
+/* BENCH 72: THE HANDSHAKE ROOM (craft)
+   The wire between two computers is a liar: it drops packets, duplicates
+   them, and reorders them, and never warns you. TCP answers with a number
+   on every byte and a receipt for every number, but a receipt for "the next
+   byte" means nothing until both sides agree what the first byte is
+   numbered. The handshake is that agreement: three packets, two starting
+   numbers, and only then does data move. Three trials: answer the SYN-ACK
+   with exact sequence numbers by hand, name the one byte a lost segment
+   left unacknowledged and retransmit only it, then diagnose a broken
+   connection from its wire tap.
+   One sentence takeaway: number every byte, trust only the receipts, and
+   agree on the first number before anything moves.
+   Pure sim hooks live in TCP72 for the smoke test; the DOM engine below
+   drives the same code. */
+(function () {
+
+  /* ---------------- pure hooks (testable, no DOM) ---------------- */
+  var TCP72 = {
+    SEG_BYTES: 100,
+    NSEG: 6,
+    CLIENT_ISNS: [2000, 3000, 4000],
+    SERVER_ISNS: [6000, 7000, 8000],
+    /* The three packets of a correct handshake for the given starting
+       numbers. ack is "-" where no acknowledgment is carried. */
+    handshakePkts: function (cIsn, sIsn) {
+      return [
+        { dir: "YOU -> SERVER", flags: "SYN", seq: cIsn, ack: "-" },
+        { dir: "SERVER -> YOU", flags: "SYN+ACK", seq: sIsn, ack: cIsn + 1 },
+        { dir: "YOU -> SERVER", flags: "ACK", seq: cIsn + 1, ack: sIsn + 1 }
+      ];
+    },
+    /* Check the client's reply to a SYN-ACK. Each wrong field is named:
+       seq must be the client's own next byte, ack must be the server's
+       next byte. */
+    checkReply: function (cIsn, sIsn, seq, ack) {
+      var wantSeq = cIsn + 1, wantAck = sIsn + 1;
+      if (seq !== wantSeq) return { ok: false, which: "seq", want: wantSeq };
+      if (ack !== wantAck) return { ok: false, which: "ack", want: wantAck };
+      return { ok: true };
+    },
+    /* Numbers typed by hand: commas and spaces tolerated, digits only. */
+    parseNum: function (s) {
+      var t = String(s == null ? "" : s).replace(/[\s,]/g, "");
+      if (!/^\d+$/.test(t)) return null;
+      return parseInt(t, 10);
+    },
+    /* Simulate the 6-segment stream. base is the first data byte; the
+       segment at dropIdx is lost on the wire. Returns the segments, the
+       ack log, the byte the server keeps asking for (want), and the ack
+       that completes the stream after the retransmit. */
+    streamSim: function (base, dropIdx) {
+      var B = TCP72.SEG_BYTES, N = TCP72.NSEG, segs = [], i;
+      for (i = 0; i < N; i++) {
+        segs.push({ n: i + 1, lo: base + i * B, hi: base + (i + 1) * B - 1 });
+      }
+      var want = base + dropIdx * B;
+      var log = [];
+      for (i = 0; i < N; i++) {
+        if (i === dropIdx) {
+          log.push({ seg: segs[i].n, tx: "DATA seq=" + segs[i].lo + " len=" + B +
+            "  (" + segs[i].lo + "-" + segs[i].hi + ")",
+            rx: "LOST on the wire", dup: false });
+          continue;
+        }
+        var a = (i < dropIdx) ? segs[i].hi + 1 : want;
+        log.push({ seg: segs[i].n, tx: "DATA seq=" + segs[i].lo + " len=" + B +
+          "  (" + segs[i].lo + "-" + segs[i].hi + ")",
+          rx: "ACK " + a + (i > dropIdx ? "  (duplicate: still wants " + want + ")" : ""),
+          dup: i > dropIdx });
+      }
+      return { segs: segs, log: log, want: want, finalAck: base + N * B,
+               drop: segs[dropIdx] };
+    },
+    /* The three broken wires for trial 3. diag keys are the verdicts;
+       evidence is the one line number that proves it. */
+    DIAGS: [
+      { key: "silent", label: "THE SERVER NEVER ANSWERED" },
+      { key: "lost", label: "A SEGMENT WAS LOST AND NEVER RESENT" },
+      { key: "reset", label: "THE SERVER ABORTED WITH RST" }
+    ],
+    CASES: {
+      silent: {
+        label: "WIRE A", title: "THE QUIET SERVER",
+        lines: [
+          "YOU -> SERVER   SYN seq=1000            (3 s pass, no reply)",
+          "YOU -> SERVER   SYN seq=1000            (6 s pass, still no reply)",
+          "YOU             GAVE UP. State never left SYN-SENT."
+        ],
+        diag: "silent", evidence: 2,
+        evWhy: "Line 2 is a retry that also got no reply: the server is silent, not merely slow."
+      },
+      lost: {
+        label: "WIRE B", title: "THE STALLED STREAM",
+        lines: [
+          "YOU -> SERVER   SYN seq=1000",
+          "SERVER -> YOU   SYN+ACK seq=5000 ack=1001",
+          "YOU -> SERVER   ACK seq=1001 ack=5001",
+          "YOU -> SERVER   DATA seq=1001 len=100     SERVER -> YOU   ACK 1101",
+          "YOU -> SERVER   DATA seq=1101 len=100     SERVER -> YOU   ACK 1201",
+          "YOU -> SERVER   DATA seq=1301 len=100     SERVER -> YOU   ACK 1201  (duplicate)",
+          "YOU -> SERVER   DATA seq=1401 len=100     SERVER -> YOU   ACK 1201  (duplicate)",
+          "YOU -> SERVER   DATA seq=1501 len=100     SERVER -> YOU   ACK 1201  (duplicate)",
+          "YOU             STALLED. 500 of 600 bytes acknowledged; nothing more sent."
+        ],
+        diag: "lost", evidence: 6,
+        evWhy: "Line 6 is the first duplicate ACK: new data arrived and the server still names 1201, so bytes 1201-1300 never arrived."
+      },
+      reset: {
+        label: "WIRE C", title: "THE RUDE RESET",
+        lines: [
+          "YOU -> SERVER   SYN seq=1000",
+          "SERVER -> YOU   SYN+ACK seq=5000 ack=1001",
+          "YOU -> SERVER   ACK seq=1001 ack=5001",
+          "YOU -> SERVER   DATA seq=1001 len=100     SERVER -> YOU   ACK 1101",
+          "SERVER -> YOU   RST. Connection aborted; nothing after this line is delivered."
+        ],
+        diag: "reset", evidence: 5,
+        evWhy: "Line 5 carries the RST flag: the server aborted the connection outright."
+      }
+    },
+    CASE_ORDER: ["silent", "lost", "reset"],
+    diagnose: function (caseKey, diagKey) {
+      return TCP72.CASES[caseKey].diag === diagKey;
+    }
+  };
+
+  /* Intro copy: why first, worked example with the sim's own numbers,
+     failure modes named, terms earned in dependency order. The worked
+     tables are rendered by the same pure hooks, so copy can never drift
+     from the sim. */
+  var HS_WE_HS_ROWS = TCP72.handshakePkts(1000, 5000).map(function (p, i) {
+    return "<tr><td>" + (i + 1) + "</td><td>" + p.dir + "</td><td>" + p.flags +
+      "</td><td>" + p.seq + "</td><td>" + p.ack + "</td></tr>";
+  }).join("");
+  var HS_WE_ST = TCP72.streamSim(1001, 2);
+  var HS_WE_ST_ROWS = HS_WE_ST.log.map(function (r) {
+    return "<tr><td>" + r.seg + "</td><td>" + r.tx + "</td><td class=\"" +
+      (r.dup ? "hot" : "") + "\">" + r.rx + "</td></tr>";
+  }).join("");
+
+  TCP72.INTRO_HTML = [
+    "<div class=\"hs-sec\">WHY THIS BENCH EXISTS</div>",
+    "<p class=\"hs-p\">The wire between two computers is a liar. It drops packets, duplicates them, and delivers them out of order, and it never warns you. Yet your downloads arrive whole. They arrive whole because <b>every byte sent carries a sequence number</b>, and the receiver answers with an <b>acknowledgment</b> that names the next byte it wants. Nothing is trusted. Everything is numbered, receipted, and retransmitted until the receipts cover it. But a receipt that says \"send me byte 5001 next\" means nothing until both sides agree what the first byte is numbered. The <b>handshake</b> is that agreement: three packets, two starting numbers, and only then does data move.</p>",
+    "<div class=\"hs-sec\">THE WORKED EXAMPLE: THE HANDSHAKE</div>",
+    "<p class=\"hs-p\">You are the client. You pick starting number <b>1000</b>; the server picks <b>5000</b>. (Real starting numbers are random; small ones here keep the arithmetic checkable by hand.)</p>",
+    "<div class=\"hs-scrollx\"><table class=\"hs-table\" aria-label=\"Worked handshake\">",
+    "<thead><tr><th>#</th><th>DIRECTION</th><th>FLAGS</th><th>SEQ</th><th>ACK</th></tr></thead>",
+    "<tbody>" + HS_WE_HS_ROWS + "</tbody></table></div>",
+    "<p class=\"hs-p\">Read it line by line. Packet 1: the <b>SYN</b> flag says \"I want to connect\"; the seq says \"my first byte will be numbered 1000\". Packet 2: the server sends its own SYN (\"my first byte will be 5000\") <b>plus</b> an ACK: \"I heard your 1000; send me 1001 next.\" An ACK always names the <b>next byte wanted</b>, never the last byte received; that rule runs this whole room. Packet 3: \"Heard your 5000; your next byte is 5001.\" Notice each ACK is the other side's seq <b>plus one</b>: the SYN itself consumes one sequence number. That plus-one is the entire handshake exam.</p>",
+    "<div class=\"hs-sec\">THE CANONICAL VIEW</div>",
+    "<p class=\"hs-p\">Time runs down. This is the standard time-sequence diagram every networking textbook draws for the handshake: two lifelines, one arrow per packet. The trials below make you fill in its numbers.</p>",
+    "<div class=\"hs-out\" aria-label=\"TCP handshake time-sequence diagram\">CLIENT                                SERVER\n  |                                       |\n  |--- SYN seq=1000 ---------------------->|\n  |                                       |\n  |<- SYN seq=5000, ACK 1001 --------------|\n  |                                       |\n  |--- ACK 5001 -------------------------->|\n  |                                       |</div>",
+    "<div class=\"hs-sec\">THE WORKED EXAMPLE: THE LOST SEGMENT</div>",
+    "<p class=\"hs-p\">Six segments of 100 bytes each, numbered 1001 through 1600. The wire eats segment 3 (bytes 1201-1300). Watch what the receipts do:</p>",
+    "<div class=\"hs-scrollx\"><table class=\"hs-table\" aria-label=\"Worked lost segment\">",
+    "<thead><tr><th>SEG</th><th>YOU SEND</th><th>SERVER ANSWERS</th></tr></thead>",
+    "<tbody>" + HS_WE_ST_ROWS + "</tbody></table></div>",
+    "<p class=\"hs-p\">The repeated ACK names the missing byte exactly: <b>1201</b>. You retransmit bytes 1201-1300; the server answers <b>ACK 1601</b>. All 600 bytes arrive in order: none missing, none duplicated. That is the whole reliability story: number every byte, trust only the receipts, retransmit only what the receipts say went missing.</p>",
+    "<div class=\"hs-sec\">THE FAILURE MODES</div>",
+    "<ul class=\"hs-list\">",
+    "<li>Answer a SYN-ACK with the wrong numbers and the server answers <b>RST</b> (reset): the connection dies on the spot. The wire does not guess; it hangs up.</li>",
+    "<li>Retransmit a segment the server already has and the ACK comes back unchanged: \"I already have that; I still want 1201.\" Duplicates are absorbed, never counted twice.</li>",
+    "<li>If the server never answers your SYN, you wait, retry, and give up with the state still <b>SYN-SENT</b>. A handshake that never completed is never used for data.</li>",
+    "</ul>",
+    "<div class=\"hs-sec\">WHERE THIS LIVES</div>",
+    "<p class=\"hs-p\"><a href=\"#bench=21\" target=\"_blank\" rel=\"noopener\">The Crimp Bay</a> put the cable in your hands; this room puts the conversation on it. The OLD IRON refurb line pushes disk images across the bench network, and the TAPEOUT bring-up bench pulls toolchains down a wire. Both stand on numbered bytes and receipts. This is the connectivity half of bench craft: the cable is the easy part, the promise the cable alone cannot make is this.</p>",
+    "<div class=\"hs-sec\">OPTIONAL DEPTH</div>",
+    "<p class=\"hs-p\">Real TCP picks random starting numbers so stray packets from dead connections cannot be mistaken for live ones, and congestion control decides how much flies at once. Neither is modeled here, on purpose: this room teaches only the numbering and the receipts, which are the entire reliability mechanism.</p>"
+  ].join("\n");
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.HS72 = TCP72;
+  }
+
+  /* ---------------- DOM engine ---------------- */
+  var HS_CSS = [
+    ".hs-overlay{position:fixed;inset:0;z-index:90;background:var(--ink);display:none;overflow-y:auto;}",
+    ".hs-overlay.open{display:block;}",
+    ".hs-panel{max-width:860px;margin:0 auto;padding:28px 18px 60px;color:var(--paper);}",
+    ".hs-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);}",
+    ".hs-title{font-family:'Space Grotesk',sans-serif;font-size:34px;margin:6px 0 10px;color:var(--paper);}",
+    ".hs-sec{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.16em;color:var(--ember);margin:26px 0 10px;padding-top:16px;border-top:1px solid var(--line);}",
+    ".hs-p{font-size:13.5px;line-height:1.7;color:var(--dim);max-width:74ch;margin:0 0 12px;}",
+    ".hs-p b{color:var(--paper);}",
+    ".hs-p a{color:var(--ember);}",
+    ".hs-list{margin:0 0 12px;padding-left:20px;max-width:74ch;}",
+    ".hs-list li{font-size:13.5px;line-height:1.7;color:var(--dim);margin:0 0 8px;}",
+    ".hs-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.06em;background:transparent;color:var(--paper);border:1px solid var(--line);padding:12px 16px;min-height:48px;cursor:pointer;}",
+    ".hs-btn:hover{border-color:var(--ember);}",
+    ".hs-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".hs-btn:disabled{opacity:.38;cursor:not-allowed;}",
+    ".hs-btn.solid{background:var(--ember);border-color:var(--ember);color:var(--ink);font-weight:700;}",
+    ".hs-btn.picked{border-color:var(--ember);color:var(--ember);}",
+    ".hs-group{margin:0 0 14px;}",
+    ".hs-group .hs-lbl{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:var(--dim);display:block;margin:0 0 8px;}",
+    ".hs-row{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 12px;}",
+    ".hs-out{font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.75;color:var(--dim);background:var(--panel);border:1px solid var(--line);padding:14px 16px;margin:0 0 12px;white-space:pre-wrap;}",
+    ".hs-out .v{color:var(--ember);}",
+    ".hs-out .w{color:var(--paper);font-weight:700;}",
+    ".hs-scrollx{overflow-x:auto;margin:0 0 12px;border:1px solid var(--line);}",
+    ".hs-scrollx .hs-table{margin:0;border:none;}",
+    ".hs-table{width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--dim);background:var(--panel);}",
+    ".hs-table th{font-size:10px;letter-spacing:.1em;color:var(--paper);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap;}",
+    ".hs-table td{padding:7px 10px;border-bottom:1px solid var(--line);white-space:nowrap;}",
+    ".hs-table tr:last-child td{border-bottom:none;}",
+    ".hs-table td.hot{color:var(--ember);}",
+    ".hs-table tr.sel td{background:rgba(255,90,31,.10);}",
+    ".hs-field{font-family:'IBM Plex Mono',monospace;font-size:14px;background:var(--ink);color:var(--paper);border:1px solid var(--line);padding:12px;min-height:48px;min-width:0;width:160px;}",
+    ".hs-field:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".hs-banner{border:1px solid var(--ember);padding:18px;margin:0 0 16px;display:none;}",
+    ".hs-banner.show{display:block;}",
+    ".hs-banner h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--ember);margin:0 0 8px;}",
+    ".hs-cert{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:var(--dim);margin:0 0 12px;white-space:pre-wrap;}",
+    ".hs-fail{border:1px solid var(--ember);padding:18px;margin:0 0 16px;display:none;}",
+    ".hs-fail.show{display:block;}",
+    ".hs-fail h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--ember);margin:0 0 8px;}",
+    "@media (max-width:620px){.hs-title{font-size:27px;}.hs-field{width:100%;}}"
+  ].join("\n");
+
+  function hsEl(tag, cls, html) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (html != null) e.innerHTML = html;
+    return e;
+  }
+  function hsBtn(label, cls) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = cls || "hs-btn";
+    b.textContent = label;
+    return b;
+  }
+  function hsReduced() {
+    return (typeof pgReduced !== "undefined") && pgReduced;
+  }
+
+  var hsEls = {};
+  var hsSt = null;
+  var hsSalt = 0;
+  var hsEscBound = false;
+
+  function hsNewState() {
+    return {
+      cIsn: TCP72.CLIENT_ISNS[hsSalt % TCP72.CLIENT_ISNS.length],
+      sIsn: TCP72.SERVER_ISNS[(hsSalt + 1) % TCP72.SERVER_ISNS.length],
+      conn: "CLOSED",
+      strikes: 0,
+      t1: { done: false },
+      t2: { done: false, drop: 1 + (hsSalt % 4), sent: false, wantOk: false },
+      t3: { done: false, caseIdx: 0, caseKey: "silent", line: 0, diag: null }
+    };
+  }
+
+  function hsSetConn(s) {
+    hsSt.conn = s;
+    hsEls.conn.innerHTML = "CONNECTION: <span class=\"w\">" + s + "</span>";
+  }
+  function hsProgress() {
+    var p1 = hsSt.t1.done ? "DONE" : "OPEN";
+    var p2 = !hsSt.t1.done ? "LOCKED" : (hsSt.t2.done ? "DONE" : "OPEN");
+    var p3 = !hsSt.t2.done ? "LOCKED" : (hsSt.t3.done ? "DONE" : "OPEN");
+    hsEls.progress.textContent = "TRIAL 1: " + p1 + " | TRIAL 2: " + p2 + " | TRIAL 3: " + p3;
+  }
+  function hsStrike(note) {
+    hsSt.strikes++;
+    hsEls.strikes.innerHTML = "STRIKES: <span class=\"v\">" + hsSt.strikes + "/3</span>" +
+      (note ? " " + note : "");
+    if (hsSt.strikes >= 3) {
+      hsEls.fail.classList.add("show");
+      hsSetConn("FAILED");
+      if (typeof toast === "function") toast("Three strikes. The room failed; reset to try again.");
+    }
+    return hsSt.strikes >= 3;
+  }
+
+  /* ---- do first: the free handshake ---- */
+  function hsDoFirst() {
+    var rows = TCP72.handshakePkts(1000, 5000);
+    var html = rows.map(function (p, i) {
+      return "PACKET " + (i + 1) + ": " + p.dir + "  flags=" + p.flags +
+        "  seq=" + p.seq + "  ack=" + p.ack;
+    }).join("\n");
+    html += "\n\nStarting numbers agreed: your first byte 1000, the server's first byte 5000." +
+      "\nThe ACK rule, three times over: name the NEXT byte wanted, never the last one received.";
+    hsEls.doOut.textContent = html;
+    if (typeof toast === "function") toast("Handshake complete. Now it is your turn.");
+  }
+
+  /* ---- trial 1: answer the SYN-ACK ---- */
+  function hsT1Check() {
+    if (hsSt.t1.done) return;
+    if (hsSt.strikes >= 3) return;
+    var seq = TCP72.parseNum(hsEls.t1Seq.value);
+    var ack = TCP72.parseNum(hsEls.t1Ack.value);
+    if (seq === null || ack === null) {
+      if (typeof toast === "function") toast("Call both numbers first: your SEQ and your ACK.");
+      hsEls.t1Out.textContent = "Two numbers are needed: YOUR SEQ and YOUR ACK. The worked example above shows the arithmetic.";
+      return;
+    }
+    var r = TCP72.checkReply(hsSt.cIsn, hsSt.sIsn, seq, ack);
+    if (r.ok) {
+      hsSt.t1.done = true;
+      hsSetConn("ESTABLISHED");
+      hsEls.t1Out.innerHTML = "EXACT. seq=" + seq + " (your next byte), ack=" + ack +
+        " (the server's next byte).\nTRIAL 1 CLEAR. The connection is ESTABLISHED; trial 2 is unlocked.";
+      hsEls.t2Wrap.style.display = "";
+      hsProgress();
+      hsCheckWin();
+      return;
+    }
+    var why = (r.which === "seq")
+      ? "wrong SEQ. Your SYN carried seq=" + hsSt.cIsn + ", so your next byte is " +
+        hsSt.cIsn + " + 1 = " + r.want + ". You sent " + seq + "."
+      : "wrong ACK. The server's SYN carried seq=" + hsSt.sIsn + ", so you owe it the next byte: " +
+        hsSt.sIsn + " + 1 = " + r.want + ". You answered " + ack + ".";
+    var dead = hsStrike();
+    hsEls.t1Out.textContent = "RST. The server hung up: " + why +
+      (dead ? "\nThree strikes: the room failed." : "\nTry again: the numbers have not changed.");
+  }
+
+  /* ---- trial 2: the lost segment ---- */
+  function hsT2Send() {
+    if (hsSt.t2.sent) return;
+    if (hsSt.strikes >= 3) return;
+    hsSt.t2.sent = true;
+    var sim = TCP72.streamSim(hsSt.cIsn + 1, hsSt.t2.drop);
+    hsSt.t2.sim = sim;
+    var html = sim.log.map(function (r) {
+      return "SEG " + r.seg + ": " + r.tx + "  ->  " + r.rx;
+    }).join("\n");
+    hsEls.t2Log.textContent = html;
+    hsEls.t2Ask.style.display = "";
+    hsEls.t2Out.textContent = "Six segments sent. One never arrived. Read the server's answers and name the byte it keeps asking for.";
+    hsSetConn("STREAMING");
+  }
+  function hsT2WantCheck() {
+    if (!hsSt.t2.sent || hsSt.t2.wantOk) return;
+    if (hsSt.strikes >= 3) return;
+    var g = TCP72.parseNum(hsEls.t2Want.value);
+    if (g === null) {
+      if (typeof toast === "function") toast("Name the byte first: one number.");
+      return;
+    }
+    var want = hsSt.t2.sim.want;
+    if (g === want) {
+      hsSt.t2.wantOk = true;
+      hsEls.t2Out.textContent = "RIGHT. The server wants byte " + want + " next: every ACK after the loss repeats it.\nNow retransmit ONLY the missing segment. The other five are already receipted.";
+      hsEls.t2Retx.style.display = "";
+      var btns = hsEls.t2Retx.querySelectorAll("button");
+      for (var i = 0; i < btns.length; i++) btns[i].disabled = false;
+      return;
+    }
+    var dead = hsStrike();
+    hsEls.t2Out.textContent = "Wrong byte. Look at the ACKs that repeat: the server names the byte it is still waiting for, not a byte it already has." +
+      (dead ? "\nThree strikes: the room failed." : "\nThe stream has not changed; read the log again.");
+  }
+  function hsT2Retx(segIdx) {
+    if (!hsSt.t2.wantOk || hsSt.t2.done) return;
+    if (hsSt.strikes >= 3) return;
+    var sim = hsSt.t2.sim;
+    if (segIdx === hsSt.t2.drop) {
+      hsSt.t2.done = true;
+      hsEls.t2Out.innerHTML = "RETRANSMIT seq=" + sim.drop.lo + " len=100  ->  SERVER: <span class=\"w\">ACK " +
+        sim.finalAck + "</span>\nAll 600 bytes in order, none missing, none duplicated.\nTRIAL 2 CLEAR. Trial 3 is unlocked.";
+      hsEls.t3Wrap.style.display = "";
+      hsProgress();
+      hsCheckWin();
+      return;
+    }
+    var s = sim.segs[segIdx];
+    hsEls.t2Out.textContent = "SERVER: ACK " + sim.want + " (unchanged). It already has bytes " + s.lo +
+      "-" + s.hi + "; duplicates are absorbed, never double-counted. It still wants " + sim.want + ".";
+    if (typeof toast === "function") toast("Duplicate absorbed. The server still wants " + sim.want + ".");
+  }
+
+  /* ---- trial 3: the wire tap ---- */
+  function hsT3Render() {
+    var c = TCP72.CASES[hsSt.t3.caseKey];
+    hsSt.t3.line = 0;
+    hsSt.t3.diag = null;
+    hsEls.t3Title.textContent = c.label + ": " + c.title;
+    var tb = hsEls.t3Body;
+    tb.innerHTML = "";
+    c.lines.forEach(function (ln, i) {
+      var tr = document.createElement("tr");
+      var tdN = document.createElement("td");
+      tdN.textContent = (i + 1);
+      var tdL = document.createElement("td");
+      tdL.textContent = ln;
+      tr.appendChild(tdN);
+      tr.appendChild(tdL);
+      tb.appendChild(tr);
+    });
+    var lw = hsEls.t3Lines;
+    lw.innerHTML = "";
+    var sel = document.createElement("select");
+    sel.id = "hsT3LineSel";
+    sel.className = "hs-field";
+    sel.setAttribute("aria-label", "Evidence line");
+    var opt0 = document.createElement("option");
+    opt0.value = "0";
+    opt0.textContent = "PICK THE LINE";
+    sel.appendChild(opt0);
+    c.lines.forEach(function (ln, i) {
+      var o = document.createElement("option");
+      o.value = String(i + 1);
+      o.textContent = "LINE " + (i + 1);
+      sel.appendChild(o);
+    });
+    sel.addEventListener("change", function () { hsT3PickLine(parseInt(sel.value, 10) || 0); });
+    lw.appendChild(sel);
+    hsEls.t3LineSel = sel;
+    var dw = hsEls.t3Diags;
+    dw.innerHTML = "";
+    TCP72.DIAGS.forEach(function (d) {
+      var b = hsBtn(d.label, "hs-btn");
+      (function (key, el) {
+        el.addEventListener("click", function () { hsT3PickDiag(key, el); });
+      })(d.key, b);
+      dw.appendChild(b);
+    });
+    hsEls.t3Out.textContent = "Read the tap. Point at the ONE line that proves what went wrong, name the diagnosis, then commit.";
+  }
+  function hsT3PickLine(n) {
+    hsSt.t3.line = n;
+    var rows = hsEls.t3Body.querySelectorAll("tr");
+    for (var j = 0; j < rows.length; j++) rows[j].classList.toggle("sel", j === n - 1);
+  }
+  function hsT3PickDiag(key, el) {
+    hsSt.t3.diag = key;
+    var btns = hsEls.t3Diags.querySelectorAll("button");
+    for (var i = 0; i < btns.length; i++) btns[i].classList.remove("picked");
+    el.classList.add("picked");
+  }
+  function hsT3New() {
+    hsSt.t3.caseIdx = (hsSt.t3.caseIdx + 1) % TCP72.CASE_ORDER.length;
+    hsSt.t3.caseKey = TCP72.CASE_ORDER[hsSt.t3.caseIdx];
+    hsT3Render();
+  }
+  function hsT3Commit() {
+    if (hsSt.t3.done) return;
+    if (hsSt.strikes >= 3) return;
+    if (!hsSt.t3.line) {
+      if (typeof toast === "function") toast("Point at the evidence line first: one LINE button.");
+      hsEls.t3Out.textContent = "A verdict needs evidence. Click the ONE line that proves what went wrong, then commit.";
+      return;
+    }
+    if (!hsSt.t3.diag) {
+      if (typeof toast === "function") toast("Name the diagnosis first: one of the three verdicts.");
+      hsEls.t3Out.textContent = "You pointed at line " + hsSt.t3.line + ". Now name what it proves: pick a diagnosis, then commit.";
+      return;
+    }
+    var c = TCP72.CASES[hsSt.t3.caseKey];
+    if (!TCP72.diagnose(hsSt.t3.caseKey, hsSt.t3.diag)) {
+      var dead = hsStrike();
+      hsEls.t3Out.textContent = "Wrong diagnosis. That verdict does not fit this wire: read the flags and the ACK numbers again, line by line." +
+        (dead ? "\nThree strikes: the room failed." : "\nThe wire has not changed; look again.");
+      return;
+    }
+    if (hsSt.t3.line !== c.evidence) {
+      hsEls.t3Out.textContent = "Diagnosis right, evidence wrong. " + c.evWhy +
+        "\nLook again: which single line carries that proof? (No strike: the verdict was correct.)";
+      return;
+    }
+    hsSt.t3.done = true;
+    hsEls.t3Out.innerHTML = "CONVICTED. " + c.evWhy + "\nTRIAL 3 CLEAR.";
+    hsProgress();
+    hsCheckWin();
+  }
+
+  /* ---- win / fail / reset ---- */
+  function hsCheckWin() {
+    hsProgress();
+    if (hsSt.t1.done && hsSt.t2.done && hsSt.t3.done) {
+      hsSetConn("COMPLETE");
+      hsEls.banner.classList.add("show");
+      var c3 = TCP72.CASES[hsSt.t3.caseKey];
+      hsEls.cert.textContent =
+        "THE HANDSHAKE ROOM, BENCH 72, THE PROVING GROUND\n" +
+        "Trial 1: answered the SYN-ACK with exact numbers (seq " + (hsSt.cIsn + 1) +
+        ", ack " + (hsSt.sIsn + 1) + ").\n" +
+        "Trial 2: named the missing byte (" + hsSt.t2.sim.want +
+        ") and retransmitted only the lost segment.\n" +
+        "Trial 3: convicted the broken wire (" + c3.label + ") from line " + c3.evidence + ".\n" +
+        "Strikes: " + hsSt.strikes + "/3.\n" +
+        "The holder numbers every byte and trusts only the receipts.";
+      if (typeof toast === "function") toast("Handshake complete. The wire is honest now.");
+    }
+  }
+  function hsDownload() {
+    var txt = "THE HANDSHAKE ROOM, BENCH 72, THE PROVING GROUND\n\n" +
+      hsEls.cert.textContent + "\n";
+    var blob = new Blob([txt], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "handshake-room-bench-72.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    if (typeof toast === "function") toast("Qualification record downloaded.");
+  }
+  function hsReset() {
+    hsSalt++;
+    hsSt = hsNewState();
+    hsEls.t1Seq.value = "";
+    hsEls.t1Ack.value = "";
+    hsEls.t1Out.textContent = "The server's SYN-ACK is on the wire. Call your two numbers.";
+    hsEls.doOut.textContent = "The handshake has not run yet.";
+    hsEls.t2Log.textContent = "The stream has not been sent yet.";
+    hsEls.t2Want.value = "";
+    hsEls.t2Out.textContent = "Send the stream first.";
+    hsEls.t2Ask.style.display = "none";
+    hsEls.t2Retx.style.display = "none";
+    hsEls.t2Retx.innerHTML = "";
+    hsT2BuildRetx();
+    hsEls.t3Out.textContent = "Pull a wire from the tap to begin.";
+    hsT3Render();
+    hsEls.strikes.innerHTML = "STRIKES: <span class=\"v\">0/3</span>";
+    hsEls.fail.classList.remove("show");
+    hsEls.banner.classList.remove("show");
+    hsEls.t2Wrap.style.display = "none";
+    hsEls.t3Wrap.style.display = "none";
+    hsSetConn("CLOSED");
+    hsProgress();
+    hsT1ShowSyn();
+  }
+
+  function hsT1ShowSyn() {
+    var html = "SERVER -> YOU   flags=SYN+ACK   seq=" + hsSt.sIsn + "   ack=" + (hsSt.cIsn + 1) +
+      "\n(Your SYN carried seq=" + hsSt.cIsn + ". Answer with YOUR SEQ and YOUR ACK.)";
+    hsEls.t1Syn.textContent = html;
+  }
+  function hsT2BuildRetx() {
+    var base = hsSt.cIsn + 1, B = TCP72.SEG_BYTES;
+    for (var i = 0; i < TCP72.NSEG; i++) {
+      (function (idx) {
+        var lo = base + idx * B, hi = lo + B - 1;
+        var b = hsBtn("RESEND " + lo + "-" + hi, "hs-btn");
+        b.disabled = true;
+        b.addEventListener("click", function () { hsT2Retx(idx); });
+        hsEls.t2Retx.appendChild(b);
+      })(i);
+    }
+  }
+
+  /* ---------------- build ---------------- */
+  function hsBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box) return;
+    if (document.getElementById("hsBtn")) return;
+    hsSalt++;
+    hsSt = hsNewState();
+
+    var sty = document.createElement("style");
+    sty.id = "hsStyle";
+    sty.textContent = HS_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "hsBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Handshake Room";
+    b.addEventListener("click", hsOpen);
+    box.appendChild(b);
+
+    var ov = hsEl("div", "hs-overlay", "");
+    ov.id = "hsOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Handshake Room");
+    var x = hsBtn("CLOSE", "hs-btn");
+    x.id = "hsXBtn";
+    x.style.cssText = "position:fixed;top:12px;right:12px;z-index:95;";
+    x.setAttribute("aria-label", "Close The Handshake Room");
+    x.addEventListener("click", hsClose);
+    ov.appendChild(x);
+    hsEls.overlay = ov;
+    if (!hsEscBound) {
+      hsEscBound = true;
+      document.addEventListener("keydown", function (ev) {
+        if (ev.key === "Escape" && hsEls.overlay && hsEls.overlay.classList.contains("open")) hsClose();
+      });
+    }
+
+    var panel = hsEl("div", "hs-panel", "");
+    panel.id = "hsPanel";
+    panel.appendChild(hsEl("div", "hs-kicker", "BENCH CRAFT BENCH 72"));
+    panel.appendChild(hsEl("h2", "hs-title", "The Handshake Room"));
+
+    var intro = hsEl("div", "", "");
+    intro.innerHTML = TCP72.INTRO_HTML;
+    panel.appendChild(intro);
+
+    /* always-visible state */
+    var conn = hsEl("div", "hs-out", "");
+    conn.id = "hsConn";
+    conn.setAttribute("aria-live", "polite");
+    panel.appendChild(conn);
+    hsEls.conn = conn;
+    var strikes = hsEl("div", "hs-out", "");
+    strikes.id = "hsStrikes";
+    panel.appendChild(strikes);
+    hsEls.strikes = strikes;
+    var prog = hsEl("div", "hs-out", "");
+    prog.id = "hsProgress";
+    panel.appendChild(prog);
+    hsEls.progress = prog;
+
+    /* do first */
+    panel.appendChild(hsEl("h3", "hs-sec", "DO FIRST"));
+    panel.appendChild(hsEl("p", "hs-p", "One button. It runs the worked handshake on the wire: your SYN at 1000, the server's answer at 5000, your reply. Nothing to configure, nothing to break."));
+    var doFirst = hsBtn("RUN THE HANDSHAKE", "hs-btn solid");
+    doFirst.id = "hsDoFirst";
+    doFirst.addEventListener("click", hsDoFirst);
+    panel.appendChild(doFirst);
+    var doOut = hsEl("div", "hs-out", "The handshake has not run yet.");
+    doOut.id = "hsDoOut";
+    doOut.setAttribute("aria-live", "polite");
+    panel.appendChild(doOut);
+    hsEls.doOut = doOut;
+
+    /* trial 1 */
+    panel.appendChild(hsEl("h3", "hs-sec", "TRIAL 1: ANSWER THE SYN-ACK"));
+    panel.appendChild(hsEl("p", "hs-p", "You are the client. The server's SYN-ACK is below, with fresh starting numbers (not the worked example's). Fill YOUR SEQ and YOUR ACK, then CHECK. Each ACK names the next byte wanted, never the last byte received. A wrong number gets an RST and a strike."));
+    var t1Syn = hsEl("div", "hs-out", "");
+    t1Syn.id = "hsT1Syn";
+    panel.appendChild(t1Syn);
+    hsEls.t1Syn = t1Syn;
+    var g1 = hsEl("div", "hs-group", "");
+    g1.appendChild(hsEl("span", "hs-lbl", "YOUR REPLY PACKET"));
+    var row1 = hsEl("div", "hs-row", "");
+    var lab1 = document.createElement("label");
+    lab1.className = "hs-lbl";
+    lab1.setAttribute("for", "hsT1Seq");
+    lab1.textContent = "YOUR SEQ";
+    var t1Seq = document.createElement("input");
+    t1Seq.id = "hsT1Seq";
+    t1Seq.className = "hs-field";
+    t1Seq.setAttribute("inputmode", "numeric");
+    t1Seq.setAttribute("aria-label", "Your sequence number");
+    var lab2 = document.createElement("label");
+    lab2.className = "hs-lbl";
+    lab2.setAttribute("for", "hsT1Ack");
+    lab2.textContent = "YOUR ACK";
+    var t1Ack = document.createElement("input");
+    t1Ack.id = "hsT1Ack";
+    t1Ack.className = "hs-field";
+    t1Ack.setAttribute("inputmode", "numeric");
+    t1Ack.setAttribute("aria-label", "Your acknowledgment number");
+    row1.appendChild(lab1); row1.appendChild(t1Seq);
+    row1.appendChild(lab2); row1.appendChild(t1Ack);
+    g1.appendChild(row1);
+    panel.appendChild(g1);
+    hsEls.t1Seq = t1Seq; hsEls.t1Ack = t1Ack;
+    var t1Check = hsBtn("CHECK THE NUMBERS", "hs-btn solid");
+    t1Check.id = "hsT1Check";
+    t1Check.addEventListener("click", hsT1Check);
+    panel.appendChild(t1Check);
+    var t1Out = hsEl("div", "hs-out", "The server's SYN-ACK is on the wire. Call your two numbers.");
+    t1Out.id = "hsT1Out";
+    t1Out.setAttribute("aria-live", "polite");
+    panel.appendChild(t1Out);
+    hsEls.t1Out = t1Out;
+
+    /* trial 2 */
+    var t2Wrap = hsEl("div", "", "");
+    t2Wrap.id = "hsT2Wrap";
+    t2Wrap.style.display = "none";
+    t2Wrap.appendChild(hsEl("h3", "hs-sec", "TRIAL 2: THE LOST SEGMENT"));
+    t2Wrap.appendChild(hsEl("p", "hs-p", "Six segments of 100 bytes leave your machine; the wire eats exactly one. Watch the server's ACKs, name the byte it keeps asking for, then retransmit ONLY the missing segment. Resending one it already has changes nothing: duplicates are absorbed."));
+    var t2Send = hsBtn("SEND THE STREAM", "hs-btn solid");
+    t2Send.id = "hsT2Send";
+    t2Send.addEventListener("click", hsT2Send);
+    t2Wrap.appendChild(t2Send);
+    var t2Log = hsEl("div", "hs-out", "The stream has not been sent yet.");
+    t2Log.id = "hsT2Log";
+    t2Log.setAttribute("aria-live", "polite");
+    t2Wrap.appendChild(t2Log);
+    hsEls.t2Log = t2Log;
+    var t2Ask = hsEl("div", "", "");
+    t2Ask.id = "hsT2Ask";
+    t2Ask.style.display = "none";
+    t2Ask.appendChild(hsEl("p", "hs-p", "Predict, then verify: which byte does the server want next?"));
+    var wrow = hsEl("div", "hs-row", "");
+    var wlab = document.createElement("label");
+    wlab.className = "hs-lbl";
+    wlab.setAttribute("for", "hsT2Want");
+    wlab.textContent = "THE SERVER WANTS BYTE";
+    var t2Want = document.createElement("input");
+    t2Want.id = "hsT2Want";
+    t2Want.className = "hs-field";
+    t2Want.setAttribute("inputmode", "numeric");
+    t2Want.setAttribute("aria-label", "The byte the server wants next");
+    wrow.appendChild(wlab); wrow.appendChild(t2Want);
+    t2Ask.appendChild(wrow);
+    hsEls.t2Want = t2Want;
+    var t2WantCheck = hsBtn("CHECK THE BYTE", "hs-btn solid");
+    t2WantCheck.id = "hsT2WantCheck";
+    t2WantCheck.addEventListener("click", hsT2WantCheck);
+    t2Ask.appendChild(t2WantCheck);
+    t2Wrap.appendChild(t2Ask);
+    hsEls.t2Ask = t2Ask;
+    var t2Out = hsEl("div", "hs-out", "Send the stream first.");
+    t2Out.id = "hsT2Out";
+    t2Out.setAttribute("aria-live", "polite");
+    t2Wrap.appendChild(t2Out);
+    hsEls.t2Out = t2Out;
+    var t2Retx = hsEl("div", "hs-row", "");
+    t2Retx.id = "hsT2Retx";
+    t2Retx.style.display = "none";
+    t2Wrap.appendChild(t2Retx);
+    hsEls.t2Retx = t2Retx;
+    panel.appendChild(t2Wrap);
+    hsEls.t2Wrap = t2Wrap;
+
+    /* trial 3 */
+    var t3Wrap = hsEl("div", "", "");
+    t3Wrap.id = "hsT3Wrap";
+    t3Wrap.style.display = "none";
+    t3Wrap.appendChild(hsEl("h3", "hs-sec", "TRIAL 3: THE WIRE TAP"));
+    t3Wrap.appendChild(hsEl("p", "hs-p", "Three broken wires sit on the tap. Pull one, read its packets, point at the ONE line that proves what went wrong, name the diagnosis, and commit. A right diagnosis with the wrong evidence line costs no strike; a wrong diagnosis does."));
+    var t3New = hsBtn("NEW WIRE", "hs-btn");
+    t3New.id = "hsT3New";
+    t3New.addEventListener("click", hsT3New);
+    t3Wrap.appendChild(t3New);
+    var t3Title = hsEl("div", "hs-out", "");
+    t3Title.id = "hsT3Title";
+    t3Wrap.appendChild(t3Title);
+    hsEls.t3Title = t3Title;
+    var tapWrap = hsEl("div", "hs-scrollx", "");
+    var tapTbl = hsEl("table", "hs-table", "");
+    tapTbl.setAttribute("aria-label", "Wire tap trace");
+    var thead = hsEl("thead", "", "");
+    var hr = hsEl("tr", "", "");
+    hr.appendChild(hsEl("th", "", "LINE"));
+    hr.appendChild(hsEl("th", "", "PACKET"));
+    thead.appendChild(hr);
+    tapTbl.appendChild(thead);
+    var t3Body = hsEl("tbody", "", "");
+    t3Body.id = "hsT3Body";
+    tapTbl.appendChild(t3Body);
+    tapWrap.appendChild(tapTbl);
+    t3Wrap.appendChild(tapWrap);
+    hsEls.t3Body = t3Body;
+    t3Wrap.appendChild(hsEl("span", "hs-lbl", "EVIDENCE LINE"));
+    var t3Lines = hsEl("div", "hs-row", "");
+    t3Lines.id = "hsT3Lines";
+    t3Wrap.appendChild(t3Lines);
+    hsEls.t3Lines = t3Lines;
+    t3Wrap.appendChild(hsEl("span", "hs-lbl", "DIAGNOSIS"));
+    var t3Diags = hsEl("div", "hs-row", "");
+    t3Diags.id = "hsT3Diags";
+    t3Wrap.appendChild(t3Diags);
+    hsEls.t3Diags = t3Diags;
+    var t3Commit = hsBtn("COMMIT DIAGNOSIS", "hs-btn solid");
+    t3Commit.id = "hsT3Commit";
+    t3Commit.addEventListener("click", hsT3Commit);
+    t3Wrap.appendChild(t3Commit);
+    var t3Out = hsEl("div", "hs-out", "Pull a wire from the tap to begin.");
+    t3Out.id = "hsT3Out";
+    t3Out.setAttribute("aria-live", "polite");
+    t3Wrap.appendChild(t3Out);
+    hsEls.t3Out = t3Out;
+    panel.appendChild(t3Wrap);
+    hsEls.t3Wrap = t3Wrap;
+
+    /* fail card */
+    var fail = hsEl("div", "hs-fail", "");
+    fail.id = "hsFail";
+    fail.appendChild(hsEl("h3", "", "THE ROOM FAILED"));
+    fail.appendChild(hsEl("p", "hs-p", "Three strikes. The wire hung up on you, which is exactly what it does to wrong numbers. Reset the room: the numbers are re-dealt and the strikes clear."));
+    var reset = hsBtn("RESET ROOM", "hs-btn solid");
+    reset.id = "hsReset";
+    reset.addEventListener("click", hsReset);
+    fail.appendChild(reset);
+    panel.appendChild(fail);
+    hsEls.fail = fail;
+
+    /* win banner */
+    var banner = hsEl("div", "hs-banner", "");
+    banner.id = "hsBanner";
+    banner.appendChild(hsEl("h3", "", "HANDSHAKE COMPLETE: THE WIRE IS HONEST NOW"));
+    var cert = hsEl("div", "hs-cert", "");
+    cert.id = "hsCert";
+    banner.appendChild(cert);
+    hsEls.cert = cert;
+    var dl = hsBtn("DOWNLOAD QUALIFICATION RECORD", "hs-btn");
+    dl.id = "hsDl";
+    dl.addEventListener("click", hsDownload);
+    banner.appendChild(dl);
+    panel.appendChild(banner);
+    hsEls.banner = banner;
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    hsT1ShowSyn();
+    hsT2BuildRetx();
+    hsT3Render();
+    hsSetConn("CLOSED");
+    hsProgress();
+    hsEls.strikes.innerHTML = "STRIKES: <span class=\"v\">0/3</span>";
+  }
+
+  function hsOpen() {
+    hsReset();
+    hsEls.overlay.classList.add("open");
+    if (hsEls.overlay.scrollTo) hsEls.overlay.scrollTo(0, 0);
+    var c = document.getElementById("hsXBtn");
+    if (c) c.focus();
+  }
+  function hsClose() {
+    hsEls.overlay.classList.remove("open");
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", hsBuild);
+  } else {
+    hsBuild();
+  }
+
+  /* debug hooks for the smoke test */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.hsDebug = {
+      state: function () { return hsSt; },
+      reseed: function (s) { hsSalt = s; },
+      els: function () { return hsEls; }
+    };
+  }
+})();
