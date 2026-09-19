@@ -58137,6 +58137,15 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(banner);
     hsEls.banner = banner;
 
+    /* hire line: the crash-triage offer at the foot of the bench, matching the
+       Bench 71 pattern. The hire-chooser module binds [data-brief] triggers
+       document-wide, so this button opens the pre-filled triage chooser tagged
+       with this bench. Copy only; no bench logic, CSS, or shell touched. */
+    var hsHire = hsEl("p", "hs-p", "");
+    hsHire.innerHTML = "Your board's handshakes dying on the real wire? " +
+      "<button type=\"button\" class=\"hs-btn\" data-brief=\"triage\" data-bench-tag=\"Bench 72: The Handshake Room\">Fixed-price crash triage</button>";
+    panel.appendChild(hsHire);
+
     ov.appendChild(panel);
     document.body.appendChild(ov);
 
