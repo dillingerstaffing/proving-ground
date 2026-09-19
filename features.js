@@ -22570,7 +22570,7 @@ if (typeof module !== "undefined" && module.exports) {
     var leg = dcEl("table", "dc-legend");
     leg.setAttribute("aria-label", "Capacitor types");
     var trh = dcEl("tr");
-    ["TYPE", "CAPACITANCE", "ESL", "ESR", "ROLE"].forEach(function (h) {
+    ["TYPE", "CAPACITANCE", "ESL (EQUIVALENT SERIES INDUCTANCE)", "ESR (EQUIVALENT SERIES RESISTANCE)", "ROLE"].forEach(function (h) {
       trh.appendChild(dcEl("th", null, h));
     });
     leg.appendChild(trh);
