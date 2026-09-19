@@ -58183,3 +58183,769 @@ if (typeof module !== "undefined" && module.exports) {
     };
   }
 })();
+
+
+/* BENCH 73: THE DENSE ROOM (arch)
+   RISC-V's C extension packs the common operations into 16-bit
+   encodings, and the decoder learns each instruction's length from the
+   first two bits it reads: 00, 01, or 10 means a 16-bit instruction, 11
+   means 32 bits (or longer). Three trials on real assembler encodings:
+   call the length of each parcel with the two-bit rule in hand, walk a
+   ten-instruction mixed stream the way the fetch unit does, then convict
+   the stale jump table that dropped a hart into the middle of its own
+   32-bit instruction.
+   One sentence takeaway: in RISC-V, the lowest two bits of the first
+   16-bit parcel decide the instruction's length.
+   Pure sim hooks live in DN73 for the smoke test; the DOM engine below
+   drives the same code. */
+(function () {
+  "use strict";
+
+  /* ---------------- pure hooks (testable, no DOM) ---------------- */
+  function dnLenOf(parcel) { return ((parcel & 3) === 3) ? 32 : 16; }
+  function dnBin16(p) {
+    var s = "";
+    for (var i = 15; i >= 0; i--) s += ((p >> i) & 1) ? "1" : "0";
+    return s;
+  }
+  function dnHex(n, w) {
+    var s = (n >>> 0).toString(16).toUpperCase();
+    while (s.length < w) s = "0" + s;
+    return "0x" + s;
+  }
+  function dnQuad(parcel) {
+    var q = parcel & 3;
+    if (q === 3) return "32-BIT";
+    return "QUADRANT " + q;
+  }
+
+  /* Trial 1: eight parcels, two-bit rule in hand. Real encodings from
+     riscv64-unknown-elf-as -march=rv32imc. second: the parcel a 32-bit
+     fetch eats along with the first. */
+  var DN_T1 = [
+    { pc: 0x1000, parcel: 0x0001, second: 0 },
+    { pc: 0x1002, parcel: 0x4515, second: 0 },
+    { pc: 0x1004, parcel: 0x85AA, second: 0 },
+    { pc: 0x1006, parcel: 0x0633, second: 0x00B5 },
+    { pc: 0x100A, parcel: 0x4114, second: 0 },
+    { pc: 0x100C, parcel: 0xF0EF, second: 0xFE7F },
+    { pc: 0x1010, parcel: 0x8280, second: 0 },
+    { pc: 0x1012, parcel: 0x9002, second: 0 }
+  ];
+
+  /* Trial 2: ten real instructions, the actual bytes of a tiny function
+     assembled with the C extension on. name: what the assembler meant. */
+  var DN_T2 = [
+    { pc: 0x1000, parcel: 0x0001, second: 0,      name: "c.nop" },
+    { pc: 0x1002, parcel: 0x4515, second: 0,      name: "c.li a0, 5" },
+    { pc: 0x1004, parcel: 0x85AA, second: 0,      name: "c.mv a1, a0" },
+    { pc: 0x1006, parcel: 0x051D, second: 0,      name: "c.addi a0, a0, 7" },
+    { pc: 0x1008, parcel: 0x0633, second: 0x00B5, name: "add a2, a0, a1" },
+    { pc: 0x100C, parcel: 0x4114, second: 0,      name: "c.lw a3, 0(a0)" },
+    { pc: 0x100E, parcel: 0x5841, second: 0,      name: "c.lw a4, 4(a0)" },
+    { pc: 0x1010, parcel: 0x94C1, second: 0,      name: "c.sw a3, 0(a1)" },
+    { pc: 0x1012, parcel: 0x98C5, second: 0,      name: "c.sw a4, 8(a1)" },
+    { pc: 0x1014, parcel: 0xF0EF, second: 0xFE7F, name: "jal ra, _start" }
+  ];
+
+  /* Trial 3: the stale table. Memory parcels, the intended jump target,
+     and the actual (buggy) target. The decoder is blameless: every fetch
+     below reads bits[1:0] exactly right. */
+  var DN_T3_MEM = [
+    { addr: 0x2000, parcel: 0x4515 },
+    { addr: 0x2002, parcel: 0xF0EF },
+    { addr: 0x2004, parcel: 0xFE7F },
+    { addr: 0x2006, parcel: 0x01E3 },
+    { addr: 0x2008, parcel: 0x0000 },
+    { addr: 0x200A, parcel: 0x9002 }
+  ];
+  var DN_T3_WANT = 0x2006;  /* where slot 7 should point in the new build */
+  var DN_T3_GOT = 0x2004;   /* where the stale table actually sent the hart */
+  var DN_T3_OPTS = [
+    { key: "misread",
+      label: "THE DECODER MISREAD THE LENGTH AT 0x2004" },
+    { key: "stale",
+      label: "THE STALE TABLE SENT THE HART TO 0x2004, THE MIDDLE OF THE 32-BIT INSTRUCTION AT 0x2002" },
+    { key: "ebreak",
+      label: "THE EBREAK AT 0x200A FIRED BEFORE THE ILLEGAL INSTRUCTION" }
+  ];
+
+  /* Walk a parcel list the way the fetch unit does. parcels: array of
+     {parcel, second}; returns the fetch records with next PCs. */
+  function dnWalk(rows, startPc) {
+    var pc = startPc, out = [], i;
+    for (i = 0; i < rows.length; i++) {
+      var len = dnLenOf(rows[i].parcel);
+      out.push({ n: i + 1, pc: pc, parcel: rows[i].parcel,
+                 second: rows[i].second || 0, len: len, next: pc + len / 8 });
+      pc += len / 8;
+    }
+    return out;
+  }
+  function dnT1Key() {
+    return DN_T1.map(function (r) { return dnLenOf(r.parcel); });
+  }
+  function dnT2Key() {
+    return DN_T2.map(function (r) { return dnLenOf(r.parcel); });
+  }
+  /* answers: array of 16/32 (or 0 for unset), in trial-2 order. */
+  function dnCheckT2(answers) {
+    var key = dnT2Key(), wrong = [], i;
+    for (i = 0; i < key.length; i++) {
+      if (answers[i] !== key[i]) wrong.push(i + 1);
+    }
+    return { ok: wrong.length === 0, wrong: wrong, key: key };
+  }
+  function dnT3Correct(choice) { return choice === "stale"; }
+  function dnT3Trace() {
+    /* The actual (buggy) fetch trace, derived from the memory map. */
+    return [
+      { pc: 0x2004, parcel: 0xFE7F, len: 32, eats: "0x2004, 0x2006",
+        next: 0x2008, note: "bits[1:0]=11, so 32-bit: eats the parcel at 0x2006 too" },
+      { pc: 0x2008, parcel: 0x0000, len: 16, eats: "0x2008",
+        next: 0x200A, note: "bits[1:0]=00, so 16-bit. 0x0000 is always illegal: TRAP" }
+    ];
+  }
+  function dnT3Healthy() {
+    return [
+      { pc: 0x2006, parcel: 0x01E3, len: 32, next: 0x200A,
+        note: "bits[1:0]=11, so 32-bit: eats 0x2008 as its second parcel" },
+      { pc: 0x200A, parcel: 0x9002, len: 16, next: 0x200C,
+        note: "bits[1:0]=10, so 16-bit (c.ebreak): clean breakpoint stop" }
+    ];
+  }
+  function dnT2Bytes() {
+    var b = 0, i;
+    for (i = 0; i < DN_T2.length; i++) b += dnLenOf(DN_T2[i].parcel) / 8;
+    return b;
+  }
+
+  var DN73 = {
+    lenOf: dnLenOf, bin16: dnBin16, hex: dnHex, quad: dnQuad,
+    T1: DN_T1, T2: DN_T2, T3MEM: DN_T3_MEM, T3WANT: DN_T3_WANT,
+    T3GOT: DN_T3_GOT, T3OPTS: DN_T3_OPTS,
+    walk: dnWalk, t1Key: dnT1Key, t2Key: dnT2Key, checkT2: dnCheckT2,
+    t3Correct: dnT3Correct, t3Trace: dnT3Trace, t3Healthy: dnT3Healthy,
+    t2Bytes: dnT2Bytes
+  };
+
+  /* Intro copy: why first, worked example with the hooks' own numbers,
+     failure modes named, terms earned in dependency order. The worked
+     rows are rendered from DN_T1 so copy can never drift from the sim. */
+  var DN_WE_ROWS = [DN_T1[1], DN_T1[3]].map(function (r) {
+    var len = dnLenOf(r.parcel), bits = dnBin16(r.parcel).slice(14);
+    var nxt = dnHex(r.pc + len / 8, 4);
+    var eat = len === 32 ? " Eats " + dnHex(r.second, 4) + " at " +
+      dnHex(r.pc + 2, 4) + " as its second parcel." : "";
+    return "<tr><td>" + dnHex(r.pc, 4) + "</td><td>" + dnHex(r.parcel, 4) +
+      "</td><td>" + bits + "</td><td>" + dnQuad(r.parcel) + "</td><td>" +
+      len + "-BIT</td><td>" + nxt + "</td></tr>" +
+      "<tr class=\"dn-sub\"><td colspan=\"6\">" + eat.replace(/^ /, "") +
+      " Next fetch at " + nxt + ".</td></tr>";
+  }).join("");
+
+  DN73.INTRO_HTML = [
+    "<div class=\"dn-sec\">WHY THIS BENCH EXISTS</div>",
+    "<p class=\"dn-p\">Flash is the most expensive square millimeter on a microcontroller, and every wasted byte is a feature that does not ship. RISC-V's answer is the C extension: the common operations get 16-bit encodings, and real programs shrink by about a quarter. The trick that makes it work is almost rude in its simplicity. The decoder reads 16 bits, looks at the <b>lowest two</b>, and only fetches 16 more when those two bits read 11. Everything downstream, the PC arithmetic, the jump tables, the disassemblers, stands or falls on reading those two bits right. This room is those two bits.</p>",
+    "<div class=\"dn-sec\">THE WORKED EXAMPLE</div>",
+    "<p class=\"dn-p\">Two real parcels from the assembler, checked by hand. Read the lowest two bits first, decide the length, then the next PC is arithmetic:</p>",
+    "<div class=\"dn-scrollx\"><table class=\"dn-table\" aria-label=\"Worked length decode\">",
+    "<thead><tr><th>PC</th><th>PARCEL</th><th>BITS[1:0]</th><th>QUADRANT</th><th>LENGTH</th><th>NEXT PC</th></tr></thead>",
+    "<tbody>" + DN_WE_ROWS + "</tbody></table></div>",
+    "<p class=\"dn-p\">0x4515 ends in 01, so it is 16 bits and the next fetch is at 0x1004. 0x0633 ends in 11, so it is 32 bits: it eats the parcel at 0x1008 too, and the next fetch is at 0x100A. That is the entire mechanism. Trial 1 hands you eight parcels and the rule; trial 2 takes the training wheels off.</p>",
+    "<div class=\"dn-sec\">THE CANONICAL VIEW</div>",
+    "<p class=\"dn-p\">This is the quadrant table from the RISC-V ISA manual, the standard map every textbook draws for instruction length. Bits[1:0] of the first parcel pick the row; the row picks the length.</p>",
+    "<div class=\"dn-scrollx\"><table class=\"dn-table\" aria-label=\"Length quadrant table\">",
+    "<thead><tr><th>BITS[1:0]</th><th>NAME</th><th>LENGTH</th></tr></thead>",
+    "<tbody>",
+    "<tr><td>00</td><td>Quadrant 0</td><td>16-bit</td></tr>",
+    "<tr><td>01</td><td>Quadrant 1</td><td>16-bit</td></tr>",
+    "<tr><td>10</td><td>Quadrant 2</td><td>16-bit</td></tr>",
+    "<tr><td class=\"hot\">11</td><td class=\"hot\">32-bit and longer</td><td class=\"hot\">fetch the second parcel</td></tr>",
+    "</tbody></table></div>",
+    "<div class=\"dn-sec\">THE FAILURE MODES</div>",
+    "<ul class=\"dn-list\">",
+    "<li>Jump into the middle of a 32-bit instruction and the decoder <b>happily decodes the second half as a fresh start</b>. The program does not crash where the bug is: it desynchronizes and dies somewhere downstream, or worse, keeps running the wrong program. Trial 3 is this exact death.</li>",
+    "<li>Any tool that steps through code four bytes at a time misparses every compressed instruction it meets. Disassemblers must walk lengths, exactly the skill trial 2 drills.</li>",
+    "<li>A chip built without the C extension (a hart is one hardware thread, one core's worth of execution) faults on the first 2-byte-aligned fetch: instruction-address-misaligned. The same binary that sings on one chip dies on its smaller cousin.</li>",
+    "</ul>",
+    "<div class=\"dn-sec\">WHERE THIS LIVES</div>",
+    "<p class=\"dn-p\"><a href=\"#bench=26\" target=\"_blank\" rel=\"noopener\">The Decode Bench</a> taught you to read a 32-bit instruction's fields; this room teaches the step before that: finding where each instruction starts. Every RISC-V lab on the portfolio assembles with the C extension on, so every binary you have built there is a mixed stream like trial 2's. The fetch unit does this walk billions of times a second; now you can do it too.</p>",
+    "<div class=\"dn-sec\">OPTIONAL DEPTH</div>",
+    "<p class=\"dn-p\">The full rule has an escape hatch: a first parcel ending in 11 whose next three bits are all 1 opens the 48-bit, 64-bit, and longer encodings in the spec's length table. This bench sticks to 16 and 32, which is every real program.</p>"
+  ].join("\n");
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.DN73 = DN73;
+  }
+
+  /* ---------------- DOM engine ---------------- */
+  var DN_CSS = [
+    ".dn-overlay{position:fixed;inset:0;z-index:90;background:var(--ink);display:none;overflow-y:auto;}",
+    ".dn-overlay.open{display:block;}",
+    ".dn-panel{max-width:860px;margin:0 auto;padding:28px 18px 60px;color:var(--paper);}",
+    ".dn-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);}",
+    ".dn-title{font-family:'Space Grotesk',sans-serif;font-size:34px;margin:6px 0 10px;color:var(--paper);}",
+    ".dn-sec{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.16em;color:var(--ember);margin:26px 0 10px;padding-top:16px;border-top:1px solid var(--line);}",
+    ".dn-p{font-size:13.5px;line-height:1.7;color:var(--dim);max-width:74ch;margin:0 0 12px;}",
+    ".dn-p b{color:var(--paper);}",
+    ".dn-p a{color:var(--ember);}",
+    ".dn-list{margin:0 0 12px;padding-left:20px;max-width:74ch;}",
+    ".dn-list li{font-size:13.5px;line-height:1.7;color:var(--dim);margin:0 0 8px;}",
+    ".dn-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.06em;background:transparent;color:var(--paper);border:1px solid var(--line);padding:12px 16px;min-height:48px;cursor:pointer;}",
+    ".dn-btn:hover{border-color:var(--ember);}",
+    ".dn-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+    ".dn-btn:disabled{opacity:.38;cursor:not-allowed;}",
+    ".dn-btn.solid{background:var(--ember);border-color:var(--ember);color:var(--ink);font-weight:700;}",
+    ".dn-btn.picked{border-color:var(--ember);color:var(--ember);}",
+    ".dn-btn.right{border-color:var(--ember);}",
+    ".dn-btn.wrong{opacity:.45;}",
+    ".dn-out{font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.75;color:var(--dim);background:var(--panel);border:1px solid var(--line);padding:14px 16px;margin:0 0 12px;white-space:pre-wrap;}",
+    ".dn-out .v{color:var(--ember);}",
+    ".dn-out .w{color:var(--paper);font-weight:700;}",
+    ".dn-scrollx{overflow-x:auto;margin:0 0 12px;border:1px solid var(--line);}",
+    ".dn-scrollx .dn-table{margin:0;border:none;}",
+    ".dn-table{width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--dim);background:var(--panel);}",
+    ".dn-table th{font-size:10px;letter-spacing:.1em;color:var(--paper);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap;}",
+    ".dn-table td{padding:7px 10px;border-bottom:1px solid var(--line);white-space:nowrap;}",
+    ".dn-table tr:last-child td{border-bottom:none;}",
+    ".dn-table tr.dn-sub td{border-bottom:1px solid var(--line);color:var(--dim);font-size:11px;white-space:normal;}",
+    ".dn-table td.hot{color:var(--ember);}",
+    ".dn-bits{display:flex;flex-wrap:wrap;gap:3px;margin:10px 0;}",
+    ".dn-bit{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--dim);border:1px solid var(--line);min-width:20px;height:30px;display:flex;align-items:center;justify-content:center;padding:0 2px;}",
+    ".dn-bit.hot{color:var(--ember);border-color:var(--ember);font-weight:700;}",
+    ".dn-bit.dim{opacity:.35;}",
+    ".dn-row{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 12px;align-items:center;}",
+    ".dn-t2row{border:1px solid var(--line);background:var(--panel);padding:10px 12px;margin:0 0 8px;}",
+    ".dn-t2row .dn-meta{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--dim);margin-bottom:8px;}",
+    ".dn-t2row .dn-meta .w{color:var(--paper);font-weight:700;}",
+    ".dn-verdict{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;margin-left:8px;}",
+    ".dn-verdict.ok{color:var(--ember);}",
+    ".dn-verdict.bad{color:var(--dim);text-decoration:line-through;}",
+    ".dn-opt{display:block;width:100%;text-align:left;margin:0 0 8px;}",
+    ".dn-banner{border:1px solid var(--ember);padding:18px;margin:0 0 16px;display:none;}",
+    ".dn-banner.show{display:block;}",
+    ".dn-banner h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--ember);margin:0 0 8px;}",
+    ".dn-cert{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:var(--dim);margin:0 0 12px;white-space:pre-wrap;}",
+    ".dn-fail{border:1px solid var(--ember);padding:18px;margin:0 0 16px;display:none;}",
+    ".dn-fail.show{display:block;}",
+    ".dn-fail h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--ember);margin:0 0 8px;}",
+    "@media (max-width:620px){.dn-title{font-size:27px;}.dn-table th,.dn-table td{white-space:normal;padding:5px 6px;font-size:11px;letter-spacing:0;}.dn-bit{min-width:17px;height:28px;font-size:11px;}}"
+  ].join("\n");
+
+  function dnEl(tag, cls, html) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (html != null) e.innerHTML = html;
+    return e;
+  }
+  function dnBtn(label, cls) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = cls || "dn-btn";
+    b.textContent = label;
+    return b;
+  }
+
+  var dnEls = {};
+  var dnSt = null;
+  var dnEscBound = false;
+
+  function dnNewState() {
+    return { strikes: 0, failed: false,
+             t1: { idx: 0, score: 0, done: false },
+             t2: { ans: {}, done: false },
+             t3: { done: false, picked: null } };
+  }
+
+  function dnProgress() {
+    var s = dnSt, parts = [];
+    parts.push("TRIAL 1 " + (s.t1.done ? "PASS (" + s.t1.score + "/8)" : "OPEN"));
+    parts.push("TRIAL 2 " + (s.t2.done ? "PASS" : "OPEN"));
+    parts.push("TRIAL 3 " + (s.t3.done ? "PASS" : "OPEN"));
+    dnEls.progress.innerHTML = parts.join(" · ");
+    dnEls.strikes.innerHTML = "STRIKES: <span class=\"v\">" + s.strikes + "/3</span>";
+  }
+
+  function dnStrike(msg) {
+    dnSt.strikes++;
+    dnProgress();
+    if (dnSt.strikes >= 3 && !dnSt.failed) {
+      dnSt.failed = true;
+      dnEls.fail.classList.add("show");
+      dnEls.failMsg.textContent = msg +
+        " That is strike three. The bench resets clean; the two bits will wait.";
+    }
+    return dnSt.failed;
+  }
+
+  function dnMaybeCertify() {
+    if (dnSt.t1.done && dnSt.t2.done && dnSt.t3.done && !dnEls.banner.classList.contains("show")) {
+      var bytes = DN73.t2Bytes();
+      var saved = 40 - bytes;
+      dnEls.cert.textContent =
+        "THE DENSE ROOM, BENCH 73, THE PROVING GROUND\n\n" +
+        "Trial 1: called " + dnSt.t1.score + "/8 parcel lengths with the two-bit rule.\n" +
+        "Trial 2: walked the 10-instruction mixed stream, all lengths correct.\n" +
+        "Trial 3: convicted the stale jump table: slot 7 sent the hart to 0x2004,\n" +
+        "  the middle of the 32-bit instruction at 0x2002. The decoder was blameless.\n" +
+        "Strikes: " + dnSt.strikes + "\n\n" +
+        "The mixed stream is " + bytes + " bytes; all 32-bit would be 40.\n" +
+        "The C extension saved " + saved + " bytes here, 40 percent.\n\n" +
+        "Two bits decide every length. 00, 01, 10: 16-bit. 11: 32-bit.";
+      dnEls.banner.classList.add("show");
+      if (typeof toast === "function") toast("Room certified: The Dense Room.");
+    }
+  }
+
+  /* ---- trial 1: do first ---- */
+  function dnT1Render() {
+    var s = dnSt.t1, wrap = dnEls.t1Card;
+    wrap.innerHTML = "";
+    if (s.done) {
+      wrap.appendChild(dnEl("div", "dn-out",
+        "Trial 1 complete: <span class=\"v\">" + s.score + "/8</span>. The two-bit rule is yours."));
+      return;
+    }
+    var r = DN_T1[s.idx], len = dnLenOf(r.parcel), bits = dnBin16(r.parcel);
+    var head = dnEl("div", "dn-out", "");
+    var i, b;
+    var brow = dnEl("div", "dn-bits", "");
+    brow.setAttribute("aria-label", "Parcel bits, most significant first");
+    for (i = 0; i < 16; i++) {
+      b = dnEl("span", "dn-bit" + (i >= 14 ? " hot" : ""), bits[i]);
+      brow.appendChild(b);
+    }
+    head.appendChild(dnEl("div", "", "PC <span class=\"w\">" + dnHex(r.pc, 4) +
+      "</span> · PARCEL <span class=\"w\">" + dnHex(r.parcel, 4) + "</span>" +
+      (len === 32 ? " · NEXT PARCEL <span class=\"w\">" + dnHex(r.second, 4) + "</span> (fetched with it)" : "")));
+    head.appendChild(brow);
+    head.appendChild(dnEl("div", "",
+      "The two <span class=\"v\">ember</span> bits are bits[1:0]. " +
+      "Parcel " + (s.idx + 1) + " of 8. Score so far: " +
+      "<span class=\"w\">" + s.score + "/" + s.idx + "</span>."));
+    wrap.appendChild(head);
+    var row = dnEl("div", "dn-row", "");
+    var b16 = dnBtn("16-BIT", "dn-btn solid"), b32 = dnBtn("32-BIT", "dn-btn solid");
+    b16.id = "dnT1B16"; b32.id = "dnT1B32";
+    b16.setAttribute("aria-label", "Call 16-bit");
+    b32.setAttribute("aria-label", "Call 32-bit");
+    b16.addEventListener("click", function () { dnT1Call(16); });
+    b32.addEventListener("click", function () { dnT1Call(32); });
+    row.appendChild(b16); row.appendChild(b32);
+    wrap.appendChild(row);
+  }
+  function dnT1Call(call) {
+    var s = dnSt.t1;
+    if (s.done || dnSt.failed) return;
+    var r = DN_T1[s.idx], want = dnLenOf(r.parcel), bits2 = dnBin16(r.parcel).slice(14);
+    var ok = call === want;
+    if (ok) s.score++;
+    var line = (ok ? "RIGHT. " : "NOT QUITE. ") + dnHex(r.parcel, 4) +
+      " ends in " + bits2 + " (" + dnQuad(r.parcel) + "): " + want + "-bit." +
+      (want === 32 ? " It eats " + dnHex(r.second, 4) + " too." : "") +
+      " Next fetch at " + dnHex(r.pc + want / 8, 4) + ".";
+    dnEls.t1Out.innerHTML = line;
+    s.idx++;
+    if (s.idx >= DN_T1.length) {
+      s.done = true;
+      dnEls.t2Wrap.style.display = "";
+      dnEls.t1Out.innerHTML += "<br><br><span class=\"w\">Trial 1 complete: " +
+        s.score + "/8.</span> Trial 2 takes the highlighted bits away.";
+    }
+    dnT1Render();
+    dnProgress();
+    dnMaybeCertify();
+  }
+
+  /* ---- trial 2: walk the stream ---- */
+  function dnT2Render() {
+    var wrap = dnEls.t2Rows;
+    wrap.innerHTML = "";
+    DN_T2.forEach(function (r, i) {
+      var row = dnEl("div", "dn-t2row", "");
+      row.id = "dnT2Row" + i;
+      var meta = dnEl("div", "dn-meta", "");
+      meta.innerHTML = "<span class=\"w\">#" + (i + 1) + "</span> PC " + dnHex(r.pc, 4) +
+        " · PARCEL " + dnHex(r.parcel, 4) + " · " + r.name +
+        "<span class=\"dn-verdict\" id=\"dnT2V" + i + "\"></span>";
+      row.appendChild(meta);
+      var brow = dnEl("div", "dn-row", "");
+      var b16 = dnBtn("16", "dn-btn"), b32 = dnBtn("32", "dn-btn");
+      b16.id = "dnT2A" + i + "16"; b32.id = "dnT2A" + i + "32";
+      b16.setAttribute("aria-label", "Instruction " + (i + 1) + ": 16-bit");
+      b32.setAttribute("aria-label", "Instruction " + (i + 1) + ": 32-bit");
+      b16.setAttribute("aria-pressed", "false");
+      b32.setAttribute("aria-pressed", "false");
+      (function (idx, btn16, btn32) {
+        btn16.addEventListener("click", function () { dnT2Pick(idx, 16); });
+        btn32.addEventListener("click", function () { dnT2Pick(idx, 32); });
+      })(i, b16, b32);
+      brow.appendChild(b16); brow.appendChild(b32);
+      row.appendChild(brow);
+      wrap.appendChild(row);
+    });
+    dnT2PaintPicks();
+  }
+  function dnT2Pick(i, len) {
+    if (dnSt.t2.done || dnSt.failed) return;
+    dnSt.t2.ans[i] = len;
+    dnT2PaintPicks();
+  }
+  function dnT2PaintPicks() {
+    DN_T2.forEach(function (r, i) {
+      var a = dnSt.t2.ans[i];
+      var b16 = document.getElementById("dnT2A" + i + "16");
+      var b32 = document.getElementById("dnT2A" + i + "32");
+      if (!b16 || !b32) return;
+      b16.classList.toggle("picked", a === 16);
+      b32.classList.toggle("picked", a === 32);
+      b16.setAttribute("aria-pressed", a === 16 ? "true" : "false");
+      b32.setAttribute("aria-pressed", a === 32 ? "true" : "false");
+    });
+  }
+  function dnT2Verify() {
+    var s = dnSt.t2;
+    if (s.done || dnSt.failed) return;
+    var ans = [], i;
+    for (i = 0; i < DN_T2.length; i++) ans.push(s.ans[i] || 0);
+    var res = DN73.checkT2(ans);
+    res.key.forEach(function (k, j) {
+      var v = document.getElementById("dnT2V" + j);
+      if (!v) return;
+      var mine = ans[j];
+      if (mine === k) {
+        v.textContent = "RIGHT";
+        v.className = "dn-verdict ok";
+      } else {
+        v.textContent = "WRONG (was " + k + ")";
+        v.className = "dn-verdict bad";
+      }
+    });
+    if (res.ok) {
+      s.done = true;
+      var bytes = DN73.t2Bytes();
+      dnEls.t2Out.innerHTML = "All ten lengths read right. The stream is <span class=\"v\">" +
+        bytes + " bytes</span>; all 32-bit would be 40. The C extension saved " +
+        (40 - bytes) + " bytes here, 40 percent of the instruction cache footprint. " +
+        "<span class=\"w\">Trial 2 passes.</span> Trial 3 is a dead hart; find what killed it.";
+      dnEls.t3Wrap.style.display = "";
+    } else {
+      dnEls.t2Out.innerHTML = "Rows <span class=\"v\">" + res.wrong.join(", ") +
+        "</span> misread. Read each parcel's last hex digit: its lowest two bits are the whole rule. Walk it again.";
+      if (dnStrike("Trial 2 misread rows " + res.wrong.join(", ") + ".")) return;
+    }
+    dnProgress();
+    dnMaybeCertify();
+  }
+
+  /* ---- trial 3: the stale table ---- */
+  function dnT3Render() {
+    var mem = dnEl("div", "dn-scrollx", "");
+    var t = "<table class=\"dn-table\" aria-label=\"Memory parcels\"><thead><tr>" +
+      "<th>ADDR</th><th>PARCEL</th><th>BITS[1:0]</th><th>LENGTH</th></tr></thead><tbody>";
+    DN_T3_MEM.forEach(function (m) {
+      t += "<tr><td>" + dnHex(m.addr, 4) + "</td><td>" + dnHex(m.parcel, 4) +
+        "</td><td>" + dnBin16(m.parcel).slice(14) + "</td><td>" +
+        dnLenOf(m.parcel) + "-BIT</td></tr>";
+    });
+    mem.innerHTML = t + "</tbody></table>";
+    dnEls.t3Mem.innerHTML = "";
+    dnEls.t3Mem.appendChild(mem);
+    dnEls.t3Mem.appendChild(dnEl("div", "dn-out",
+      "Slot 7 should name <span class=\"w\">0x2006</span> in the new build. " +
+      "It still names <span class=\"v\">0x2004</span>, correct in the old build. " +
+      "The new build replaced the 16-bit instruction at 0x2002 with a 32-bit one in place:\n" +
+      "0x2002 holds " + dnHex(0xF0EF, 4) + ", bits[1:0]=11, so it spans 0x2002-0x2005.\n" +
+      "0x2004 is its middle. Nobody regenerated the table."));
+    var tr = dnEl("div", "dn-scrollx", "");
+    var h = "<table class=\"dn-table\" aria-label=\"Actual fetch trace\"><thead><tr>" +
+      "<th>PC</th><th>PARCEL</th><th>LENGTH</th><th>WHAT HAPPENED</th></tr></thead><tbody>";
+    DN73.t3Trace().forEach(function (f) {
+      h += "<tr><td>" + dnHex(f.pc, 4) + "</td><td>" + dnHex(f.parcel, 4) +
+        "</td><td>" + f.len + "-BIT</td><td>" + f.note + "</td></tr>";
+    });
+    tr.innerHTML = h + "</tbody></table>";
+    dnEls.t3Trace.innerHTML = "";
+    dnEls.t3Trace.appendChild(tr);
+    dnEls.t3Trace.appendChild(dnEl("div", "dn-out",
+      "<span class=\"v\">TRAP: ILLEGAL INSTRUCTION at 0x2008.</span> " +
+      "The hart is dead. Name the root cause, not the last symptom."));
+    var ow = dnEls.t3Opts;
+    ow.innerHTML = "";
+    DN_T3_OPTS.forEach(function (o) {
+      var b = dnBtn(o.label, "dn-btn dn-opt");
+      b.id = "dnT3Opt_" + o.key;
+      b.setAttribute("aria-pressed", "false");
+      (function (key, btn) {
+        btn.addEventListener("click", function () { dnT3Pick(key); });
+      })(o.key, b);
+      ow.appendChild(b);
+    });
+  }
+  function dnT3Pick(key) {
+    if (dnSt.t3.done || dnSt.failed) return;
+    dnSt.t3.picked = key;
+    DN_T3_OPTS.forEach(function (o) {
+      var b = document.getElementById("dnT3Opt_" + o.key);
+      if (!b) return;
+      b.classList.toggle("picked", o.key === key);
+      b.setAttribute("aria-pressed", o.key === key ? "true" : "false");
+    });
+  }
+  function dnT3Check() {
+    var s = dnSt.t3;
+    if (s.done || dnSt.failed) return;
+    if (!s.picked) {
+      dnEls.t3Out.textContent = "Pick a root cause first.";
+      return;
+    }
+    if (DN73.t3Correct(s.picked)) {
+      s.done = true;
+      dnEls.t3Out.innerHTML = "<span class=\"w\">Correct.</span> The decoder read 0xFE7F's low bits " +
+        "(11) exactly right and took 32 bits, exactly as designed. The address was the lie, not the " +
+        "decode. Stale tables kill harts; the two-bit rule never did.";
+    } else {
+      var why = s.picked === "misread"
+        ? "0xFE7F ends in 11: 32-bit was the correct read. The decoder did its job."
+        : "The hart never reached 0x200A. It died at 0x2008.";
+      dnEls.t3Out.innerHTML = "Not the root cause. " + why;
+      if (dnStrike("Trial 3 wrong root cause (" + s.picked + ").")) return;
+    }
+    dnProgress();
+    dnMaybeCertify();
+  }
+
+  function dnDownload() {
+    var txt = "THE DENSE ROOM, BENCH 73, THE PROVING GROUND\n\n" +
+      dnEls.cert.textContent + "\n";
+    var blob = new Blob([txt], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "dense-room-bench-73.txt";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    if (typeof toast === "function") toast("Qualification record downloaded.");
+  }
+
+  function dnReset() {
+    dnSt = dnNewState();
+    dnEls.banner.classList.remove("show");
+    dnEls.fail.classList.remove("show");
+    dnEls.t1Out.textContent = "Eight parcels, two bits each. Nothing here can hurt you.";
+    dnEls.t2Out.textContent = "Set every length, then run the fetch.";
+    dnEls.t3Out.textContent = "Name the root cause.";
+    dnEls.t2Wrap.style.display = "none";
+    dnEls.t3Wrap.style.display = "none";
+    dnT1Render();
+    dnT2Render();
+    dnT3Render();
+    dnSt.t3.picked = null;
+    dnProgress();
+  }
+
+  /* ---------------- build ---------------- */
+  function dnBuild() {
+    var box = document.querySelector(".dossier .actions");
+    if (!box) return;
+    if (document.getElementById("dnBtn")) return;
+    dnSt = dnNewState();
+
+    var sty = document.createElement("style");
+    sty.id = "dnStyle";
+    sty.textContent = DN_CSS;
+    document.head.appendChild(sty);
+
+    var b = document.createElement("button");
+    b.id = "dnBtn";
+    b.className = "pg-launch";
+    b.textContent = "Open The Dense Room";
+    b.addEventListener("click", dnOpen);
+    box.appendChild(b);
+
+    var ov = dnEl("div", "dn-overlay", "");
+    ov.id = "dnOverlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", "The Dense Room");
+    var x = dnBtn("CLOSE", "dn-btn");
+    x.id = "dnXBtn";
+    x.style.cssText = "position:fixed;top:calc(12px + env(safe-area-inset-top));right:calc(16px + env(safe-area-inset-right));z-index:95;";
+    x.setAttribute("aria-label", "Close The Dense Room");
+    x.addEventListener("click", dnClose);
+    ov.appendChild(x);
+    dnEls.overlay = ov;
+    if (!dnEscBound) {
+      dnEscBound = true;
+      document.addEventListener("keydown", function (ev) {
+        if (ev.key === "Escape" && dnEls.overlay && dnEls.overlay.classList.contains("open")) dnClose();
+      });
+    }
+
+    var panel = dnEl("div", "dn-panel", "");
+    panel.id = "dnPanel";
+    panel.appendChild(dnEl("div", "dn-kicker", "RISC-V BENCH 73"));
+    panel.appendChild(dnEl("h2", "dn-title", "The Dense Room"));
+
+    var intro = dnEl("div", "", "");
+    intro.innerHTML = DN73.INTRO_HTML;
+    panel.appendChild(intro);
+
+    var prog = dnEl("div", "dn-out", "");
+    prog.id = "dnProgress";
+    prog.setAttribute("aria-live", "polite");
+    panel.appendChild(prog);
+    dnEls.progress = prog;
+    var strikes = dnEl("div", "dn-out", "");
+    strikes.id = "dnStrikes";
+    panel.appendChild(strikes);
+    dnEls.strikes = strikes;
+
+    /* do first */
+    panel.appendChild(dnEl("div", "dn-sec", "DO FIRST: CALL THE LENGTH"));
+    panel.appendChild(dnEl("p", "dn-p",
+      "The two ember bits decide everything: 00, 01, or 10 means 16-bit, 11 means 32-bit. " +
+      "Call all eight parcels. Nothing here can hurt you; this is the rule going into your hands."));
+    var t1Card = dnEl("div", "", "");
+    t1Card.id = "dnT1Card";
+    panel.appendChild(t1Card);
+    dnEls.t1Card = t1Card;
+    var t1Out = dnEl("div", "dn-out", "Eight parcels, two bits each. Nothing here can hurt you.");
+    t1Out.id = "dnT1Out";
+    t1Out.setAttribute("aria-live", "polite");
+    panel.appendChild(t1Out);
+    dnEls.t1Out = t1Out;
+
+    /* trial 2 */
+    var t2Wrap = dnEl("div", "", "");
+    t2Wrap.id = "dnT2Wrap";
+    t2Wrap.style.display = "none";
+    t2Wrap.appendChild(dnEl("div", "dn-sec", "TRIAL 2: WALK THE STREAM"));
+    t2Wrap.appendChild(dnEl("p", "dn-p",
+      "Ten real instructions from the assembler, mixed 16 and 32, no highlighted bits. " +
+      "Read each parcel's last hex digit: its lowest two bits are the whole rule. " +
+      "Set every length, then RUN FETCH. All ten must read right; a wrong walk costs a strike."));
+    var t2Rows = dnEl("div", "", "");
+    t2Rows.id = "dnT2Rows";
+    t2Wrap.appendChild(t2Rows);
+    dnEls.t2Rows = t2Rows;
+    var t2Run = dnBtn("RUN FETCH", "dn-btn solid");
+    t2Run.id = "dnT2Run";
+    t2Run.addEventListener("click", dnT2Verify);
+    t2Wrap.appendChild(t2Run);
+    var t2Out = dnEl("div", "dn-out", "Set every length, then run the fetch.");
+    t2Out.id = "dnT2Out";
+    t2Out.setAttribute("aria-live", "polite");
+    t2Wrap.appendChild(t2Out);
+    dnEls.t2Out = t2Out;
+    panel.appendChild(t2Wrap);
+    dnEls.t2Wrap = t2Wrap;
+
+    /* trial 3 */
+    var t3Wrap = dnEl("div", "", "");
+    t3Wrap.id = "dnT3Wrap";
+    t3Wrap.style.display = "none";
+    t3Wrap.appendChild(dnEl("div", "dn-sec", "TRIAL 3: THE STALE TABLE"));
+    t3Wrap.appendChild(dnEl("p", "dn-p",
+      "A jump table from the old build still points slot 7 at 0x2004. The new build replaced the " +
+      "16-bit instruction at 0x2002 with a 32-bit one in place, and nobody regenerated the table. " +
+      "The hart took the jump and died. The memory below is the crime scene; the trace is what the " +
+      "fetch unit actually did."));
+    var t3Mem = dnEl("div", "", "");
+    t3Mem.id = "dnT3Mem";
+    t3Wrap.appendChild(t3Mem);
+    dnEls.t3Mem = t3Mem;
+    var t3Trace = dnEl("div", "", "");
+    t3Trace.id = "dnT3Trace";
+    t3Wrap.appendChild(t3Trace);
+    dnEls.t3Trace = t3Trace;
+    var t3Opts = dnEl("div", "", "");
+    t3Opts.id = "dnT3Opts";
+    t3Wrap.appendChild(t3Opts);
+    dnEls.t3Opts = t3Opts;
+    var t3Check = dnBtn("NAME THE ROOT CAUSE", "dn-btn solid");
+    t3Check.id = "dnT3Check";
+    t3Check.addEventListener("click", dnT3Check);
+    t3Wrap.appendChild(t3Check);
+    var t3Out = dnEl("div", "dn-out", "Name the root cause.");
+    t3Out.id = "dnT3Out";
+    t3Out.setAttribute("aria-live", "polite");
+    t3Wrap.appendChild(t3Out);
+    dnEls.t3Out = t3Out;
+    panel.appendChild(t3Wrap);
+    dnEls.t3Wrap = t3Wrap;
+
+    /* fail panel */
+    var fail = dnEl("div", "dn-fail", "");
+    fail.id = "dnFail";
+    fail.appendChild(dnEl("h3", "", "BENCH FAILED: THREE STRIKES"));
+    var failMsg = dnEl("p", "dn-p", "");
+    failMsg.id = "dnFailMsg";
+    fail.appendChild(failMsg);
+    dnEls.failMsg = failMsg;
+    var reset = dnBtn("RESET THE BENCH", "dn-btn solid");
+    reset.id = "dnReset";
+    reset.addEventListener("click", dnReset);
+    fail.appendChild(reset);
+    panel.appendChild(fail);
+    dnEls.fail = fail;
+
+    /* banner + cert */
+    var banner = dnEl("div", "dn-banner", "");
+    banner.id = "dnBanner";
+    banner.appendChild(dnEl("h3", "", "ROOM CERTIFIED: THE DENSE ROOM"));
+    var cert = dnEl("div", "dn-cert", "");
+    cert.id = "dnCert";
+    banner.appendChild(cert);
+    dnEls.cert = cert;
+    var dl = dnBtn("DOWNLOAD QUALIFICATION RECORD", "dn-btn");
+    dl.id = "dnDl";
+    dl.addEventListener("click", dnDownload);
+    banner.appendChild(dl);
+    panel.appendChild(banner);
+    dnEls.banner = banner;
+
+    /* hire line: crash-triage offer at the foot of the bench, matching the
+       Bench 71/72 pattern. The hire-chooser module binds [data-brief]
+       triggers document-wide. Copy only. */
+    var hire = dnEl("p", "dn-p", "");
+    hire.innerHTML = "Mystery crashes since the C extension went on? " +
+      "<button type=\"button\" class=\"dn-btn\" data-brief=\"triage\" data-bench-tag=\"Bench 73: The Dense Room\">Fixed-price crash triage</button>";
+    panel.appendChild(hire);
+
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+
+    dnT1Render();
+    dnT2Render();
+    dnT3Render();
+    dnProgress();
+  }
+
+  function dnOpen() {
+    dnReset();
+    dnEls.overlay.classList.add("open");
+    if (dnEls.overlay.scrollTo) dnEls.overlay.scrollTo(0, 0);
+    var c = document.getElementById("dnXBtn");
+    if (c) c.focus();
+  }
+  function dnClose() {
+    dnEls.overlay.classList.remove("open");
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", dnBuild);
+  } else {
+    dnBuild();
+  }
+
+  /* debug hooks for the smoke test */
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.dnDebug = {
+      state: function () { return dnSt; },
+      els: function () { return dnEls; },
+      hooks: function () { return DN73; }
+    };
+  }
+})();
+

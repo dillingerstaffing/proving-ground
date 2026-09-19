@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260919-pg117">
+<meta name="build-version" content="v20260919-pg118">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -1207,7 +1207,11 @@ var PG_BENCHES = [
   { section: "craft", n: "72", name: "The Handshake Room", btn: "hsBtn", pill: "oldiron", pillLabel: "BENCH CRAFT",
     desc: "The wire drops, duplicates, and reorders packets, and never warns you. TCP answers with a number on every byte and a receipt for every number: agree the starting numbers first (the handshake), then keep the stream whole by retransmitting only what the receipts say went missing. Call every sequence number yourself, lose a segment on purpose, and convict a broken connection from its wire tap.",
     how: "Run the handshake free, answer the SYN-ACK numbers by hand, name the missing byte and retransmit only it, then diagnose the broken wire from its tap.",
-    spec: "3-WAY HANDSHAKE \u00B7 SEQ/ACK \u00B7 3 TRIALS" }
+    spec: "3-WAY HANDSHAKE \u00B7 SEQ/ACK \u00B7 3 TRIALS" },
+  { section: "arch", n: "73", name: "The Dense Room", btn: "dnBtn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "RISC-V's C extension packs the common operations into 16 bits, and the decoder learns each instruction's length from the first two bits it reads. Call every length on real assembler encodings, walk a ten-instruction mixed stream the way the fetch unit does, then convict the stale jump table that dropped a hart into the middle of its own 32-bit instruction.",
+    how: "Call 16 or 32 on each parcel, predict all ten fetch lengths in the real stream, then name the root cause of the crash.",
+    spec: "C EXTENSION \u00B7 3 TRIALS" }
  ];
 /* Teaching order: the sequence a newcomer should take the benches in.
    The index renders this list top to bottom; the number on each row is its
@@ -1222,6 +1226,7 @@ var PG_TEACH_ORDER = [
   "36",
   "40",
   "26",
+  "73",
   "64",
   "65",
   "67",
@@ -1295,7 +1300,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-19-pg117";
+var PG_REV = "2026-09-19-pg118";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {

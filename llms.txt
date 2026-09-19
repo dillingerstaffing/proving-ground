@@ -2,13 +2,13 @@
 
 > Real working engineering benches that prove the capabilities behind freelance silicon work, TAPEOUT graphics hardware, and OLD IRON hardware donation. Free, no account, runs entirely on your device.
 
-The Proving Ground is Chris Dillinger's interactive engineering lab: 72 hands-on hardware benches (numbered 01 through 72, from "The Silicon Anvil" to "The Handshake Room") covering computer architecture, analog and power electronics, and bench craft. Each bench is a real working simulation, not a mockup: visitors run code, train links, tune loops, and earn trial certificates on their own device.
+The Proving Ground is Chris Dillinger's interactive engineering lab: 73 hands-on hardware benches (numbered 01 through 73, from "The Silicon Anvil" to "The Dense Room") covering computer architecture, analog and power electronics, and bench craft. Each bench is a real working simulation, not a mockup: visitors run code, train links, tune loops, and earn trial certificates on their own device.
 
 URL: https://dillingerstaffing.github.io/proving-ground/
 
 ## The benches
 
-- 72 benches, each a real mechanism to operate: an RV32I core you program in assembly, pipeline hazard labs, page walkers, trap gates, UART/SPI scan chains, PLL tuning, power-electronics reflow profiles, and more.
+- 73 benches, each a real mechanism to operate: an RV32I core you program in assembly, pipeline hazard labs, page walkers, trap gates, UART/SPI scan chains, PLL tuning, power-electronics reflow profiles, and more.
 - Every bench is interactive: type, measure, certify. No sign-in, no server, everything runs in the visitor's browser.
 
 ## Work with Chris (published on the site)
