@@ -2,18 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260919-pg120">
+<meta name="build-version" content="v20260919-pg121">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
-<meta name="description" content="The Proving Ground: real working engineering benches that prove the capabilities behind freelance silicon work, TAPEOUT graphics hardware, and OLD IRON hardware donation. Free, no account, runs entirely on your device.">
+<meta name="description" content="The Proving Ground: 73 interactive hardware benches, RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs entirely on your device.">
 <link rel="canonical" href="https://dillingerstaffing.github.io/proving-ground/">
 <meta name="robots" content="index, follow, max-image-preview:large">
 <meta name="theme-color" content="#0a0c0e">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="The Proving Ground">
 <meta property="og:title" content="The Proving Ground: Working Engineering Benches">
-<meta property="og:description" content="Real working engineering benches. RISC-V cores, GPU qualification, drive sanitization. Proof, not promises.">
+<meta property="og:description" content="73 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs in the browser.">
 <meta property="og:url" content="https://dillingerstaffing.github.io/proving-ground/">
 <meta property="og:image" content="https://dillingerstaffing.github.io/proving-ground/og-card.png">
 <meta property="og:image:width" content="1200">
@@ -25,7 +25,7 @@
 {"@context":"https://schema.org","@type":"WebApplication",
  "name":"The Proving Ground",
  "url":"https://dillingerstaffing.github.io/proving-ground/",
- "description":"Working engineering benches proving capabilities behind freelance silicon work, TAPEOUT, and OLD IRON.",
+ "description":"73 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft.",
  "applicationCategory":"BrowserApplication","operatingSystem":"Any modern web browser",
  "isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
@@ -774,7 +774,7 @@ body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
         <circle class="draw-core" cx="24" cy="24" r="2.6" fill="#0a0c0e"/>
       </svg>
       <div class="head-group">
-        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">73</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;ALL&nbsp;SYSTEMS&nbsp;NOMINAL</span></span></div>
+        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">73</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;INTERACTIVE,&nbsp;IN&nbsp;BROWSER</span></span></div>
         <button class="hire-btn" type="button" data-brief="general">HIRE CHRIS</button>
         <button class="theme-toggle" type="button" aria-label="Switch to terminal theme" title="Switch theme">
           <span class="theme-toggle-mark" aria-hidden="true"><i></i><i></i></span>
@@ -782,7 +782,7 @@ body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
       </div>
     </div>
     <h1 class="wordmark"><span class="wl"><span>The Proving</span></span><span class="wl"><span class="outline">Ground</span></span></h1>
-    <p class="hero-lede">Working engineering benches. Every mechanism proved against ground truth.</p>
+    <p class="hero-lede">Interactive engineering benches with worked examples and checkable models.</p>
   </header>
 
   <main id="benches" aria-label="Engineering benches"></main>
@@ -793,17 +793,17 @@ body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
       <p class="work-lede">One email. Pick an offer and the project brief comes pre-filled.</p>
       <button class="vrow" type="button" data-brief="triage">
         <span class="grow"><span class="vname">Crash triage</span>
-        <span class="vsub">ONE DEFINED HANG, HARD FAULT, OR DATA-CORRUPTION SYMPTOM &middot; FROM $250 / SYMPTOM</span></span>
+        <span class="vsub">ONE DEFINED HANG, HARD FAULT, OR DATA-CORRUPTION SYMPTOM &middot; SCOPE AND PRICE AGREED AFTER REVIEW OF THE SYMPTOM</span></span>
         <span class="vext" aria-hidden="true">&rarr;</span>
       </button>
       <button class="vrow" type="button" data-brief="bringup">
         <span class="grow"><span class="vname">Bare-metal bring-up</span>
-        <span class="vsub">STARTUP CODE, LINKER SCRIPT, CLOCK AND PERIPHERALS, REPRODUCIBLE BUILD &middot; FROM $500 FIXED</span></span>
+        <span class="vsub">STARTUP CODE, LINKER SCRIPT, CLOCK AND PERIPHERALS, REPRODUCIBLE BUILD &middot; SCOPE AND PRICE AGREED AFTER REVIEWING THE BOARD AND PERIPHERALS</span></span>
         <span class="vext" aria-hidden="true">&rarr;</span>
       </button>
       <button class="vrow" type="button" data-brief="audit">
         <span class="grow"><span class="vname">C audit and hardening</span>
-        <span class="vsub">LINE-LEVEL PASS FOR UB, MEMORY ERRORS, INTERRUPT SAFETY &middot; FROM $350 FIXED</span></span>
+        <span class="vsub">LINE-LEVEL PASS FOR UB, MEMORY ERRORS, INTERRUPT SAFETY &middot; SCOPE AND PRICE AGREED AFTER REVIEWING THE CODEBASE</span></span>
         <span class="vext" aria-hidden="true">&rarr;</span>
       </button>
     </section>
@@ -1303,7 +1303,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-19-pg120";
+var PG_REV = "2026-09-19-pg121";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
@@ -1920,9 +1920,9 @@ if ('serviceWorker' in navigator) {
   apply(current());
 })();
 </script>
-<script src="rvcore.js?v=59a0e783b4" defer></script>
-<script src="rvdata.js?v=59a0e783b4" defer></script>
-<script src="riscv-lab.js?v=59a0e783b4" defer></script>
-<script src="features.js?v=59a0e783b4" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=bc1f2c4294" defer></script>
+<script src="rvdata.js?v=bc1f2c4294" defer></script>
+<script src="riscv-lab.js?v=bc1f2c4294" defer></script>
+<script src="features.js?v=bc1f2c4294" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

@@ -50596,15 +50596,15 @@ if (typeof module !== "undefined" && module.exports) {
     },
     triage: {
       subject: "Crash triage inquiry",
-      body: "Offer: Crash triage, from $250 per symptom (root cause, minimal fix, regression guidance).\n\nThe symptom (hang, hard fault, data corruption):\n\nChip or board:\n\nFailing log or reproduction steps:\n\nTimeline:\n"
+      body: "Offer: Crash triage (scope and price agreed after reviewing one defined symptom).\n\nThe symptom (hang, hard fault, data corruption):\n\nChip or board:\n\nFailing log or reproduction steps:\n\nTimeline:\n"
     },
     bringup: {
       subject: "Bare-metal bring-up inquiry",
-      body: "Offer: Bare-metal bring-up, from $500 fixed (startup code, linker script, clock and peripherals, reproducible build).\n\nChip or board:\n\nPeripherals to enable:\n\nToolchain or SDK:\n\nTimeline:\n"
+      body: "Offer: Bare-metal bring-up (scope and price agreed after reviewing the board and peripherals).\n\nChip or board:\n\nPeripherals to enable:\n\nToolchain or SDK:\n\nTimeline:\n"
     },
     audit: {
       subject: "C audit and hardening inquiry",
-      body: "Offer: C audit and hardening, from $350 fixed (line-level pass, prioritized findings and fixes).\n\nCodebase or file to audit:\n\nRepo or datasheet access:\n\nFocus areas (UB, memory errors, interrupt safety, stack pressure):\n\nTimeline:\n"
+      body: "Offer: C audit and hardening (scope and price agreed after reviewing the codebase).\n\nCodebase or file to audit:\n\nRepo or datasheet access:\n\nFocus areas (UB, memory errors, interrupt safety, stack pressure):\n\nTimeline:\n"
     }
   };
 
