@@ -28179,8 +28179,7 @@ if (typeof module !== "undefined" && module.exports) {
       "<p class='gt-why'><b>WHY IT MATTERS.</b> A GPU board, a memory module, the RV32I core " +
       "in the Silicon Anvil: at the bottom they are all one kind of gate, repeated millions " +
       "of times. The NAND gate is universal: NOT, AND, OR, XOR, adders, and whole processors " +
-      "can all be built from NAND gates and nothing else. Fabs characterize the NAND cell " +
-      "before any other cell, because everything else is made of it. Understand this one " +
+      "can all be built from NAND gates and nothing else. Understand this one " +
       "gate and you understand what silicon is made of. Four trials, one gate, no other parts.</p>" +
       "<p class='gt-worked'><b>WORKED EXAMPLE, by hand, before you touch the bench.</b> One NAND " +
       "gate. A NAND outputs 0 only when both inputs are 1, otherwise it outputs 1. Now tie " +
@@ -32847,7 +32846,7 @@ if (typeof module !== "undefined" && module.exports) {
         "Attempts: " + st.attempts + ", strikes: " + st.strikes + ", grade " + bwGrade(st) + "."];
     } else {
       detail = ["Called the SLTU bit from the borrow on 4 unsigned comparisons,",
-        "including the 0x80 vs 0x7F trap where the sign bit lies and the borrow tells the truth.",
+        "including the 0x80 vs 0x7F pitfall where the sign bit lies and the borrow tells the truth.",
         "Attempts: " + st.attempts + ", strikes: " + st.strikes + ", grade " + bwGrade(st) + "."];
     }
     var lines = ["THE BORROW ROOM, TRIAL " + (ti + 1) + " CERTIFICATE",
@@ -38195,7 +38194,7 @@ if (typeof module !== "undefined" && module.exports) {
   /* ---------- intro copy: why first, worked example, failure modes ---------- */
   var LDO_INTRO_HTML = [
     "<div class=\"ldo-card\"><h3>WHY THIS ROOM EXISTS</h3>",
-    "<p class=\"why\">Every 3.3 V rail on a RISC-V board starts life at 5 V, and somebody has to burn the difference. ",
+    "<p class=\"why\">A 3.3 V rail can be made from a 5 V source with a linear regulator, and somebody has to burn the difference. ",
     "That somebody is a linear regulator: it turns the voltage it drops into heat, watt for watt. So the input rail is a window, not a value. ",
     "Push it too high and the die cooks itself into thermal shutdown. Park it too low and the regulator runs out of headroom, a failure called dropout, ",
     "and the output sags below what the chip needs. This room is about living inside the window.</p>",
@@ -39375,7 +39374,7 @@ if (typeof module !== "undefined" && module.exports) {
   /* ---------- intro copy: why first, worked example, failure modes ---------- */
   var DR_INTRO_HTML = [
     "<div class=\"dr-card\"><h3>WHY THIS ROOM EXISTS</h3>",
-    "<p class=\"why\">Every status light on every board you will ever service is a light-emitting diode: ",
+    "<p class=\"why\">Many board status lights are light-emitting diodes: ",
     "power indicators, fault lights, link activity. They all obey one law. A diode conducts in one direction only, ",
     "and while it conducts it keeps a fixed slice of the voltage for itself, its forward voltage, written Vf. ",
     "Red keeps 2.0 V, green keeps 2.2 V, white keeps 3.2 V. Miss the toll and the LED is dark, dim, or dead. ",    "On this bench, each color keeps its nominal forward drop; real parts vary with current and temperature. ",
@@ -41810,13 +41809,13 @@ if (typeof module !== "undefined" && module.exports) {
         why: "SILENT: " + ryFmtV(volts) + " on a " + ryFmtV(part.coilV) + " coil is " +
           Math.round(volts / part.coilV * 100) + "% of rating, under the " +
           Math.round(RL_PULLIN * 100) + "% pull-in floor. The coil draws " + mA +
-          " mA but the armature needs " + needmA + " mA to move. No click. The trap is assuming it switched." };
+          " mA but the armature needs " + needmA + " mA to move. No click. The pitfall is assuming it switched." };
     }
     if (volts > RL_OVER * part.coilV) {
       var w = Math.round(volts * volts / part.coilR * 10) / 10;
       var wr = Math.round(part.coilV * part.coilV / part.coilR * 10) / 10;
       return { ok: false, cooks: true,
-        why: "COOKS: it clicks today, which is the trap. Coil power is V^2 / R = " + w +
+        why: "COOKS: it clicks today, which is the catch. Coil power is V^2 / R = " + w +
           " W against a " + wr + " W design. Watch the heat bar: the coil has about five seconds." };
     }
     return { ok: true,
@@ -42862,11 +42861,12 @@ if (typeof module !== "undefined" && module.exports) {
     "This room is the whole skill: read those two numbers, pick the part that survives your load, drive the gate ",
     "hard and fast, and never park it at the threshold.</p>",
     "<p class=\"why\">The worked example, by hand. IRLZ44N-class, logic-level: Vgs(th) 1.0 to 2.0 V, ",
-    "Rds(on) 22 milliohms at Vgs = 4.5 V. A 12 V lamp at 6 A, gate driven at 5 V. 5 V clears the 2.0 V ",
-    "worst-case threshold, so every unit off the reel is fully on. Heat: 6-squared x 0.022 = 0.79 W, warm to the ",
+    "Rds(on) 22 milliohms at Vgs = 4.5 V. A 12 V lamp at 6 A, gate driven at 5 V. This part specifies ",
+    "Rds(on) at Vgs = 4.5 V, so the 5 V gate drive supports the stated 22 milliohm value in this model; ",
+    "clearing the threshold alone marks only the onset of conduction, not full enhancement. Heat: 6-squared x 0.022 = 0.79 W, warm to the ",
     "touch, no heatsink drama. Now the same lamp on the IRF540-class standard-level part, gate at 3.3 V logic: ",
     "its threshold runs 2.0 to 4.0 V, so a 3.3 V gate may never open the channel at all, and the unlucky half-open ",
-    "unit sits near an ohm: 36 x 1 = 36 W, smoke in seconds. Trial 1, load 1, is this exact trap: pick the logic-level part.</p></div>",
+    "unit sits near an ohm: 36 x 1 = 36 W, smoke in seconds. Trial 1, load 1, is this exact pitfall: pick the logic-level part.</p></div>",
     "<div class=\"mf-card mf-fail\"><h3>THE FAILURE MODES, STATED UP FRONT</h3>",
     "<ul><li><b>STARVED GATE:</b> gate drive under the part's worst-case threshold. The datasheet promises only ",
     "that the threshold sits below the max, so a 3.3 V gate on a 4.0 V max part may never turn the unit on at all; ",
@@ -45535,7 +45535,7 @@ if (typeof module !== "undefined" && module.exports) {
     "<p class=\"why\">A regulator does not need a chip. A resistor and one special diode hold a rail steady: ",
     "the resistor feeds current from the 12 V rail, the Zener diode drinks whatever the load does not, ",
     "and the rail sits at the Zener's breakdown voltage. Two parts, no feedback loop, and this exact circuit ",
-    "still ships in millions of small rails. The catch is the whole room: the Zener can only drink so much. ",
+    "still ships in small, low-current rails. The catch is the whole room: the Zener can only drink so much. ",
     "When the load gets greedy, the regulation dies before anything else does.</p>",
     "<p class=\"why\">Three terms, earned now. The <b>breakdown voltage</b> Vz is the Zener's one trick: run ",
     "backwards, a 5.1 V Zener blocks like any diode below 5.1 V and avalanches at 5.1 V, clamping there while ",
@@ -46391,12 +46391,12 @@ if (typeof module !== "undefined" && module.exports) {
     "<p class=\"why\">Sensors make voltages but almost no current. Loads, ADC inputs, long cables, want milliamps. ",
     "Hook a sleepy sensor straight to a thirsty load and the voltage collapses, because the load and the source ",
     "fight over the same current. The op-amp <b>follower</b> breaks the fight: one amplifier with its output wired ",
-    "back to its input copies the input voltage exactly, and the load current comes from the amplifier's own ",
+    "back to its input copies the input voltage, within the amplifier's offset and rail limits, and the load current comes from the amplifier's own ",
     "supply rails, not from the sensor. The input asks for almost nothing; the output gives milliamps. That is ",
     "the whole room: a copy with muscle. Bench multimeters buffer their inputs this way, audio gear buffers ",
     "everything, and every DAC that drives a cable sits behind a follower.</p>",
     "<p class=\"why\">Three terms, earned now. A <b>follower</b> has its output tied to its input, so the feedback ",
-    "forces the output to equal the input: gain exactly 1, a copy. <b>Gain</b> for the non-inverting amplifier is ",
+    "forces the output to track the input: the ideal closed-loop gain is 1, a copy. <b>Gain</b> for the non-inverting amplifier is ",
     "set by two resistors: gain = 1 + Rf/Rg, no transistor math, just the ratio. The <b>rails</b> are the supply ",
     "voltages: the output cannot go past them. Asking for more is called <b>clipping</b>, and the top of the wave ",
     "goes flat.</p></div>",
@@ -49141,7 +49141,8 @@ if (typeof module !== "undefined" && module.exports) {
     "<div class=\"tm-card\"><h3>WHY THIS ROOM EXISTS</h3>",
     "<p class=\"why\">Every RISC-V system-on-chip is a traffic jam waiting to happen. The core, the DMA " +
     "engine, and the display controller all share one memory bus, through an interconnect (TileLink on " +
-    "SiFive parts, AXI elsewhere) that runs exactly the logic in this room every cycle. If two masters " +
+    "SiFive parts, AXI elsewhere) whose arbitration starts with the same rule you use here: at most " +
+    "one requester gets the shared resource per cycle. If two masters " +
     "drive the bus at once, the bits collide and everyone reads garbage. So a tiny referee, the <b>arbiter</b>, " +
     "watches the request lines and grants exactly one winner per cycle. The rule the referee follows " +
     "decides which master waits, which one starves, and how fast an urgent request gets through. Get the " +
@@ -49960,10 +49961,10 @@ if (typeof module !== "undefined" && module.exports) {
     "<div class=\"tm-card\"><h3>WHY THIS ROOM EXISTS</h3>",
     "<p class=\"why\">Every system you will ever bring up moves bytes, and bytes travel in an order " +
     "someone chose. A 32-bit number is four bytes plus one rule: which byte sits at the lowest " +
-    "address. RISC-V chose <b>little-endian</b>: the least-significant byte lives at the lowest " +
+    "address. The RISC-V systems used in these benches are <b>little-endian</b>: the least-significant byte lives at the lowest " +
     "address, so a word load at 0x1000 picks up bits 7:0 from 0x1000, bits 15:8 from 0x1001, and " +
     "so on. The network chose the opposite: <b>big-endian</b>, most-significant byte first, and " +
-    "every header on every wire arrives that way. Read a value in the other order and nothing " +
+    "IP and TCP header fields use that big-endian network byte order. Read a value in the other order and nothing " +
     "traps, nothing warns, and every number you touch is wrong. The bytes are all present and " +
     "all correct; the order is not. This room is one mechanism, the order rule, taught three " +
     "ways: lay a word into memory by hand, call what a load reads back, and un-garble a frame " +
@@ -50877,8 +50878,8 @@ if (typeof module !== "undefined" && module.exports) {
   /* ---------- intro copy: why first, worked example, failure modes ---------- */
   var CA_INTRO_HTML = [
     "<div class=\"tm-card\"><h3>WHY THIS ROOM EXISTS</h3>",
-    "<p class=\"why\">Every program you have ever run is made of function calls, and on RISC-V " +
-    "every call rides two instructions. <b>jal ra, target</b> writes the return address, the " +
+    "<p class=\"why\">Most programs use function calls. In this bench, a nearby call uses <b>jal</b>, and " +
+    "<b>ret</b> is a <b>jalr</b> form that jumps through ra. <b>jal ra, target</b> writes the return address, the " +
     "address of the instruction right after the call, into register ra, and jumps to the " +
     "target. <b>jalr x0, 0(ra)</b>, spelled <b>ret</b>, jumps back to whatever ra holds. That " +
     "is the whole contract, and it is why nested calls need the stack: a second call " +
@@ -55040,7 +55041,7 @@ if (typeof module !== "undefined" && module.exports) {
   /* ---------------- build / open / close / reset ---------------- */
   var ADC_INTRO_HTML = [
     "<b>WHY THIS ROOM EXISTS</b> Every sensor reading your firmware ever took passed through an " +
-    "analog-to-digital converter, and the converter inside every RISC-V microcontroller: a SAR ADC on " +
+    "analog-to-digital converter, and many microcontrollers use the same machine: a SAR ADC on " +
     "the analog die, programmed through the registers your firmware writes. It is the same " +
     "machine: successive approximation. It asks one yes-or-no question per bit, most significant bit " +
     "first: 'Is the input at least this big?' A 12-bit reading costs 12 questions and a single " +
@@ -55057,8 +55058,8 @@ if (typeof module !== "undefined" && module.exports) {
     "0.256 V. The input is 2.500 V. The machine asks: 'At least 2.048 V, half of full scale?' YES, " +
     "bit 3 = 1. 'At least 3.072 V (2.048 + 1.024)?' NO, bit 2 = 0. 'At least 2.560 V (2.048 + 0.512)?' " +
     "NO, bit 1 = 0. 'At least 2.304 V (2.048 + 0.256)?' YES, bit 0 = 1. Code 1001 = 9, reading " +
-    "2.304 V. The truth was 2.500 V, so the error is 0.196 V: under one step, never zero, never more " +
-    "than one step. That is the whole contract. Check every subtraction yourself; the arithmetic is " +
+    "2.304 V. The truth was 2.500 V, so the error is 0.196 V: at least zero and less than one step in " +
+    "this floor-quantizing model. That is the whole contract. Check every subtraction yourself; the arithmetic is " +
     "the lesson.",
     "<b>THE FAILURE MODES</b> Three, stated before you touch anything. One: quantization. The answer " +
     "is always off by up to one step, so a 12-bit reading of a 3.3 V rail is honest to about 0.8 mV " +
@@ -56102,19 +56103,19 @@ if (typeof module !== "undefined" && module.exports) {
     "<b>WHY THIS ROOM EXISTS</b> Every operating system heartbeat runs on one piece of hardware: a " +
     "counter that never stops ticking, and a compare register that wakes the CPU the instant the " +
     "counter reaches your deadline. The scheduler tick, the network timeout, the blinking cursor: all " +
-    "of them are this machine. RISC-V names it mtime and mtimecmp. mtime ticks one million times a " +
-    "second and nothing stops it, not even sleep. The moment mtime reaches the value in mtimecmp, the " +
-    "hardware raises a machine-timer interrupt. Set the deadline, go quiet, and get woken exactly on " +
-    "time. This room makes you drive it by hand.",
+    "of them are this machine. RISC-V names it mtime and mtimecmp. In this bench, mtime ticks one " +
+    "million times a second and nothing stops it, not even sleep. When mtime reaches the value in " +
+    "mtimecmp, the hardware sets the machine-timer interrupt pending condition. Set the deadline, go quiet, " +
+    "and get woken on time. This room makes you drive it by hand.",
     "<b>THE OBVIOUS ATTEMPTS</b> The obvious way to wait 750 milliseconds is to poll: sit in a loop " +
     "reading mtime until it passes the target. It works, and it burns every cycle doing nothing. The " +
     "second obvious way is a software countdown in the main loop, which drifts the moment anything " +
     "else runs long. The deadline register fixes both: the comparison happens in hardware, every " +
     "tick, for free. Trial 1 makes you measure the difference, and the poll loop's wasted iterations " +
     "are real, counted, and on screen.",
-    "<b>THE WORKED EXAMPLE</b> mtime ticks at 1 MHz, so one tick is one microsecond. The room snapshots " +
+    "<b>THE WORKED EXAMPLE</b> In this bench, mtime ticks at 1 MHz, so one tick is one microsecond. The room snapshots " +
     "mtime at 8,000,000. You want a wakeup in 250 ms. 250 ms is 250,000 ticks. Write 8,250,000 into " +
-    "mtimecmp. The interrupt fires the instant mtime reaches 8,250,000, not a tick sooner. Check the " +
+    "mtimecmp. The timer interrupt goes pending the instant mtime reaches 8,250,000, not a tick sooner. Check the " +
     "addition yourself: 8,000,000 + 250,000 = 8,250,000. Trial 1 is this exact arithmetic with a live " +
     "counter.",
     "<b>THE FAILURE MODES</b> Three, stated before you touch anything. One: arm the deadline in the " +
@@ -56214,8 +56215,8 @@ if (typeof module !== "undefined" && module.exports) {
     panel.appendChild(trEl("div", "tmr-kicker", "RISC-V BENCH 70"));
     panel.appendChild(trEl("h2", "tmr-title", "The Timer Room"));
     var sub = trEl("p", "tmr-sub", "");
-    sub.innerHTML = "<b>HOW IT WORKS</b> The machine timer: mtime ticks at 1 MHz and never stops, " +
-      "mtimecmp is the deadline, and the hardware raises a machine-timer interrupt the instant mtime " +
+    sub.innerHTML = "<b>HOW IT WORKS</b> The machine timer: in this bench, mtime ticks at 1 MHz and never stops, " +
+      "mtimecmp is the deadline, and the hardware sets the machine-timer interrupt pending the instant mtime " +
       "reaches it. Ring the free 2-second tick, predict a 750 ms deadline to the tick, hold 2.00 Hz " +
       "for 10 blinks against handler latency, then arm the past on purpose and disarm the storm. " +
       "Three strikes and the room resets.";
@@ -56554,7 +56555,7 @@ if (typeof module !== "undefined" && module.exports) {
     "<p class=\"bp-p\">The two parts fail for different reasons and need different fixes. One redirect count cannot tell you which part failed. <a href=\"#bench=02\" target=\"_blank\" rel=\"noopener\">The Pipeline Hazard Lab</a> taught you that predictors learn; here you open the predictor and meet its two halves.</p>",
     "<div class=\"bp-sec\">WHERE THIS LIVES IN RISC-V</div>",
     "<p class=\"bp-p\">Every conditional branch instruction does this. A C <b>for</b> loop compiles to a backward branch: jump back to the top while the counter runs. A C <b>if</b> compiles to a forward branch: skip over the body when the condition is false. In RISC-V those are instructions like <b>beq</b> (jump if two registers are equal) and <b>bne</b> (jump if not equal); the beq in the pipeline table below is one. Each time the CPU fetches one, it makes the two guesses: the BTB supplies where it went last time, the direction predictor votes whether it goes this time.</p>",
-    "<p class=\"bp-p\">The traces in this bench are branch histories shaped like the ones small programs produce. The letters (A, B, C...) stand in for branch instructions sitting at different addresses: A is one branch, B is another. COUNTED LOOP is a counted loop with an if inside. MIXED BRANCHES is ten irregular branches. ALTERNATING BRANCH is one branch flipping taken, not taken, which no predictor can learn. BTB PRESSURE is four hot branches sharing a two-entry BTB, so entries evict each other.</p>",
+    "<p class=\"bp-p\">The traces in this bench are branch histories shaped like the ones small programs produce. The letters (A, B, C...) stand in for branch instructions sitting at different addresses: A is one branch, B is another. COUNTED LOOP is a counted loop with an if inside. MIXED BRANCHES is ten irregular branches. ALTERNATING BRANCH is one branch flipping taken, not taken, which this per-branch 2-bit counter cannot learn. BTB PRESSURE is four hot branches sharing a two-entry BTB, so entries evict each other.</p>",
     "<div class=\"bp-sec\">THE BTB</div>",
     "<p class=\"bp-p\">The BTB is consulted in the fetch stage, before the CPU even knows the instruction is a branch. That timing is why the lookup uses the program counter alone: the table is indexed by PC, each entry holds a tag (which branch was here last) and the target it used. The tag check is required, because two different branches can land in the same entry.</p>",
     "<div class=\"bp-scrollx\"><table class=\"bp-table\" aria-label=\"BTB lookup walk\">",
@@ -58347,7 +58348,7 @@ if (typeof module !== "undefined" && module.exports) {
 
   DN73.INTRO_HTML = [
     "<div class=\"dn-sec\">WHY THIS BENCH EXISTS</div>",
-    "<p class=\"dn-p\">Flash is the most expensive square millimeter on a microcontroller, and every wasted byte is a feature that does not ship. RISC-V's answer is the C extension: the common operations get 16-bit encodings, and real programs shrink by about a quarter. The trick that makes it work is almost rude in its simplicity. The decoder reads 16 bits, looks at the <b>lowest two</b>, and only fetches 16 more when those two bits read 11. Everything downstream, the PC arithmetic, the jump tables, the disassemblers, stands or falls on reading those two bits right. This room is those two bits.</p>",
+    "<p class=\"dn-p\">Flash consumes substantial die area on many microcontrollers, so every wasted byte is a feature that does not ship. RISC-V's answer is the C extension: the common operations get 16-bit encodings, and programs often shrink by roughly a quarter. The trick that makes it work is almost rude in its simplicity. The decoder reads 16 bits, looks at the <b>lowest two</b>, and only fetches 16 more when those two bits read 11. Everything downstream, the PC arithmetic, the jump tables, the disassemblers, stands or falls on reading those two bits right. This room is those two bits.</p>",
     "<div class=\"dn-sec\">THE WORKED EXAMPLE</div>",
     "<p class=\"dn-p\">Two real parcels from the assembler, checked by hand. Read the lowest two bits first, decide the length, then the next PC is arithmetic:</p>",
     "<div class=\"dn-scrollx\"><table class=\"dn-table\" aria-label=\"Worked length decode\">",

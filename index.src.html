@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260919-pg119">
+<meta name="build-version" content="v20260919-pg120">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -774,7 +774,7 @@ body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
         <circle class="draw-core" cx="24" cy="24" r="2.6" fill="#0a0c0e"/>
       </svg>
       <div class="head-group">
-        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">09</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;ALL&nbsp;SYSTEMS&nbsp;NOMINAL</span></span></div>
+        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">73</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;ALL&nbsp;SYSTEMS&nbsp;NOMINAL</span></span></div>
         <button class="hire-btn" type="button" data-brief="general">HIRE CHRIS</button>
         <button class="theme-toggle" type="button" aria-label="Switch to terminal theme" title="Switch theme">
           <span class="theme-toggle-mark" aria-hidden="true"><i></i><i></i></span>
@@ -1124,7 +1124,7 @@ var PG_BENCHES = [
     how: "Burn a die at 5 V in a SOT-23, call the 127 C die on a 300 mA load within 6 C, size an input rail that holds a 700 mA load at or under 125 C, then fix the crash that is not heat.",
     spec: "LINEAR REGULATORS \u00B7 3 TRIALS" },
   { section: "craft", n: "51", name: "The Stripe Room", btn: "stripeBtn", pill: "oldiron", pillLabel: "BENCH CRAFT",
-    desc: "Resistor color codes on the bench: read 4-band and 5-band stripes, survive gold multipliers and the wrong-end trap, verify every part against the bench meter.",
+    desc: "Resistor color codes on the bench: read 4-band and 5-band stripes, survive gold multipliers and the wrong-end pitfall, verify every part against the bench meter.",
     how: "Read each part's stripes, enter the value in ohms, commit the reading, then the meter verifies.",
     spec: "4+5 BAND \u00B7 8 PARTS" },
   { section: "analog", n: "52", name: "The Diode Room", btn: "diBtn", pill: "oldiron", pillLabel: "ANALOG AND POWER ELECTRONICS",
@@ -1168,7 +1168,7 @@ var PG_BENCHES = [
     how: "Free-run the chip first, fit parts and call the frequency before power flows, stretch the duty past 90 percent, then probe two dead boards and name each fault.",
     spec: "555 ASTABLE \u00B7 3 TRIALS" },
   { section: "analog", n: "62", name: "The Inductor Room", btn: "inBtn", pill: "oldiron", pillLabel: "ANALOG AND POWER ELECTRONICS",
-    desc: "Current through a coil cannot change instantly: V = L di/dt. Open the switch and the coil makes whatever voltage it needs to keep its current moving, 5.00 kV when 0.5 A through 10 mH is interrupted in 1 us.. Measure the kick, race the current ramp against a relay pull-in window, and diagnose two boards the same law killed.",
+    desc: "Current through a coil cannot change instantly: V = L di/dt. Open the switch and the coil makes whatever voltage it needs to keep its current moving, 5.00 kV when 0.5 A through 10 mH is interrupted in 1 us. Measure the kick, race the current ramp against a relay pull-in window, and diagnose two boards the same law killed.",
     how: "Free-run the coil first, call each kick and each ramp time before power flows, then probe two dead boards and name the fault the coil caused.",
     spec: "V = L di/dt \u00B7 FLYBACK \u00B7 SATURATION" },
   { section: "arch", n: "63", name: "The Arbiter Room", btn: "arBtn", pill: "riscv", pillLabel: "RISC-V",
@@ -1196,7 +1196,7 @@ var PG_BENCHES = [
     how: "Seat each drive by its key, cable every SATA drive end to end, call BOOT or NO BOOT for each machine before you press power, then convict the intake that fits but never links.",
     spec: "M.2 KEYING \u00B7 SATA CABLES \u00B7 3 TRIALS" },
   { section: "analog", n: "69", name: "The Convert Room", btn: "adcBtn", pill: "riscv", pillLabel: "RISC-V",
-    desc: "The converter inside every microcontroller: successive approximation asks one yes-or-no question per bit, most significant first, and twelve questions make a 12-bit reading. Race it against the naive counter, call every comparator answer yourself, budget the quantization error, freeze a moving input, and certify the room.",
+    desc: "Successive approximation is the converter inside many microcontrollers: successive approximation asks one yes-or-no question per bit, most significant first, and twelve questions make a 12-bit reading. Race it against the naive counter, call every comparator answer yourself, budget the quantization error, freeze a moving input, and certify the room.",
     how: "Free-run the 4-bit converter, call each comparator answer on the mystery voltages, budget the 12-bit quantization, then freeze the moving input.",
     spec: "SAR ADC \u00B7 3 TRIALS" },
   { section: "arch", n: "70", name: "The Timer Room", btn: "tmrBtn", pill: "riscv", pillLabel: "RISC-V",
@@ -1303,7 +1303,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-19-pg119";
+var PG_REV = "2026-09-19-pg120";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
