@@ -50607,7 +50607,7 @@ if (typeof module !== "undefined" && module.exports) {
     }
   };
 
-  var chooser, gmailA, nativeA, copyBtn, copyStatus, closeBtn, wbBtns = null, currentBrief = "general", lastTrigger = null;
+  var chooser, gmailA, nativeA, copyBtn, copyStatus, closeBtn, wbBtns = null, currentBrief = "general", lastTrigger = null, currentTag = null;
 
   function build() {
     chooser = document.getElementById("pgChooser");
@@ -50637,7 +50637,7 @@ if (typeof module !== "undefined" && module.exports) {
     });
     wbBtns = chooser.querySelectorAll(".ch-wb");
     for (var j = 0; j < wbBtns.length; j++) {
-      wbBtns[j].addEventListener("click", function () { applyBrief(this.getAttribute("data-wb")); });
+      wbBtns[j].addEventListener("click", function () { applyBrief(this.getAttribute("data-wb"), currentTag); });
     }
   }
 
@@ -50662,6 +50662,7 @@ if (typeof module !== "undefined" && module.exports) {
 
   function openChooser(key, benchTag) {
     if (!chooser) return;
+    currentTag = benchTag || null;
     applyBrief(key, benchTag);
     lastTrigger = document.activeElement;
     chooser.showModal();

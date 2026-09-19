@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260919-pg118">
+<meta name="build-version" content="v20260919-pg119">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -860,7 +860,7 @@ body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
   <div class="ch-head">
     <div>
       <h2 id="pgChooserTitle">Choose how to get in touch</h2>
-      <p id="pgChooserDesc">Pick a workstream and the brief fills in. Send it by whichever route suits you.</p>
+      <p id="pgChooserDesc">Pick a workstream or an offer and the brief fills in. Send it by whichever route suits you.</p>
     </div>
     <button class="ch-close" type="button" aria-label="Close contact options">&#215;</button>
   </div>
@@ -870,6 +870,9 @@ body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
       <button class="ch-wb" type="button" data-wb="firmware">Firmware</button>
       <button class="ch-wb" type="button" data-wb="kernel">Kernel</button>
       <button class="ch-wb" type="button" data-wb="hardware">Hardware</button>
+      <button class="ch-wb" type="button" data-wb="triage">Crash triage</button>
+      <button class="ch-wb" type="button" data-wb="bringup">Bring-up</button>
+      <button class="ch-wb" type="button" data-wb="audit">C audit</button>
     </div>
     <a class="ch-opt" id="pgMailGmail" href="#" target="_blank" rel="noopener">
       <span>Compose in Gmail</span><span aria-hidden="true">&#8599;</span>
@@ -1300,7 +1303,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-19-pg118";
+var PG_REV = "2026-09-19-pg119";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
@@ -1917,9 +1920,9 @@ if ('serviceWorker' in navigator) {
   apply(current());
 })();
 </script>
-<script src="rvcore.js?v=f0d417d01e" defer></script>
-<script src="rvdata.js?v=f0d417d01e" defer></script>
-<script src="riscv-lab.js?v=f0d417d01e" defer></script>
-<script src="features.js?v=f0d417d01e" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=81860debaa" defer></script>
+<script src="rvdata.js?v=81860debaa" defer></script>
+<script src="riscv-lab.js?v=81860debaa" defer></script>
+<script src="features.js?v=81860debaa" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
