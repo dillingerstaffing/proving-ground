@@ -57305,7 +57305,7 @@ if (typeof module !== "undefined" && module.exports) {
        bench logic. Test case for the foot-of-every-bench line. */
     var hire = bpEl("p", "bp-p", "");
     hire.innerHTML = "Hitting this exact fault on your real board? " +
-      "<button type=\"button\" class=\"bp-btn\" data-brief=\"triage\" data-bench-tag=\"Bench 71: The Two Guesses\">Fixed-price crash triage</button>";
+      "<button type=\"button\" class=\"bp-btn\" data-brief=\"triage\" data-bench-tag=\"Bench 71: The Two Guesses\">Crash triage</button>";
     panel.appendChild(hire);
 
     ov.appendChild(panel);
@@ -58145,7 +58145,7 @@ if (typeof module !== "undefined" && module.exports) {
        with this bench. Copy only; no bench logic, CSS, or shell touched. */
     var hsHire = hsEl("p", "hs-p", "");
     hsHire.innerHTML = "Your board's handshakes dying on the real wire? " +
-      "<button type=\"button\" class=\"hs-btn\" data-brief=\"triage\" data-bench-tag=\"Bench 72: The Handshake Room\">Fixed-price crash triage</button>";
+      "<button type=\"button\" class=\"hs-btn\" data-brief=\"triage\" data-bench-tag=\"Bench 72: The Handshake Room\">Crash triage</button>";
     panel.appendChild(hsHire);
 
     ov.appendChild(panel);
@@ -58912,7 +58912,7 @@ if (typeof module !== "undefined" && module.exports) {
        triggers document-wide. Copy only. */
     var hire = dnEl("p", "dn-p", "");
     hire.innerHTML = "Mystery crashes since the C extension went on? " +
-      "<button type=\"button\" class=\"dn-btn\" data-brief=\"triage\" data-bench-tag=\"Bench 73: The Dense Room\">Fixed-price crash triage</button>";
+      "<button type=\"button\" class=\"dn-btn\" data-brief=\"triage\" data-bench-tag=\"Bench 73: The Dense Room\">Crash triage</button>";
     panel.appendChild(hire);
 
     ov.appendChild(panel);
