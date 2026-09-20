@@ -58951,3 +58951,869 @@ if (typeof module !== "undefined" && module.exports) {
   }
 })();
 
+/* BENCH 74: THE STANDOFF ROOM (craft)
+   One atomic mechanism: a motherboard standoff belongs under a mounting
+   hole and nowhere else, because anywhere else the brass bridges the
+   board's copper to the grounded steel case, and that is a short circuit.
+   Three trials: seat the board on the tray and call BOOT or NO BOOT before
+   pressing power (do-first, consequence-free); call what three stray spots
+   short on a copper map, then test each call against the sim (predict then
+   verify, strikes on wrong calls); revive a dead refurb intake with the
+   continuity probe, pull the stray standoff, and boot it.
+   One sentence takeaway: a standoff belongs under a mounting hole and
+   nowhere else, because anywhere else the brass bridges the board's copper
+   to the chassis.
+   Pure sim hooks live in SO74 for the smoke test; the DOM engine below
+   drives the same code. */
+(function () {
+"use strict";
+
+/* ---------------- pure hooks (testable, no DOM) ---------------- */
+var SO74 = {};
+SO74.T1_COLS = 6;
+SO74.T1_ROWS = 4;
+SO74.T1_HOLES = [[1, 1], [4, 1], [1, 2], [4, 2]];
+SO74.T1_SEED = [[1, 1], [4, 1], [1, 2], [4, 2], [2, 2]];
+SO74.key = function (c, r) { return c + "," + r; };
+/* Human cell names: columns A.., rows 1... ("C3", like a spreadsheet). */
+SO74.cellName = function (c, r) { return String.fromCharCode(65 + c) + (r + 1); };
+SO74.inList = function (list, c, r) {
+  for (var i = 0; i < list.length; i++) {
+    if (list[i][0] === c && list[i][1] === r) return true;
+  }
+  return false;
+};
+/* Power-on check shared by trials 1 and 3: every standoff must sit on a
+   mounting hole, and every mounting hole must carry a standoff. cells is a
+   {"c,r": true} map; netAt (optional) names the copper under a stray. */
+SO74.powerCheck = function (cells, holes, netAt) {
+  var shorts = [], missing = [], k, p, c, r, i;
+  for (k in cells) {
+    if (!cells.hasOwnProperty(k)) continue;
+    p = k.split(",");
+    c = +p[0]; r = +p[1];
+    if (!SO74.inList(holes, c, r)) {
+      shorts.push({ c: c, r: r, net: netAt ? netAt(c, r) : null });
+    }
+  }
+  for (i = 0; i < holes.length; i++) {
+    if (!cells[SO74.key(holes[i][0], holes[i][1])]) {
+      missing.push({ c: holes[i][0], r: holes[i][1] });
+    }
+  }
+  return { ok: shorts.length === 0 && missing.length === 0, shorts: shorts, missing: missing };
+};
+
+/* Trial 2: the copper map, 5 x 4. A standoff bridges whatever copper it
+   lands on straight to the chassis. */
+SO74.T2_COLS = 5;
+SO74.T2_ROWS = 4;
+SO74.netAt2 = function (c, r) {
+  if (c <= 1 && r <= 2) return "v12";
+  if (r === 3 && c <= 2) return "pwrgd";
+  if (c >= 3 && r <= 1) return "v5sb";
+  return "gnd";
+};
+SO74.NETLBL = { v12: "12V", v5sb: "5VSB", gnd: "GND", pwrgd: "PWR" };
+SO74.T2_SPOTS = [
+  { id: "A", c: 0, r: 1 },
+  { id: "B", c: 4, r: 2 },
+  { id: "C", c: 1, r: 3 }
+];
+SO74.T2_VERDICTS = [
+  { key: "fine", label: "BOOTS FINE" },
+  { key: "latch", label: "PSU LATCHES OFF, STONE DEAD" },
+  { key: "noreset", label: "FANS SPIN, NEVER POSTS" },
+  { key: "silent", label: "ELECTRICALLY SILENT, STILL WRONG" }
+];
+SO74.t2Spot = function (id) {
+  for (var i = 0; i < SO74.T2_SPOTS.length; i++) {
+    if (SO74.T2_SPOTS[i].id === id) return SO74.T2_SPOTS[i];
+  }
+  return null;
+};
+SO74.t2NetOf = function (id) {
+  var s = SO74.t2Spot(id);
+  return s ? SO74.netAt2(s.c, s.r) : null;
+};
+SO74.t2Key = function (net) {
+  if (net === "v12") return "latch";
+  if (net === "pwrgd") return "noreset";
+  return "silent";
+};
+SO74.t2Grade = function (spotId, verdictKey) {
+  var net = SO74.t2NetOf(spotId);
+  var want = SO74.t2Key(net);
+  return { ok: verdictKey === want, want: want, net: net };
+};
+SO74.t2Outcome = function (net) {
+  if (net === "v12") return {
+    title: "PSU LATCHES OFF, STONE DEAD",
+    body: "12 V across about 0.01 ohm of brass contact: about 1,200 A, " +
+      "roughly forty times what that rail is built to carry. The supply's " +
+      "overcurrent latch opens in microseconds. No fans, no lights, no beep: " +
+      "the machine is a brick until the stray comes out."
+  };
+  if (net === "pwrgd") return {
+    title: "FANS SPIN, NEVER POSTS",
+    body: "PWR_GOOD is the chipset's power-is-stable line. The brass pins it " +
+      "at 0 V, so reset never releases. Fans spin, drives click, the screen " +
+      "stays black. The classic everything-runs-nothing-boots."
+  };
+  return {
+    title: "ELECTRICALLY SILENT, STILL WRONG",
+    body: "Chassis ground meets the ground plane: 0 V across the contact, no " +
+      "current, nothing heats. The least dangerous mistake on this board, and " +
+      "still a mistake: that corner of the board floats unsupported, and the " +
+      "next builder copies what they see."
+  };
+};
+
+/* Trial 3: the dead intake, 6 x 4. Six mounting holes, seven standoffs. */
+SO74.T3_COLS = 6;
+SO74.T3_ROWS = 4;
+SO74.T3_HOLES = [[1, 1], [4, 1], [1, 2], [4, 2], [0, 3], [5, 3]];
+SO74.T3_STRAY = [3, 1];
+SO74.netAt3 = function (c, r) {
+  return (c >= 2 && c <= 3 && r <= 2) ? "v12" : "gnd";
+};
+SO74.t3Seed = function () {
+  var cells = {}, i;
+  for (i = 0; i < SO74.T3_HOLES.length; i++) {
+    cells[SO74.key(SO74.T3_HOLES[i][0], SO74.T3_HOLES[i][1])] = true;
+  }
+  cells[SO74.key(SO74.T3_STRAY[0], SO74.T3_STRAY[1])] = true;
+  return cells;
+};
+/* Continuity probe: ohms between a copper pour and the chassis. */
+SO74.t3Probe = function (net, shortPresent) {
+  if (net === "v12" && shortPresent) {
+    return { text: "12V POUR: 0.3 OHM TO CHASSIS. DEAD SHORT. A healthy rail reads kilo-ohms.", short: true };
+  }
+  if (net === "v12") {
+    return { text: "12V POUR: 8.4 KOHM TO CHASSIS. NORMAL. The short is gone.", short: false };
+  }
+  if (net === "v5sb") {
+    return { text: "5VSB: 9.1 KOHM TO CHASSIS. NORMAL.", short: false };
+  }
+  return { text: "GROUND FILL: 0.1 OHM TO CHASSIS. NORMAL. That is what ground is.", short: false };
+};
+SO74.t3StrayPresent = function (cells) {
+  return !!cells[SO74.key(SO74.T3_STRAY[0], SO74.T3_STRAY[1])];
+};
+
+SO74.INTRO_HTML =
+  "<h3 class=\"so-sec\">WHY THIS ROOM EXISTS</h3>" +
+  "<p class=\"so-p\">A new build that never shows a screen is usually not a dead part. " +
+  "On a refurb intake bench, the most common dead board is one extra brass standoff under " +
+  "the board, bridging the board's copper straight to the steel case. Five minutes with a " +
+  "flashlight fixes it. An RMA costs two weeks.</p>" +
+  "<h3 class=\"so-sec\">THE MECHANISM</h3>" +
+  "<p class=\"so-p\">A standoff is brass, brass conducts, and the case is grounded. Under a " +
+  "mounting hole the standoff meets a plated ring tied to ground, and all is well. Anywhere " +
+  "else it meets live copper, and live copper bolted to the case is a short circuit.</p>" +
+  "<h3 class=\"so-sec\">THE WORKED EXAMPLE</h3>" +
+  "<p class=\"so-p\">From this room's own trial 2: the 12 V rail, through a standoff touching " +
+  "its copper pour. Contact resistance is about 0.01 ohm, so the fault current is 12 / 0.01: " +
+  "about 1,200 A, roughly forty times what that rail is built to carry. The supply's " +
+  "overcurrent latch opens in microseconds and the machine goes stone dead: no fans, no " +
+  "lights. You will call that verdict before you test it.</p>" +
+  "<h3 class=\"so-sec\">THE FAILURE MODES</h3>" +
+  "<ul class=\"so-list\">" +
+  "<li>Stray on the 12 V pour: the supply latches off, stone dead.</li>" +
+  "<li>Stray on the PWR_GOOD line: fans spin, drives click, the screen stays black (reset never releases).</li>" +
+  "<li>Stray on the ground fill: electrically silent, still wrong (the board floats unsupported there).</li>" +
+  "<li>A mounting hole with no standoff: the board hangs on its neighbors and can crack.</li>" +
+  "</ul>" +
+  "<h3 class=\"so-sec\">THE THREE TRIALS</h3>" +
+  "<p class=\"so-p\">1. Seat the board on the tray, call BOOT or NO BOOT, press power. " +
+  "2. Call what three stray spots short, then test each call. " +
+  "3. Revive a dead intake with the continuity probe, then boot it.</p>" +
+  "<p class=\"so-p\"><b>One-sentence takeaway:</b> a standoff belongs under a mounting hole " +
+  "and nowhere else, because anywhere else the brass bridges the board's copper to the chassis.</p>";
+
+/* ---------------- CSS ---------------- */
+var SO_CSS = [
+  ".so-overlay{position:fixed;inset:0;z-index:90;background:var(--ink);display:none;overflow-y:auto;}",
+  ".so-overlay.open{display:block;}",
+  ".so-panel{max-width:860px;margin:0 auto;padding:28px 18px 60px;color:var(--paper);}",
+  ".so-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);}",
+  ".so-title{font-family:'Space Grotesk',sans-serif;font-size:34px;margin:6px 0 10px;color:var(--paper);}",
+  ".so-sec{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.16em;color:var(--ember);margin:26px 0 10px;padding-top:16px;border-top:1px solid var(--line);}",
+  ".so-p{font-size:13.5px;line-height:1.7;color:var(--dim);max-width:74ch;margin:0 0 12px;}",
+  ".so-p b{color:var(--paper);}",
+  ".so-list{margin:0 0 12px;padding-left:20px;max-width:74ch;}",
+  ".so-list li{font-size:13.5px;line-height:1.7;color:var(--dim);margin:0 0 8px;}",
+  ".so-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.06em;background:transparent;color:var(--paper);border:1px solid var(--line);padding:12px 16px;min-height:48px;cursor:pointer;}",
+  ".so-btn:hover{border-color:var(--ember);}",
+  ".so-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+  ".so-btn:disabled{opacity:.38;cursor:not-allowed;}",
+  ".so-btn.solid{background:var(--ember);border-color:var(--ember);color:var(--ink);font-weight:700;}",
+  ".so-btn.picked{border-color:var(--ember);color:var(--ember);}",
+  ".so-group{margin:0 0 14px;}",
+  ".so-lbl{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:var(--dim);display:block;margin:0 0 8px;}",
+  ".so-row{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 12px;}",
+  ".so-out{font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.75;color:var(--dim);background:var(--panel);border:1px solid var(--line);padding:14px 16px;margin:0 0 12px;white-space:pre-wrap;}",
+  ".so-out .v{color:var(--ember);}",
+  ".so-out .w{color:var(--paper);font-weight:700;}",
+  ".so-grid{display:grid;gap:4px;margin:0 0 12px;}",
+  ".so-t1{grid-template-columns:repeat(6,1fr);}",
+  ".so-t2{grid-template-columns:repeat(5,1fr);}",
+  ".so-t3{grid-template-columns:repeat(6,1fr);}",
+  ".so-cell{position:relative;min-height:48px;background:var(--panel);border:1px solid var(--line);color:var(--dim);font-family:'IBM Plex Mono',monospace;cursor:pointer;padding:0;}",
+  ".so-cell:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+  ".so-cell .so-netlbl{position:absolute;top:2px;left:4px;font-size:9px;letter-spacing:.08em;color:var(--dim);}",
+  ".so-cell .so-ring{position:absolute;inset:8px;border:2px dashed var(--ember);border-radius:50%;pointer-events:none;}",
+  ".so-cell .so-dot{position:absolute;inset:0;margin:auto;width:22px;height:22px;border-radius:50%;background:#c19a3f;pointer-events:none;}",
+  ".so-cell.bad{border-color:var(--ember);box-shadow:inset 0 0 0 2px var(--ember);}",
+  ".so-mcell{position:relative;min-height:48px;background:var(--panel);border:1px solid var(--line);color:var(--dim);font-family:'IBM Plex Mono',monospace;}",
+  ".so-mcell .so-netlbl{position:absolute;top:2px;left:4px;font-size:9px;letter-spacing:.08em;color:var(--dim);}",
+  ".so-mcell.so-net-v12{background:rgba(255,90,31,.16);}",
+  ".so-mcell.so-net-v5sb{background:rgba(120,140,220,.14);}",
+  ".so-mcell.so-net-gnd{background:rgba(120,170,120,.10);}",
+  ".so-mcell.so-net-pwrgd{background:rgba(232,201,72,.16);}",
+  ".so-cell.so-net-v12{background:rgba(255,90,31,.16);}",
+  ".so-cell.so-net-gnd{background:rgba(120,170,120,.10);}",
+  ".so-spot{position:relative;min-height:48px;display:flex;align-items:center;justify-content:center;background:var(--panel);border:1px solid var(--line);color:var(--paper);font-family:'IBM Plex Mono',monospace;font-size:15px;font-weight:700;cursor:pointer;}",
+  ".so-spot:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+  ".so-spot .so-netlbl{position:absolute;top:2px;left:4px;font-size:9px;letter-spacing:.08em;color:var(--dim);font-weight:400;}",
+  ".so-spot.picked{border-color:var(--ember);color:var(--ember);}",
+  ".so-spot.solved{border-color:var(--ember);}",
+  ".so-spot.solved::after{content:\"OK\";position:absolute;bottom:2px;right:4px;font-size:9px;letter-spacing:.1em;color:var(--ember);}",
+  ".so-spot.so-net-v12{background:rgba(255,90,31,.16);}",
+  ".so-spot.so-net-gnd{background:rgba(120,170,120,.10);}",
+  ".so-spot.so-net-pwrgd{background:rgba(232,201,72,.16);}",
+  ".so-legend{font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.8;color:var(--dim);margin:0 0 12px;}",
+  ".so-legend .sw{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:baseline;}",
+  ".so-done{color:var(--ember);font-size:11px;letter-spacing:.14em;margin-left:8px;}",
+  ".so-banner{border:1px solid var(--ember);padding:18px;margin:0 0 16px;display:none;}",
+  ".so-banner.show{display:block;}",
+  ".so-banner h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--ember);margin:0 0 8px;}",
+  ".so-cert{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:var(--dim);margin:0 0 12px;white-space:pre-wrap;}",
+  ".so-fail{border:1px solid var(--ember);padding:18px;margin:0 0 16px;display:none;}",
+  ".so-fail.show{display:block;}",
+  ".so-fail h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--ember);margin:0 0 8px;}",
+  "@media (max-width:620px){.so-title{font-size:27px;}.so-cell .so-netlbl,.so-mcell .so-netlbl,.so-spot .so-netlbl{font-size:8px;}}"
+].join("\n");
+
+function soEl(tag, cls, html) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html != null) e.innerHTML = html;
+  return e;
+}
+function soBtn(label, cls) {
+  var b = document.createElement("button");
+  b.type = "button";
+  b.className = cls || "so-btn";
+  b.textContent = label;
+  return b;
+}
+function soReduced() {
+  return (typeof pgReduced !== "undefined") && pgReduced;
+}
+function soToast(msg) {
+  if (typeof toast === "function") toast(msg);
+}
+
+var soSt = null;
+var soEls = {};
+var soEscBound = false;
+
+function soNewState() {
+  var t1cells = {}, i;
+  for (i = 0; i < SO74.T1_SEED.length; i++) {
+    t1cells[SO74.key(SO74.T1_SEED[i][0], SO74.T1_SEED[i][1])] = true;
+  }
+  return {
+    t1: { cells: t1cells, call: null, done: false },
+    t2: { spot: null, verdict: null, solved: { A: false, B: false, C: false }, strikes: 0, done: false },
+    t3: { cells: SO74.t3Seed(), done: false },
+    failed: false
+  };
+}
+
+/* ---------------- shared render helpers ---------------- */
+function soCellAria(c, r, net, isHole, hasStandoff) {
+  var s = "cell " + SO74.cellName(c, r);
+  if (net) s += ", " + SO74.NETLBL[net];
+  s += isHole ? ", mounting hole" : ", no mounting hole";
+  s += hasStandoff ? ", standoff seated" : ", empty";
+  return s;
+}
+function soMarkDone(id) {
+  var h = document.getElementById(id);
+  if (h && !h.querySelector(".so-done")) {
+    var s = soEl("span", "so-done", "DONE");
+    h.appendChild(s);
+  }
+}
+function soProgress() {
+  var n = (soSt.t1.done ? 1 : 0) + (soSt.t2.done ? 1 : 0) + (soSt.t3.done ? 1 : 0);
+  soEls.progress.innerHTML = "TRIALS: <span class=\"v\">" + n + "/3</span>";
+  soEls.strikes.innerHTML = "STRIKES: <span class=\"v\">" + soSt.t2.strikes + "/3</span>";
+}
+function soCheckWin() {
+  if (soSt.t1.done && soSt.t2.done && soSt.t3.done && !soEls.banner.classList.contains("show")) {
+    soEls.banner.classList.add("show");
+    soEls.cert.textContent =
+      "THE STANDOFF ROOM: BENCH QUALIFICATION RECORD\n" +
+      "Bench 74, BENCH CRAFT (OLD IRON)\n" +
+      "Trial 1: stray standoff found on the tray walk, board seated on brass only, " +
+      "BOOT called before power, POST clean.\n" +
+      "Trial 2: 3/3 stray-spot verdicts called before testing (12 V pour latches " +
+      "the supply, PWR_GOOD held low spins fans without POST, ground fill is silent but still wrong).\n" +
+      "Trial 3: dead refurb intake revived: the continuity probe found the 12 V pour " +
+      "bridged to chassis, the stray pulled, POST clean.\n" +
+      "Takeaway: a standoff belongs under a mounting hole and nowhere else, because " +
+      "anywhere else the brass bridges the board's copper to the chassis.";
+    soToast("Room certified: The Standoff Room.");
+  }
+}
+function soFail() {
+  soSt.failed = true;
+  soEls.fail.classList.add("show");
+}
+function soDownload() {
+  var blob = new Blob([soEls.cert.textContent], { type: "text/plain" });
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "standoff-room-record.txt";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function () {
+    URL.revokeObjectURL(a.href);
+    a.remove();
+  }, 500);
+}
+
+/* ---------------- trial 1: seat the board ---------------- */
+function soT1Render() {
+  var g = soEls.t1Grid;
+  g.innerHTML = "";
+  var c, r, b, hole, has;
+  for (r = 0; r < SO74.T1_ROWS; r++) {
+    for (c = 0; c < SO74.T1_COLS; c++) {
+      (function (cc, rr) {
+        hole = SO74.inList(SO74.T1_HOLES, cc, rr);
+        has = !!soSt.t1.cells[SO74.key(cc, rr)];
+        b = document.createElement("button");
+        b.type = "button";
+        b.className = "so-cell";
+        b.setAttribute("data-c", cc);
+        b.setAttribute("data-r", rr);
+        b.setAttribute("aria-pressed", has ? "true" : "false");
+        b.setAttribute("aria-label", soCellAria(cc, rr, null, hole, has));
+        var inner = "";
+        if (hole) inner += "<span class=\"so-ring\"></span>";
+        if (has) inner += "<span class=\"so-dot\"></span>";
+        b.innerHTML = inner;
+        b.addEventListener("click", function () {
+          var k = SO74.key(cc, rr);
+          if (soSt.t1.cells[k]) delete soSt.t1.cells[k];
+          else soSt.t1.cells[k] = true;
+          soT1Render();
+        });
+        g.appendChild(b);
+      })(c, r);
+    }
+  }
+  var i, btns = g.children;
+  for (i = 0; i < btns.length; i++) {
+    btns[i].classList.remove("bad");
+  }
+}
+function soT1Power() {
+  var out = soEls.t1Out;
+  if (!soSt.t1.call) {
+    out.textContent = "Call BOOT or NO BOOT first. The habit is the lesson: predict, then power.";
+    return;
+  }
+  var res = SO74.powerCheck(soSt.t1.cells, SO74.T1_HOLES, null);
+  var names = function (list) {
+    return list.map(function (p) { return SO74.cellName(p.c, p.r); }).join(", ");
+  };
+  if (res.ok) {
+    if (soSt.t1.call === "BOOT") {
+      out.innerHTML = "<span class=\"w\">POST:</span> all rails clean, memory counts, no shorts. " +
+        "Trial 1 complete: the board sits on brass only.";
+      soSt.t1.done = true;
+      soMarkDone("soT1Head");
+      soProgress();
+      soCheckWin();
+    } else {
+      out.textContent = "It POSTs clean. Your call said NO BOOT: the tray was right, every " +
+        "standoff under a hole. Call it again and press power.";
+    }
+    return;
+  }
+  if (res.shorts.length) {
+    out.innerHTML = "<span class=\"w\">CLICK.</span> The supply's overcurrent latch just opened. " +
+      "Dead short at " + names(res.shorts) + ": brass on live copper, bolted to the case. " +
+      "No fans, no lights. Pull the stray and try again.";
+    var i, cell;
+    for (i = 0; i < res.shorts.length; i++) {
+      cell = soEls.t1Grid.querySelector("[data-c=\"" + res.shorts[i].c + "\"][data-r=\"" + res.shorts[i].r + "\"]");
+      if (cell) cell.classList.add("bad");
+    }
+    if (typeof toast === "function") toast("Short: PSU latched off.");
+    return;
+  }
+  out.textContent = "It POSTs, but hole " + names(res.missing) + " has no standoff: the board hangs " +
+    "on its neighbors and can crack under a heavy cooler. Seat the missing brass.";
+}
+
+/* ---------------- trial 2: name the short ---------------- */
+function soT2Render() {
+  var m = soEls.t2Map;
+  m.innerHTML = "";
+  var c, r, cell;
+  for (r = 0; r < SO74.T2_ROWS; r++) {
+    for (c = 0; c < SO74.T2_COLS; c++) {
+      (function (cc, rr) {
+        var spotNet = SO74.netAt2(cc, rr);
+        var spot = null;
+        var i;
+        for (i = 0; i < SO74.T2_SPOTS.length; i++) {
+          if (SO74.T2_SPOTS[i].c === cc && SO74.T2_SPOTS[i].r === rr) spot = SO74.T2_SPOTS[i];
+        }
+        if (spot) {
+          cell = document.createElement("button");
+          cell.type = "button";
+          cell.className = "so-spot so-net-" + spotNet;
+          if (soSt.t2.spot === spot.id) cell.classList.add("picked");
+          if (soSt.t2.solved[spot.id]) cell.classList.add("solved");
+          cell.setAttribute("data-spot", spot.id);
+          cell.setAttribute("aria-label", "Spot " + spot.id + ": call what a standoff here shorts");
+          cell.innerHTML = "<span class=\"so-netlbl\">" + SO74.NETLBL[spotNet] + "</span>" + spot.id;
+          cell.addEventListener("click", function () {
+            soSt.t2.spot = spot.id;
+            soEls.t2SpotLbl.textContent = "SPOT: " + spot.id + " (on the " + SO74.NETLBL[spotNet] + " copper)";
+            soT2Render();
+          });
+        } else {
+          cell = document.createElement("div");
+          cell.className = "so-mcell so-net-" + spotNet;
+          cell.innerHTML = "<span class=\"so-netlbl\">" + SO74.NETLBL[spotNet] + "</span>";
+        }
+        m.appendChild(cell);
+      })(c, r);
+    }
+  }
+  var i, vb = soEls.t2Verdicts.children;
+  for (i = 0; i < vb.length; i++) {
+    vb[i].classList.toggle("picked", vb[i].getAttribute("data-v") === soSt.t2.verdict);
+  }
+}
+function soT2Test() {
+  var out = soEls.t2Out;
+  if (soSt.failed) { out.textContent = "The room failed. Reset it to try the spots again."; return; }
+  if (!soSt.t2.spot) { out.textContent = "Pick a spot first: A, B, or C."; return; }
+  if (!soSt.t2.verdict) { out.textContent = "Call a verdict first, then test the call."; return; }
+  if (soSt.t2.solved[soSt.t2.spot]) { out.textContent = "Spot " + soSt.t2.spot + " is already solved. Pick another."; return; }
+  var g = SO74.t2Grade(soSt.t2.spot, soSt.t2.verdict);
+  var oc = SO74.t2Outcome(g.net);
+  var n, solved = 0;
+  if (g.ok) {
+    soSt.t2.solved[soSt.t2.spot] = true;
+    for (n in soSt.t2.solved) if (soSt.t2.solved[n]) solved++;
+    out.innerHTML = "<span class=\"w\">Called it. " + oc.title + ".</span> " + oc.body +
+      " Spot " + soSt.t2.spot + " solved (" + solved + "/3).";
+    if (solved === 3) {
+      soSt.t2.done = true;
+      out.innerHTML += " Trial 2 complete: 3/3 verdicts called before testing.";
+      soMarkDone("soT2Head");
+      soProgress();
+      soCheckWin();
+    }
+  } else {
+    soSt.t2.strikes++;
+    soProgress();
+    out.innerHTML = "<span class=\"w\">Strike " + soSt.t2.strikes + ".</span> The bench disagrees: " +
+      "<span class=\"w\">" + oc.title + ".</span> " + oc.body + " Read it, then call the next spot.";
+    if (soSt.t2.strikes >= 3) {
+      soFail();
+      out.textContent = "Three strikes. The room failed: reset it below and walk the spots again.";
+    }
+  }
+  soSt.t2.verdict = null;
+  soT2Render();
+}
+
+/* ---------------- trial 3: the dead intake ---------------- */
+function soT3Render() {
+  var g = soEls.t3Grid;
+  g.innerHTML = "";
+  var c, r, b, hole, has, net;
+  for (r = 0; r < SO74.T3_ROWS; r++) {
+    for (c = 0; c < SO74.T3_COLS; c++) {
+      (function (cc, rr) {
+        hole = SO74.inList(SO74.T3_HOLES, cc, rr);
+        has = !!soSt.t3.cells[SO74.key(cc, rr)];
+        net = SO74.netAt3(cc, rr);
+        b = document.createElement("button");
+        b.type = "button";
+        b.className = "so-cell so-net-" + net;
+        b.setAttribute("data-c", cc);
+        b.setAttribute("data-r", rr);
+        b.setAttribute("aria-pressed", has ? "true" : "false");
+        b.setAttribute("aria-label", soCellAria(cc, rr, net, hole, has));
+        var inner = "<span class=\"so-netlbl\">" + SO74.NETLBL[net] + "</span>";
+        if (hole) inner += "<span class=\"so-ring\"></span>";
+        if (has) inner += "<span class=\"so-dot\"></span>";
+        b.innerHTML = inner;
+        b.addEventListener("click", function () {
+          var k = SO74.key(cc, rr);
+          if (soSt.t3.cells[k]) {
+            delete soSt.t3.cells[k];
+            if (!SO74.inList(SO74.T3_HOLES, cc, rr)) {
+              soEls.t3Out.textContent = "Standoff pulled from cell " + SO74.cellName(cc, rr) +
+                ". Probe the 12V pour again and watch the short clear.";
+            } else {
+              soEls.t3Out.textContent = "That was a mounting-hole standoff at " +
+                SO74.cellName(cc, rr) + ": the board needs it back. Tap the cell again to re-seat it.";
+            }
+          } else {
+            soSt.t3.cells[k] = true;
+          }
+          soT3Render();
+        });
+        g.appendChild(b);
+      })(c, r);
+    }
+  }
+}
+function soT3Probe(net) {
+  var shortPresent = SO74.t3StrayPresent(soSt.t3.cells);
+  var r = SO74.t3Probe(net, net === "v12" ? shortPresent : false);
+  soEls.t3Out.textContent = r.text + (r.short ? " Find the brass sitting on the red copper." : "");
+}
+function soT3Power() {
+  var out = soEls.t3Out;
+  var res = SO74.powerCheck(soSt.t3.cells, SO74.T3_HOLES, SO74.netAt3);
+  var names = function (list) {
+    return list.map(function (p) { return SO74.cellName(p.c, p.r); }).join(", ");
+  };
+  if (res.ok) {
+    out.innerHTML = "<span class=\"w\">POST:</span> the intake lives. Memory counts, all rails clean. " +
+      "Trial 3 complete: the refurb line gets this one back.";
+    soSt.t3.done = true;
+    soMarkDone("soT3Head");
+    soProgress();
+    soCheckWin();
+    return;
+  }
+  if (res.shorts.length) {
+    var s = res.shorts[0];
+    var where = s.net === "v12" ? "the 12 V pour" : "live copper";
+    out.textContent = "Still dead. Standoff at " + names(res.shorts) + " sits on " + where +
+      ": the rail is bridged to the chassis and the supply latches off. " +
+      "The probe already told you: pull the brass off the red copper.";
+    return;
+  }
+  out.textContent = "It POSTs, but hole " + names(res.missing) + " has no standoff. " +
+    "The intake ships only with full brass: seat it.";
+}
+
+/* ---------------- reset ---------------- */
+function soReset() {
+  soSt = soNewState();
+  soEls.fail.classList.remove("show");
+  soEls.banner.classList.remove("show");
+  var heads = ["soT1Head", "soT2Head", "soT3Head"], i, h, d;
+  for (i = 0; i < heads.length; i++) {
+    h = document.getElementById(heads[i]);
+    if (h) { d = h.querySelector(".so-done"); if (d) d.remove(); }
+  }
+  soT1Render();
+  soT2Render();
+  soT3Render();
+  soEls.t1Out.textContent = "Tray re-seeded the way the last shift left it. Walk it.";
+  soEls.t2Out.textContent = "Pick a spot, call the verdict, test the call.";
+  soEls.t2SpotLbl.textContent = "SPOT: none selected";
+  soEls.t3Out.textContent = "Intake on the bench, stone dead. Probe the pours.";
+  soProgress();
+}
+
+/* ---------------- build ---------------- */
+function soBuild() {
+  var box = document.querySelector(".dossier .actions");
+  if (!box) return;
+  if (document.getElementById("soBtn")) return;
+  soSt = soNewState();
+
+  var sty = document.createElement("style");
+  sty.id = "soStyle";
+  sty.textContent = SO_CSS;
+  document.head.appendChild(sty);
+
+  var b = document.createElement("button");
+  b.id = "soBtn";
+  b.className = "pg-launch";
+  b.textContent = "Open The Standoff Room";
+  b.addEventListener("click", soOpen);
+  box.appendChild(b);
+
+  var ov = soEl("div", "so-overlay", "");
+  ov.id = "soOverlay";
+  ov.setAttribute("role", "dialog");
+  ov.setAttribute("aria-label", "The Standoff Room");
+  var x = soBtn("CLOSE", "so-btn");
+  x.id = "soXBtn";
+  x.style.cssText = "position:fixed;top:calc(12px + env(safe-area-inset-top));right:calc(16px + env(safe-area-inset-right));z-index:95;";
+  x.setAttribute("aria-label", "Close The Standoff Room");
+  x.addEventListener("click", soClose);
+  ov.appendChild(x);
+  soEls.overlay = ov;
+  if (!soEscBound) {
+    soEscBound = true;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && soEls.overlay && soEls.overlay.classList.contains("open")) soClose();
+    });
+  }
+
+  var panel = soEl("div", "so-panel", "");
+  panel.id = "soPanel";
+  panel.appendChild(soEl("div", "so-kicker", "BENCH CRAFT BENCH 74"));
+  panel.appendChild(soEl("h2", "so-title", "The Standoff Room"));
+
+  var intro = soEl("div", "", "");
+  intro.innerHTML = SO74.INTRO_HTML;
+  panel.appendChild(intro);
+
+  var prog = soEl("div", "so-out", "");
+  prog.id = "soProgress";
+  prog.setAttribute("aria-live", "polite");
+  panel.appendChild(prog);
+  soEls.progress = prog;
+  var strikes = soEl("div", "so-out", "");
+  strikes.id = "soStrikes";
+  panel.appendChild(strikes);
+  soEls.strikes = strikes;
+
+  /* ---- trial 1 ---- */
+  var t1Head = soEl("h3", "so-sec", "DO FIRST: TRIAL 1, SEAT THE BOARD");
+  t1Head.id = "soT1Head";
+  panel.appendChild(t1Head);
+  panel.appendChild(soEl("p", "so-p",
+    "Nothing to break. The tray is seeded the way the last shift left it: five brass standoffs, " +
+    "and the board ghost shows its four mounting holes. Walk the tray: tap a brass dot to pull a " +
+    "standoff, tap an empty cell to seat one. When the tray is right, call it, then press power."));
+  panel.appendChild(soEl("div", "so-legend",
+    "BRASS DOT = standoff seated &nbsp; DASHED RING = mounting hole, the only legal home for brass"));
+  var t1Grid = soEl("div", "so-grid so-t1", "");
+  t1Grid.id = "soT1Grid";
+  t1Grid.setAttribute("role", "group");
+  t1Grid.setAttribute("aria-label", "Case tray: 6 by 4 threaded positions");
+  panel.appendChild(t1Grid);
+  soEls.t1Grid = t1Grid;
+  var callRow = soEl("div", "so-row", "");
+  callRow.appendChild(soEl("span", "so-lbl", "CALL IT:"));
+  var bootB = soBtn("BOOT", "so-btn");
+  bootB.addEventListener("click", function () {
+    soSt.t1.call = "BOOT";
+    bootB.classList.add("picked"); noBootB.classList.remove("picked");
+    soEls.t1Out.textContent = "Called: BOOT. Press power.";
+  });
+  var noBootB = soBtn("NO BOOT", "so-btn");
+  noBootB.addEventListener("click", function () {
+    soSt.t1.call = "NO BOOT";
+    noBootB.classList.add("picked"); bootB.classList.remove("picked");
+    soEls.t1Out.textContent = "Called: NO BOOT. Press power.";
+  });
+  callRow.appendChild(bootB);
+  callRow.appendChild(noBootB);
+  panel.appendChild(callRow);
+  var t1Row = soEl("div", "so-row", "");
+  var power1 = soBtn("PRESS POWER", "so-btn solid");
+  power1.id = "soT1Power";
+  power1.addEventListener("click", soT1Power);
+  var reseed1 = soBtn("RESET TRAY", "so-btn");
+  reseed1.addEventListener("click", function () {
+    var cells = {}, i;
+    for (i = 0; i < SO74.T1_SEED.length; i++) {
+      cells[SO74.key(SO74.T1_SEED[i][0], SO74.T1_SEED[i][1])] = true;
+    }
+    soSt.t1.cells = cells;
+    soSt.t1.call = null;
+    bootB.classList.remove("picked"); noBootB.classList.remove("picked");
+    soT1Render();
+    soEls.t1Out.textContent = "Tray re-seeded. Walk it.";
+  });
+  t1Row.appendChild(power1);
+  t1Row.appendChild(reseed1);
+  panel.appendChild(t1Row);
+  var t1Out = soEl("div", "so-out", "Tap a brass dot to pull it. When the tray is right, call BOOT or NO BOOT, then press power.");
+  t1Out.id = "soT1Out";
+  t1Out.setAttribute("aria-live", "polite");
+  panel.appendChild(t1Out);
+  soEls.t1Out = t1Out;
+
+  /* ---- trial 2 ---- */
+  var t2Head = soEl("h3", "so-sec", "TRIAL 2: NAME THE SHORT");
+  t2Head.id = "soT2Head";
+  panel.appendChild(t2Head);
+  panel.appendChild(soEl("p", "so-p",
+    "One copper map, three stray spots. Tap a spot, call the verdict, then TEST THE CALL. " +
+    "Three correct calls pass the trial. A wrong call is a strike: three strikes fail the room."));
+  panel.appendChild(soEl("div", "so-legend",
+    "12V = 12 volt power pour &nbsp; 5VSB = 5 volt standby pour &nbsp; GND = ground fill &nbsp; " +
+    "PWR = PWR_GOOD, the line that tells the chipset power is stable (held low, the board never leaves reset)"));
+  var t2Map = soEl("div", "so-grid so-t2", "");
+  t2Map.id = "soT2Map";
+  t2Map.setAttribute("role", "group");
+  t2Map.setAttribute("aria-label", "Copper map: pick a stray spot");
+  panel.appendChild(t2Map);
+  soEls.t2Map = t2Map;
+  var spotLbl = soEl("div", "so-legend", "SPOT: none selected");
+  spotLbl.id = "soT2SpotLbl";
+  panel.appendChild(spotLbl);
+  soEls.t2SpotLbl = spotLbl;
+  panel.appendChild(soEl("span", "so-lbl", "CALL THE VERDICT:"));
+  var vRow = soEl("div", "so-row", "");
+  vRow.id = "soT2Verdicts";
+  var i;
+  for (i = 0; i < SO74.T2_VERDICTS.length; i++) {
+    (function (v) {
+      var vb = soBtn(v.label, "so-btn");
+      vb.setAttribute("data-v", v.key);
+      vb.addEventListener("click", function () {
+        soSt.t2.verdict = v.key;
+        soT2Render();
+      });
+      vRow.appendChild(vb);
+    })(SO74.T2_VERDICTS[i]);
+  }
+  panel.appendChild(vRow);
+  soEls.t2Verdicts = vRow;
+  var testB = soBtn("TEST THE CALL", "so-btn solid");
+  testB.id = "soT2Test";
+  testB.addEventListener("click", soT2Test);
+  var t2Row = soEl("div", "so-row", "");
+  t2Row.appendChild(testB);
+  panel.appendChild(t2Row);
+  var t2Out = soEl("div", "so-out", "Pick a spot, call the verdict, test the call.");
+  t2Out.id = "soT2Out";
+  t2Out.setAttribute("aria-live", "polite");
+  panel.appendChild(t2Out);
+  soEls.t2Out = t2Out;
+
+  /* ---- trial 3 ---- */
+  var t3Head = soEl("h3", "so-sec", "TRIAL 3: THE DEAD INTAKE");
+  t3Head.id = "soT3Head";
+  panel.appendChild(t3Head);
+  panel.appendChild(soEl("p", "so-p",
+    "An OLD IRON intake: board seated, looks right, stone dead. The continuity probe reads ohms " +
+    "between a copper pour and the chassis. Probe the pours, find the one that reads a short, pull " +
+    "the standoff sitting on it (tap any brass dot to pull it, tap an empty hole to re-seat), then press power."));
+  panel.appendChild(soEl("div", "so-legend",
+    "12V = 12 volt power pour &nbsp; GND = ground fill &nbsp; BRASS DOT = standoff &nbsp; " +
+    "DASHED RING = mounting hole"));
+  var t3Grid = soEl("div", "so-grid so-t3", "");
+  t3Grid.id = "soT3Grid";
+  t3Grid.setAttribute("role", "group");
+  t3Grid.setAttribute("aria-label", "Intake board: 6 by 4 positions under the board");
+  panel.appendChild(t3Grid);
+  soEls.t3Grid = t3Grid;
+  panel.appendChild(soEl("span", "so-lbl", "CONTINUITY PROBE:"));
+  var pRow = soEl("div", "so-row", "");
+  var nets = [["v12", "PROBE 12V POUR"], ["v5sb", "PROBE 5VSB"], ["gnd", "PROBE GROUND"]];
+  for (i = 0; i < nets.length; i++) {
+    (function (net, label) {
+      var pb = soBtn(label, "so-btn");
+      pb.addEventListener("click", function () { soT3Probe(net); });
+      pRow.appendChild(pb);
+    })(nets[i][0], nets[i][1]);
+  }
+  panel.appendChild(pRow);
+  var t3Row = soEl("div", "so-row", "");
+  var power3 = soBtn("PRESS POWER", "so-btn solid");
+  power3.id = "soT3Power";
+  power3.addEventListener("click", soT3Power);
+  var reseed3 = soBtn("RESET INTAKE", "so-btn");
+  reseed3.addEventListener("click", function () {
+    soSt.t3.cells = SO74.t3Seed();
+    soT3Render();
+    soEls.t3Out.textContent = "Intake re-seated, still dead. Probe the pours.";
+  });
+  t3Row.appendChild(power3);
+  t3Row.appendChild(reseed3);
+  panel.appendChild(t3Row);
+  var t3Out = soEl("div", "so-out", "Intake on the bench, stone dead. Probe the pours.");
+  t3Out.id = "soT3Out";
+  t3Out.setAttribute("aria-live", "polite");
+  panel.appendChild(t3Out);
+  soEls.t3Out = t3Out;
+
+  /* fail card */
+  var fail = soEl("div", "so-fail", "");
+  fail.id = "soFail";
+  fail.appendChild(soEl("h3", "", "THE ROOM FAILED"));
+  fail.appendChild(soEl("p", "so-p", "Three strikes. The copper does not negotiate: name every " +
+    "stray before you test it. Reset the room: the spots are the same, the strikes clear."));
+  var reset = soBtn("RESET ROOM", "so-btn solid");
+  reset.id = "soReset";
+  reset.addEventListener("click", soReset);
+  fail.appendChild(reset);
+  panel.appendChild(fail);
+  soEls.fail = fail;
+
+  /* win banner */
+  var banner = soEl("div", "so-banner", "");
+  banner.id = "soBanner";
+  banner.appendChild(soEl("h3", "", "STANDOFF ROOM CERTIFIED: THE BOARD SITS ON BRASS ONLY"));
+  var cert = soEl("div", "so-cert", "");
+  cert.id = "soCert";
+  banner.appendChild(cert);
+  soEls.cert = cert;
+  var dl = soBtn("DOWNLOAD QUALIFICATION RECORD", "so-btn");
+  dl.id = "soDl";
+  dl.addEventListener("click", soDownload);
+  banner.appendChild(dl);
+  panel.appendChild(banner);
+  soEls.banner = banner;
+
+  /* hire line: crash-triage offer at the foot of the bench, matching the
+     Bench 71/72/73 pattern. The hire-chooser module binds [data-brief]
+     triggers document-wide. Copy only. */
+  var hire = soEl("p", "so-p", "");
+  hire.innerHTML = "New build that never shows a screen? " +
+    "<button type=\"button\" class=\"so-btn\" data-brief=\"triage\" data-bench-tag=\"Bench 74: The Standoff Room\">Crash triage</button>";
+  panel.appendChild(hire);
+
+  ov.appendChild(panel);
+  document.body.appendChild(ov);
+
+  soT1Render();
+  soT2Render();
+  soT3Render();
+  soProgress();
+}
+
+function soOpen() {
+  soReset();
+  soEls.overlay.classList.add("open");
+  if (soEls.overlay.scrollTo) soEls.overlay.scrollTo(0, 0);
+  var c = document.getElementById("soXBtn");
+  if (c) c.focus();
+}
+function soClose() {
+  soEls.overlay.classList.remove("open");
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", soBuild);
+} else {
+  soBuild();
+}
+
+/* debug hooks for the smoke test */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.SO74 = SO74;
+  module.exports.soDebug = {
+    state: function () { return soSt; },
+    reseed: function () { soReset(); },
+    els: function () { return soEls; }
+  };
+}
+})();

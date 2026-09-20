@@ -1214,7 +1214,11 @@ var PG_BENCHES = [
   { section: "arch", n: "73", name: "The Dense Room", btn: "dnBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "RISC-V's C extension packs the common operations into 16 bits, and the decoder learns each instruction's length from the first two bits it reads. Call every length on real assembler encodings, walk a ten-instruction mixed stream the way the fetch unit does, then convict the stale jump table that dropped a hart into the middle of its own 32-bit instruction.",
     how: "Call 16 or 32 on each parcel, predict all ten fetch lengths in the real stream, then name the root cause of the crash.",
-    spec: "C EXTENSION \u00B7 3 TRIALS" }
+    spec: "C EXTENSION \u00B7 3 TRIALS" },
+  { section: "craft", n: "74", name: "The Standoff Room", btn: "soBtn", pill: "oldiron", pillLabel: "BENCH CRAFT",
+    desc: "The five-minute fix before the parts blame game: one extra brass standoff under the board bridges the board's copper to the steel case. Walk the tray, call what three stray spots short, then revive a dead intake with the continuity probe.",
+    how: "Pull the stray standoff, call BOOT or NO BOOT before you press power, then find the dead short with the probe and boot the intake.",
+    spec: "BRASS STANDOFFS \u00B7 SHORT HUNT \u00B7 3 TRIALS" }
  ];
 /* Teaching order: the sequence a newcomer should take the benches in.
    The index renders this list top to bottom; the number on each row is its
@@ -1285,6 +1289,7 @@ var PG_TEACH_ORDER = [
   "20",
   "28",
   "06",
+  "74",
   "27",
   "68",
   "46",
