@@ -23793,8 +23793,7 @@ if (typeof module !== "undefined" && module.exports) {
       st.certified = true;
       st.best = st.d.gcs;
       frLog("<span class='good'>TRIAL " + FR_TRIALS[frS.cur].n + " CERTIFIED</span>: " +
-        st.d.wi + " host writes, " + st.d.gcs + " collections, every sector reads back, no dead blocks" +
-        (v.policy ? ", policy " + v.policy.toUpperCase() : "") + ".", null);
+        st.d.wi + " host writes, " + st.d.gcs + " collections, every sector reads back, no dead blocks.", null);
     } else {
       st.strikes++;
       frLog("<span class='bad'>CERTIFY FAILED</span>: " + v.reasons.join("; ") +
