@@ -1,14 +1,14 @@
 # The Proving Ground: Working Engineering Benches
 
-> 73 interactive hardware benches covering RISC-V bring-up, analog and power electronics, and bench craft. Free, no account, runs entirely on your device.
+> 74 interactive hardware benches covering RISC-V bring-up, analog and power electronics, and bench craft. Free, no account, runs entirely on your device.
 
-The Proving Ground is Chris Dillinger's interactive engineering lab: 73 hands-on hardware benches (numbered 01 through 73, from "The Silicon Anvil" to "The Dense Room") covering computer architecture, analog and power electronics, and bench craft. Each bench is a real working simulation, not a mockup: visitors run code, train links, tune loops, and earn trial certificates on their own device.
+The Proving Ground is Chris Dillinger's interactive engineering lab: 74 hands-on hardware benches (numbered 01 through 74, from "The Silicon Anvil" to "The Standoff Room") covering computer architecture, analog and power electronics, and bench craft. Each bench is a real working simulation, not a mockup: visitors run code, train links, tune loops, and earn trial certificates on their own device.
 
 URL: https://dillingerstaffing.github.io/proving-ground/
 
 ## The benches
 
-- 73 benches, each a real mechanism to operate: an RV32I core you program in assembly, pipeline hazard labs, page walkers, trap gates, UART/SPI scan chains, PLL tuning, power-electronics reflow profiles, and more.
+- 74 benches, each a real mechanism to operate: an RV32I core you program in assembly, pipeline hazard labs, page walkers, trap gates, UART/SPI scan chains, PLL tuning, power-electronics reflow profiles, and more.
 - Every bench is interactive: type, measure, certify. No sign-in, no server, everything runs in the visitor's browser.
 
 ## Work with Chris (published on the site)
