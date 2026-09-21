@@ -24735,19 +24735,28 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
   /* ---------- certify ---------- */
-  function bnRenderChecks() {
-    var i = bnS.cur, st = bnS.trials[i], T = BN_TRIALS[i], ok = false, why = "";
+  /* The win condition, in one place: certification demands the evidence
+     (press tests run and passing) exactly as the bench brief promises. */
+  function bnChecksOk(i) {
+    var st = bnS.trials[i];
     if (i === 0) {
-      ok = !!st.predicted && st.rawPresses > 0 && st.filtPresses > 0 && st.filtCount === 1;
+      return !!st.predicted && st.rawPresses > 0 && st.filtPresses > 0 && st.filtCount === 1;
+    } else if (i === 1) {
+      return st.passed && !!st.lastTest && st.lastTest.pass;
+    }
+    return st.passed[0] && st.passed[1] && st.passed[2];
+  }
+
+  function bnRenderChecks() {
+    var i = bnS.cur, st = bnS.trials[i], T = BN_TRIALS[i], ok = bnChecksOk(i), why = "";
+    if (i === 0) {
       why = "Checks: prediction recorded " + (st.predicted ? "(yes: " + st.predicted + ")" : "(no)") +
         ", raw press done " + (st.rawPresses > 0 ? "(yes)" : "(no)") +
         ", filtered press accepted exactly once " + (st.filtPresses > 0 && st.filtCount === 1 ? "(yes)" : "(no)") + ".";
     } else if (i === 1) {
-      ok = st.passed && !!st.lastTest && st.lastTest.pass;
       why = "Checks: a 20-press test passes at the current knob settings " +
         (st.lastTest ? (st.lastTest.pass ? "(yes)" : "(no, last run failed)") : "(no test run yet)") + ".";
     } else {
-      ok = st.passed[0] && st.passed[1] && st.passed[2];
       why = "Checks: TACTILE " + (st.passed[0] ? "qualified" : "open") +
         ", DOME " + (st.passed[1] ? "qualified" : "open") +
         ", WORN " + (st.passed[2] ? "qualified" : "open") + ".";
@@ -24759,6 +24768,12 @@ if (typeof module !== "undefined" && module.exports) {
 
   function bnOnCertify() {
     var i = bnS.cur, st = bnS.trials[i];
+    if (st.certified) return;
+    if (!bnChecksOk(i)) {
+      bnLog("<span class='bad'>CERTIFY REFUSED: the checks above are not all passing yet. " +
+        "Run the press evidence first.</span>", null);
+      return;
+    }
     st.certified = true;
     bnLog("<span class='good'>Trial " + BN_TRIALS[i].n + " certified.</span>");
     toast("Trial " + BN_TRIALS[i].n + " certified");
