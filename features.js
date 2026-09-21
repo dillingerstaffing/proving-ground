@@ -41117,13 +41117,13 @@ if (typeof module !== "undefined" && module.exports) {
     });
     s += fsTxt((W + L) / 2, H - 8, "CURRENT (A)", "middle", 11, "var(--steel)");
     var awg = FS_AWGS[rail.awg], pts = [], i, t;
-    for (i = awg.amp * 1.02; i <= 100; i *= 1.06) {
+    for (i = awg * 1.02; i <= 100; i *= 1.06) {
       t = fsSmokeT(rail.awg, i);
-      if (t > 100) break;
+      if (t > 100) continue;
       pts.push(X(i) + "," + Y(t));
     }
     s += '<polyline points="' + pts.join(" ") + '" fill="none" stroke="var(--ember)" stroke-width="1.5" stroke-dasharray="6 3"/>';
-    s += fsTxt(X(awg.amp * 3), +Y(fsSmokeT(rail.awg, awg.amp * 3)) - 6, "WIRE " + rail.awg + " AWG SMOKES", "start", 10, "var(--ember)");
+    s += fsTxt(X(awg * 3), +Y(fsSmokeT(rail.awg, awg * 3)) - 6, "WIRE " + rail.awg + " AWG SMOKES", "start", 10, "var(--ember)");
     if (rating !== null && rating !== undefined) {
       var hold = FS_SPEEDS[speedKey].hold, melt = fsMelt(rating, speedKey), pts2 = [], i2, t2;
       for (i2 = hold * rating * 1.02; i2 <= 100; i2 *= 1.06) {
