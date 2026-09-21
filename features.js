@@ -59831,3 +59831,669 @@ if (typeof module !== "undefined" && module.exports) {
   };
 }
 })();
+
+/* BENCH 75: THE SCHMITT ROOM (analog)
+   One atomic mechanism: a Schmitt trigger decides with TWO thresholds, Vth - h/2
+   and Vth + h/2, instead of one. The output flips HIGH only at the upper line and
+   back LOW only at the lower line, so any noise wobble smaller than the gap (the
+   hysteresis) is ignored and one noisy crossing becomes exactly one decision.
+   The gap must be wider than the noise but narrower than the signal's headroom.
+   Four trials: watch a plain comparator chatter on one crossing; dial the gap to
+   one decision and break it with a weak signal; call the toggle counts before the
+   reveal; tame three fresh noisy signals with one hysteresis slider.
+   One sentence takeaway: two thresholds with a gap between them turn one noisy
+   crossing into one decision, and the gap must be wider than the noise but
+   narrower than the signal.
+   Pure sim hooks live in SC75 for the smoke test; the DOM engine below drives
+   the same code. */
+(function () {
+"use strict";
+
+/* ---------------- pure hooks (testable, no DOM) ---------------- */
+var SC75 = {};
+SC75.VDD = 3.3;
+SC75.VTH = 1.65;
+SC75.lcg = function (seed) {
+  var s = seed >>> 0;
+  return function () {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+};
+/* Slow sensor ramp that dwells through the threshold region: 20% of the
+   samples climb to Vth - 0.12, 60% crawl across [Vth - 0.12, Vth + 0.12], the
+   last 20% sprint to hi. Independent uniform noise of +-amp rides on top.
+   Base is monotone non-decreasing. */
+SC75.makeTrace = function (o) {
+  var n = o.n || 400, lo = o.lo != null ? o.lo : 0,
+      hi = o.hi != null ? o.hi : SC75.VDD,
+      vth = o.vth != null ? o.vth : SC75.VTH,
+      amp = o.amp || 0, rng = SC75.lcg(o.seed || 1),
+      v = new Array(n), i, t, base;
+  for (i = 0; i < n; i++) {
+    t = n === 1 ? 0 : i / (n - 1);
+    if (t < 0.2) base = lo + (vth - 0.12 - lo) * (t / 0.2);
+    else if (t < 0.8) base = (vth - 0.12) + 0.24 * ((t - 0.2) / 0.6);
+    else base = (vth + 0.12) + (hi - (vth + 0.12)) * ((t - 0.8) / 0.2);
+    v[i] = base + (rng() * 2 - 1) * amp;
+  }
+  return v;
+};
+/* Digital output over the trace: "plain" flips at the single threshold,
+   "schmitt" flips HIGH at Vth + h/2 and LOW at Vth - h/2. */
+SC75.simOut = function (v, vth, mode, h) {
+  var out = new Array(v.length), i, st = false;
+  for (i = 0; i < v.length; i++) {
+    if (mode === "schmitt") {
+      if (!st && v[i] >= vth + h / 2) st = true;
+      else if (st && v[i] <= vth - h / 2) st = false;
+    } else {
+      st = v[i] >= vth;
+    }
+    out[i] = st ? 1 : 0;
+  }
+  return out;
+};
+SC75.risingToggles = function (out) {
+  var c = 0, i;
+  for (i = 1; i < out.length; i++) {
+    if (out[i] === 1 && out[i - 1] === 0) c++;
+  }
+  return c;
+};
+/* Certification trial: noise 30..60 mV, headroom 2.6*amp..+30 mV above Vth.
+   Verified over 400 seeds: h=0 always chatters (>1), a winning h exists in
+   10 mV steps, and h=500 mV always misses (0). */
+SC75.certTrial = function (seed) {
+  var rng = SC75.lcg(seed);
+  var amp = 0.03 + rng() * 0.03;
+  var head = 2.6 * amp + rng() * 0.03;
+  return { seed: seed, amp: amp, hi: SC75.VTH + head, vth: SC75.VTH };
+};
+SC75.certSeed = function (attempt, i) {
+  return 1000 + (attempt * 3 + i) * 37;
+};
+SC75.gradeTrial = function (trial, hMv) {
+  var v = SC75.makeTrace({ seed: trial.seed, amp: trial.amp, hi: trial.hi, vth: trial.vth });
+  var t = SC75.risingToggles(SC75.simOut(v, trial.vth, "schmitt", hMv / 1000));
+  if (t === 1) return { ok: true, t: t };
+  if (t === 0) return { ok: false, t: t, why: "miss" };
+  return { ok: false, t: t, why: "chatter" };
+};
+
+SC75.INTRO_HTML =
+  "<h3 class=\"sc75-sec\">WHY THIS ROOM EXISTS</h3>" +
+  "<p class=\"sc75-p\">A digital input only understands two answers: HIGH and LOW. The real world " +
+  "arrives as a slow, noisy ramp that crosses the middle many times, not once. Each crossing looks " +
+  "like a button press, so one press becomes a burst of presses and one sensor trip becomes an " +
+  "alarm storm. A Schmitt trigger fixes it at the source: one crossing, one decision.</p>" +
+  "<h3 class=\"sc75-sec\">THE MECHANISM</h3>" +
+  "<p class=\"sc75-p\">A plain comparator owns one threshold, Vth. Above it is HIGH, below is LOW, " +
+  "and every wobble of noise near the line flips the answer. A Schmitt trigger owns two thresholds " +
+  "with a gap between them, and the gap has a name: hysteresis. The output flips HIGH only at the " +
+  "upper line and back LOW only at the lower line, so any wobble smaller than the gap is ignored. " +
+  "The <a href=\"#bench=34\" target=\"_blank\" rel=\"noopener\">Bounce Room</a> tames the same " +
+  "chatter in time, demanding N steady samples; this room tames it in voltage, demanding the " +
+  "signal clear two lines.</p>" +
+  "<h3 class=\"sc75-sec\">THE WORKED EXAMPLE</h3>" +
+  "<p class=\"sc75-p\">This room's own trial 1, Vth = 1.65 V with 60 mV of noise: the plain " +
+  "comparator fires 21 times on a single crossing. Set 200 mV of hysteresis on the same signal " +
+  "and it fires exactly once. Press RUN THE CROSSING and count both yourself.</p>" +
+  "<h3 class=\"sc75-sec\">THE FAILURE MODES</h3>" +
+  "<ul class=\"sc75-list\">" +
+  "<li>Gap too narrow (under about twice the noise): the chatter survives, you only moved the line.</li>" +
+  "<li>Gap too wide (past the signal's headroom): the upper line never gets crossed and the output " +
+  "stays dead. Trial 2's weak-signal preset shows it.</li>" +
+  "<li>Noise bigger than the signal's headroom: no gap can save it. Amplify or filter first; " +
+  "hysteresis is not a filter.</li>" +
+  "</ul>" +
+  "<h3 class=\"sc75-sec\">THE FOUR TRIALS</h3>" +
+  "<p class=\"sc75-p\">1. Watch one crossing chatter on a plain comparator. 2. Dial the gap until " +
+  "one crossing gives exactly one decision, then break it with a weak signal. 3. Call the toggle " +
+  "counts before the sim reveals them. 4. Tame three fresh noisy signals with one hysteresis " +
+  "slider: exactly one rising edge each.</p>" +
+  "<p class=\"sc75-p\"><b>One-sentence takeaway:</b> two thresholds with a gap between them turn " +
+  "one noisy crossing into one decision, and the gap must be wider than the noise but narrower " +
+  "than the signal.</p>";
+
+/* ---------------- CSS ---------------- */
+var SC75_CSS = [
+  ".sc75-overlay{position:fixed;inset:0;z-index:90;background:var(--ink);display:none;overflow-y:auto;}",
+  ".sc75-overlay.open{display:block;}",
+  ".sc75-panel{max-width:860px;margin:0 auto;padding:28px 18px 60px;color:var(--paper);box-sizing:border-box;}",
+  ".sc75-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);}",
+  ".sc75-title{font-family:'Space Grotesk',sans-serif;font-size:34px;margin:6px 0 10px;color:var(--paper);}",
+  ".sc75-sec{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.16em;color:var(--ember);margin:26px 0 10px;padding-top:16px;border-top:1px solid var(--line);}",
+  ".sc75-p{font-size:13.5px;line-height:1.7;color:var(--dim);max-width:74ch;margin:0 0 12px;}",
+  ".sc75-p b{color:var(--paper);}",
+  ".sc75-p a{color:var(--ember);}",
+  ".sc75-list{margin:0 0 12px;padding-left:20px;max-width:74ch;}",
+  ".sc75-list li{font-size:13.5px;line-height:1.7;color:var(--dim);margin:0 0 8px;}",
+  ".sc75-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.06em;background:transparent;color:var(--paper);border:1px solid var(--line);padding:12px 16px;min-height:48px;cursor:pointer;}",
+  ".sc75-btn:hover{border-color:var(--ember);}",
+  ".sc75-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+  ".sc75-btn:disabled{opacity:.38;cursor:not-allowed;}",
+  ".sc75-btn.solid{background:var(--ember);border-color:var(--ember);color:var(--ink);font-weight:700;}",
+  ".sc75-btn.picked{border-color:var(--ember);color:var(--ember);}",
+  ".sc75-group{margin:0 0 14px;min-width:0;}",
+  ".sc75-lbl{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:var(--dim);display:block;margin:0 0 8px;}",
+  ".sc75-lbl .v{color:var(--ember);}",
+  ".sc75-row{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 12px;align-items:flex-end;}",
+  ".sc75-out{font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.75;color:var(--dim);background:var(--panel);border:1px solid var(--line);padding:14px 16px;margin:0 0 12px;white-space:pre-wrap;}",
+  ".sc75-out .v{color:var(--ember);}",
+  ".sc75-out .w{color:var(--paper);font-weight:700;}",
+  ".sc75-cv{display:block;width:100%;height:250px;background:var(--panel);border:1px solid var(--line);margin:0 0 12px;box-sizing:border-box;}",
+  ".sc75-legend{font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.8;color:var(--dim);margin:0 0 12px;}",
+  ".sc75-legend .sw{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:baseline;}",
+  "input[type=range].sc75-range{width:100%;min-height:48px;accent-color:var(--ember);margin:0;box-sizing:border-box;}",
+  ".sc75-trial{border:1px solid var(--line);padding:12px 14px;margin:0 0 10px;background:var(--panel);}",
+  ".sc75-trial h4{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.14em;color:var(--paper);margin:0 0 6px;}",
+  ".sc75-trial .pass{color:var(--ember);}",
+  ".sc75-trial p{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--dim);margin:0 0 10px;line-height:1.6;}",
+  ".sc75-banner{border:1px solid var(--ember);padding:18px;margin:0 0 16px;display:none;}",
+  ".sc75-banner.show{display:block;}",
+  ".sc75-banner h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--ember);margin:0 0 8px;}",
+  "@media (max-width:620px){.sc75-title{font-size:27px;}.sc75-cv{height:220px;}}"
+].join("\n");
+
+function sc75El(tag, cls, html) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html != null) e.innerHTML = html;
+  return e;
+}
+function sc75Btn(label, cls) {
+  var b = document.createElement("button");
+  b.type = "button";
+  b.className = cls || "sc75-btn";
+  b.textContent = label;
+  return b;
+}
+function sc75Slider(id, min, max, step, val) {
+  var s = document.createElement("input");
+  s.type = "range";
+  s.id = id;
+  s.className = "sc75-range";
+  s.min = String(min); s.max = String(max); s.step = String(step); s.value = String(val);
+  return s;
+}
+var sc75St = null, sc75Els = {}, sc75EscBounded = false;
+
+function sc75NewState() {
+  return {
+    t3: { plainCall: null, schCall: null, revealed: false },
+    t4: { attempt: 0, h: 200, trials: [] },
+    certified: false
+  };
+}
+function sc75DealTrials() {
+  var i, tr;
+  sc75St.t4.trials = [];
+  for (i = 0; i < 3; i++) {
+    tr = SC75.certTrial(SC75.certSeed(sc75St.t4.attempt, i));
+    sc75St.t4.trials.push({ trial: tr, pass: false, last: null });
+  }
+}
+
+/* ---------------- canvas ---------------- */
+function sc75Draw(cv, cfg) {
+  var dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+  var W = cv.clientWidth || 600, H = cv.clientHeight || 250;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  var ctx = cv.getContext("2d");
+  if (!ctx) return;
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+  var padL = 40, padR = 10, padT = 12, padB = 12;
+  var inTop = padT, inH = (H - padT - padB) * 0.62;
+  var outTop = inTop + inH + 8, outH = H - outTop - padB;
+  var v, n = cfg.v.length, i, x;
+  var css = function (name) {
+    if (typeof getComputedStyle === "function") {
+      return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+    return "";
+  };
+  var paper = css("--paper") || "#e8e4da";
+  var dim = css("--dim") || "#8a8f98";
+  var ember = css("--ember") || "#ff5a1f";
+  var line = css("--line") || "#2a2e35";
+  var yOf = function (vv) { return inTop + inH - (vv / SC75.VDD) * inH; };
+  var xOf = function (i) { return padL + (i / (n - 1)) * (W - padL - padR); };
+  ctx.font = "10px 'IBM Plex Mono', monospace";
+  /* gridlines + voltage ticks */
+  ctx.strokeStyle = line; ctx.fillStyle = dim; ctx.lineWidth = 1;
+  [0, SC75.VTH, SC75.VDD].forEach(function (vv) {
+    var y = yOf(vv);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+    ctx.fillText(vv.toFixed(2) + "V", 2, y + 3);
+  });
+  ctx.fillText("IN", 2, inTop + 10);
+  ctx.fillText("OUT", 2, outTop + 10);
+  /* threshold lines */
+  if (cfg.mode === "schmitt") {
+    ctx.strokeStyle = ember; ctx.setLineDash([5, 4]);
+    [cfg.vth - cfg.h / 2, cfg.vth + cfg.h / 2].forEach(function (vv) {
+      var y = yOf(vv);
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+    });
+    ctx.setLineDash([]);
+    ctx.fillStyle = ember;
+    ctx.fillText("Vhi", W - padR - 26, yOf(cfg.vth + cfg.h / 2) - 4);
+    ctx.fillText("Vlo", W - padR - 26, yOf(cfg.vth - cfg.h / 2) + 12);
+  } else {
+    ctx.strokeStyle = dim; ctx.setLineDash([5, 4]);
+    ctx.beginPath(); ctx.moveTo(padL, yOf(cfg.vth)); ctx.lineTo(W - padR, yOf(cfg.vth)); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = dim;
+    ctx.fillText("Vth", W - padR - 26, yOf(cfg.vth) - 4);
+  }
+  /* input trace */
+  ctx.strokeStyle = paper; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (i = 0; i < n; i++) {
+    x = xOf(i); v = cfg.v[i];
+    if (i === 0) ctx.moveTo(x, yOf(v)); else ctx.lineTo(x, yOf(v));
+  }
+  ctx.stroke();
+  /* output step trace */
+  var oy = function (b) { return b ? outTop + 3 : outTop + outH - 3; };
+  ctx.strokeStyle = ember; ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (i = 0; i < n; i++) {
+    x = xOf(i);
+    if (i === 0) ctx.moveTo(x, oy(cfg.out[i]));
+    else {
+      if (cfg.out[i] !== cfg.out[i - 1]) ctx.lineTo(x, oy(cfg.out[i - 1]));
+      ctx.lineTo(x, oy(cfg.out[i]));
+    }
+  }
+  ctx.stroke();
+  ctx.lineWidth = 1;
+}
+
+/* ---------------- trial renders ---------------- */
+function sc75T1Run() {
+  var noise = +sc75Els.t1Noise.value / 1000, vth = +sc75Els.t1Vth.value;
+  sc75Els.t1NoiseVal.textContent = Math.round(noise * 1000) + " mV";
+  sc75Els.t1VthVal.textContent = vth.toFixed(2) + " V";
+  var v = SC75.makeTrace({ seed: 7, amp: noise, hi: SC75.VDD, vth: vth });
+  var out = SC75.simOut(v, vth, "plain", 0);
+  var t = SC75.risingToggles(out);
+  sc75Draw(sc75Els.t1Cv, { v: v, out: out, vth: vth, mode: "plain", h: 0 });
+  sc75Els.t1Out.innerHTML = "Plain comparator, one crossing: <span class=\"v\">" + t +
+    " rising edges</span>." +
+    (t > 1 ? " That is " + t + " phantom presses from one slow ramp." :
+      t === 1 ? " Clean, this time: the noise never re-crossed the line." :
+      " Nothing fired: the threshold sits above the noise band.");
+}
+function sc75T2Run() {
+  var h = +sc75Els.t2H.value;
+  var weak = sc75Els.t2Weak;
+  var vth = SC75.VTH, hi = weak ? vth + 0.10 : SC75.VDD;
+  sc75Els.t2HVal.textContent = h + " mV";
+  var v = SC75.makeTrace({ seed: 7, amp: 0.06, hi: hi, vth: vth });
+  var out = SC75.simOut(v, vth, "schmitt", h / 1000);
+  var t = SC75.risingToggles(out);
+  sc75Draw(sc75Els.t2Cv, { v: v, out: out, vth: vth, mode: "schmitt", h: h / 1000 });
+  var verdict;
+  if (t === 1) verdict = "<span class=\"w\">ONE DECISION.</span> Exactly 1 rising edge: the gap beat the noise and the signal cleared it.";
+  else if (t === 0) verdict = "<span class=\"v\">MISS.</span> 0 edges: the gap is wider than the signal's headroom, the upper line never got crossed. Narrow the gap.";
+  else verdict = "<span class=\"v\">CHATTER.</span> " + t + " rising edges: the gap is narrower than the noise. Widen it.";
+  sc75Els.t2Out.innerHTML = "Schmitt, gap " + h + " mV" + (weak ? ", weak signal" : ", full swing") +
+    ": " + verdict;
+}
+function sc75T3Draw() {
+  var v = SC75.makeTrace({ seed: 21, amp: 0.055, hi: SC75.VDD, vth: SC75.VTH });
+  var out = SC75.simOut(v, SC75.VTH, "plain", 0);
+  sc75Draw(sc75Els.t3Cv, { v: v, out: out, vth: SC75.VTH, mode: "plain", h: 0 });
+}
+function sc75T3Run() {
+  var st = sc75St.t3;
+  if (st.plainCall === null || st.schCall === null) {
+    sc75Els.t3Out.textContent = "Call both counts first: pick a plain-comparator band and a Schmitt band.";
+    return;
+  }
+  var v = SC75.makeTrace({ seed: 21, amp: 0.055, hi: SC75.VDD, vth: SC75.VTH });
+  var plain = SC75.risingToggles(SC75.simOut(v, SC75.VTH, "plain", 0));
+  var sch = SC75.risingToggles(SC75.simOut(v, SC75.VTH, "schmitt", 0.2));
+  var band = function (t) { return t <= 1 ? "1" : t <= 10 ? "2-10" : "11+"; };
+  var sband = function (t) { return t === 0 ? "0" : t === 1 ? "1" : "2+"; };
+  var pOk = st.plainCall === band(plain), sOk = st.schCall === sband(sch);
+  st.revealed = true;
+  sc75Els.t3Out.innerHTML =
+    "Plain comparator: <span class=\"v\">" + plain + " edges</span> (" + band(plain) + "). You called " +
+    st.plainCall + ": " + (pOk ? "<span class=\"w\">right.</span>" : "<span class=\"v\">off.</span>") + "\n" +
+    "Schmitt at 200 mV: <span class=\"v\">" + sch + " edge" + (sch === 1 ? "" : "s") + "</span>. You called " +
+    st.schCall + ": " + (sOk ? "<span class=\"w\">right.</span>" : "<span class=\"v\">off.</span>") +
+    ((pOk && sOk) ? "\nBoth calls right. The gap turned " + plain + " phantom presses into " + sch + "." : "");
+}
+function sc75Pick(btns, key) {
+  var i;
+  for (i = 0; i < btns.length; i++) btns[i].classList.remove("picked");
+  return function () {
+    for (var j = 0; j < btns.length; j++) btns[j].classList.remove("picked");
+    this.classList.add("picked");
+    sc75St.t3[key] = this.getAttribute("data-v");
+    sc75St.t3.revealed = false;
+  };
+}
+function sc75T4Render() {
+  var wrap = sc75Els.t4Trials;
+  wrap.innerHTML = "";
+  var i, card, h4, p, run;
+  for (i = 0; i < sc75St.t4.trials.length; i++) {
+    (function (idx) {
+      var T = sc75St.t4.trials[idx];
+      card = sc75El("div", "sc75-trial", "");
+      h4 = sc75El("h4", "", "TRIAL " + (idx + 1) + " <span class=\"st\"></span>");
+      p = sc75El("p", "", "noise " + Math.round(T.trial.amp * 1000) + " mV, headroom " +
+        Math.round((T.trial.hi - T.trial.vth) * 1000) + " mV above 1.65 V" +
+        (T.last ? ", last run: " + T.last : ""));
+      run = sc75Btn("RUN THE TRIAL", "sc75-btn");
+      run.addEventListener("click", function () { sc75T4Run(idx); });
+      card.appendChild(h4); card.appendChild(p); card.appendChild(run);
+      wrap.appendChild(card);
+      T.card = card; T.h4 = h4; T.p = p;
+    })(i);
+  }
+  sc75T4Progress();
+}
+function sc75T4Run(idx) {
+  var T = sc75St.t4.trials[idx];
+  var h = +sc75Els.t4H.value;
+  var g = SC75.gradeTrial(T.trial, h);
+  T.last = g.t + " edge" + (g.t === 1 ? "" : "s") + (g.ok ? " (pass)" : g.why === "miss" ? " (miss)" : " (chatter)");
+  T.pass = g.ok;
+  T.h4.innerHTML = "TRIAL " + (idx + 1) + " <span class=\"st " + (g.ok ? "pass" : "") + "\">" +
+    (g.ok ? "PASS" : "OPEN") + "</span>";
+  T.p.textContent = "noise " + Math.round(T.trial.amp * 1000) + " mV, headroom " +
+    Math.round((T.trial.hi - T.trial.vth) * 1000) + " mV above 1.65 V, last run: " + T.last;
+  sc75T4Progress();
+}
+function sc75T4Progress() {
+  var n = 0, i;
+  for (i = 0; i < sc75St.t4.trials.length; i++) if (sc75St.t4.trials[i].pass) n++;
+  sc75Els.t4HVal.textContent = sc75Els.t4H.value + " mV";
+  if (n === 3 && !sc75St.certified) {
+    sc75St.certified = true;
+    sc75Els.t4Banner.classList.add("show");
+    sc75Els.t4Banner.innerHTML = "<h3>CERTIFIED: THE SCHMITT ROOM</h3>" +
+      "<p class=\"sc75-p\">Three fresh noisy signals, one hysteresis setting each, exactly one " +
+      "decision per crossing. You picked gaps wider than the noise and narrower than the " +
+      "headroom, three times running.</p>";
+  }
+  sc75Progress();
+}
+function sc75Progress() {
+  var n = 0, i;
+  for (i = 0; i < sc75St.t4.trials.length; i++) if (sc75St.t4.trials[i].pass) n++;
+  sc75Els.progress.textContent = "BENCH 75 PROGRESS: certify trials " + n + "/3 passed" +
+    (sc75St.certified ? " (CERTIFIED)" : "") +
+    (sc75St.t3.revealed ? ", calls revealed" : "");
+}
+
+/* ---------------- build ---------------- */
+function sc75Open() {
+  sc75Els.overlay.classList.add("open");
+  if (sc75Els.overlay.scrollTo) sc75Els.overlay.scrollTo(0, 0);
+  sc75T3Draw();
+  var c = document.getElementById("sc75XBtn");
+  if (c) c.focus();
+}
+function sc75Close() {
+  sc75Els.overlay.classList.remove("open");
+}
+function sc75Build() {
+  var box = document.querySelector(".dossier .actions");
+  if (!box) return;
+  if (document.getElementById("sc75Btn")) return;
+  sc75St = sc75NewState();
+  sc75DealTrials();
+
+  var sty = document.createElement("style");
+  sty.id = "sc75Style";
+  sty.textContent = SC75_CSS;
+  document.head.appendChild(sty);
+
+  var b = document.createElement("button");
+  b.id = "sc75Btn";
+  b.className = "pg-launch";
+  b.textContent = "Open The Schmitt Room";
+  b.addEventListener("click", sc75Open);
+  box.appendChild(b);
+
+  var ov = sc75El("div", "sc75-overlay", "");
+  ov.id = "sc75Overlay";
+  ov.setAttribute("role", "dialog");
+  ov.setAttribute("aria-label", "The Schmitt Room");
+  var x = sc75Btn("CLOSE", "sc75-btn");
+  x.id = "sc75XBtn";
+  x.style.cssText = "position:fixed;top:calc(12px + env(safe-area-inset-top));right:calc(16px + env(safe-area-inset-right));z-index:95;";
+  x.setAttribute("aria-label", "Close The Schmitt Room");
+  x.addEventListener("click", sc75Close);
+  ov.appendChild(x);
+  sc75Els.overlay = ov;
+  if (!sc75EscBounded) {
+    sc75EscBounded = true;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && sc75Els.overlay && sc75Els.overlay.classList.contains("open")) sc75Close();
+    });
+  }
+
+  var panel = sc75El("div", "sc75-panel", "");
+  panel.id = "sc75Panel";
+  panel.appendChild(sc75El("div", "sc75-kicker", "ANALOG AND POWER ELECTRONICS \u00B7 BENCH 75"));
+  panel.appendChild(sc75El("h2", "sc75-title", "The Schmitt Room"));
+
+  var intro = sc75El("div", "", "");
+  intro.innerHTML = SC75.INTRO_HTML;
+  panel.appendChild(intro);
+
+  var prog = sc75El("div", "sc75-out", "");
+  prog.id = "sc75Progress";
+  prog.setAttribute("aria-live", "polite");
+  panel.appendChild(prog);
+  sc75Els.progress = prog;
+
+  /* ---- trial 1 ---- */
+  panel.appendChild(sc75El("h3", "sc75-sec", "DO FIRST: WATCH IT CHATTER"));
+  panel.appendChild(sc75El("p", "sc75-p",
+    "Nothing to break. A slow sensor ramp crosses the threshold once, with noise riding on it. " +
+    "The plain comparator below owns one threshold and no memory. Press RUN THE CROSSING and " +
+    "count how many rising edges one crossing buys you. Drag the sliders first if you like: " +
+    "the chatter is the lesson either way."));
+  var g1 = sc75El("div", "sc75-group", "");
+  var nLbl = sc75El("label", "sc75-lbl", "NOISE: ");
+  sc75Els.t1NoiseVal = sc75El("span", "v", "60 mV");
+  nLbl.appendChild(sc75Els.t1NoiseVal);
+  g1.appendChild(nLbl);
+  sc75Els.t1Noise = sc75Slider("sc75T1Noise", 0, 120, 5, 60);
+  sc75Els.t1Noise.setAttribute("aria-label", "Noise amplitude in millivolts");
+  g1.appendChild(sc75Els.t1Noise);
+  panel.appendChild(g1);
+  var g1b = sc75El("div", "sc75-group", "");
+  var vLbl = sc75El("label", "sc75-lbl", "THRESHOLD: ");
+  sc75Els.t1VthVal = sc75El("span", "v", "1.65 V");
+  vLbl.appendChild(sc75Els.t1VthVal);
+  g1b.appendChild(vLbl);
+  sc75Els.t1Vth = sc75Slider("sc75T1Vth", 1.30, 2.00, 0.05, 1.65);
+  sc75Els.t1Vth.setAttribute("aria-label", "Comparator threshold in volts");
+  g1b.appendChild(sc75Els.t1Vth);
+  panel.appendChild(g1b);
+  var t1Run = sc75Btn("RUN THE CROSSING", "sc75-btn solid");
+  t1Run.addEventListener("click", sc75T1Run);
+  var row1 = sc75El("div", "sc75-row", "");
+  row1.appendChild(t1Run);
+  panel.appendChild(row1);
+  sc75Els.t1Cv = sc75El("canvas", "sc75-cv", "");
+  sc75Els.t1Cv.id = "sc75T1Cv";
+  sc75Els.t1Cv.setAttribute("role", "img");
+  sc75Els.t1Cv.setAttribute("aria-label", "Input trace and plain comparator output");
+  panel.appendChild(sc75Els.t1Cv);
+  panel.appendChild(sc75El("div", "sc75-legend",
+    "<span class=\"sw\" style=\"background:#e8e4da\"></span>input trace &nbsp; " +
+    "<span class=\"sw\" style=\"background:var(--ember)\"></span>comparator output &nbsp; " +
+    "<span class=\"sw\" style=\"background:transparent;border-top:2px dashed #8a8f98\"></span>Vth"));
+  sc75Els.t1Out = sc75El("div", "sc75-out", "Press RUN THE CROSSING.");
+  sc75Els.t1Out.id = "sc75T1Out";
+  panel.appendChild(sc75Els.t1Out);
+
+  /* ---- trial 2 ---- */
+  panel.appendChild(sc75El("h3", "sc75-sec", "DIAL THE GAP"));
+  panel.appendChild(sc75El("p", "sc75-p",
+    "Same signal, now through a Schmitt trigger. Drag the hysteresis slider, press RUN THE FIX, " +
+    "and watch the two threshold lines move apart. Find the gap that turns the chatter into " +
+    "exactly one rising edge. Then flip to the WEAK SIGNAL preset and push the gap wide: past " +
+    "about 350 mV the upper line starves of headroom and the output never moves. That is the " +
+    "other cliff."));
+  var g2 = sc75El("div", "sc75-group", "");
+  var hLbl = sc75El("label", "sc75-lbl", "HYSTERESIS: ");
+  sc75Els.t2HVal = sc75El("span", "v", "0 mV");
+  hLbl.appendChild(sc75Els.t2HVal);
+  g2.appendChild(hLbl);
+  sc75Els.t2H = sc75Slider("sc75T2H", 0, 500, 10, 0);
+  sc75Els.t2H.setAttribute("aria-label", "Hysteresis gap in millivolts");
+  g2.appendChild(sc75Els.t2H);
+  panel.appendChild(g2);
+  var row2a = sc75El("div", "sc75-row", "");
+  row2a.appendChild(sc75El("span", "sc75-lbl", "SIGNAL:"));
+  var fullB = sc75Btn("FULL SWING", "sc75-btn picked");
+  var weakB = sc75Btn("WEAK SIGNAL", "sc75-btn");
+  sc75Els.t2Weak = false;
+  fullB.addEventListener("click", function () {
+    sc75Els.t2Weak = false;
+    fullB.classList.add("picked"); weakB.classList.remove("picked");
+  });
+  weakB.addEventListener("click", function () {
+    sc75Els.t2Weak = true;
+    weakB.classList.add("picked"); fullB.classList.remove("picked");
+  });
+  row2a.appendChild(fullB); row2a.appendChild(weakB);
+  panel.appendChild(row2a);
+  var t2Run = sc75Btn("RUN THE FIX", "sc75-btn solid");
+  t2Run.addEventListener("click", sc75T2Run);
+  var row2 = sc75El("div", "sc75-row", "");
+  row2.appendChild(t2Run);
+  panel.appendChild(row2);
+  sc75Els.t2Cv = sc75El("canvas", "sc75-cv", "");
+  sc75Els.t2Cv.id = "sc75T2Cv";
+  sc75Els.t2Cv.setAttribute("role", "img");
+  sc75Els.t2Cv.setAttribute("aria-label", "Input trace and Schmitt trigger output");
+  panel.appendChild(sc75Els.t2Cv);
+  panel.appendChild(sc75El("div", "sc75-legend",
+    "<span class=\"sw\" style=\"background:var(--ember)\"></span>Vhi and Vlo: the two decision lines"));
+  sc75Els.t2Out = sc75El("div", "sc75-out", "Set a gap and press RUN THE FIX.");
+  sc75Els.t2Out.id = "sc75T2Out";
+  panel.appendChild(sc75Els.t2Out);
+
+  /* ---- trial 3 ---- */
+  panel.appendChild(sc75El("h3", "sc75-sec", "CALL IT, THEN VERIFY"));
+  panel.appendChild(sc75El("p", "sc75-p",
+    "A fresh signal, 55 mV of noise, drawn below but not yet run. Call the counts before the " +
+    "sim moves: how many rising edges does the plain comparator make, and how many does the " +
+    "Schmitt make with 200 mV of hysteresis? Then press RUN AND REVEAL and grade yourself."));
+  sc75Els.t3Cv = sc75El("canvas", "sc75-cv", "");
+  sc75Els.t3Cv.id = "sc75T3Cv";
+  sc75Els.t3Cv.setAttribute("role", "img");
+  sc75Els.t3Cv.setAttribute("aria-label", "Fresh noisy input trace, output not yet run");
+  panel.appendChild(sc75Els.t3Cv);
+  var row3a = sc75El("div", "sc75-row", "");
+  row3a.appendChild(sc75El("span", "sc75-lbl", "PLAIN COMPARATOR EDGES:"));
+  var pBtns = [];
+  ["1", "2-10", "11+"].forEach(function (v) {
+    var pb = sc75Btn(v, "sc75-btn");
+    pb.setAttribute("data-v", v);
+    row3a.appendChild(pb); pBtns.push(pb);
+  });
+  panel.appendChild(row3a);
+  var row3b = sc75El("div", "sc75-row", "");
+  row3b.appendChild(sc75El("span", "sc75-lbl", "SCHMITT AT 200 mV:"));
+  var sBtns = [];
+  ["0", "1", "2+"].forEach(function (v) {
+    var sb = sc75Btn(v, "sc75-btn");
+    sb.setAttribute("data-v", v);
+    row3b.appendChild(sb); sBtns.push(sb);
+  });
+  panel.appendChild(row3b);
+  pBtns.forEach(function (pb) { pb.addEventListener("click", sc75Pick(pBtns, "plainCall")); });
+  sBtns.forEach(function (sb) { sb.addEventListener("click", sc75Pick(sBtns, "schCall")); });
+  var t3Run = sc75Btn("RUN AND REVEAL", "sc75-btn solid");
+  t3Run.addEventListener("click", sc75T3Run);
+  var row3 = sc75El("div", "sc75-row", "");
+  row3.appendChild(t3Run);
+  panel.appendChild(row3);
+  sc75Els.t3Out = sc75El("div", "sc75-out", "Make both calls, then reveal.");
+  sc75Els.t3Out.id = "sc75T3Out";
+  panel.appendChild(sc75Els.t3Out);
+
+  /* ---- trial 4 ---- */
+  panel.appendChild(sc75El("h3", "sc75-sec", "CERTIFY: THREE FRESH SIGNALS"));
+  panel.appendChild(sc75El("p", "sc75-p",
+    "Three new noisy signals, fresh noise and fresh headroom on every reshuffle. One " +
+    "hysteresis slider serves all three. A trial passes on exactly one rising edge: more is " +
+    "chatter, zero is a miss. Pass all three to certify."));
+  var g4 = sc75El("div", "sc75-group", "");
+  var h4Lbl = sc75El("label", "sc75-lbl", "HYSTERESIS: ");
+  sc75Els.t4HVal = sc75El("span", "v", "200 mV");
+  h4Lbl.appendChild(sc75Els.t4HVal);
+  g4.appendChild(h4Lbl);
+  sc75Els.t4H = sc75Slider("sc75T4H", 0, 500, 10, 200);
+  sc75Els.t4H.setAttribute("aria-label", "Certification hysteresis gap in millivolts");
+  sc75Els.t4H.addEventListener("input", function () { sc75T4Progress(); });
+  g4.appendChild(sc75Els.t4H);
+  panel.appendChild(g4);
+  sc75Els.t4Trials = sc75El("div", "", "");
+  sc75Els.t4Trials.id = "sc75T4Trials";
+  panel.appendChild(sc75Els.t4Trials);
+  var newSig = sc75Btn("RESHUFFLE SIGNALS", "sc75-btn");
+  newSig.addEventListener("click", function () {
+    sc75St.t4.attempt++;
+    sc75St.certified = false;
+    sc75Els.t4Banner.classList.remove("show");
+    sc75DealTrials();
+    sc75T4Render();
+  });
+  var row4 = sc75El("div", "sc75-row", "");
+  row4.appendChild(newSig);
+  panel.appendChild(row4);
+  var banner = sc75El("div", "sc75-banner", "");
+  banner.id = "sc75T4Banner";
+  panel.appendChild(banner);
+  sc75Els.t4Banner = banner;
+
+  /* hire line: phantom-trigger offer at the foot of the bench, matching the
+     Bench 71/72/73/74 pattern. The hire-chooser module binds [data-brief]
+     triggers document-wide. Copy only. */
+  var hire = sc75El("p", "sc75-p", "");
+  hire.innerHTML = "A pushbutton that registers twice per press, or a sensor that alarms in bursts? " +
+    "<button type=\"button\" class=\"sc75-btn\" data-brief=\"triage\" data-bench-tag=\"Bench 75: The Schmitt Room\">Crash triage</button>";
+  panel.appendChild(hire);
+
+  ov.appendChild(panel);
+  document.body.appendChild(ov);
+
+  sc75T4Render();
+  sc75Progress();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", sc75Build);
+} else {
+  sc75Build();
+}
+
+/* debug hooks for the smoke test */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.SC75 = SC75;
+  module.exports.sc75Debug = {
+    state: function () { return sc75St; },
+    reseed: function () { sc75DealTrials(); sc75T4Render(); },
+    els: function () { return sc75Els; },
+    grade: SC75.gradeTrial,
+    runT1: sc75T1Run,
+    runT2: sc75T2Run,
+    runT3: sc75T3Run
+  };
+}
+})();

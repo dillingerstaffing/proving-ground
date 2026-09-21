@@ -6,14 +6,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
-<meta name="description" content="The Proving Ground: 74 interactive hardware benches, RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs entirely on your device.">
+<meta name="description" content="The Proving Ground: 75 interactive hardware benches, RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs entirely on your device.">
 <link rel="canonical" href="https://dillingerstaffing.github.io/proving-ground/">
 <meta name="robots" content="index, follow, max-image-preview:large">
 <meta name="theme-color" content="#0a0c0e">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="The Proving Ground">
 <meta property="og:title" content="The Proving Ground: Working Engineering Benches">
-<meta property="og:description" content="74 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs in the browser.">
+<meta property="og:description" content="75 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs in the browser.">
 <meta property="og:url" content="https://dillingerstaffing.github.io/proving-ground/">
 <meta property="og:image" content="https://dillingerstaffing.github.io/proving-ground/og-card.png">
 <meta property="og:image:width" content="1200">
@@ -25,7 +25,7 @@
 {"@context":"https://schema.org","@type":"WebApplication",
  "name":"The Proving Ground",
  "url":"https://dillingerstaffing.github.io/proving-ground/",
- "description":"74 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft.",
+ "description":"75 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft.",
  "applicationCategory":"BrowserApplication","operatingSystem":"Any modern web browser",
  "isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
@@ -774,7 +774,7 @@ body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
         <circle class="draw-core" cx="24" cy="24" r="2.6" fill="#0a0c0e"/>
       </svg>
       <div class="head-group">
-        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">74</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;INTERACTIVE,&nbsp;IN&nbsp;BROWSER</span></span></div>
+        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">75</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;INTERACTIVE,&nbsp;IN&nbsp;BROWSER</span></span></div>
         <button class="hire-btn" type="button" data-brief="general">HIRE CHRIS</button>
         <button class="theme-toggle" type="button" aria-label="Switch to terminal theme" title="Switch theme">
           <span class="theme-toggle-mark" aria-hidden="true"><i></i><i></i></span>
@@ -1218,7 +1218,11 @@ var PG_BENCHES = [
   { section: "craft", n: "74", name: "The Standoff Room", btn: "soBtn", pill: "oldiron", pillLabel: "BENCH CRAFT",
     desc: "The five-minute fix before the parts blame game: one extra brass standoff under the board bridges the board's copper to the steel case. Walk the tray, call what three stray spots short, then revive a dead intake with the continuity probe.",
     how: "Pull the stray standoff, call BOOT or NO BOOT before you press power, then find the dead short with the probe and boot the intake.",
-    spec: "BRASS STANDOFFS \u00B7 SHORT HUNT \u00B7 3 TRIALS" }
+    spec: "BRASS STANDOFFS \u00B7 SHORT HUNT \u00B7 3 TRIALS" },
+  { section: "analog", n: "75", name: "The Schmitt Room", btn: "sc75Btn", pill: "tapeout", pillLabel: "ANALOG AND POWER ELECTRONICS",
+    desc: "Chatter is a voltage problem, not a time problem: a noisy signal crosses one threshold dozens of times. Give the comparator two thresholds with a gap between them and the chatter collapses to a single decision. Dial the gap wider than the noise but narrower than the signal.",
+    how: "Watch the plain comparator chatter, dial the hysteresis gap until one crossing gives exactly one rising edge, then tame three fresh noisy signals.",
+    spec: "HYSTERESIS \u00B7 3 TRIALS" }
  ];
 /* Teaching order: the sequence a newcomer should take the benches in.
    The index renders this list top to bottom; the number on each row is its
@@ -1240,6 +1244,7 @@ var PG_TEACH_ORDER = [
   "01",
   "08",
   "34",
+  "75",
   "10",
   "70",
   "44",
