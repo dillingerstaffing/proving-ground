@@ -60497,3 +60497,716 @@ if (typeof module !== "undefined" && module.exports) {
   };
 }
 })();
+
+/* BENCH 76: THE GROUND ROOM (craft)
+   One atomic mechanism: a ground wire is a resistor, so the return current of
+   one circuit becomes a voltage on the ground of every circuit sharing that
+   wire. A digital block's switching current times the shared wire resistance
+   (I times R) appears as bounce on the analog stage's ground reference, and
+   the ADC reports the sum. Give every block its own wire back to one common
+   point (a star) and the coupling dies, because no current is shared anymore.
+   Four trials: watch a daisy-chained board's ADC code jitter 7 LSB from one
+   pulse train; predict the bounce in millivolts before the sim moves; rewire
+   the board as a star and feel the bounce vanish while a constant DC offset
+   remains; certify three fresh boards by picking the topology and the spoke
+   gauge that keep both bounce and offset inside 1 LSB.
+   One sentence takeaway: current through a shared ground wire becomes a
+   voltage your analog stage sees; give every stage its own wire back to one
+   point and the coupling dies.
+   Pure sim hooks live in GR76 for the smoke test; the DOM engine below drives
+   the same code. Standalone module for unit + DOM testing; spliced into
+   features.js after the smoke test passes. */
+(function () {
+"use strict";
+
+/* ---------------- pure hooks (testable, no DOM) ---------------- */
+var GR76 = {};
+GR76.VDD = 3.3;
+GR76.ADC_BITS = 12;
+GR76.LSB_MV = 3300 / 4096; /* 0.8057 mV per code */
+GR76.VS_MV = 1650;         /* sensor output, mid-scale */
+GR76.REFCODE = Math.round(GR76.VS_MV / GR76.LSB_MV); /* 2048 */
+GR76.GAUGES = [10, 25, 50, 100, 200]; /* wire gauge, milliohms per segment */
+GR76.BANDS = ["1 mV or less", "1 to 5 mV", "5 to 15 mV", "more than 15 mV"];
+GR76.lcg = function (seed) {
+  var s = seed >>> 0;
+  return function () {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+};
+/* Analog-tap ground voltage over 400 samples. Digital block pulls a square
+   wave 0..iDig mA (8 pulses across the window); the sensor draws a steady
+   iSens mA. Daisy: supply --R-- digital tap --R-- analog tap, so the digital
+   return shares segment R1 with the analog stage. Star: each block gets its
+   own segment R back to the supply point, nothing is shared. Units: mA times
+   ohm gives millivolts, so vagnd comes out in mV directly. */
+GR76.simWave = function (o) {
+  var n = 400, cycles = 8, i, idt, vag;
+  var R = o.gauge / 1000; /* ohms per segment */
+  var v = new Array(n), err = new Array(n);
+  var mn = Infinity, mx = -Infinity, sum = 0;
+  for (i = 0; i < n; i++) {
+    idt = (Math.floor(i / (n / cycles)) % 2 === 0) ? 0 : o.iDig;
+    if (o.topology === "star") vag = o.iSens * R;
+    else vag = (idt + o.iSens) * R + o.iSens * R;
+    v[i] = vag;
+    if (vag < mn) mn = vag;
+    if (vag > mx) mx = vag;
+    sum += vag;
+    err[i] = Math.round((GR76.VS_MV - vag) / GR76.LSB_MV) - GR76.REFCODE;
+  }
+  var emn = Infinity, emx = -Infinity;
+  for (i = 0; i < n; i++) {
+    if (err[i] < emn) emn = err[i];
+    if (err[i] > emx) emx = err[i];
+  }
+  var off = sum / n;
+  return { vag: v, err: err, bounce_mV: mx - mn, offset_mV: off,
+           bounceLSB: emx - emn, offsetLSB: off / GR76.LSB_MV };
+};
+GR76.bandOf = function (mv) {
+  if (mv <= 1) return 0;
+  if (mv <= 5) return 1;
+  if (mv <= 15) return 2;
+  return 3;
+};
+/* Certification boards: digital 85..120 mA (loud enough that no daisy gauge
+   passes), sensor 10..40 mA (so the analog spoke gauge always matters). */
+GR76.certTrial = function (seed) {
+  var rng = GR76.lcg(seed);
+  return { seed: seed,
+           iDig: 85 + Math.floor(rng() * 36),
+           iSens: 10 + Math.floor(rng() * 31) };
+};
+GR76.certSeed = function (attempt, i) {
+  return 2000 + (attempt * 3 + i) * 37;
+};
+/* Pass bar: bounce exactly 0 LSB (the wobble is gone, not smaller) and DC
+   offset at most 1 LSB (constant, so it calibrates out). Daisy always fails
+   the bounce bar: min bounce is 85 mA * 10 mOhm = 0.85 mV = 1.055 LSB of
+   code travel, and more than 1 LSB of travel always moves at least one code. */
+GR76.gradeTrial = function (trial, topology, gauge) {
+  var w = GR76.simWave({ topology: topology, iDig: trial.iDig,
+                         iSens: trial.iSens, gauge: gauge });
+  if (topology !== "star") return { ok: false, why: "daisy", w: w };
+  if (w.bounceLSB !== 0) return { ok: false, why: "bounce", w: w };
+  if (w.offsetLSB > 1) return { ok: false, why: "offset", w: w };
+  return { ok: true, w: w };
+};
+
+GR76.INTRO_HTML =
+  "<h3 class=\"gr76-sec\">WHY THIS ROOM EXISTS</h3>" +
+  "<p class=\"gr76-p\">A sensor can read perfectly on your DMM and still lie to the " +
+  "microcontroller in bursts. The liar is usually not the sensor: it is the ground wire. " +
+  "Current always flows in a loop, and the ground wire is half of every loop. When two " +
+  "circuits share one ground wire, the digital block's switching current becomes a voltage " +
+  "on the analog stage's ground reference, and the ADC reports the sum. This room is about " +
+  "that one shared wire, and the wiring that kills it.</p>" +
+  "<h3 class=\"gr76-sec\">THE MECHANISM</h3>" +
+  "<p class=\"gr76-p\">Ground is the common reference every voltage is measured against. " +
+  "A wire is a resistor with better marketing: push current through it and Ohm's law puts " +
+  "a voltage across it, V = I times R. In a daisy chain the digital block's return current " +
+  "flows through the same wire segment the analog stage's ground hangs from, so the analog " +
+  "ground bounces by I_dig times R_shared every time the digital block switches. The ADC " +
+  "is 12 bits over 3.3 V, which is 4096 codes of 0.81 mV each (one LSB). A few millivolts " +
+  "of bounce is a handful of LSBs of lie. A star ground gives every block its own wire " +
+  "back to one common point, so no current is shared and the bounce dies.</p>" +
+  "<h3 class=\"gr76-sec\">THE WORKED EXAMPLE</h3>" +
+  "<p class=\"gr76-p\">This room's own board 1: the digital block pulls 60 mA pulses " +
+  "through 100 mOhm of shared wire. Bounce = 0.06 A times 0.1 ohm = 6 mV. One LSB is " +
+  "0.81 mV, so the reading jitters about 7 LSB peak to peak. Press RUN THE SWEEP and " +
+  "watch the ADC code wobble while the digital pulses run.</p>" +
+  "<h3 class=\"gr76-sec\">THE FAILURE MODES</h3>" +
+  "<ul class=\"gr76-list\">" +
+  "<li>A quiet digital stage hides the bug: the bounce scales with I times R, so a " +
+  "sipping microcontroller looks clean until the motor driver wakes up and the sensor " +
+  "reading falls apart. Intermittent is the classic symptom.</li>" +
+  "<li>The star removes the coupling, not the resistance: each spoke still drops I times " +
+  "R as a steady DC offset. The analog spoke's drop is constant, so you can calibrate " +
+  "it out; the daisy's bounce you cannot.</li>" +
+  "<li>A star drawn wrong is still a daisy: if the digital return crosses the analog " +
+  "spoke anywhere, you rebuilt the shared segment. This bench wires it right; your " +
+  "board might not.</li>" +
+  "</ul>" +
+  "<h3 class=\"gr76-sec\">THE FOUR TRIALS</h3>" +
+  "<p class=\"gr76-p\">1. Run the sweep on the daisy-chained board and watch the ADC " +
+  "code jitter. 2. Call the bounce in millivolts before the sim moves. 3. Rewire the " +
+  "board as a star and certify the bounce is gone. 4. Certify three fresh boards: pick " +
+  "the topology and the spoke gauge that keep bounce at 0 LSB and DC offset inside " +
+  "1 LSB.</p>" +
+  "<p class=\"gr76-p\"><b>One-sentence takeaway:</b> current through a shared ground " +
+  "wire becomes a voltage your analog stage sees; give every stage its own wire back " +
+  "to one point and the coupling dies.</p>";
+
+/* ---------------- CSS ---------------- */
+var GR76_CSS = [
+  ".gr76-overlay{position:fixed;inset:0;z-index:90;background:var(--ink);display:none;overflow-y:auto;}",
+  ".gr76-overlay.open{display:block;}",
+  ".gr76-panel{max-width:860px;margin:0 auto;padding:28px 18px 60px;color:var(--paper);box-sizing:border-box;}",
+  ".gr76-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);}",
+  ".gr76-title{font-family:'Space Grotesk',sans-serif;font-size:34px;margin:6px 0 10px;color:var(--paper);}",
+  ".gr76-sec{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.16em;color:var(--ember);margin:26px 0 10px;padding-top:16px;border-top:1px solid var(--line);}",
+  ".gr76-p{font-size:13.5px;line-height:1.7;color:var(--dim);max-width:74ch;margin:0 0 12px;}",
+  ".gr76-p b{color:var(--paper);}",
+  ".gr76-list{margin:0 0 12px;padding-left:20px;max-width:74ch;}",
+  ".gr76-list li{font-size:13.5px;line-height:1.7;color:var(--dim);margin:0 0 8px;}",
+  ".gr76-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.06em;background:transparent;color:var(--paper);border:1px solid var(--line);padding:12px 16px;min-height:48px;cursor:pointer;}",
+  ".gr76-btn:hover{border-color:var(--ember);}",
+  ".gr76-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+  ".gr76-btn:disabled{opacity:.38;cursor:not-allowed;}",
+  ".gr76-btn.solid{background:var(--ember);border-color:var(--ember);color:var(--ink);font-weight:700;}",
+  ".gr76-btn.picked{border-color:var(--ember);color:var(--ember);}",
+  ".gr76-group{margin:0 0 14px;min-width:0;}",
+  ".gr76-lbl{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:var(--dim);display:block;margin:0 0 8px;}",
+  ".gr76-lbl .v{color:var(--ember);}",
+  ".gr76-row{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 12px;align-items:flex-end;}",
+  ".gr76-out{font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.75;color:var(--dim);background:var(--panel);border:1px solid var(--line);padding:14px 16px;margin:0 0 12px;white-space:pre-wrap;}",
+  ".gr76-out .v{color:var(--ember);}",
+  ".gr76-out .w{color:var(--paper);font-weight:700;}",
+  ".gr76-cv{display:block;width:100%;height:250px;background:var(--panel);border:1px solid var(--line);margin:0 0 12px;box-sizing:border-box;}",
+  ".gr76-legend{font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.8;color:var(--dim);margin:0 0 12px;}",
+  ".gr76-legend .sw{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:baseline;}",
+  "input[type=range].gr76-range{width:100%;min-height:48px;accent-color:var(--ember);margin:0;box-sizing:border-box;}",
+  ".gr76-trial{border:1px solid var(--line);padding:12px 14px;margin:0 0 10px;background:var(--panel);}",
+  ".gr76-trial h4{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.14em;color:var(--paper);margin:0 0 6px;}",
+  ".gr76-trial .pass{color:var(--ember);}",
+  ".gr76-trial p{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--dim);margin:0 0 10px;line-height:1.6;}",
+  ".gr76-banner{border:1px solid var(--ember);padding:18px;margin:0 0 16px;display:none;}",
+  ".gr76-banner.show{display:block;}",
+  ".gr76-banner h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--ember);margin:0 0 8px;}",
+  "@media (max-width:620px){.gr76-title{font-size:27px;}.gr76-cv{height:220px;}}"
+].join("\n");
+
+function gr76El(tag, cls, html) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html != null) e.innerHTML = html;
+  return e;
+}
+function gr76Btn(label, cls) {
+  var b = document.createElement("button");
+  b.type = "button";
+  b.className = cls || "gr76-btn";
+  b.textContent = label;
+  return b;
+}
+function gr76Slider(id, min, max, step, val) {
+  var s = document.createElement("input");
+  s.type = "range";
+  s.id = id;
+  s.className = "gr76-range";
+  s.min = String(min); s.max = String(max); s.step = String(step); s.value = String(val);
+  return s;
+}
+function gr76Fmt(n, d) {
+  return (Math.round(n * Math.pow(10, d)) / Math.pow(10, d)).toFixed(d);
+}
+var gr76St = null, gr76Els = {}, gr76EscBound = false;
+
+function gr76NewState() {
+  return {
+    t1: { gauge: 100 },
+    t2: { gauge: 50, band: null, revealed: false },
+    t3: { topology: "daisy", gauge: 100, passed: false },
+    t4: { attempt: 0, topology: "daisy", gauge: 100, trials: [] },
+    certified: false
+  };
+}
+function gr76DealTrials() {
+  var i, tr;
+  gr76St.t4.trials = [];
+  for (i = 0; i < 3; i++) {
+    tr = GR76.certTrial(GR76.certSeed(gr76St.t4.attempt, i));
+    gr76St.t4.trials.push({ trial: tr, pass: false, last: null });
+  }
+}
+
+/* ---------------- canvas ----------------
+   Two stacked regions. Top: ADC error in LSB vs time, with dashed 0 and
+   plus/minus 1 LSB lines. Bottom: the analog tap's ground voltage in mV vs
+   time, the actual bounce. */
+function gr76Draw(cv, w) {
+  var dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+  var W = cv.clientWidth || 600, H = cv.clientHeight || 250;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  var ctx = cv.getContext("2d");
+  if (!ctx) return;
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+  var css = function (name) {
+    if (typeof getComputedStyle === "function") {
+      return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+    return "";
+  };
+  var paper = css("--paper") || "#e8e4da";
+  var dim = css("--dim") || "#8a8f98";
+  var ember = css("--ember") || "#ff5a1f";
+  var line = css("--line") || "#2a2e35";
+  var padL = 44, padR = 10, padT = 12, padB = 12;
+  var topH = (H - padT - padB) * 0.55, topTop = padT;
+  var botTop = topTop + topH + 10, botH = H - botTop - padB;
+  var n = w.err.length, i, x;
+  var xOf = function (j) { return padL + (j / (n - 1)) * (W - padL - padR); };
+  ctx.font = "10px 'IBM Plex Mono', monospace";
+  /* top: ADC error in LSB */
+  var mAbs = 2, j;
+  for (j = 0; j < n; j++) { var a = Math.abs(w.err[j]); if (a > mAbs) mAbs = a; }
+  mAbs *= 1.25;
+  var yTop = function (e) { return topTop + topH / 2 - (e / mAbs) * (topH / 2); };
+  ctx.strokeStyle = line; ctx.lineWidth = 1;
+  [-1, 0, 1].forEach(function (e) {
+    var y = yTop(e);
+    ctx.setLineDash(e === 0 ? [] : [5, 4]);
+    ctx.strokeStyle = e === 0 ? dim : line;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+    ctx.setLineDash([]);
+  });
+  ctx.fillStyle = dim;
+  ctx.fillText("ADC ERR", 2, topTop + 10);
+  ctx.fillText("+1", 2, yTop(1) + 3);
+  ctx.fillText("-1", 2, yTop(-1) + 3);
+  ctx.fillText("LSB", 2, yTop(0) + 12);
+  ctx.strokeStyle = paper; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (j = 0; j < n; j++) {
+    x = xOf(j);
+    if (j === 0) ctx.moveTo(x, yTop(w.err[j])); else ctx.lineTo(x, yTop(w.err[j]));
+  }
+  ctx.stroke();
+  /* bottom: analog-tap ground in mV */
+  var gMax = 0.5;
+  for (j = 0; j < n; j++) if (w.vag[j] > gMax) gMax = w.vag[j];
+  gMax *= 1.3;
+  var yBot = function (g) { return botTop + botH - (g / gMax) * botH; };
+  ctx.strokeStyle = line;
+  ctx.beginPath(); ctx.moveTo(padL, yBot(0)); ctx.lineTo(W - padR, yBot(0)); ctx.stroke();
+  ctx.fillStyle = dim;
+  ctx.fillText("GND", 2, botTop + 10);
+  ctx.fillText("mV", 2, botTop + 22);
+  ctx.strokeStyle = ember; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (j = 0; j < n; j++) {
+    x = xOf(j);
+    if (j === 0) ctx.moveTo(x, yBot(w.vag[j])); else ctx.lineTo(x, yBot(w.vag[j]));
+  }
+  ctx.stroke();
+  ctx.lineWidth = 1;
+}
+
+/* ---------------- trial runs ---------------- */
+function gr76T1Run() {
+  var iDig = +gr76Els.t1I.value;
+  var g = gr76St.t1.gauge;
+  gr76Els.t1IVal.textContent = iDig + " mA";
+  var w = GR76.simWave({ topology: "daisy", iDig: iDig, iSens: 2, gauge: g });
+  gr76Draw(gr76Els.t1Cv, w);
+  gr76Els.t1Out.innerHTML =
+    "Daisy chain, digital " + iDig + " mA through " + g + " mOhm of shared wire: " +
+    "shared bounce <span class=\"v\">" + gr76Fmt(w.bounce_mV, 2) + " mV = " +
+    gr76Fmt(w.bounce_mV / GR76.LSB_MV, 1) + " LSB</span> peak to peak. " +
+    "The ADC code swings " + w.bounceLSB + " LSB while the sensor never moves. " +
+    "That wobble is the digital block's current, read back as sensor data.";
+}
+function gr76T2Reveal() {
+  var st = gr76St.t2;
+  if (st.band === null) {
+    gr76Els.t2Out.textContent = "Call a band first: pick one of the four bounce bands.";
+    return;
+  }
+  var iDig = +gr76Els.t2I.value;
+  var bounce = iDig * st.gauge / 1000;
+  var truth = GR76.bandOf(bounce);
+  var okW = st.band === truth;
+  st.revealed = true;
+  gr76Els.t2Out.innerHTML =
+    "Bounce = " + iDig + " mA times " + st.gauge + " mOhm = <span class=\"v\">" +
+    gr76Fmt(bounce, 2) + " mV</span> (" + GR76.BANDS[truth] + "). You called " +
+    GR76.BANDS[st.band] + ": " + (okW ? "<span class=\"w\">right.</span>" :
+    "<span class=\"v\">off.</span> Multiply the milliamps by the milliohms and " +
+    "divide by a thousand; the answer is always I times R.");
+  gr76Progress();
+}
+function gr76T3Run() {
+  var st = gr76St.t3;
+  var w = GR76.simWave({ topology: st.topology, iDig: 100, iSens: 2, gauge: st.gauge });
+  gr76Draw(gr76Els.t3Cv, w);
+  var head = (st.topology === "star" ? "STAR" : "DAISY CHAIN") +
+    ", digital 100 mA, spokes " + st.gauge + " mOhm: ";
+  var body;
+  if (st.topology === "daisy") {
+    body = "shared bounce <span class=\"v\">" + gr76Fmt(w.bounce_mV, 2) + " mV = " +
+      gr76Fmt(w.bounce_mV / GR76.LSB_MV, 1) + " LSB</span> peak to peak. " +
+      "<span class=\"v\">FAIL:</span> the digital return still shares the analog " +
+      "wire. Rewire it as a star.";
+    st.passed = false;
+  } else {
+    body = "shared bounce <span class=\"v\">0.00 mV</span>. DC offset " +
+      gr76Fmt(w.offset_mV, 2) + " mV (" + gr76Fmt(w.offsetLSB, 2) + " LSB), " +
+      "constant: the analog spoke still drops I times R, but it never moves, " +
+      "so you can calibrate it out. <span class=\"w\">PASS: the bounce is gone.</span>";
+    st.passed = true;
+  }
+  gr76Els.t3Out.innerHTML = head + body;
+  gr76Progress();
+}
+function gr76T4Render() {
+  var wrap = gr76Els.t4Trials;
+  wrap.innerHTML = "";
+  var i;
+  for (i = 0; i < gr76St.t4.trials.length; i++) {
+    (function (idx) {
+      var T = gr76St.t4.trials[idx];
+      var card = gr76El("div", "gr76-trial", "");
+      var h4 = gr76El("h4", "", "BOARD " + "ABC"[idx] + " <span class=\"st\"></span>");
+      var p = gr76El("p", "", "digital " + T.trial.iDig + " mA, sensor " +
+        T.trial.iSens + " mA" + (T.last ? ", last run: " + T.last : ""));
+      var run = gr76Btn("RUN THE BOARD", "gr76-btn");
+      run.addEventListener("click", function () { gr76T4Run(idx); });
+      card.appendChild(h4); card.appendChild(p); card.appendChild(run);
+      wrap.appendChild(card);
+      T.card = card; T.h4 = h4; T.p = p;
+    })(i);
+  }
+  gr76T4Progress();
+}
+function gr76T4Run(idx) {
+  var T = gr76St.t4.trials[idx];
+  var st = gr76St.t4;
+  var g = GR76.gradeTrial(T.trial, st.topology, st.gauge);
+  var w = g.w;
+  if (g.ok) {
+    T.last = "bounce 0 LSB, offset " + gr76Fmt(w.offsetLSB, 2) + " LSB (pass)";
+  } else if (g.why === "daisy") {
+    T.last = "bounce " + gr76Fmt(w.bounce_mV / GR76.LSB_MV, 1) +
+      " LSB (fail: still daisy-chained)";
+  } else {
+    T.last = "offset " + gr76Fmt(w.offsetLSB, 2) +
+      " LSB over the 1 LSB budget (fail: spoke too thin)";
+  }
+  T.pass = g.ok;
+  T.h4.innerHTML = "BOARD " + "ABC"[idx] + " <span class=\"st " + (g.ok ? "pass" : "") +
+    "\">" + (g.ok ? "PASS" : "OPEN") + "</span>";
+  T.p.textContent = "digital " + T.trial.iDig + " mA, sensor " + T.trial.iSens +
+    " mA, " + st.topology + ", spokes " + st.gauge + " mOhm, last run: " + T.last;
+  gr76T4Progress();
+}
+function gr76T4Progress() {
+  var n = 0, i;
+  for (i = 0; i < gr76St.t4.trials.length; i++) if (gr76St.t4.trials[i].pass) n++;
+  if (n === 3 && !gr76St.certified) {
+    gr76St.certified = true;
+    gr76Els.t4Banner.classList.add("show");
+    gr76Els.t4Banner.innerHTML = "<h3>CERTIFIED: THE GROUND ROOM</h3>" +
+      "<p class=\"gr76-p\">Three fresh boards, each with its own digital and sensor " +
+      "currents. You picked the star every time and spokes fat enough to hold the DC " +
+      "offset inside 1 LSB. No shared wire, no coupled noise.</p>";
+  }
+  gr76Progress();
+}
+function gr76Progress() {
+  var n = 0, i;
+  for (i = 0; i < gr76St.t4.trials.length; i++) if (gr76St.t4.trials[i].pass) n++;
+  gr76Els.progress.textContent = "BENCH 76 PROGRESS: boards " + n + "/3 passed" +
+    (gr76St.certified ? " (CERTIFIED)" : "") +
+    (gr76St.t3.passed ? ", star wired" : "") +
+    (gr76St.t2.revealed ? ", bounce called" : "");
+}
+
+/* A result was earned under one wiring and one gauge. Changing either
+   invalidates the result: the old pass belongs to different copper. Trial 3
+   drops its pass; trial 4 drops every board pass, the last-run notes, the
+   certification, and the banner, then re-renders the board cards so no stale
+   PASS chip survives. Trials 1 and 2 carry no pass state, so they are
+   untouched. */
+function gr76Invalidate(key) {
+  if (key === "t3") {
+    gr76St.t3.passed = false;
+    gr76Progress();
+    return;
+  }
+  if (key === "t4") {
+    var i;
+    for (i = 0; i < gr76St.t4.trials.length; i++) {
+      gr76St.t4.trials[i].pass = false;
+      gr76St.t4.trials[i].last = null;
+    }
+    gr76St.certified = false;
+    gr76Els.t4Banner.classList.remove("show");
+    gr76Els.t4Banner.innerHTML = "";
+    gr76T4Render();
+  }
+}
+
+/* ---------------- build ---------------- */
+function gr76Open() {
+  gr76Els.overlay.classList.add("open");
+  if (gr76Els.overlay.scrollTo) gr76Els.overlay.scrollTo(0, 0);
+  var c = document.getElementById("gr76XBtn");
+  if (c) c.focus();
+}
+function gr76Close() {
+  gr76Els.overlay.classList.remove("open");
+}
+function gr76GaugeRow(stateKey, render) {
+  var row = gr76El("div", "gr76-row", "");
+  row.appendChild(gr76El("span", "gr76-lbl", "WIRE GAUGE:"));
+  var btns = [];
+  GR76.GAUGES.forEach(function (g) {
+    var b = gr76Btn(g + " m\u03A9", "gr76-btn" + (gr76St[stateKey].gauge === g ? " picked" : ""));
+    b.setAttribute("aria-label", "Wire gauge " + g + " milliohm per segment");
+    b.setAttribute("data-g", String(g));
+    b.addEventListener("click", function () {
+      gr76St[stateKey].gauge = g;
+      for (var k = 0; k < btns.length; k++) btns[k].classList.remove("picked");
+      b.classList.add("picked");
+      gr76Invalidate(stateKey);
+    });
+    btns.push(b);
+    row.appendChild(b);
+  });
+  return row;
+}
+function gr76TopoRow(stateKey) {
+  var row = gr76El("div", "gr76-row", "");
+  row.appendChild(gr76El("span", "gr76-lbl", "WIRING:"));
+  var opts = [["daisy", "DAISY CHAIN"], ["star", "STAR GROUND"]];
+  var btns = [];
+  opts.forEach(function (o) {
+    var b = gr76Btn(o[1], "gr76-btn" + (gr76St[stateKey].topology === o[0] ? " picked" : ""));
+    b.setAttribute("aria-label", "Wiring: " + o[1].toLowerCase());
+    b.addEventListener("click", function () {
+      gr76St[stateKey].topology = o[0];
+      for (var k = 0; k < btns.length; k++) btns[k].classList.remove("picked");
+      b.classList.add("picked");
+      gr76Invalidate(stateKey);
+    });
+    btns.push(b);
+    row.appendChild(b);
+  });
+  return row;
+}
+function gr76Build() {
+  var box = document.querySelector(".dossier .actions");
+  if (!box) return;
+  if (document.getElementById("gr76Btn")) return;
+  gr76St = gr76NewState();
+  gr76DealTrials();
+
+  var sty = document.createElement("style");
+  sty.id = "gr76Style";
+  sty.textContent = GR76_CSS;
+  document.head.appendChild(sty);
+
+  var b = document.createElement("button");
+  b.id = "gr76Btn";
+  b.className = "pg-launch";
+  b.textContent = "Open The Ground Room";
+  b.addEventListener("click", gr76Open);
+  box.appendChild(b);
+
+  var ov = gr76El("div", "gr76-overlay", "");
+  ov.id = "gr76Overlay";
+  ov.setAttribute("role", "dialog");
+  ov.setAttribute("aria-label", "The Ground Room");
+  var x = gr76Btn("CLOSE", "gr76-btn");
+  x.id = "gr76XBtn";
+  x.style.cssText = "position:fixed;top:calc(12px + env(safe-area-inset-top));right:calc(16px + env(safe-area-inset-right));z-index:95;";
+  x.setAttribute("aria-label", "Close The Ground Room");
+  x.addEventListener("click", gr76Close);
+  ov.appendChild(x);
+  gr76Els.overlay = ov;
+  if (!gr76EscBound) {
+    gr76EscBound = true;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && gr76Els.overlay && gr76Els.overlay.classList.contains("open")) gr76Close();
+    });
+  }
+
+  var panel = gr76El("div", "gr76-panel", "");
+  panel.id = "gr76Panel";
+  panel.appendChild(gr76El("div", "gr76-kicker", "BENCH CRAFT \u00B7 BENCH 76"));
+  panel.appendChild(gr76El("h2", "gr76-title", "The Ground Room"));
+
+  var intro = gr76El("div", "", "");
+  intro.innerHTML = GR76.INTRO_HTML;
+  panel.appendChild(intro);
+
+  var prog = gr76El("div", "gr76-out", "");
+  prog.id = "gr76Progress";
+  prog.setAttribute("aria-live", "polite");
+  panel.appendChild(prog);
+  gr76Els.progress = prog;
+
+  /* ---- trial 1: do first, watch it share ---- */
+  panel.appendChild(gr76El("h3", "gr76-sec", "DO FIRST: WATCH IT SHARE"));
+  panel.appendChild(gr76El("p", "gr76-p",
+    "Nothing to break. The board below is wired as a daisy chain: the digital block's " +
+    "return current flows through the same wire segment the analog stage's ground hangs " +
+    "from. Press RUN THE SWEEP and watch the ADC code wobble while the digital pulses " +
+    "run. The top trace is the ADC error in LSB; the bottom trace is the analog tap's " +
+    "ground voltage, the actual bounce."));
+  var g1 = gr76El("div", "gr76-group", "");
+  var iLbl = gr76El("label", "gr76-lbl", "DIGITAL CURRENT: ");
+  gr76Els.t1IVal = gr76El("span", "v", "60 mA");
+  iLbl.appendChild(gr76Els.t1IVal);
+  g1.appendChild(iLbl);
+  gr76Els.t1I = gr76Slider("gr76T1I", 5, 120, 5, 60);
+  gr76Els.t1I.setAttribute("aria-label", "Digital block pulse current in milliamps");
+  g1.appendChild(gr76Els.t1I);
+  panel.appendChild(g1);
+  panel.appendChild(gr76GaugeRow("t1"));
+  var t1Run = gr76Btn("RUN THE SWEEP", "gr76-btn solid");
+  t1Run.addEventListener("click", gr76T1Run);
+  var row1 = gr76El("div", "gr76-row", "");
+  row1.appendChild(t1Run);
+  panel.appendChild(row1);
+  gr76Els.t1Cv = gr76El("canvas", "gr76-cv", "");
+  gr76Els.t1Cv.id = "gr76T1Cv";
+  gr76Els.t1Cv.setAttribute("role", "img");
+  gr76Els.t1Cv.setAttribute("aria-label", "ADC error in LSB and analog ground voltage versus time");
+  panel.appendChild(gr76Els.t1Cv);
+  panel.appendChild(gr76El("div", "gr76-legend",
+    "<span class=\"sw\" style=\"background:#e8e4da\"></span>ADC error (LSB) &nbsp; " +
+    "<span class=\"sw\" style=\"background:var(--ember)\"></span>analog ground (mV) &nbsp; " +
+    "<span class=\"sw\" style=\"background:transparent;border-top:2px dashed #8a8f98\"></span>plus/minus 1 LSB"));
+  gr76Els.t1Out = gr76El("div", "gr76-out", "Press RUN THE SWEEP.");
+  gr76Els.t1Out.id = "gr76T1Out";
+  panel.appendChild(gr76Els.t1Out);
+
+  /* ---- trial 2: predict, then verify ---- */
+  panel.appendChild(gr76El("h3", "gr76-sec", "CALL IT, THEN VERIFY"));
+  panel.appendChild(gr76El("p", "gr76-p",
+    "Same daisy-chained board, fresh knobs. Set the digital current and the wire gauge, " +
+    "then call the shared bounce in millivolts before the sim moves. The answer is always " +
+    "I times R: milliamps times milliohms, divided by a thousand. Then press RUN AND " +
+    "REVEAL and grade yourself."));
+  var g2 = gr76El("div", "gr76-group", "");
+  var i2Lbl = gr76El("label", "gr76-lbl", "DIGITAL CURRENT: ");
+  gr76Els.t2IVal = gr76El("span", "v", "45 mA");
+  i2Lbl.appendChild(gr76Els.t2IVal);
+  g2.appendChild(i2Lbl);
+  gr76Els.t2I = gr76Slider("gr76T2I", 5, 120, 5, 45);
+  gr76Els.t2I.setAttribute("aria-label", "Digital block pulse current in milliamps");
+  gr76Els.t2I.addEventListener("input", function () {
+    gr76Els.t2IVal.textContent = gr76Els.t2I.value + " mA";
+  });
+  g2.appendChild(gr76Els.t2I);
+  panel.appendChild(g2);
+  panel.appendChild(gr76GaugeRow("t2"));
+  var row2a = gr76El("div", "gr76-row", "");
+  row2a.appendChild(gr76El("span", "gr76-lbl", "BOUNCE BAND:"));
+  var bandBtns = [];
+  GR76.BANDS.forEach(function (band, bi) {
+    var bb = gr76Btn(band, "gr76-btn");
+    bb.setAttribute("aria-label", "Call the bounce: " + band);
+    bb.addEventListener("click", function () {
+      for (var k = 0; k < bandBtns.length; k++) bandBtns[k].classList.remove("picked");
+      bb.classList.add("picked");
+      gr76St.t2.band = bi;
+      gr76St.t2.revealed = false;
+    });
+    bandBtns.push(bb);
+    row2a.appendChild(bb);
+  });
+  panel.appendChild(row2a);
+  var t2Run = gr76Btn("RUN AND REVEAL", "gr76-btn solid");
+  t2Run.addEventListener("click", gr76T2Reveal);
+  var row2 = gr76El("div", "gr76-row", "");
+  row2.appendChild(t2Run);
+  panel.appendChild(row2);
+  gr76Els.t2Out = gr76El("div", "gr76-out", "Call a band, then reveal.");
+  gr76Els.t2Out.id = "gr76T2Out";
+  panel.appendChild(gr76Els.t2Out);
+
+  /* ---- trial 3: wire the star ---- */
+  panel.appendChild(gr76El("h3", "gr76-sec", "WIRE THE STAR"));
+  panel.appendChild(gr76El("p", "gr76-p",
+    "Same board, same 100 mA digital block, your choice of wiring. Daisy chain shares " +
+    "the wire; star ground gives every block its own spoke back to the supply point. " +
+    "Pick a wiring, pick a gauge, press RUN THE REWIRE. The board passes when the " +
+    "bounce is exactly 0 LSB."));
+  panel.appendChild(gr76TopoRow("t3"));
+  panel.appendChild(gr76GaugeRow("t3"));
+  var t3Run = gr76Btn("RUN THE REWIRE", "gr76-btn solid");
+  t3Run.addEventListener("click", gr76T3Run);
+  var row3 = gr76El("div", "gr76-row", "");
+  row3.appendChild(t3Run);
+  panel.appendChild(row3);
+  gr76Els.t3Cv = gr76El("canvas", "gr76-cv", "");
+  gr76Els.t3Cv.id = "gr76T3Cv";
+  gr76Els.t3Cv.setAttribute("role", "img");
+  gr76Els.t3Cv.setAttribute("aria-label", "ADC error in LSB and analog ground voltage versus time after the rewire");
+  panel.appendChild(gr76Els.t3Cv);
+  gr76Els.t3Out = gr76El("div", "gr76-out", "Pick a wiring and press RUN THE REWIRE.");
+  gr76Els.t3Out.id = "gr76T3Out";
+  panel.appendChild(gr76Els.t3Out);
+
+  /* ---- trial 4: certify three fresh boards ---- */
+  panel.appendChild(gr76El("h3", "gr76-sec", "CERTIFY: THREE FRESH BOARDS"));
+  panel.appendChild(gr76El("p", "gr76-p",
+    "Three new boards, each with its own digital and sensor currents. One wiring and " +
+    "one gauge serve all three. A board passes on bounce exactly 0 LSB and DC offset " +
+    "inside 1 LSB. The star always kills the bounce; the spoke gauge decides the " +
+    "offset, because the sensor's own current drops I times R on the analog spoke. " +
+    "Pass all three to certify."));
+  panel.appendChild(gr76TopoRow("t4"));
+  panel.appendChild(gr76GaugeRow("t4"));
+  gr76Els.t4Trials = gr76El("div", "", "");
+  gr76Els.t4Trials.id = "gr76T4Trials";
+  panel.appendChild(gr76Els.t4Trials);
+  var newB = gr76Btn("RESHUFFLE BOARDS", "gr76-btn");
+  newB.addEventListener("click", function () {
+    gr76St.t4.attempt++;
+    gr76St.certified = false;
+    gr76Els.t4Banner.classList.remove("show");
+    gr76DealTrials();
+    gr76T4Render();
+  });
+  var row4 = gr76El("div", "gr76-row", "");
+  row4.appendChild(newB);
+  panel.appendChild(row4);
+  var banner = gr76El("div", "gr76-banner", "");
+  banner.id = "gr76T4Banner";
+  panel.appendChild(banner);
+  gr76Els.t4Banner = banner;
+
+  /* hire line: noisy-sensor offer at the foot of the bench, matching the
+     Bench 71/72/73/74/75 pattern. The hire-chooser module binds [data-brief]
+     triggers document-wide. Copy only. */
+  var hire = gr76El("p", "gr76-p", "");
+  hire.innerHTML = "A sensor that reads clean on the DMM but jitters on the ADC every time the motor kicks in? " +
+    "<button type=\"button\" class=\"gr76-btn\" data-brief=\"triage\" data-bench-tag=\"Bench 76: The Ground Room\">Crash triage</button>";
+  panel.appendChild(hire);
+
+  ov.appendChild(panel);
+  document.body.appendChild(ov);
+
+  gr76T4Render();
+  gr76Progress();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", gr76Build);
+} else {
+  gr76Build();
+}
+
+/* debug hooks for the smoke test */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.GR76 = GR76;
+  module.exports.gr76Debug = {
+    state: function () { return gr76St; },
+    reseed: function () { gr76DealTrials(); gr76T4Render(); },
+    els: function () { return gr76Els; },
+    grade: GR76.gradeTrial,
+    sim: GR76.simWave,
+    runT1: gr76T1Run,
+    revealT2: gr76T2Reveal,
+    runT3: gr76T3Run,
+    runT4: gr76T4Run
+  };
+}
+})();
+
