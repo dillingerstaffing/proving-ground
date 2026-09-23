@@ -52645,6 +52645,9 @@ if (typeof module !== "undefined" && module.exports) {
     ".fsh-share-h{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.14em;color:var(--dim);margin:16px 0 8px;}",
     ".fsh-share-prev{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:var(--dim);white-space:pre-wrap;word-break:break-word;border:1px solid var(--line);padding:10px;margin:0 0 10px;max-height:220px;overflow-y:auto;}",
     ".fsh-share-row{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 8px;}",
+    ".fsh-share-status{font-family:'IBM Plex Mono',monospace;font-size:13px;line-height:1.6;min-height:22px;margin:0 0 8px;color:var(--dim);}",
+    ".fsh-share-status.ok{color:var(--mint);}",
+    ".fsh-share-status.bad{color:var(--bad);}",
     ".fsh-log{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:var(--dim);max-height:180px;overflow-y:auto;}",
     ".fsh-log .lt-ok{color:var(--mint);}",
     ".fsh-log .lt-bad{color:var(--bad);}",
@@ -53640,20 +53643,46 @@ if (typeof module !== "undefined" && module.exports) {
     sharePrev.id = "fshSharePrev";
     banner.appendChild(sharePrev);
     var shareRow = fshEl("div", "fsh-share-row");
+    var shareStatus = fshEl("p", "fsh-share-status", "");
+    function fshShareFlash(msg, ok) {
+      shareStatus.textContent = msg;
+      shareStatus.classList.toggle("ok", !!ok);
+      shareStatus.classList.toggle("bad", !ok);
+    }
     var copyShare = fshBtn("COPY SHARE TEXT", "fsh-btn");
     copyShare.addEventListener("click", function () {
       pgCopyText(fshShareText(), function (ok) {
+        if (ok) {
+          copyShare.textContent = "COPIED TO CLIPBOARD";
+          copyShare.disabled = true;
+          fshShareFlash("Copied. Open the LinkedIn post and paste it in.", true);
+          setTimeout(function () {
+            copyShare.textContent = "COPY SHARE TEXT";
+            copyShare.disabled = false;
+          }, 2600);
+        } else {
+          fshShareFlash("Copy failed. Long-press the preview text above to copy it manually.", false);
+        }
         fshLog(ok ? "Share text copied. Paste it into your LinkedIn post."
-                  : "Copy failed; select the preview text above manually.", ok ? "ok" : "bad");
+                  : "Share text copy failed.", ok ? "ok" : "bad");
       });
     });
-    var openLi = fshBtn("OPEN LINKEDIN POST", "fsh-btn solid");
-    openLi.addEventListener("click", function () { pgOpenLinkedInPost("frame-shop"); });
+    var openLi = fshBtn("COPY TEXT AND OPEN LINKEDIN", "fsh-btn solid");
+    openLi.addEventListener("click", function () {
+      pgCopyText(fshShareText(), function (ok) {
+        fshShareFlash(ok ? "Copied. LinkedIn is opening: paste the text into your post."
+                         : "LinkedIn is opening. Copy the preview text above and paste it in.", ok);
+        fshLog(ok ? "Share text copied; opening LinkedIn."
+                  : "Copy failed; opening LinkedIn anyway.", ok ? "ok" : "bad");
+      });
+      pgOpenLinkedInPost("frame-shop");
+    });
     shareRow.appendChild(copyShare);
     shareRow.appendChild(openLi);
     banner.appendChild(shareRow);
+    banner.appendChild(shareStatus);
     banner.appendChild(fshEl("p", "fsh-why",
-      "Copy the text, then open the LinkedIn post and paste it in. The link carries its own label because LinkedIn rewrites bare URLs."));
+      "One tap copies the certification text and opens LinkedIn. Paste it into the post. The link carries its own label because LinkedIn rewrites bare URLs."));
     fshEls.banner = banner; fshEls.certP = certP; fshEls.sharePrev = sharePrev;
     panel.appendChild(banner);
 
