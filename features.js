@@ -52620,6 +52620,7 @@ if (typeof module !== "undefined" && module.exports) {
     ".fsh-seq{border:1px dashed var(--line);min-height:52px;padding:8px;margin:0 0 10px;font-family:'IBM Plex Mono',monospace;font-size:13px;}",
     ".fsh-seq .fsh-step{display:block;background:var(--panel);border:1px solid var(--line);padding:8px 10px;margin:0 0 4px;}",
     ".fsh-seq .fsh-step.locked{border-color:var(--ember);color:var(--ember);}",
+    ".fsh-seq .fsh-step.wrong{border-color:var(--ember);color:var(--ember);}",
     ".fsh-seq .fsh-empty{color:var(--dim);font-size:12px;padding:8px;}",
     ".fsh-traybtns{display:flex;gap:8px;margin:0 0 10px;flex-wrap:wrap;}",
     ".fsh-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper);border:1px solid var(--line);cursor:pointer;}",
@@ -53337,12 +53338,56 @@ if (typeof module !== "undefined" && module.exports) {
   /* ---------------- trial 4: the nested call (capstone) ---------------- */
   function fshBuildT4(panel) {
     var card = fshTrialCard("TRIAL 4", "THE NESTED CALL",
-      "A function that calls another must park ra, because the inner <b>jal</b> overwrites it. <b>s0 to s11 are callee-saved</b>: the callee restores what it touches. <b>ra is not</b>: it belongs to the caller, so the outer function must park its own way home before calling and restore it after. Assemble the whole lifecycle around the fixed nested call and watch the outer return address survive it.");
+      "First watch the trap: a nested call with no saved ra. Then assemble the frame that survives it. <b>s0 to s11 are callee-saved</b>: the callee restores what it touches. <b>ra is not</b>: the caller guards its own way home.");
     var strip = fshStateStrip();
     var stack = fshStackBox(fshFrameLabel);
     var cols = fshEl("div", "fsh-cols");
     cols.appendChild(stack.el);
     var right = fshEl("div", "");
+    /* the trap, demonstrated on the honest machine: stepping is by hand,
+       no quiz and no strikes. Watch ra die, then build the frame that
+       keeps a copy. */
+    var t4busy = false, trapCpu = null, trapIdx = 0;
+    var TRAP_SEQ = [FSH_CALL, { id: "trap_ret", asm: "ret", op: "ret", tag: "jump home" }];
+    right.appendChild(fshEl("p", "fsh-why", "FIRST, THE WRONG WAY (watch it fail):"));
+    right.appendChild(fshEl("p", "fsh-why", "This is the <b>mistake</b>, not the pattern. No frame is claimed, ra is never parked. Do not memorize this sequence."));
+    var trapSeqEl = fshEl("div", "fsh-seq");
+    var trapBtn = fshBtn("STEP THE WRONG WAY", "fsh-btn solid");
+    var trapRes = fshResultLine();
+    trapBtn.addEventListener("click", function () {
+      if (fshSt.failed || fshSt.t4.pass) return;
+      if (trapCpu === null) {
+        if (t4busy) return;
+        t4busy = true;
+        trapBtn.textContent = "NEXT STEP";
+        trapRes.className = "fsh-result";
+        trapRes.textContent = "";
+        trapSeqEl.innerHTML = "";
+        trapCpu = fshCpu();
+        trapIdx = 0;
+        strip.set(trapCpu); stack.render(trapCpu);
+        fshLog("t4: stepping the broken call. Watch ra.", "dim");
+        return;
+      }
+      var ins = TRAP_SEQ[trapIdx];
+      trapSeqEl.appendChild(fshEl("span", "fsh-step wrong", (trapIdx + 1) + ". " + ins.asm + "   [WRONG WAY]"));
+      fshStep(trapCpu, ins);
+      strip.set(trapCpu); stack.render(trapCpu);
+      trapIdx++;
+      if (trapIdx >= TRAP_SEQ.length) {
+        fshSay(trapRes, false, "ret landed at " + fshHex(trapCpu.retTarget) + ", not 0x1040. The inner jal overwrote ra and nothing saved it. Now assemble the frame that keeps a copy.");
+        fshLog("t4 trap watched: ra clobbered, ret lost.", "dim");
+        trapCpu = null;
+        t4busy = false;
+        trapBtn.textContent = "STEP THE WRONG WAY";
+        var fresh = fshCpu();
+        strip.set(fresh); stack.render(fresh);
+      }
+    });
+    right.appendChild(trapSeqEl);
+    right.appendChild(trapBtn);
+    right.appendChild(trapRes);
+    right.appendChild(fshEl("p", "fsh-why", "NOW ASSEMBLE THE FRAME THAT SURVIVES IT:"));
     var active = "pro";
     var seg = fshEl("div", "fsh-seg");
     var bPro = document.createElement("button");
@@ -53419,15 +53464,17 @@ if (typeof module !== "undefined" && module.exports) {
     strip.set(cpu0); stack.render(cpu0);
     paint();
     run.addEventListener("click", function () {
-      if (fshSt.failed || fshSt.t4.pass) return;
+      if (fshSt.failed || fshSt.t4.pass || t4busy) return;
       if (seqPro.length + seqEpi.length !== 8) { fshSay(res, false, "place all eight instructions first."); return; }
       var seq = seqPro.concat([FSH_CALL], seqEpi);
       run.disabled = true;
+      t4busy = true;
       fshLog("t4: stepping the nested call. Predict every instruction, including the call itself.", "dim");
       fshRunGate({
         seq: seq, cpu0: fshCpu(), strip: strip, stack: stack, quizSlot: quizSlot4,
         onDone: function (cpu) {
           quizSlot4.innerHTML = "";
+          t4busy = false;
           var bad = fshCheckCap(cpu);
           if (!bad.length) {
             fshSt.t4.pass = true;
