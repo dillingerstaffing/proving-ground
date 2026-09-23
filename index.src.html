@@ -1821,8 +1821,46 @@ function pgShareCopy(url) {
     pgShareFallback(url, done);
   }
 }
-(function pgShareFab() {
-  var fab = document.createElement("button");
+/* LinkedIn certification sharing: builds the share text for any bench
+   ("I just completed <name> bench." + full certification text + the
+   labeled deep link, since LinkedIn rewrites and obscures bare URLs),
+   copies it to the clipboard, and opens a fresh LinkedIn share dialog
+   carrying the bench link. The share text is copied separately because
+   LinkedIn's share endpoint only accepts a URL; the user pastes the
+   copied text into the post. Any bench wires its cert banner with:
+     pgCertShareUI(parentEl, "The Frame Shop", "frame-shop", getCertText)
+   where getCertText() returns the current certification text. */
+function pgBenchLink(slug) {
+  return location.origin + location.pathname + "#bench=" + slug;
+}
+function pgShareTextFor(name, slug, certText) {
+  return "I just completed " + name + " bench on the Proving Ground.\n\n" +
+    certText + "\n\nCan you complete it too?\n[" + name + " bench]: " + pgBenchLink(slug);
+}
+function pgCopyText(text, done) {
+  function fin(ok) { try { done(!!ok); } catch (e) {} }
+  function fallback() {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.cssText = "position:fixed;opacity:0;top:0;left:0;";
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      fin(ok);
+    } catch (e) { fin(false); }
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () { fin(true); }, fallback);
+  } else { fallback(); }
+}
+function pgOpenLinkedInPost(slug) {
+  window.open("https://www.linkedin.com/sharing/share-offsite/?url=" +
+    encodeURIComponent(pgBenchLink(slug)), "_blank", "noopener");
+}
+(function pgShareFab() {  var fab = document.createElement("button");
   fab.id = "pgShareFab";
   fab.type = "button";
   fab.textContent = "SHARE";

@@ -52642,6 +52642,9 @@ if (typeof module !== "undefined" && module.exports) {
     ".fsh-banner.show{display:block;}",
     ".fsh-banner h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--mint);margin:0 0 8px;}",
     ".fsh-cert{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:var(--dim);white-space:pre-wrap;margin:0 0 12px;}",
+    ".fsh-share-h{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.14em;color:var(--dim);margin:16px 0 8px;}",
+    ".fsh-share-prev{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:var(--dim);white-space:pre-wrap;word-break:break-word;border:1px solid var(--line);padding:10px;margin:0 0 10px;max-height:220px;overflow-y:auto;}",
+    ".fsh-share-row{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 8px;}",
     ".fsh-log{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:var(--dim);max-height:180px;overflow-y:auto;}",
     ".fsh-log .lt-ok{color:var(--mint);}",
     ".fsh-log .lt-bad{color:var(--bad);}",
@@ -53509,9 +53512,14 @@ if (typeof module !== "undefined" && module.exports) {
         "Strikes: " + fshSt.strikes + "/3"
       ];
       if (fshEls.certP) fshEls.certP.textContent = lines.join("\n");
+      if (fshEls.sharePrev) fshEls.sharePrev.textContent = fshShareText();
       if (fshEls.banner) fshEls.banner.classList.add("show");
       fshLog("ROOM CERTIFIED. The frame lifecycle held, four ways.", "ok");
     }
+  }
+  function fshShareText() {
+    var cert = fshEls.certP ? fshEls.certP.textContent : "";
+    return pgShareTextFor("The Frame Shop", "frame-shop", cert);
   }
   function fshDownloadCert() {
     var txt = fshEls.certP ? fshEls.certP.textContent : "";
@@ -53622,7 +53630,26 @@ if (typeof module !== "undefined" && module.exports) {
     dl.id = "fshCertDl";
     dl.addEventListener("click", fshDownloadCert);
     banner.appendChild(dl);
-    fshEls.banner = banner; fshEls.certP = certP;
+    banner.appendChild(fshEl("h4", "fsh-share-h", "SHARE TO LINKEDIN"));
+    var sharePrev = fshEl("pre", "fsh-share-prev", "");
+    sharePrev.id = "fshSharePrev";
+    banner.appendChild(sharePrev);
+    var shareRow = fshEl("div", "fsh-share-row");
+    var copyShare = fshBtn("COPY SHARE TEXT", "fsh-btn");
+    copyShare.addEventListener("click", function () {
+      pgCopyText(fshShareText(), function (ok) {
+        fshLog(ok ? "Share text copied. Paste it into your LinkedIn post."
+                  : "Copy failed; select the preview text above manually.", ok ? "ok" : "bad");
+      });
+    });
+    var openLi = fshBtn("OPEN LINKEDIN POST", "fsh-btn solid");
+    openLi.addEventListener("click", function () { pgOpenLinkedInPost("frame-shop"); });
+    shareRow.appendChild(copyShare);
+    shareRow.appendChild(openLi);
+    banner.appendChild(shareRow);
+    banner.appendChild(fshEl("p", "fsh-why",
+      "Copy the text, then open the LinkedIn post and paste it in. The link carries its own label because LinkedIn rewrites bare URLs."));
+    fshEls.banner = banner; fshEls.certP = certP; fshEls.sharePrev = sharePrev;
     panel.appendChild(banner);
 
     var logCard = fshEl("div", "fsh-card");
