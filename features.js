@@ -61210,3 +61210,815 @@ if (typeof module !== "undefined" && module.exports) {
 }
 })();
 
+/* BENCH 77: THE BAUD ROOM (craft)
+   One atomic mechanism: two devices share bytes over one wire with no clock
+   line because they agree on exactly one number, the baud rate (bits per
+   second). The wire idles HIGH; the start bit drops it LOW for one bit time
+   (the only sync the receiver gets); 8 data bits follow least significant
+   first; the stop bit returns the wire HIGH. The receiver samples mid-bit,
+   and a LOW stop bit means FRAMING ERROR: the frame is discarded, the only
+   checksum the frame has. Seven trials: transmit bytes free through a real
+   bit-time model; call three mystery bytes from their waveforms; break the
+   baud contract on purpose (19200 into a 9600 listener turns 'A' into 0xFC)
+   and predict the garbage before the wire runs; certify three lines where
+   one hides a crushed stop bit.
+   One sentence takeaway: one agreed bit time turns a single wire into a byte
+   pipe; get the number wrong and the wire delivers confident garbage.
+   Pure sim hooks live in BD77 for the smoke test; the DOM engine below drives
+   the same code. Standalone module for unit + DOM testing; spliced into
+   features.js after the smoke test passes. */
+(function () {
+"use strict";
+
+/* ---------------- pure hooks (testable, no DOM) ---------------- */
+var BD77 = {};
+BD77.BAUDS = [4800, 9600, 19200];
+BD77.POOL = [0x41, 0x42, 0x43, 0x45, 0x4B, 0x4D, 0x50, 0x52, 0x53, 0x54,
+             0x57, 0x58, 0x5A, 0x32, 0x33, 0x37, 0x3F, 0x21];
+BD77.bitTimeUs = function (baud) { return 1000000 / baud; };
+BD77.bitsLSB = function (byte) {
+  var b = [], k;
+  for (k = 0; k < 8; k++) b.push((byte >> k) & 1);
+  return b;
+};
+/* start(0), D0..D7, stop(1): the ten wire bits of one frame */
+BD77.frameBits = function (byte) { return [0].concat(BD77.bitsLSB(byte), [1]); };
+BD77.revBits = function (byte) {
+  var r = 0, k;
+  for (k = 0; k < 8; k++) r |= (((byte >> k) & 1) << (7 - k));
+  return r;
+};
+BD77.glyph = function (byte) {
+  if (byte >= 0x20 && byte <= 0x7E) return String.fromCharCode(byte);
+  return "?";
+};
+BD77.hex2 = function (byte) {
+  var h = byte.toString(16).toUpperCase();
+  return "0x" + (h.length < 2 ? "0" + h : h);
+};
+BD77.lcg = function (seed) {
+  var s = seed >>> 0;
+  return function () {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+};
+/* Wire bit idx: 0 is the start bit (LOW), 1..8 are D0..D7, 9 is the stop
+   bit (HIGH); anything else is the idle HIGH wire. */
+BD77.bitAt = function (byte, idx) {
+  if (idx < 0) return 1;
+  if (idx === 0) return 0;
+  if (idx <= 8) return BD77.bitsLSB(byte)[idx - 1];
+  return 1;
+};
+/* Receiver model: falling edge at t = 0, sample mid-bit at 1.5..8.5 receiver
+   bit times (data) and 9.5 (stop). A LOW stop sample is a framing error:
+   the frame is discarded. crushStop forces the stop sample LOW to model
+   noise crushing the stop bit. Sample times are computed as exact integer
+   multiples of the baud ratio (txBaud/rxBaud), never via microseconds, so
+   the hand-checkable cases (2:1, 1:2, 1:1) land exactly on wire bits. */
+BD77.receive = function (byte, txBaud, rxBaud, crushStop) {
+  var ratio = txBaud / rxBaud, bits = [], k, idx;
+  for (k = 0; k < 8; k++) {
+    idx = Math.floor((1.5 + k) * ratio);
+    bits.push(BD77.bitAt(byte, idx));
+  }
+  var stop = crushStop ? 0 : BD77.bitAt(byte, Math.floor(9.5 * ratio));
+  var val = 0;
+  for (k = 0; k < 8; k++) val |= (bits[k] << k);
+  return { bits: bits, byte: val, stopOk: stop === 1, framingError: stop !== 1 };
+};
+BD77.pick = function (rng, arr) { return arr[Math.floor(rng() * arr.length)]; };
+/* Four unique answer choices for a mystery byte: the byte itself, the
+   MSB-first misread, and two other pool bytes. Deterministic per rng. */
+BD77.choicesFor = function (byte, rng) {
+  var set = [byte], rev = BD77.revBits(byte), guard = 0;
+  if (rev !== byte) set.push(rev);
+  while (set.length < 4 && guard < 300) {
+    guard++;
+    var c = BD77.pick(rng, BD77.POOL);
+    if (set.indexOf(c) < 0) set.push(c);
+  }
+  /* Fisher-Yates with the seeded rng */
+  var i, j, tmp;
+  for (i = set.length - 1; i > 0; i--) {
+    j = Math.floor(rng() * (i + 1));
+    tmp = set[i]; set[i] = set[j]; set[j] = tmp;
+  }
+  return set;
+};
+BD77.seed2 = function (attempt) { return 7700 + attempt * 131; };
+BD77.seed3 = function (attempt) { return 7781 + attempt * 97; };
+BD77.seed4 = function (attempt) { return 7793 + attempt * 57; };
+BD77.dealT2 = function (attempt) {
+  var rng = BD77.lcg(BD77.seed2(attempt)), trials = [], i;
+  for (i = 0; i < 3; i++) {
+    var b = BD77.pick(rng, BD77.POOL);
+    trials.push({ byte: b, choices: BD77.choicesFor(b, rng), ok: false, done: false });
+  }
+  return trials;
+};
+/* Trial 3: a fresh mismatch scenario each deal. txBaud is 4800 or 19200,
+   the receiver stays at 9600. At 4800 the stop check lands on wire bit D3,
+   so only bytes with D3 = 1 are dealt (a LOW D3 would raise a framing
+   error and muddy the question); at 19200 the stop check always lands in
+   the idle wire, so any byte works. */
+BD77.dealT3 = function (attempt) {
+  var rng = BD77.lcg(BD77.seed3(attempt));
+  var tx = BD77.pick(rng, [4800, 19200]);
+  var byte = BD77.pick(rng, BD77.POOL), guard = 0;
+  while (tx === 4800 && (((byte >> 3) & 1) === 0) && guard < 300) {
+    guard++;
+    byte = BD77.pick(rng, BD77.POOL);
+  }
+  var other = tx === 4800 ? 19200 : 4800;
+  var truth = BD77.receive(byte, tx, 9600, false).byte;
+  var cands = [truth, byte, BD77.revBits(byte),
+               BD77.receive(byte, other, 9600, false).byte];
+  var set = [], i;
+  for (i = 0; i < cands.length; i++) {
+    if (set.indexOf(cands[i]) < 0) set.push(cands[i]);
+  }
+  var guard = 0;
+  while (set.length < 4 && guard < 300) {
+    guard++;
+    var c = BD77.pick(rng, BD77.POOL);
+    if (set.indexOf(c) < 0) set.push(c);
+  }
+  var j, tmp;
+  for (i = set.length - 1; i > 0; i--) {
+    j = Math.floor(rng() * (i + 1));
+    tmp = set[i]; set[i] = set[j]; set[j] = tmp;
+  }
+  return { txBaud: tx, byte: byte, truth: truth, choices: set,
+           pred: null, ok: false, revealed: false };
+};
+/* Trial 4: three line captures; exactly one has its stop bit crushed. */
+BD77.dealT4 = function (attempt) {
+  var rng = BD77.lcg(BD77.seed4(attempt)), trials = [], i;
+  var faultAt = Math.floor(rng() * 3);
+  for (i = 0; i < 3; i++) {
+    var b = BD77.pick(rng, BD77.POOL);
+    trials.push({ byte: b, fault: i === faultAt,
+                  choices: BD77.choicesFor(b, rng), ok: false, done: false });
+  }
+  return trials;
+};
+BD77.t3Explain = function (scen) {
+  var rxBt = BD77.bitTimeUs(9600), txBt = BD77.bitTimeUs(scen.txBaud);
+  var ratio = rxBt / txBt;
+  var dir = scen.txBaud > 9600
+    ? "the wire's bits are half as long as your sample windows, so every sample skips a bit and the tail samples land in the stop bit and the idle wire"
+    : "the wire's bits are twice as long as your sample windows, so you sample the same wire bit twice and the stop check lands mid-frame";
+  return "TX " + scen.txBaud + " baud, RX 9600 baud. Your bit time is " +
+    rxBt.toFixed(2) + " us, the wire's is " + txBt.toFixed(2) + " us " +
+    "(ratio " + ratio.toFixed(2) + ":1). " + dir + ", and the receiver " +
+    "reads " + BD77.hex2(scen.truth) + " ('" + BD77.glyph(scen.truth) + "') " +
+    "instead of " + BD77.hex2(scen.byte) + " ('" + BD77.glyph(scen.byte) + "').";
+};
+
+BD77.INTRO_HTML =
+  "<h3 class=\"bd77-sec\">WHY THIS ROOM EXISTS</h3>" +
+  "<p class=\"bd77-p\">A board that refuses to boot still talks: its serial console. " +
+  "Two wires, transmit and receive, no clock line, and the whole contract is one " +
+  "number, the <b>baud rate</b>. Set the same number on both ends and bytes cross the " +
+  "wire. Set different numbers and the same wire delivers confident garbage. This room " +
+  "is about that one number, and the frame it measures.</p>" +
+  "<h3 class=\"bd77-sec\">THE MECHANISM</h3>" +
+  "<p class=\"bd77-p\">Baud is bits per second, so the <b>bit time</b> is one divided by " +
+  "the baud. At 9600 baud one bit lasts 104.17 microseconds (about a ten-thousandth of " +
+  "a second). The wire <b>idles HIGH</b>. The <b>start bit</b> drops the wire LOW for " +
+  "exactly one bit time: that falling edge is the only synchronization the receiver " +
+  "gets, there is no shared clock. Then come <b>8 data bits, least significant bit " +
+  "first</b>, one bit time each. Then the <b>stop bit</b> returns the wire HIGH for one " +
+  "bit time. The receiver waits one and a half bit times after the falling edge, then " +
+  "samples the wire once per bit time, in the middle of each data bit. If the stop-bit " +
+  "sample reads HIGH, the frame is good. If it reads LOW, the receiver throws the byte " +
+  "away and reports <b>FRAMING ERROR</b>. The stop bit is the frame's only checksum. " +
+  "One 10-bit frame at 9600 baud takes 1.04 milliseconds, so the wire carries roughly " +
+  "960 bytes per second.</p>" +
+  "<h3 class=\"bd77-sec\">THE WORKED EXAMPLE</h3>" +
+  "<p class=\"bd77-p\">Send the letter <b>'A'</b>. In ASCII, 'A' is 0x41, which is " +
+  "01000001 in binary. Least significant bit first, the data bits on the wire are " +
+  "<b>1, 0, 0, 0, 0, 0, 1, 0</b>. The full frame is: idle HIGH, start LOW, then " +
+  "1 0 0 0 0 0 1 0, then stop HIGH. The receiver samples at 1.5, 2.5, through 8.5 bit " +
+  "times after the falling edge and reads 1, 0, 0, 0, 0, 0, 1, 0, which reassembles to " +
+  "0x41, 'A'. The stop-bit sample at 9.5 bit times reads HIGH, so the frame is accepted. " +
+  "Check it against the bit cells in trial 1: D0 is the first bit after the start bit.</p>" +
+  "<h3 class=\"bd77-sec\">THE FAILURE MODES</h3>" +
+  "<p class=\"bd77-p\">Two failures, and they look different. <b>Baud mismatch:</b> the " +
+  "transmitter's bits are a different length than the receiver's sample windows, so the " +
+  "receiver samples the wrong moments on the wire and decodes garbage. Transmit 'A' at " +
+  "19200 baud while the receiver listens at 9600: the wire's bits are half as long as " +
+  "the receiver's windows, each sample skips a bit, the tail samples land in the stop " +
+  "bit and the idle wire, and the receiver confidently reports <b>0xFC</b>. Same byte, " +
+  "same wire, wrong number. <b>Crushed stop bit:</b> noise or a short holds the wire LOW " +
+  "where the stop bit should be HIGH. The receiver sees the bad stop, throws the whole " +
+  "frame away, and reports FRAMING ERROR. No half-bytes, no guesses: the frame is " +
+  "discarded.</p>";
+
+var BD77_CSS = [
+  ".bd77-overlay{position:fixed;inset:0;z-index:90;background:var(--ink);display:none;overflow-y:auto;}",
+  ".bd77-overlay.open{display:block;}",
+  ".bd77-panel{max-width:860px;margin:0 auto;padding:28px 18px 60px;color:var(--paper);box-sizing:border-box;}",
+  ".bd77-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);}",
+  ".bd77-title{font-family:'Space Grotesk',sans-serif;font-size:34px;margin:6px 0 10px;color:var(--paper);}",
+  ".bd77-sec{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.16em;color:var(--ember);margin:26px 0 10px;padding-top:16px;border-top:1px solid var(--line);}",
+  ".bd77-p{font-size:13.5px;line-height:1.7;color:var(--dim);max-width:74ch;margin:0 0 12px;}",
+  ".bd77-p b{color:var(--paper);}",
+  ".bd77-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.06em;background:transparent;color:var(--paper);border:1px solid var(--line);padding:12px 16px;min-height:48px;cursor:pointer;}",
+  ".bd77-btn:hover{border-color:var(--ember);}",
+  ".bd77-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+  ".bd77-btn:disabled{opacity:.38;cursor:not-allowed;}",
+  ".bd77-btn.solid{background:var(--ember);border-color:var(--ember);color:var(--ink);font-weight:700;}",
+  ".bd77-btn.picked{border-color:var(--ember);color:var(--ember);}",
+  ".bd77-btn.right{border-color:var(--ember);color:var(--ember);box-shadow:inset 0 0 0 1px var(--ember);}",
+  ".bd77-btn.wrong{opacity:.45;}",
+  ".bd77-group{margin:0 0 14px;min-width:0;}",
+  ".bd77-lbl{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:var(--dim);display:block;margin:0 0 8px;}",
+  ".bd77-lbl .v{color:var(--ember);}",
+  ".bd77-row{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 12px;align-items:flex-end;}",
+  ".bd77-out{font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.75;color:var(--dim);background:var(--panel);border:1px solid var(--line);padding:14px 16px;margin:0 0 12px;white-space:pre-wrap;}",
+  ".bd77-out .v{color:var(--ember);}",
+  ".bd77-out .w{color:var(--paper);font-weight:700;}",
+  ".bd77-trial{border:1px solid var(--line);padding:12px 14px;margin:0 0 10px;background:var(--panel);}",
+  ".bd77-trial h4{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.14em;color:var(--paper);margin:0 0 6px;}",
+  ".bd77-trial h4 .pass{color:var(--ember);}",
+  ".bd77-trial p{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--dim);margin:0 0 10px;line-height:1.6;}",
+  ".bd77-trial .verdict{font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.7;margin:8px 0 0;}",
+  ".bd77-trial .verdict.ok{color:var(--ember);}",
+  ".bd77-trial .verdict.bad{color:var(--dim);}",
+  ".bd77-wave{width:100%;height:auto;display:block;background:var(--panel);border:1px solid var(--line);margin:0 0 8px;box-sizing:border-box;}",
+  ".bd77-wtrace{fill:none;stroke:var(--paper);stroke-width:2.5;}",
+  ".bd77-wgrid{stroke:var(--line);stroke-width:1;stroke-dasharray:4 4;}",
+  ".bd77-wsamp{fill:var(--ember);}",
+  ".bd77-wsnum{font-size:9px;font-family:'IBM Plex Mono',monospace;fill:var(--ink);}",
+  ".bd77-wstop{fill:none;stroke:var(--ember);stroke-width:2;}",
+  ".bd77-wstoplbl{font-size:9px;font-family:'IBM Plex Mono',monospace;fill:var(--ember);}",
+  ".bd77-wlbl{font-size:9px;font-family:'IBM Plex Mono',monospace;fill:var(--dim);}",
+  ".bd77-cells{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px;}",
+  ".bd77-cell{flex:1 1 0;min-width:56px;border:1px solid var(--line);padding:8px 4px;text-align:center;font-family:'IBM Plex Mono',monospace;}",
+  ".bd77-cell .k{display:block;font-size:10px;letter-spacing:.12em;color:var(--dim);margin-bottom:4px;}",
+  ".bd77-cell .n{display:block;font-size:16px;color:var(--paper);}",
+  ".bd77-cell .s{display:block;font-size:10px;color:var(--dim);margin-top:2px;}",
+  ".bd77-cell.low .n{color:var(--ember);}",
+  ".bd77-cell.fault{border-color:var(--ember);}",
+  ".bd77-cell.fault .s{color:var(--ember);}",
+  ".bd77-banner{border:1px solid var(--ember);padding:18px;margin:0 0 16px;display:none;}",
+  ".bd77-banner.show{display:block;}",
+  ".bd77-banner h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--ember);margin:0 0 8px;}",
+  ".bd77-banner p{font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.7;color:var(--dim);margin:0;}",
+  "@media (max-width:620px){.bd77-title{font-size:27px;}.bd77-cell{min-width:48px;}}"
+].join("\n");
+
+/* ---------------- DOM engine ---------------- */
+var bd77St = null, bd77Els = {}, bd77EscBound = false;
+var bd77Reduced = (typeof window !== "undefined" && window.matchMedia) ?
+  window.matchMedia("(prefers-reduced-motion: reduce)").matches : true;
+
+function bd77NewState() {
+  return {
+    t1Byte: 0x41,
+    t2Attempt: 0, t2: BD77.dealT2(0),
+    t3Attempt: 0, t3: BD77.dealT3(0),
+    t3TxFree: 9600,
+    t4Attempt: 0, t4: BD77.dealT4(0),
+    certified: false
+  };
+}
+function bd77El(tag, cls, html) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html != null) e.innerHTML = html;
+  return e;
+}
+function bd77Btn(label, cls) {
+  var b = document.createElement("button");
+  b.type = "button";
+  b.className = cls || "bd77-btn";
+  b.textContent = label;
+  return b;
+}
+function bd77ChoiceLabel(byte) {
+  return "'" + BD77.glyph(byte) + "' (" + BD77.hex2(byte) + ")";
+}
+function bd77Esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/* Waveform: 12 slots (1 idle + 10 frame bits + 1 idle), drawn in the
+   transmitter's bit time; receiver sample circles are placed at the
+   receiver's own sample times so a baud mismatch shows the circles
+   landing on the wrong wire moments. Returns an SVG element. */
+function bd77WaveSVG(byte, txBaud, rxBaud, crushStop, opts) {
+  opts = opts || {};
+  var W = 624, H = 118, slots = 12, sw = W / slots;
+  var yHi = 30, yLo = 88;
+  var ratio = txBaud / rxBaud;
+  var frame = BD77.frameBits(byte);
+  var vals = [1].concat(frame, [1]); /* slot values, LOW/HIGH */
+  if (crushStop) vals[10] = 0; /* slot 10 is the stop bit */
+  function lvl(v) { return v ? yHi : yLo; }
+  var pts = [], i, x0, x1;
+  for (i = 0; i < slots; i++) {
+    x0 = i * sw; x1 = (i + 1) * sw;
+    if (i > 0 && vals[i] !== vals[i - 1]) pts.push(x0 + "," + lvl(vals[i]));
+    pts.push(x0 + "," + lvl(vals[i]));
+    pts.push(x1 + "," + lvl(vals[i]));
+  }
+  var svg = '<svg class="bd77-wave" viewBox="0 0 ' + W + ' ' + H + '" role="img" ' +
+    'aria-label="UART waveform: idle high, start bit low, eight data bits, stop bit high">';
+  svg += '<line class="bd77-wgrid" x1="0" y1="' + yHi + '" x2="' + W + '" y2="' + yHi + '"/>';
+  svg += '<line class="bd77-wgrid" x1="0" y1="' + yLo + '" x2="' + W + '" y2="' + yLo + '"/>';
+  svg += '<polyline class="bd77-wtrace" points="' + pts.join(" ") + '"/>';
+  /* receiver sample circles: sample k lands at (1.5 + k) receiver bit times
+     after the falling edge (x = sw), measured in transmitter bit times */
+  var edgeX = sw;
+  function sampleX(k) { return edgeX + ((1.5 + k) * ratio) * sw; }
+  function sampleLevel(k) {
+    var v = BD77.bitAt(byte, Math.floor((1.5 + k) * ratio));
+    return v ? yHi : yLo;
+  }
+  for (i = 0; i < 8; i++) {
+    var sx = sampleX(i), sy = sampleLevel(i);
+    if (sx < 0 || sx > W) continue;
+    svg += '<circle class="bd77-wsamp" cx="' + sx.toFixed(1) + '" cy="' + sy + '" r="7"/>';
+    svg += '<text class="bd77-wsnum" x="' + sx.toFixed(1) + '" y="' + (sy + 3.5) +
+      '" text-anchor="middle">' + (i + 1) + '</text>';
+  }
+  /* stop-bit sample marker */
+  var stx = edgeX + (9.5 * ratio) * sw;
+  if (stx >= 0 && stx <= W) {
+    var stv = crushStop ? 0 : BD77.bitAt(byte, Math.floor(9.5 * ratio));
+    var sty = stv ? yHi : yLo;
+    svg += '<rect class="bd77-wstop" x="' + (stx - 6).toFixed(1) + '" y="' + (sty - 6) +
+      '" width="12" height="12"/>';
+    svg += '<text class="bd77-wstoplbl" x="' + stx.toFixed(1) + '" y="' + (sty - 12) +
+      '" text-anchor="middle">STOP</text>';
+  }
+  var names = ["IDLE", "START", "D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "STOP", "IDLE"];
+  for (i = 0; i < slots; i++) {
+    svg += '<text class="bd77-wlbl" x="' + (i * sw + sw / 2).toFixed(1) + '" y="' + (H - 6) +
+      '" text-anchor="middle">' + names[i] + '</text>';
+  }
+  svg += '</svg>';
+  return svg;
+}
+
+function bd77BitCells(byte, crushStop) {
+  var frame = BD77.frameBits(byte);
+  var names = ["START", "D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "STOP"];
+  var wrap = bd77El("div", "bd77-cells", "");
+  wrap.setAttribute("aria-label", "Frame bit cells");
+  var i, cell, v, isStop;
+  for (i = 0; i < 10; i++) {
+    isStop = i === 9;
+    v = (isStop && crushStop) ? 0 : frame[i];
+    cell = bd77El("div", "bd77-cell" + (v ? "" : " low") + (isStop && crushStop ? " fault" : ""), "");
+    cell.innerHTML = '<span class="k">' + names[i] + '</span>' +
+      '<span class="n">' + v + '</span>' +
+      '<span class="s">' + (v ? "HIGH" : "LOW") + (isStop && crushStop ? " : FAULT" : "") + '</span>';
+    wrap.appendChild(cell);
+  }
+  return wrap;
+}
+
+function bd77Readout(byte, txBaud, rxBaud, r, opts) {
+  opts = opts || {};
+  var out = bd77El("div", "bd77-out", "");
+  var dec = r.framingError
+    ? '<span class="v">FRAMING ERROR</span> (byte discarded)'
+    : '<span class="w">' + bd77Esc("'" + BD77.glyph(r.byte) + "'") + '</span> ' + BD77.hex2(r.byte);
+  out.innerHTML =
+    'TX BYTE <span class="v">' + bd77Esc("'" + BD77.glyph(byte) + "'") + '</span> ' + BD77.hex2(byte) +
+    '  TX <span class="v">' + txBaud + '</span> baud (bit ' + BD77.bitTimeUs(txBaud).toFixed(2) + ' us)' +
+    '  RX <span class="v">' + rxBaud + '</span> baud\n' +
+    'DECODED ' + dec +
+    '  STOP BIT <span class="v">' + (r.stopOk ? "HIGH: frame accepted" : "LOW: frame rejected") + '</span>';
+  return out;
+}
+
+function bd77Progress() {
+  var n = 0;
+  var i;
+  for (i = 0; i < bd77St.t2.length; i++) if (bd77St.t2[i].ok) n++;
+  if (bd77St.t3.ok) n++;
+  for (i = 0; i < bd77St.t4.length; i++) if (bd77St.t4[i].ok) n++;
+  bd77Els.progress.innerHTML = 'BENCH 77 PROGRESS: <span class="v">' + n + '/7</span> trials certified' +
+    (n === 7 ? ' <span class="w">: LINE CERTIFIED</span>' : '');
+}
+
+/* ---- trial 1: do first, send the A ---- */
+function bd77T1Render() {
+  var host = bd77Els.t1;
+  host.innerHTML = "";
+  var row = bd77El("div", "bd77-row", "");
+  var bytes = [0x41, 0x5A, 0x37, 0x3F];
+  var i;
+  for (i = 0; i < bytes.length; i++) {
+    (function (b) {
+      var btn = bd77Btn(bd77ChoiceLabel(b), "bd77-btn" + (bd77St.t1Byte === b ? " picked" : ""));
+      btn.setAttribute("aria-pressed", bd77St.t1Byte === b ? "true" : "false");
+      btn.addEventListener("click", function () { bd77St.t1Byte = b; bd77T1Render(); });
+      row.appendChild(btn);
+    })(bytes[i]);
+  }
+  var go = bd77Btn("TRANSMIT", "bd77-btn solid");
+  go.addEventListener("click", function () {
+    var byte = bd77St.t1Byte;
+    host.innerHTML = "";
+    host.appendChild(row);
+    var wrap = bd77El("div", "", "");
+    wrap.innerHTML = bd77WaveSVG(byte, 9600, 9600, false);
+    host.appendChild(wrap.firstChild);
+    host.appendChild(bd77BitCells(byte, false));
+    host.appendChild(bd77Readout(byte, 9600, 9600, BD77.receive(byte, 9600, 9600, false)));
+    host.appendChild(go);
+  });
+  host.appendChild(row);
+  host.appendChild(go);
+}
+
+/* ---- trial 2: call the byte ---- */
+function bd77T2Render() {
+  var host = bd77Els.t2;
+  host.innerHTML = "";
+  var i;
+  for (i = 0; i < bd77St.t2.length; i++) {
+    (function (idx) {
+      var t = bd77St.t2[idx];
+      var card = bd77El("div", "bd77-trial", "");
+      card.innerHTML = '<h4>MYSTERY BYTE ' + (idx + 1) + '/3 ' +
+        (t.ok ? '<span class="pass">: CALLED</span>' : '') + '</h4>';
+      if (!t.done) {
+        var cap = bd77Btn("CAPTURE", "bd77-btn");
+        cap.addEventListener("click", function () {
+          t.done = true;
+          bd77T2Render();
+        });
+        card.appendChild(cap);
+      } else {
+        var wrap = bd77El("div", "", "");
+        wrap.innerHTML = bd77WaveSVG(t.byte, 9600, 9600, false);
+        card.appendChild(wrap.firstChild);
+        card.appendChild(bd77BitCells(t.byte, false));
+        if (!t.ok) {
+          card.appendChild(bd77El("p", "", "Read the data bits, D0 first (it is the first bit after the start bit). Call the byte:"));
+          var r = bd77El("div", "bd77-row", "");
+          var j;
+          for (j = 0; j < t.choices.length; j++) {
+            (function (c) {
+              var b = bd77Btn(bd77ChoiceLabel(c), "bd77-btn");
+              b.addEventListener("click", function () { bd77T2Grade(idx, c); });
+              r.appendChild(b);
+            })(t.choices[j]);
+          }
+          card.appendChild(r);
+        } else {
+          card.appendChild(bd77El("p", "verdict ok", "Called: " +
+            bd77Esc(bd77ChoiceLabel(t.byte)) + ". The wire agreed."));
+        }
+        if (bd77T2Miss[idx]) card.appendChild(bd77El("p", "verdict bad", bd77T2Miss[idx]));
+      }
+      host.appendChild(card);
+    })(i);
+  }
+}
+function bd77T2Grade(idx, call) {
+  var t = bd77St.t2[idx];
+  var truth = BD77.receive(t.byte, 9600, 9600, false).byte;
+  if (call === truth) {
+    t.ok = true;
+  } else {
+    t.done = true; /* re-render with a miss note */
+  }
+  bd77T2Miss = bd77T2Miss || {};
+  bd77T2Miss[idx] = (call === truth) ? null :
+    "You called " + bd77ChoiceLabel(call) + "; the wire said " + bd77ChoiceLabel(truth) +
+    ". Read the data bits least significant first: D0 is the first bit after the start bit.";
+  bd77T2Render();
+  bd77Progress();
+}
+
+/* ---- trial 3: break the contract ---- */
+function bd77T3Render() {
+  var host = bd77Els.t3;
+  host.innerHTML = "";
+  /* free play */
+  var free = bd77El("div", "bd77-trial", "");
+  free.innerHTML = '<h4>FREE PLAY: MOVE THE TRANSMITTER</h4>' +
+    '<p>The receiver stays at 9600 baud. Change the transmitter and send \'A\' ' +
+    'through the same wire.</p>';
+  var brow = bd77El("div", "bd77-row", "");
+  var i;
+  for (i = 0; i < BD77.BAUDS.length; i++) {
+    (function (b) {
+      var btn = bd77Btn(String(b) + " BAUD", "bd77-btn" + (bd77St.t3TxFree === b ? " picked" : ""));
+      btn.setAttribute("aria-pressed", bd77St.t3TxFree === b ? "true" : "false");
+      btn.addEventListener("click", function () { bd77St.t3TxFree = b; bd77T3Render(); });
+      brow.appendChild(btn);
+    })(BD77.BAUDS[i]);
+  }
+  free.appendChild(brow);
+  var txRow = bd77El("div", "bd77-row", "");
+  var go = bd77Btn("TRANSMIT 'A'", "bd77-btn solid");
+  go.addEventListener("click", function () {
+    var tx = bd77St.t3TxFree, byte = 0x41;
+    var r = BD77.receive(byte, tx, 9600, false);
+    var wrap = bd77El("div", "", "");
+    wrap.innerHTML = bd77WaveSVG(byte, tx, 9600, false);
+    var old = free.querySelector(".bd77-wave, .bd77-out, .bd77-cells");
+    while (old) { old.parentNode.removeChild(old); old = free.querySelector(".bd77-wave, .bd77-out, .bd77-cells"); }
+    free.appendChild(wrap.firstChild);
+    free.appendChild(bd77BitCells(byte, false));
+    free.appendChild(bd77Readout(byte, tx, 9600, r));
+  });
+  txRow.appendChild(go);
+  free.appendChild(txRow);
+  host.appendChild(free);
+
+  /* prediction */
+  var scen = bd77St.t3;
+  var q = bd77El("div", "bd77-trial", "");
+  q.innerHTML = '<h4>PREDICT THE GARBAGE' + (scen.ok ? ' <span class="pass">: CALLED</span>' : '') + '</h4>' +
+    '<p>The bench deals a mismatch: the transmitter runs at <b>' + scen.txBaud +
+    '</b> baud and the receiver listens at <b>9600</b> baud. The byte on the wire is a ' +
+    'mystery. Call what the receiver decodes, then run the wire to verify.</p>';
+  if (!scen.ok) {
+    var r2 = bd77El("div", "bd77-row", "");
+    for (i = 0; i < scen.choices.length; i++) {
+      (function (c) {
+        var b = bd77Btn(bd77ChoiceLabel(c), "bd77-btn" + (scen.pred === c ? " picked" : ""));
+        b.addEventListener("click", function () { scen.pred = c; bd77T3Render(); });
+        r2.appendChild(b);
+      })(scen.choices[i]);
+    }
+    q.appendChild(r2);
+    var run = bd77Btn("RUN THE WIRE TO VERIFY", "bd77-btn solid");
+    run.disabled = scen.pred === null;
+    run.addEventListener("click", function () { bd77T3Verify(); });
+    q.appendChild(run);
+  } else {
+    q.appendChild(bd77El("p", "verdict ok", "Called " + bd77Esc(bd77ChoiceLabel(scen.truth)) +
+      " and the wire agreed."));
+  }
+  host.appendChild(q);
+}
+function bd77T3Verify() {
+  var scen = bd77St.t3;
+  var cards = bd77Els.t3.querySelectorAll(".bd77-trial");
+  var q = cards[1];
+  var r = BD77.receive(scen.byte, scen.txBaud, 9600, false);
+  /* freeze the question: drop the choice row and the run button */
+  var rows = q.querySelectorAll(".bd77-row"), i;
+  for (i = 0; i < rows.length; i++) rows[i].parentNode.removeChild(rows[i]);
+  var runBtn = q.querySelector(".bd77-btn.solid");
+  if (runBtn) runBtn.parentNode.removeChild(runBtn);
+  var wrap = bd77El("div", "", "");
+  wrap.innerHTML = bd77WaveSVG(scen.byte, scen.txBaud, 9600, false);
+  q.appendChild(wrap.firstChild);
+  q.appendChild(bd77BitCells(scen.byte, false));
+  q.appendChild(bd77Readout(scen.byte, scen.txBaud, 9600, r));
+  var v = bd77El("p", "", "");
+  if (scen.pred === scen.truth) {
+    scen.ok = true;
+    q.querySelector("h4").innerHTML = 'PREDICT THE GARBAGE <span class="pass">: CALLED</span>';
+    v.className = "verdict ok";
+    v.textContent = "Called " + bd77ChoiceLabel(scen.truth) + ": the wire agreed. " +
+      BD77.t3Explain(scen);
+    q.appendChild(v);
+  } else {
+    v.className = "verdict bad";
+    v.textContent = "You called " + bd77ChoiceLabel(scen.pred) + "; the wire decoded " +
+      bd77ChoiceLabel(scen.truth) + ". " + BD77.t3Explain(scen);
+    q.appendChild(v);
+    var again = bd77Btn("DEAL A NEW MISMATCH", "bd77-btn");
+    again.addEventListener("click", function () {
+      bd77St.t3Attempt++;
+      bd77St.t3 = BD77.dealT3(bd77St.t3Attempt);
+      bd77T3Render();
+    });
+    q.appendChild(again);
+  }
+  bd77Progress();
+}
+
+/* ---- trial 4: certify the line ---- */
+function bd77T4Render() {
+  var host = bd77Els.t4;
+  host.innerHTML = "";
+  var i;
+  for (i = 0; i < bd77St.t4.length; i++) {
+    (function (idx) {
+      var t = bd77St.t4[idx];
+      var card = bd77El("div", "bd77-trial", "");
+      card.innerHTML = '<h4>LINE ' + (idx + 1) + '/3, 9600 BAUD' +
+        (t.ok ? ' <span class="pass">: CERTIFIED</span>' : '') + '</h4>';
+      var wrap = bd77El("div", "", "");
+      wrap.innerHTML = bd77WaveSVG(t.byte, 9600, 9600, t.fault);
+      card.appendChild(wrap.firstChild);
+      card.appendChild(bd77BitCells(t.byte, t.fault));
+      if (!t.ok) {
+        card.appendChild(bd77El("p", "", "Decode the byte, or flag the line if its stop bit is crushed:"));
+        var r = bd77El("div", "bd77-row", "");
+        var j;
+        for (j = 0; j < t.choices.length; j++) {
+          (function (c) {
+            var b = bd77Btn(bd77ChoiceLabel(c), "bd77-btn");
+            b.addEventListener("click", function () { bd77T4Grade(idx, c); });
+            r.appendChild(b);
+          })(t.choices[j]);
+        }
+        var fe = bd77Btn("FRAMING ERROR", "bd77-btn");
+        fe.addEventListener("click", function () { bd77T4Grade(idx, -1); });
+        r.appendChild(fe);
+        card.appendChild(r);
+        if (bd77T4Miss[idx]) card.appendChild(bd77El("p", "verdict bad", bd77T4Miss[idx]));
+      } else {
+        card.appendChild(bd77El("p", "verdict ok",
+          t.fault ? "Flagged: FRAMING ERROR. The stop bit is LOW, so the receiver threw the frame away."
+                  : "Decoded: " + bd77Esc(bd77ChoiceLabel(t.byte)) + ". Stop bit HIGH, frame accepted."));
+      }
+      host.appendChild(card);
+    })(i);
+  }
+  var passed = 0, k;
+  for (k = 0; k < bd77St.t4.length; k++) if (bd77St.t4[k].ok) passed++;
+  var row = bd77El("div", "bd77-row", "");
+  var nl = bd77Btn("RUN A NEW LINE", "bd77-btn");
+  nl.addEventListener("click", function () {
+    bd77St.t4Attempt++;
+    bd77St.t4 = BD77.dealT4(bd77St.t4Attempt);
+    bd77T4Miss = {};
+    bd77T4Render();
+    bd77Progress();
+  });
+  row.appendChild(nl);
+  host.appendChild(row);
+  if (passed === 3 && !bd77St.certified) {
+    bd77St.certified = true;
+  }
+  if (bd77St.certified) {
+    var banner = bd77El("div", "bd77-banner show", "");
+    banner.innerHTML = '<h3>LINE CERTIFIED</h3><p>Three lines read, the crushed stop bit ' +
+      'caught, every frame accounted for. One agreed bit time is the whole contract: ' +
+      'hold it on both ends and the bytes cross.</p>';
+    host.appendChild(banner);
+  }
+}
+var bd77T2Miss = {};
+var bd77T4Miss = {};
+function bd77T4Grade(idx, call) {
+  var t = bd77St.t4[idx];
+  var r = BD77.receive(t.byte, 9600, 9600, t.fault);
+  if (t.fault) {
+    if (call === -1) { t.ok = true; bd77T4Miss[idx] = null; }
+    else bd77T4Miss[idx] = "That line's stop bit is LOW. The receiver does not decode it " +
+      "at all: it reports FRAMING ERROR and throws the frame away.";
+  } else {
+    if (call === r.byte) { t.ok = true; bd77T4Miss[idx] = null; }
+    else bd77T4Miss[idx] = "The wire decoded " + bd77ChoiceLabel(r.byte) +
+      ". Read the data bits least significant first: D0 is the first bit after the start bit.";
+  }
+  bd77T4Render();
+  bd77Progress();
+}
+
+/* ---- open / close / build ---- */
+function bd77Open() {
+  bd77Els.overlay.classList.add("open");
+  document.body.style.overflow = "hidden";
+}
+function bd77Close() {
+  bd77Els.overlay.classList.remove("open");
+  document.body.style.overflow = "";
+}
+function bd77Build() {
+  var box = document.querySelector(".dossier .actions");
+  if (!box) return;
+  if (document.getElementById("bd77Btn")) return;
+  bd77St = bd77NewState();
+  bd77T2Miss = {};
+  bd77T4Miss = {};
+
+  var sty = document.createElement("style");
+  sty.id = "bd77Style";
+  sty.textContent = BD77_CSS;
+  document.head.appendChild(sty);
+
+  var b = document.createElement("button");
+  b.id = "bd77Btn";
+  b.className = "pg-launch";
+  b.textContent = "Open The Baud Room";
+  b.addEventListener("click", bd77Open);
+  box.appendChild(b);
+
+  var ov = bd77El("div", "bd77-overlay", "");
+  ov.id = "bd77Overlay";
+  ov.setAttribute("role", "dialog");
+  ov.setAttribute("aria-label", "The Baud Room");
+  var x = bd77Btn("CLOSE", "bd77-btn");
+  x.id = "bd77XBtn";
+  x.style.cssText = "position:fixed;top:calc(12px + env(safe-area-inset-top));right:calc(16px + env(safe-area-inset-right));z-index:95;";
+  x.setAttribute("aria-label", "Close The Baud Room");
+  x.addEventListener("click", bd77Close);
+  ov.appendChild(x);
+  bd77Els.overlay = ov;
+  if (!bd77EscBound) {
+    bd77EscBound = true;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && bd77Els.overlay && bd77Els.overlay.classList.contains("open")) bd77Close();
+    });
+  }
+
+  var panel = bd77El("div", "bd77-panel", "");
+  panel.appendChild(bd77El("div", "bd77-kicker", "BENCH CRAFT \u00B7 BENCH 77"));
+  panel.appendChild(bd77El("h2", "bd77-title", "The Baud Room"));
+
+  var intro = bd77El("div", "", "");
+  intro.innerHTML = BD77.INTRO_HTML;
+  panel.appendChild(intro);
+
+  var prog = bd77El("div", "bd77-out", "");
+  prog.id = "bd77Progress";
+  prog.setAttribute("aria-live", "polite");
+  panel.appendChild(prog);
+  bd77Els.progress = prog;
+
+  panel.appendChild(bd77El("h3", "bd77-sec", "DO FIRST: SEND THE BYTE"));
+  panel.appendChild(bd77El("p", "bd77-p",
+    "Nothing to break. The bench below is a real bit-time model of a UART transmitter " +
+    "and receiver, both set to 9600 baud. Pick a byte, press TRANSMIT, and watch the frame " +
+    "cross the wire: the falling start edge, eight data bits least significant first, the " +
+    "stop bit. The ember circles mark where the receiver samples; the cells below name " +
+    "every bit on the wire."));
+  bd77Els.t1 = bd77El("div", "", "");
+  panel.appendChild(bd77Els.t1);
+
+  panel.appendChild(bd77El("h3", "bd77-sec", "CALL THE BYTE"));
+  panel.appendChild(bd77El("p", "bd77-p",
+    "Now the receiver hides its answer. Press CAPTURE to grab a mystery byte off the wire " +
+    "at 9600 baud, read the data bits yourself (D0 is the first bit after the start bit), " +
+    "and call the byte. Three bytes, three calls."));
+  bd77Els.t2 = bd77El("div", "", "");
+  panel.appendChild(bd77Els.t2);
+
+  panel.appendChild(bd77El("h3", "bd77-sec", "BREAK THE CONTRACT"));
+  panel.appendChild(bd77El("p", "bd77-p",
+    "Free play first: move the transmitter off 9600 baud while the receiver stays put, " +
+    "and watch the sample circles land on the wrong wire moments. Then the bench deals a " +
+    "mismatch and you call the decoded byte before the wire runs."));
+  bd77Els.t3 = bd77El("div", "", "");
+  panel.appendChild(bd77Els.t3);
+
+  panel.appendChild(bd77El("h3", "bd77-sec", "CERTIFY THE LINE"));
+  panel.appendChild(bd77El("p", "bd77-p",
+    "Three lines, three captures, all at 9600 baud. One of the three has its stop bit " +
+    "crushed LOW by noise: the receiver reports FRAMING ERROR and throws the frame away. " +
+    "Decode the clean lines, flag the dead one. Call all three to certify."));
+  bd77Els.t4 = bd77El("div", "", "");
+  panel.appendChild(bd77Els.t4);
+
+  /* hire line: serial-console triage offer at the foot of the bench, matching the
+     Bench 71-76 pattern. The hire-chooser module binds [data-brief]
+     triggers document-wide. Copy only. */
+  var hire = bd77El("p", "bd77-p", "");
+  hire.innerHTML = "A board that will not boot and talks only over its serial console? " +
+    "<button type=\"button\" class=\"bd77-btn\" data-brief=\"triage\" data-bench-tag=\"Bench 77: The Baud Room\">Crash triage</button>";
+  panel.appendChild(hire);
+
+  ov.appendChild(panel);
+  document.body.appendChild(ov);
+
+  bd77T1Render();
+  bd77T2Render();
+  bd77T3Render();
+  bd77T4Render();
+  bd77Progress();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", bd77Build);
+} else {
+  bd77Build();
+}
+
+/* debug hooks for the smoke test */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.BD77 = BD77;
+  module.exports.bd77Debug = {
+    state: function () { return bd77St; },
+    reseed2: function (a) { bd77St.t2Attempt = a; bd77St.t2 = BD77.dealT2(a); },
+    reseed3: function (a) { bd77St.t3Attempt = a; bd77St.t3 = BD77.dealT3(a); },
+    reseed4: function (a) { bd77St.t4Attempt = a; bd77St.t4 = BD77.dealT4(a); },
+    els: function () { return bd77Els; },
+    grade2: bd77T2Grade,
+    verify3: bd77T3Verify,
+    grade4: bd77T4Grade,
+    render1: bd77T1Render,
+    render2: bd77T2Render,
+    render3: bd77T3Render,
+    render4: bd77T4Render
+  };
+}
+})();
