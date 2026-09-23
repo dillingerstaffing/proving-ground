@@ -52305,7 +52305,7 @@ if (typeof module !== "undefined" && module.exports) {
   function fshCpu() {
     return {
       r: { sp: 0x8000, s0: 0x9000, ra: 0x1040, a0: 7, t0: 0x5EED },
-      m: { 0x8000: 0xCA11, 0x8008: 0xCA11, 0x8018: 0xCA11, 0x7FF8: 0xDEAD, 0x7FF0: 0xDEAD },
+      m: { 0x8000: 0xCA11, 0x8008: 0xCA11, 0x8010: 0xCA11, 0x8018: 0xCA11, 0x7FF8: 0xDEAD, 0x7FF0: 0xDEAD },
       minWrite: 0x100000, retTarget: null, stopped: false
     };
   }
@@ -52545,7 +52545,7 @@ if (typeof module !== "undefined" && module.exports) {
   /* ---------------- verdicts, read from machine state ---------------- */
   function fshCheckPro(c) {
     var bad = [];
-    if (fshLoad(c, 0x8018) !== 0xCA11 || fshLoad(c, 0x8000) !== 0xCA11 || fshLoad(c, 0x8008) !== 0xCA11)
+    if (fshLoad(c, 0x8018) !== 0xCA11 || fshLoad(c, 0x8010) !== 0xCA11 || fshLoad(c, 0x8000) !== 0xCA11 || fshLoad(c, 0x8008) !== 0xCA11)
       bad.push("a caller word got clobbered: you stored before you allocated.");
     if (c.r.sp !== 0x7FE0) bad.push("sp is " + fshHex(c.r.sp) + ", not 0x7FE0: the frame is not 32 bytes.");
     if (fshLoad(c, 0x7FF8) !== 0x1040) bad.push("ra was not parked at 0x7FF8.");
@@ -52561,7 +52561,7 @@ if (typeof module !== "undefined" && module.exports) {
     if (c.r.ra !== 0x1040) bad.push("ra holds " + fshHex(c.r.ra) + ": the restore read the wrong word.");
     if (c.r.s0 !== 0x9000) bad.push("s0 was not restored to the caller frame pointer.");
     if (c.r.sp !== 0x8000) bad.push("sp is " + fshHex(c.r.sp) + ", not 0x8000: the 32 bytes were not returned.");
-    if (fshLoad(c, 0x8018) !== 0xCA11) bad.push("a caller word got clobbered on the way out.");
+    if (fshLoad(c, 0x8018) !== 0xCA11 || fshLoad(c, 0x8010) !== 0xCA11 || fshLoad(c, 0x8008) !== 0xCA11 || fshLoad(c, 0x8000) !== 0xCA11) bad.push("a caller word got clobbered on the way out.");
     return bad;
   }
   function fshCheckCap(c) {
@@ -52612,13 +52612,13 @@ if (typeof module !== "undefined" && module.exports) {
     ".fsh-row.at-sp .fsh-lab{color:var(--ember);}",
     ".fsh-row.clob .fsh-val{color:var(--bad);}",
     ".fsh-row.clob .fsh-lab{color:var(--bad);}",
-    ".fsh-chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 10px;}",
+    ".fsh-chips{display:flex;flex-direction:column;align-items:stretch;gap:8px;margin:0 0 10px;}",
     ".fsh-chip{font-family:'IBM Plex Mono',monospace;font-size:13px;min-height:48px;padding:10px 14px;background:var(--panel);color:var(--paper);border:1px solid var(--line);cursor:pointer;text-align:left;}",
     ".fsh-chip small{display:block;font-size:11px;color:var(--dim);font-family:'Space Grotesk',sans-serif;}",
     ".fsh-chip:disabled{opacity:.35;cursor:default;}",
     ".fsh-chip:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
     ".fsh-seq{border:1px dashed var(--line);min-height:52px;padding:8px;margin:0 0 10px;font-family:'IBM Plex Mono',monospace;font-size:13px;}",
-    ".fsh-seq .fsh-step{display:inline-block;background:var(--panel);border:1px solid var(--line);padding:8px 10px;margin:4px;}",
+    ".fsh-seq .fsh-step{display:block;background:var(--panel);border:1px solid var(--line);padding:8px 10px;margin:0 0 4px;}",
     ".fsh-seq .fsh-step.locked{border-color:var(--ember);color:var(--ember);}",
     ".fsh-seq .fsh-empty{color:var(--dim);font-size:12px;padding:8px;}",
     ".fsh-traybtns{display:flex;gap:8px;margin:0 0 10px;flex-wrap:wrap;}",
