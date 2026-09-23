@@ -53350,7 +53350,7 @@ if (typeof module !== "undefined" && module.exports) {
     /* the trap, demonstrated on the honest machine: stepping is by hand,
        no quiz and no strikes. Watch ra die, then build the frame that
        keeps a copy. */
-    var t4busy = false, trapCpu = null, trapIdx = 0;
+    var runBusy = false, trapCpu = null, trapIdx = 0;
     var TRAP_SEQ = [FSH_CALL, { id: "trap_ret", asm: "ret", op: "ret", tag: "jump home" }];
     right.appendChild(fshEl("p", "fsh-why", "FIRST, THE WRONG WAY (watch it fail):"));
     right.appendChild(fshEl("p", "fsh-why", "This is the <b>mistake</b>, not the pattern. No frame is claimed, ra is never parked. Do not memorize this sequence."));
@@ -53359,9 +53359,8 @@ if (typeof module !== "undefined" && module.exports) {
     var trapRes = fshResultLine();
     trapBtn.addEventListener("click", function () {
       if (fshSt.failed || fshSt.t4.pass) return;
+      if (runBusy) { fshSay(trapRes, false, "the scored run is stepping; let it finish first."); return; }
       if (trapCpu === null) {
-        if (t4busy) return;
-        t4busy = true;
         trapBtn.textContent = "NEXT STEP";
         trapRes.className = "fsh-result";
         trapRes.textContent = "";
@@ -53381,7 +53380,6 @@ if (typeof module !== "undefined" && module.exports) {
         fshSay(trapRes, false, "ret landed at " + fshHex(trapCpu.retTarget) + ", not 0x1040. The inner jal overwrote ra and nothing saved it. Now assemble the frame that keeps a copy.");
         fshLog("t4 trap watched: ra clobbered, ret lost.", "dim");
         trapCpu = null;
-        t4busy = false;
         trapBtn.textContent = "STEP THE WRONG WAY";
         var fresh = fshCpu();
         strip.set(fresh); stack.render(fresh);
@@ -53467,17 +53465,24 @@ if (typeof module !== "undefined" && module.exports) {
     strip.set(cpu0); stack.render(cpu0);
     paint();
     run.addEventListener("click", function () {
-      if (fshSt.failed || fshSt.t4.pass || t4busy) return;
+      if (fshSt.failed || fshSt.t4.pass || runBusy) return;
       if (seqPro.length + seqEpi.length !== 8) { fshSay(res, false, "place all eight instructions first."); return; }
+      if (trapCpu !== null) {
+        trapCpu = null;
+        trapBtn.textContent = "STEP THE WRONG WAY";
+        trapRes.className = "fsh-result";
+        trapRes.textContent = "";
+        fshLog("t4: trap demo parked; the scored run takes the bench.", "dim");
+      }
       var seq = seqPro.concat([FSH_CALL], seqEpi);
       run.disabled = true;
-      t4busy = true;
+      runBusy = true;
       fshLog("t4: stepping the nested call. Predict every instruction, including the call itself.", "dim");
       fshRunGate({
         seq: seq, cpu0: fshCpu(), strip: strip, stack: stack, quizSlot: quizSlot4,
         onDone: function (cpu) {
           quizSlot4.innerHTML = "";
-          t4busy = false;
+          runBusy = false;
           var bad = fshCheckCap(cpu);
           if (!bad.length) {
             fshSt.t4.pass = true;
