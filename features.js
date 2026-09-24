@@ -62130,3 +62130,613 @@ if (typeof module !== "undefined" && module.exports) {
   };
 }
 })();
+/* Bench 78 staging: The SMART Room module (appended to features.js at ship time). */
+/* ============================================================
+   THE SMART ROOM
+   Bench 78, OLD IRON refurb line (section: craft, pill: oldiron).
+   One atomic mechanism: a used drive keeps its own failure diary
+   (SMART), and five numbers in it are enough to call SELL, REWORK,
+   or SCRAP before the drive ever sees a customer machine.
+   One sentence takeaway: read the drive's own log of dead sectors
+   and worn NAND against the house rules, and you know whether the
+   drive is shelf stock or scrap without opening it.
+   Trial 1 (worked example, HDD): all error counters zero, 18,240
+   hours, 34C. Do-first: call the verdict cold, then the walkthrough
+   reveals each attribute in dependency order.
+   Trial 2 (HDD): 14 current pending sectors, everything else clean.
+   Correct call is REWORK; RUN SURFACE REWRITE then remaps pending
+   into reallocated live on the table (14 ticks of visible state),
+   and the second call is SELL.
+   Trial 3 (SSD): 96% wear used, 8% spare left, reads fine today.
+   Correct call is SCRAP: the diary condemns a drive that still works.
+   Pure sim hooks live in SM78 for the smoke test; the DOM engine
+   below drives the same code. Self-contained IIFE, appended at the
+   end of features.js.
+   ============================================================ */
+(function () {
+"use strict";
+
+/* ---------------- pure hooks (testable, no DOM) ---------------- */
+var SM78 = {};
+
+/* The three intake drives. attr: [smart id, name, raw, unit] */
+SM78.DRIVES = [
+  { id: "t1", tag: "INTAKE-101", model: "ST2000DM008 2 TB HDD", kind: "hdd",
+    attrs: [
+      ["5", "Reallocated Sector Count", 0, ""],
+      ["197", "Current Pending Sector Count", 0, ""],
+      ["198", "Offline Uncorrectable", 0, ""],
+      ["9", "Power-On Hours", 18240, " h"],
+      ["194", "Temperature", 34, " C"]
+    ],
+    answer: "SELL" },
+  { id: "t2", tag: "INTAKE-102", model: "WD10EZEX 1 TB HDD", kind: "hdd",
+    attrs: [
+      ["5", "Reallocated Sector Count", 0, ""],
+      ["197", "Current Pending Sector Count", 14, ""],
+      ["198", "Offline Uncorrectable", 0, ""],
+      ["9", "Power-On Hours", 9610, " h"],
+      ["194", "Temperature", 41, " C"]
+    ],
+    answer: "REWORK", answerAfter: "SELL" },
+  { id: "t3", tag: "INTAKE-103", model: "Samsung 870 EVO 500 GB SSD", kind: "ssd",
+    attrs: [
+      ["231", "Percentage Used (NAND wear)", 96, " %"],
+      ["232", "Available Spare", 8, " %"],
+      ["9", "Power-On Hours", 31204, " h"],
+      ["194", "Temperature", 38, " C"]
+    ],
+    answer: "SCRAP" }
+];
+
+/* House rules, the bench's verdict table. Returns {v, why}. */
+SM78.verdict = function (kind, a) {
+  function get(id) {
+    for (var i = 0; i < a.length; i++) if (a[i][0] === id) return a[i][2];
+    return 0;
+  }
+  if (kind === "ssd") {
+    var wear = get("231"), spare = get("232");
+    if (wear >= 95) return { v: "SCRAP", why: "wear " + wear + "% >= 95% scrap line" };
+    if (spare <= 10) return { v: "SCRAP", why: "spare " + spare + "% <= 10% scrap line" };
+    return { v: "SELL", why: "wear and spare in range" };
+  }
+  var r = get("5"), p = get("197"), u = get("198");
+  if (u > 0) return { v: "SCRAP", why: "uncorrectable " + u + " > 0" };
+  if (r >= 100) return { v: "SCRAP", why: "reallocated " + r + " >= 100 scrap line" };
+  if (p > 0) return { v: "REWORK", why: "pending " + p + " > 0, nothing failed yet" };
+  return { v: "SELL", why: "all error counters zero" };
+};
+
+/* One surface-rewrite step: force-remap up to 4 pending sectors.
+   st: {pending, reallocated, uncorrectable}. Mutates and returns st. */
+SM78.rewriteStep = function (st) {
+  var n = Math.min(st.pending, 4);
+  st.pending -= n;
+  st.reallocated += n;
+  return st;
+};
+SM78.rewriteDone = function (st) { return st.pending <= 0; };
+
+/* Human-scale hours: 18240 -> "18,240 h (about 2.1 years of continuous spinning)" */
+SM78.fmtHours = function (h) {
+  var s = String(h).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  var yrs = h / 8760;
+  var y = (Math.round(yrs * 10) / 10).toFixed(1);
+  return s + " h (about " + y + " years of continuous spinning)";
+};
+
+/* ---------------- styles ---------------- */
+var SM78_CSS = [
+  ".sm78-overlay{position:fixed;inset:0;z-index:90;background:var(--ink);display:none;overflow-y:auto;}",
+  ".sm78-overlay.open{display:block;}",
+  ".sm78-panel{max-width:860px;margin:0 auto;padding:28px 18px 60px;color:var(--paper);box-sizing:border-box;}",
+  ".sm78-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);}",
+  ".sm78-title{font-family:'Space Grotesk',sans-serif;font-size:34px;margin:6px 0 10px;color:var(--paper);}",
+  ".sm78-sec{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.16em;color:var(--ember);margin:26px 0 10px;padding-top:16px;border-top:1px solid var(--line);}",
+  ".sm78-p{font-size:13.5px;line-height:1.7;color:var(--dim);max-width:74ch;margin:0 0 12px;}",
+  ".sm78-p b{color:var(--paper);}",
+  ".sm78-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.06em;background:transparent;color:var(--paper);border:1px solid var(--line);padding:12px 16px;min-height:48px;cursor:pointer;}",
+  ".sm78-btn:hover{border-color:var(--ember);}",
+  ".sm78-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+  ".sm78-btn:disabled{opacity:.38;cursor:not-allowed;}",
+  ".sm78-btn.solid{background:var(--ember);border-color:var(--ember);color:var(--ink);font-weight:700;}",
+  ".sm78-btn.picked{border-color:var(--ember);color:var(--ember);}",
+  ".sm78-row{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 12px;}",
+  ".sm78-out{font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.75;color:var(--dim);background:var(--panel);border:1px solid var(--line);padding:14px 16px;margin:0 0 12px;white-space:pre-wrap;}",
+  ".sm78-out .v{color:var(--ember);}",
+  ".sm78-out .w{color:var(--paper);font-weight:700;}",
+  ".sm78-trial{border:1px solid var(--line);padding:12px 14px;margin:0 0 10px;background:var(--panel);}",
+  ".sm78-trial h4{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.14em;color:var(--paper);margin:0 0 2px;}",
+  ".sm78-trial h4 .pass{color:var(--ember);}",
+  ".sm78-trial .model{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--dim);margin:0 0 10px;}",
+  ".sm78-verdict{font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.7;margin:8px 0 0;}",
+  ".sm78-verdict.ok{color:var(--ember);}",
+  ".sm78-verdict.bad{color:var(--dim);}",
+  "table.sm78-tab{width:100%;border-collapse:collapse;margin:0 0 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;}",
+  "table.sm78-tab th{font-size:10px;letter-spacing:.14em;color:var(--dim);text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);font-weight:400;}",
+  "table.sm78-tab td{padding:7px 8px;border-bottom:1px solid var(--line);color:var(--paper);vertical-align:top;}",
+  "table.sm78-tab td.raw{text-align:right;white-space:nowrap;color:var(--ember);font-weight:700;}",
+  "table.sm78-tab td.id{color:var(--dim);white-space:nowrap;}",
+  ".sm78-walk{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.8;color:var(--dim);margin:0 0 12px;display:none;}",
+  ".sm78-walk.show{display:block;}",
+  ".sm78-walk b{color:var(--paper);}",
+  ".sm78-walk .v{color:var(--ember);}",
+  ".sm78-banner{border:1px solid var(--ember);padding:18px;margin:0 0 16px;display:none;}",
+  ".sm78-banner.show{display:block;}",
+  ".sm78-banner h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--ember);margin:0 0 8px;}",
+  ".sm78-banner p{font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.7;color:var(--dim);margin:0;}",
+  "@media (max-width:620px){.sm78-title{font-size:27px;}table.sm78-tab{font-size:11px;}}"
+].join("\n");
+
+/* ---------------- DOM engine ---------------- */
+var sm78St = null, sm78Els = {}, sm78EscBound = false;
+var sm78Reduced = (typeof window !== "undefined" && window.matchMedia) ?
+  window.matchMedia("(prefers-reduced-motion: reduce)").matches : true;
+
+function sm78NewState() {
+  return {
+    t1: { call: null, pass: false },
+    t2: { call: null, rewrote: false, rewriting: false, call2: null, pass: false,
+          rw: { pending: 14, reallocated: 0, uncorrectable: 0 } },
+    t3: { call: null, pass: false },
+    certified: false
+  };
+}
+function sm78El(tag, cls, html) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html !== undefined && html !== "") e.innerHTML = html;
+  return e;
+}
+function sm78Btn(label, cls) {
+  var b = sm78El("button", "sm78-btn" + (cls ? " " + cls : ""), "");
+  b.type = "button";
+  b.textContent = label;
+  return b;
+}
+function sm78Drive(i) { return SM78.DRIVES[i]; }
+
+SM78.INTRO_HTML =
+  "<p class=\"sm78-p\">Every used drive on the intake cart already wrote its confession. " +
+  "<b>SMART is the drive's own log of every sector it has given up on</b>, and reading it " +
+  "is the whole job: five numbers tell you whether a drive is shelf stock or scrap before " +
+  "it ever sees a customer machine. Guess wrong and the shop eats a return, a rebuild, " +
+  "and its reputation.</p>" +
+  "<p class=\"sm78-p\">Three intake drives, three verdicts. Read each SMART table against " +
+  "the house rules, call <b>SELL</b>, <b>REWORK</b>, or <b>SCRAP</b>, and run the surface " +
+  "rewrite on the drive with pending sectors.</p>";
+
+SM78.RULES_HTML =
+  "<table class=\"sm78-tab\" aria-label=\"House rules\">" +
+  "<tr><th>VERDICT</th><th>WHEN</th></tr>" +
+  "<tr><td><b>SCRAP</b></td><td>Offline Uncorrectable above 0, Reallocated at 100 or more, " +
+  "SSD wear at 95% or more, SSD spare at 10% or less.</td></tr>" +
+  "<tr><td><b>REWORK</b></td><td>Current Pending above 0 with none of the above. Run the " +
+  "surface rewrite: the drive writes every sector, and each pending sector either remaps " +
+  "cleanly or proves itself dead.</td></tr>" +
+  "<tr><td><b>SELL</b></td><td>Everything else. Error counters at zero, wear and spare in range.</td></tr>" +
+  "</table>" +
+  "<p class=\"sm78-p\">Failure modes, stated plainly. <b>SMART is a diary of what already " +
+  "broke, never a forecast of what breaks next.</b> Pending sectors that survive a rewrite " +
+  "are a dying surface: scrap the drive. Power-on hours are context, never a verdict: a " +
+  "clean 40,000-hour drive can sell, and a 200-hour drive with uncorrectable errors is scrap.</p>";
+
+/* verdict miss messages: trial -> wrong call -> teaching line */
+var SM78_MISS = {
+  t1: {
+    REWORK: "Nothing is pending and nothing needs rewriting: every counter on this table is zero. Read the table again.",
+    SCRAP: "Scrap is for drives with dead sectors or exhausted NAND. This table is all zeros. Read it again."
+  },
+  t2: {
+    SELL: "Wrong call. Fourteen sectors sit in Current Pending: the drive suspects them and has not remapped them yet, and a pending sector can already be failing reads. The house rules say REWORK.",
+    SCRAP: "Too hasty. Nothing has actually failed: reallocated and uncorrectable are both zero. Pending sectors remap on the next full write, which is exactly what REWORK means."
+  },
+  t2b: {
+    REWORK: "The rewrite already ran: pending is zero and nothing failed. Read the table again.",
+    SCRAP: "Fourteen remapped sectors is far under the 100-sector scrap line, and no read ever failed. This drive earned its shelf spot."
+  },
+  t3: {
+    SELL: "It reads perfectly today, and the diary still condemns it: 96% of its rated writes are consumed and 8% spare remains. A drive past its rated life fails on a customer's schedule, not yours.",
+    REWORK: "There is nothing to rewrite: no pending sectors, and NAND wear does not heal. The flash is consumed."
+  }
+};
+
+function sm78TableHTML(drive, live) {
+  var h = "<table class=\"sm78-tab\" aria-label=\"SMART table for " + drive.tag + "\">" +
+    "<tr><th>ID</th><th>ATTRIBUTE</th><th style=\"text-align:right\">RAW</th></tr>";
+  for (var i = 0; i < drive.attrs.length; i++) {
+    var a = drive.attrs[i], id = a[0], nm = a[1], raw = a[2], unit = a[3] || "";
+    if (live && drive.id === "t2" && (id === "5" || id === "197" || id === "198")) {
+      var st = sm78St.t2.rw;
+      raw = id === "5" ? st.reallocated : id === "197" ? st.pending : st.uncorrectable;
+    }
+    var cellId = live && drive.id === "t2" ? " id=\"sm78-" + id + "\"" : "";
+    h += "<tr><td class=\"id\">" + id + "</td><td>" + nm + "</td>" +
+      "<td class=\"raw\"" + cellId + ">" + raw + unit + "</td></tr>";
+  }
+  return h + "</table>";
+}
+
+function sm78Progress() {
+  var n = 0;
+  if (sm78St.t1.pass) n++;
+  if (sm78St.t2.pass) n++;
+  if (sm78St.t3.pass) n++;
+  sm78Els.progress.innerHTML =
+    "DRIVES CERTIFIED <span class=\"v\">" + n + " / 3</span>" +
+    (sm78St.certified ? " <span class=\"w\">CERTIFIED</span>" : "");
+}
+
+function sm78CheckCert() {
+  if (!sm78St.certified && sm78St.t1.pass && sm78St.t2.pass && sm78St.t3.pass) {
+    sm78St.certified = true;
+    sm78Els.banner.classList.add("show");
+    sm78Els.banner.innerHTML =
+      "<h3>BENCH 78 CERTIFIED</h3><p>Three drives, three correct calls, one surface " +
+      "rewrite. The takeaway in one line: the drive already wrote its confession, " +
+      "read the five numbers before it ships.</p>";
+  }
+  sm78Progress();
+}
+
+/* ---- trial 1: do-first call, then the worked example ---- */
+function sm78T1Render() {
+  var d = sm78Drive(0), box = sm78Els.t1;
+  box.innerHTML = "";
+  var tr = sm78El("div", "sm78-trial", "");
+  var pass = sm78St.t1.pass ? " <span class=\"pass\">PASS</span>" : "";
+  tr.appendChild(sm78El("h4", "", d.tag + ": FIRST DRIVE" + pass));
+  tr.appendChild(sm78El("p", "model", d.model + " (spinning rust, 2 TB)"));
+  var tw = sm78El("div", "", sm78TableHTML(d, false));
+  tr.appendChild(tw);
+  tr.appendChild(sm78El("p", "sm78-p",
+    "Nothing to break. No rules yet, just the table: read the five numbers and call the verdict."));
+  var row = sm78El("div", "sm78-row", "");
+  ["SELL", "REWORK", "SCRAP"].forEach(function (v) {
+    var b = sm78Btn(v, sm78St.t1.call === v ? "picked" : "");
+    b.setAttribute("aria-label", "Call " + v + " on drive one");
+    b.addEventListener("click", function () { sm78T1Call(v); });
+    row.appendChild(b);
+  });
+  tr.appendChild(row);
+  var vline = sm78El("p", "sm78-verdict", "");
+  vline.id = "sm78T1Verdict";
+  tr.appendChild(vline);
+  var walk = sm78El("div", "sm78-walk", "");
+  walk.id = "sm78T1Walk";
+  walk.innerHTML =
+    "<b>THE WORKED EXAMPLE.</b> " +
+    "Reallocated Sector Count (ID 5): sectors the drive already gave up on and swapped for spares. " +
+    "<span class=\"v\">0</span>: the surface is intact.<br>" +
+    "Current Pending Sector Count (ID 197): sectors the drive suspects but has not remapped yet. " +
+    "<span class=\"v\">0</span>: nothing waiting.<br>" +
+    "Offline Uncorrectable (ID 198): reads that failed outright. " +
+    "<span class=\"v\">0</span>: every read ever attempted succeeded.<br>" +
+    "Power-On Hours (ID 9): <span class=\"v\">" + SM78.fmtHours(18240) + "</span>: " +
+    "mid-life for this drive, and with zero errors behind it, fine.<br>" +
+    "Temperature (ID 194): <span class=\"v\">34 C</span> at read time: cool and unremarkable.<br>" +
+    "<b>Verdict: SELL.</b> All error counters at zero, wear in range. That is the whole read, " +
+    "and it is the pattern every later drive is checked against.";
+  tr.appendChild(walk);
+  box.appendChild(tr);
+  if (sm78St.t1.call) {
+    walk.classList.add("show");
+    sm78T1VerdictLine();
+  }
+}
+function sm78T1VerdictLine() {
+  var l = document.getElementById("sm78T1Verdict");
+  if (!l) return;
+  if (sm78St.t1.pass) {
+    l.className = "sm78-verdict ok";
+    l.textContent = "CORRECT: SELL. All error counters at zero.";
+  } else {
+    l.className = "sm78-verdict bad";
+    l.textContent = "NOT QUITE: " + SM78_MISS.t1[sm78St.t1.call];
+  }
+}
+function sm78T1Call(v) {
+  sm78St.t1.call = v;
+  sm78St.t1.pass = (v === sm78Drive(0).answer);
+  sm78T1Render();
+  sm78Progress();
+}
+
+/* ---- trial 2: the pending sectors + surface rewrite ---- */
+function sm78T2Render() {
+  var d = sm78Drive(1), box = sm78Els.t2, st = sm78St.t2;
+  box.innerHTML = "";
+  var tr = sm78El("div", "sm78-trial", "");
+  var pass = st.pass ? " <span class=\"pass\">PASS</span>" : "";
+  tr.appendChild(sm78El("h4", "", d.tag + ": SECOND DRIVE" + pass));
+  tr.appendChild(sm78El("p", "model", d.model + " (spinning rust, 1 TB)"));
+  tr.appendChild(sm78El("div", "", sm78TableHTML(d, true)));
+  tr.appendChild(sm78El("p", "sm78-p",
+    "The house rules are above. Fourteen sectors are waiting in Current Pending: call it."));
+  var row = sm78El("div", "sm78-row", "");
+  ["SELL", "REWORK", "SCRAP"].forEach(function (v) {
+    var b = sm78Btn(v, st.call === v ? "picked" : "");
+    b.disabled = st.rewrote;
+    b.setAttribute("aria-label", "Call " + v + " on drive two");
+    b.addEventListener("click", function () { sm78T2Call(v); });
+    row.appendChild(b);
+  });
+  tr.appendChild(row);
+  var vline = sm78El("p", "sm78-verdict", "");
+  vline.id = "sm78T2Verdict";
+  tr.appendChild(vline);
+
+  if (st.call === "REWORK" && !st.rewrote && !st.pass) {
+    var rw = sm78El("div", "", "");
+    rw.id = "sm78Rewrite";
+    rw.appendChild(sm78El("p", "sm78-p",
+      "Correct: REWORK. Now run it: the surface rewrite writes every sector, forcing each " +
+      "pending sector to remap or prove itself dead. Watch the Pending row drain into Reallocated."));
+    var rb = sm78Btn("RUN SURFACE REWRITE", "solid");
+    rb.id = "sm78RewriteBtn";
+    rb.disabled = st.rewriting;
+    rb.addEventListener("click", sm78RewriteRun);
+    rw.appendChild(rb);
+    var rprog = sm78El("p", "sm78-verdict", "");
+    rprog.id = "sm78RewriteProg";
+    rw.appendChild(rprog);
+    tr.appendChild(rw);
+  }
+  if (st.rewrote && !st.pass) {
+    tr.appendChild(sm78El("p", "sm78-p",
+      "Rewrite complete: 14 pending sectors remapped, 0 uncorrectable. Read the table again and call it."));
+    var row2 = sm78El("div", "sm78-row", "");
+    ["SELL", "REWORK", "SCRAP"].forEach(function (v) {
+      var b2 = sm78Btn(v, st.call2 === v ? "picked" : "");
+      b2.setAttribute("aria-label", "Call " + v + " on drive two after the rewrite");
+      b2.addEventListener("click", function () { sm78T2Call2(v); });
+      row2.appendChild(b2);
+    });
+    tr.appendChild(row2);
+    var v2 = sm78El("p", "sm78-verdict", "");
+    v2.id = "sm78T2Verdict2";
+    tr.appendChild(v2);
+  }
+  box.appendChild(tr);
+  if (st.call) sm78T2VerdictLine();
+  if (st.call2) sm78T2Verdict2Line();
+}
+function sm78T2VerdictLine() {
+  var l = document.getElementById("sm78T2Verdict");
+  if (!l) return;
+  var st = sm78St.t2;
+  if (st.call === "REWORK") {
+    l.className = "sm78-verdict ok";
+    l.textContent = "CORRECT: REWORK. Fourteen pending sectors must be forced to remap before this drive ships.";
+  } else {
+    l.className = "sm78-verdict bad";
+    l.textContent = "NOT QUITE: " + SM78_MISS.t2[st.call];
+  }
+}
+function sm78T2Call(v) {
+  var st = sm78St.t2;
+  if (st.rewrote) return;
+  st.call = v;
+  sm78T2Render();
+  sm78Progress();
+}
+function sm78T2Verdict2Line() {
+  var l = document.getElementById("sm78T2Verdict2");
+  if (!l) return;
+  var st = sm78St.t2;
+  if (st.pass) {
+    l.className = "sm78-verdict ok";
+    l.textContent = "CORRECT: SELL. Fourteen remapped sectors is far under the 100-sector scrap line, no read ever failed.";
+  } else {
+    l.className = "sm78-verdict bad";
+    l.textContent = "NOT QUITE: " + SM78_MISS.t2b[st.call2];
+  }
+}
+function sm78T2Call2(v) {
+  var st = sm78St.t2;
+  st.call2 = v;
+  st.pass = (v === sm78Drive(1).answerAfter);
+  sm78T2Render();
+  sm78CheckCert();
+}
+function sm78RewriteRun() {
+  var st = sm78St.t2;
+  if (st.rewriting || st.rewrote) return;
+  st.rewriting = true;
+  var btn = document.getElementById("sm78RewriteBtn");
+  if (btn) btn.disabled = true;
+  function tick() {
+    SM78.rewriteStep(st.rw);
+    var p = document.getElementById("sm78-197");
+    var r = document.getElementById("sm78-5");
+    if (p) p.textContent = st.rw.pending;
+    if (r) r.textContent = st.rw.reallocated;
+    var prog = document.getElementById("sm78RewriteProg");
+    var done = SM78.rewriteDone(st.rw);
+    var pct = Math.round(((14 - st.rw.pending) / 14) * 100);
+    if (prog) prog.textContent = done ?
+      "REWRITE COMPLETE: 14 remapped, 0 uncorrectable." :
+      "REWRITING: " + pct + "% (" + st.rw.pending + " pending left)";
+    if (!done) {
+      setTimeout(tick, sm78Reduced ? 0 : 140);
+    } else {
+      st.rewriting = false;
+      st.rewrote = true;
+      sm78T2Render();
+      sm78Progress();
+    }
+  }
+  tick();
+}
+
+/* ---- trial 3: the tired SSD ---- */
+function sm78T3Render() {
+  var d = sm78Drive(2), box = sm78Els.t3, st = sm78St.t3;
+  box.innerHTML = "";
+  var tr = sm78El("div", "sm78-trial", "");
+  var pass = st.pass ? " <span class=\"pass\">PASS</span>" : "";
+  tr.appendChild(sm78El("h4", "", d.tag + ": THIRD DRIVE" + pass));
+  tr.appendChild(sm78El("p", "model", d.model + " (solid state, 500 GB)"));
+  tr.appendChild(sm78El("div", "", sm78TableHTML(d, false)));
+  tr.appendChild(sm78El("p", "sm78-p",
+    "SSDs keep a different diary: no spinning sectors to remap. <b>Percentage Used is the " +
+    "odometer of the NAND</b>: 96 means 96% of the drive's rated writes are consumed. " +
+    "<b>Available Spare is the reserve block pool</b>: 8% remains. This drive reads " +
+    "perfectly today. Call it anyway."));
+  var row = sm78El("div", "sm78-row", "");
+  ["SELL", "REWORK", "SCRAP"].forEach(function (v) {
+    var b = sm78Btn(v, st.call === v ? "picked" : "");
+    b.setAttribute("aria-label", "Call " + v + " on drive three");
+    b.addEventListener("click", function () { sm78T3Call(v); });
+    row.appendChild(b);
+  });
+  tr.appendChild(row);
+  var vline = sm78El("p", "sm78-verdict", "");
+  vline.id = "sm78T3Verdict";
+  tr.appendChild(vline);
+  box.appendChild(tr);
+  if (st.call) sm78T3VerdictLine();
+}
+function sm78T3VerdictLine() {
+  var l = document.getElementById("sm78T3Verdict");
+  if (!l) return;
+  var st = sm78St.t3;
+  if (st.pass) {
+    l.className = "sm78-verdict ok";
+    l.textContent = "CORRECT: SCRAP. Rated life consumed is rated life consumed, however well it reads today.";
+  } else {
+    l.className = "sm78-verdict bad";
+    l.textContent = "NOT QUITE: " + SM78_MISS.t3[st.call];
+  }
+}
+function sm78T3Call(v) {
+  var st = sm78St.t3;
+  st.call = v;
+  st.pass = (v === sm78Drive(2).answer);
+  sm78T3Render();
+  sm78CheckCert();
+}
+
+/* ---- open / close / build ---- */
+function sm78Open() {
+  sm78Els.overlay.classList.add("open");
+  document.body.style.overflow = "hidden";
+}
+function sm78Close() {
+  sm78Els.overlay.classList.remove("open");
+  document.body.style.overflow = "";
+}
+function sm78Build() {
+  var box = document.querySelector(".dossier .actions");
+  if (!box) return;
+  if (document.getElementById("sm78Btn")) return;
+  sm78St = sm78NewState();
+
+  var sty = document.createElement("style");
+  sty.id = "sm78Style";
+  sty.textContent = SM78_CSS;
+  document.head.appendChild(sty);
+
+  var b = document.createElement("button");
+  b.id = "sm78Btn";
+  b.className = "pg-launch";
+  b.textContent = "Open The SMART Room";
+  b.addEventListener("click", sm78Open);
+  box.appendChild(b);
+
+  var ov = sm78El("div", "sm78-overlay", "");
+  ov.id = "sm78Overlay";
+  ov.setAttribute("role", "dialog");
+  ov.setAttribute("aria-label", "The SMART Room");
+  var x = sm78Btn("CLOSE", "");
+  x.id = "sm78XBtn";
+  x.style.cssText = "position:fixed;top:calc(12px + env(safe-area-inset-top));right:calc(16px + env(safe-area-inset-right));z-index:95;";
+  x.setAttribute("aria-label", "Close The SMART Room");
+  x.addEventListener("click", sm78Close);
+  ov.appendChild(x);
+  sm78Els.overlay = ov;
+  if (!sm78EscBound) {
+    sm78EscBound = true;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && sm78Els.overlay && sm78Els.overlay.classList.contains("open")) sm78Close();
+    });
+  }
+
+  var panel = sm78El("div", "sm78-panel", "");
+  panel.appendChild(sm78El("div", "sm78-kicker", "BENCH CRAFT \u00B7 BENCH 78"));
+  panel.appendChild(sm78El("h2", "sm78-title", "The SMART Room"));
+
+  var intro = sm78El("div", "", "");
+  intro.innerHTML = SM78.INTRO_HTML;
+  panel.appendChild(intro);
+
+  var prog = sm78El("div", "sm78-out", "");
+  prog.id = "sm78Progress";
+  prog.setAttribute("aria-live", "polite");
+  panel.appendChild(prog);
+  sm78Els.progress = prog;
+
+  panel.appendChild(sm78El("h3", "sm78-sec", "DO FIRST: CALL THE FIRST DRIVE"));
+  sm78Els.t1 = sm78El("div", "", "");
+  panel.appendChild(sm78Els.t1);
+
+  panel.appendChild(sm78El("h3", "sm78-sec", "THE HOUSE RULES"));
+  var rules = sm78El("div", "", "");
+  rules.innerHTML = SM78.RULES_HTML;
+  panel.appendChild(rules);
+
+  panel.appendChild(sm78El("h3", "sm78-sec", "DRIVE TWO: FOURTEEN PENDING SECTORS"));
+  sm78Els.t2 = sm78El("div", "", "");
+  panel.appendChild(sm78Els.t2);
+
+  panel.appendChild(sm78El("h3", "sm78-sec", "DRIVE THREE: THE TIRED SSD"));
+  sm78Els.t3 = sm78El("div", "", "");
+  panel.appendChild(sm78Els.t3);
+
+  var banner = sm78El("div", "sm78-banner", "");
+  banner.id = "sm78Banner";
+  banner.setAttribute("aria-live", "polite");
+  panel.appendChild(banner);
+  sm78Els.banner = banner;
+
+  /* hire line: drive-health triage offer at the foot of the bench, matching
+     the Bench 71-77 pattern. The hire-chooser module binds [data-brief]
+     triggers document-wide. Copy only. */
+  var hire = sm78El("p", "sm78-p", "");
+  hire.innerHTML = "A shelf of unknown drives and no time to guess which ones to trust? " +
+    "<button type=\"button\" class=\"sm78-btn\" data-brief=\"triage\" data-bench-tag=\"Bench 78: The SMART Room\">Crash triage</button>";
+  panel.appendChild(hire);
+
+  ov.appendChild(panel);
+  document.body.appendChild(ov);
+
+  sm78T1Render();
+  sm78T2Render();
+  sm78T3Render();
+  sm78Progress();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", sm78Build);
+} else {
+  sm78Build();
+}
+
+/* debug hooks for the smoke test */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.SM78 = SM78;
+  module.exports.sm78Debug = {
+    state: function () { return sm78St; },
+    els: function () { return sm78Els; },
+    call1: sm78T1Call,
+    call2: sm78T2Call,
+    call2b: sm78T2Call2,
+    call3: sm78T3Call,
+    rewriteRun: sm78RewriteRun,
+    render1: sm78T1Render,
+    render2: sm78T2Render,
+    render3: sm78T3Render
+  };
+}
+})();

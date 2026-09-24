@@ -6,14 +6,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
-<meta name="description" content="The Proving Ground: 77 interactive hardware benches, RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs entirely on your device.">
+<meta name="description" content="The Proving Ground: 78 interactive hardware benches, RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs entirely on your device.">
 <link rel="canonical" href="https://dillingerstaffing.github.io/proving-ground/">
 <meta name="robots" content="index, follow, max-image-preview:large">
 <meta name="theme-color" content="#0a0c0e">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="The Proving Ground">
 <meta property="og:title" content="The Proving Ground: Working Engineering Benches">
-<meta property="og:description" content="77 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs in the browser.">
+<meta property="og:description" content="78 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs in the browser.">
 <meta property="og:url" content="https://dillingerstaffing.github.io/proving-ground/">
 <meta property="og:image" content="https://dillingerstaffing.github.io/proving-ground/og-card.png">
 <meta property="og:image:width" content="1200">
@@ -25,7 +25,7 @@
 {"@context":"https://schema.org","@type":"WebApplication",
  "name":"The Proving Ground",
  "url":"https://dillingerstaffing.github.io/proving-ground/",
- "description":"77 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft.",
+ "description":"78 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft.",
  "applicationCategory":"BrowserApplication","operatingSystem":"Any modern web browser",
  "isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
@@ -774,7 +774,7 @@ body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
         <circle class="draw-core" cx="24" cy="24" r="2.6" fill="#0a0c0e"/>
       </svg>
       <div class="head-group">
-        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">77</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;INTERACTIVE,&nbsp;IN&nbsp;BROWSER</span></span></div>
+        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">78</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;INTERACTIVE,&nbsp;IN&nbsp;BROWSER</span></span></div>
         <button class="hire-btn" type="button" data-brief="general">HIRE CHRIS</button>
         <button class="theme-toggle" type="button" aria-label="Switch to terminal theme" title="Switch theme">
           <span class="theme-toggle-mark" aria-hidden="true"><i></i><i></i></span>
@@ -1230,7 +1230,11 @@ var PG_BENCHES = [
   { section: "craft", n: "77", name: "The Baud Room", btn: "bd77Btn", pill: "oldiron", pillLabel: "BENCH CRAFT",
     desc: "Two wires, no clock: the serial console contract is one number, the baud rate. Send bytes through a real bit-time model, read start edges and stop bits by hand, then watch a 19200 transmitter turn 'A' into 0xFC for a 9600 listener.",
     how: "Transmit a byte free, call three mystery bytes from their waveforms, break the baud contract on purpose and predict the garbage before the wire runs, then certify three lines (one hides a framing error).",
-    spec: "UART FRAMING \u00B7 7 TRIALS" }
+    spec: "UART FRAMING \u00B7 7 TRIALS" },
+  { section: "craft", n: "78", name: "The SMART Room", btn: "sm78Btn", pill: "oldiron", pillLabel: "BENCH CRAFT",
+    desc: "Drive health qualification for the OLD IRON refurb line: read each intake drive's SMART failure diary, call SELL, REWORK, or SCRAP, and run the surface rewrite that forces pending sectors to remap.",
+    how: "Read the SMART table on each drive, call the verdict, rewrite the pending sectors on drive two.",
+    spec: "SMART TABLE \u00B7 3 DRIVES" }
  ];
 /* Teaching order: the sequence a newcomer should take the benches in.
    The index renders this list top to bottom; the number on each row is its
@@ -1307,6 +1311,7 @@ var PG_TEACH_ORDER = [
   "76",
   "27",
   "68",
+  "78",
   "46",
   "47",
   "22",
@@ -1983,9 +1988,9 @@ if ('serviceWorker' in navigator) {
   apply(current());
 })();
 </script>
-<script src="rvcore.js?v=6736b64c39" defer></script>
-<script src="rvdata.js?v=6736b64c39" defer></script>
-<script src="riscv-lab.js?v=6736b64c39" defer></script>
-<script src="features.js?v=6736b64c39" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=4361182669" defer></script>
+<script src="rvdata.js?v=4361182669" defer></script>
+<script src="riscv-lab.js?v=4361182669" defer></script>
+<script src="features.js?v=4361182669" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
