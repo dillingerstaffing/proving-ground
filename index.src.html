@@ -1234,7 +1234,11 @@ var PG_BENCHES = [
   { section: "craft", n: "78", name: "The SMART Room", btn: "sm78Btn", pill: "oldiron", pillLabel: "BENCH CRAFT",
     desc: "Drive health qualification for the OLD IRON refurb line: read each intake drive's SMART failure diary, call SELL, REWORK, or SCRAP, and run the surface rewrite that forces pending sectors to remap.",
     how: "Read the SMART table on each drive, call the verdict, rewrite the pending sectors on drive two.",
-    spec: "SMART TABLE \u00B7 3 DRIVES" }
+    spec: "SMART TABLE \u00B7 3 DRIVES" },
+  { section: "craft", n: "79", name: "The Thermocouple Room", btn: "tc79Btn", pill: "oldiron", pillLabel: "BENCH CRAFT",
+    desc: "A thermocouple never reads temperature, only the gap between its two junctions. Real NIST type-K data, a live two-junction probe, three certification measurements.",
+    how: "Predict the tip temperature, work the cold-junction math on the live probe, then certify three junctions.",
+    spec: "TYPE K \u00B7 CJC \u00B7 3 TRIALS" }
  ];
 /* Teaching order: the sequence a newcomer should take the benches in.
    The index renders this list top to bottom; the number on each row is its
@@ -1318,6 +1322,7 @@ var PG_TEACH_ORDER = [
   "21",
   "23",
   "19",
+  "79",
   "04",
   "17"
 ];

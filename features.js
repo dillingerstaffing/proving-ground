@@ -62740,3 +62740,546 @@ if (typeof module !== "undefined" && module.exports) {
   };
 }
 })();
+/* Bench 79 staging: The Thermocouple Room module (appended to features.js at ship time). */
+/* ============================================================
+   THE THERMOCOUPLE ROOM
+   Bench 79, OLD IRON bench craft (section: craft, pill: oldiron).
+   One atomic mechanism: a thermocouple never measures absolute
+   temperature. It measures the difference between its two junctions
+   (the hot sensing tip and the cold terminal block), so the meter
+   reading is meaningless without the cold-junction temperature.
+   One sentence takeaway: the meter reads V(tip) minus V(cold), so
+   add the cold junction back through the type-K table or every
+   reading lies by exactly the terminal temperature.
+   Data: NIST ITS-90 type-K reference table, 10 C steps, -50..500 C,
+   linear interpolation between steps (spot-verified against the
+   published NIST tables, 2026-09-25).
+   Do-first: predict the tip temperature for 4.12 mV with 25 C
+   terminals (the naive 101 C trap), then the worked example shows
+   the three CJC steps to the true 125 C.
+   Live probe: tip and terminal sliders drive a real meter model;
+   dragging the cold junction moves the reading with the tip fixed.
+   Trials: ice bath (0 C tip, 22 C terminals, -0.88 mV), warm board
+   (85 C tip, 30 C terminals, 2.27 mV), furnace (350 C tip, 40 C
+   terminals, 12.68 mV; the last tech logged the naive 311 C).
+   Pure sim hooks live in TC79 for the smoke test; the DOM engine
+   below drives the same code. Self-contained IIFE, appended at the
+   end of features.js.
+   ============================================================ */
+(function () {
+"use strict";
+
+/* ---------------- pure hooks (testable, no DOM) ---------------- */
+var TC79 = {};
+/* NIST ITS-90 type-K thermoelectric voltage in mV, reference junction 0 C. */
+TC79.TABLE = [
+  [-50,-1.889],[-40,-1.527],[-30,-1.156],[-20,-0.778],[-10,-0.392],
+  [0,0.000],[10,0.397],[20,0.798],[30,1.203],[40,1.612],
+  [50,2.023],[60,2.436],[70,2.851],[80,3.267],[90,3.682],
+  [100,4.096],[110,4.509],[120,4.920],[130,5.328],[140,5.735],
+  [150,6.138],[160,6.540],[170,6.941],[180,7.340],[190,7.739],
+  [200,8.138],[210,8.539],[220,8.940],[230,9.343],[240,9.747],
+  [250,10.153],[260,10.561],[270,10.971],[280,11.382],[290,11.795],
+  [300,12.209],[310,12.624],[320,13.040],[330,13.457],[340,13.874],
+  [350,14.293],[360,14.713],[370,15.133],[380,15.554],[390,15.975],
+  [400,16.397],[410,16.820],[420,17.243],[430,17.667],[440,18.091],
+  [450,18.516],[460,18.941],[470,19.366],[480,19.792],[490,20.218],
+  [500,20.644]
+];
+/* Forward: degrees C -> mV, straight-line interpolation between 10 C steps. */
+TC79.mvAt = function (tC) {
+  var T = TC79.TABLE, t = Math.max(-50, Math.min(500, tC));
+  for (var i = 0; i < T.length - 1; i++) {
+    if (t <= T[i + 1][0]) {
+      var t0 = T[i][0], v0 = T[i][1], t1 = T[i + 1][0], v1 = T[i + 1][1];
+      return v0 + (v1 - v0) * (t - t0) / (t1 - t0);
+    }
+  }
+  return T[T.length - 1][1];
+};
+/* Inverse: mV -> degrees C, same table walked the other way. */
+TC79.cAt = function (mv) {
+  var T = TC79.TABLE;
+  var m = Math.max(T[0][1], Math.min(T[T.length - 1][1], mv));
+  for (var i = 0; i < T.length - 1; i++) {
+    if (m <= T[i + 1][1]) {
+      var v0 = T[i][1], t0 = T[i][0], v1 = T[i + 1][1], t1 = T[i + 1][0];
+      return t0 + (t1 - t0) * (m - v0) / (v1 - v0);
+    }
+  }
+  return T[T.length - 1][0];
+};
+/* The whole bench in one line: the meter sees the difference. */
+TC79.meter = function (tipC, coldC) { return TC79.mvAt(tipC) - TC79.mvAt(coldC); };
+/* What the last tech logged: the meter voltage read straight off the table. */
+TC79.naive = function (mv) { return TC79.cAt(mv); };
+/* Cold-junction compensation: add the terminal voltage back, then invert. */
+TC79.compensate = function (meterMv, coldC) { return TC79.cAt(meterMv + TC79.mvAt(coldC)); };
+TC79.TOL = 2;
+TC79.check = function (answerC, truthC) { return Math.abs(answerC - truthC) <= TC79.TOL; };
+TC79.r2 = function (x) { return Math.round(x * 100) / 100; };
+/* meterMv is the rounded on-screen reading the visitor works from. */
+TC79.TRIALS = [
+  { id: "t1", tag: "TRIAL 1: THE ICE BATH", tip: 0, cold: 22, meterMv: -0.88,
+    story: "Tip packed in shaved ice water. Terminals at 22 C on the bench. The meter reads -0.88 mV. Call the tip temperature.",
+    note: "Negative meter, positive lesson: the tip is colder than the terminals, so the voltage goes negative. The math does not care.",
+    trap: -23, trapTol: 5,
+    missNaive: "That is the no-compensation answer, about -23 C: the meter voltage read straight off the table. The terminals contribute 0.88 mV you never added back. Add it: -0.88 + 0.88 = 0.00 mV, and the table says 0 C. Ice water, exactly as physics demands.",
+    missGeneric: "Not within 2 C. Step it: convert the 22 C terminals to millivolts, add that to the meter reading, convert the sum back to degrees." },
+  { id: "t2", tag: "TRIAL 2: THE WARM BOARD", tip: 85, cold: 30, meterMv: 2.27,
+    story: "Tip taped to a warm regulator heatsink. Terminals at 30 C. The meter reads 2.27 mV. Call the tip temperature.",
+    note: "",
+    trap: 56, trapTol: 4,
+    missNaive: "56 C is the reading with the cold junction forgotten. The terminals contribute 1.20 mV you never added back: 2.27 + 1.20 = 3.47 mV, and the table says 85 C. The missing degrees were the room.",
+    missGeneric: "Not within 2 C. Step it: convert the 30 C terminals to millivolts, add that to the meter reading, convert the sum back to degrees." },
+  { id: "t3", tag: "TRIAL 3: THE FURNACE", tip: 350, cold: 40, meterMv: 12.68,
+    story: "The reflow furnace. The last tech logged 311 C and walked away; the terminals sat at 40 C in the warm shop. The meter reads 12.68 mV. Convict the log or confirm it: what is the true tip temperature?",
+    note: "",
+    trap: 311, trapTol: 5,
+    missNaive: "311 C is exactly what the last tech logged, and it is exactly wrong: it is the meter voltage read straight off the table with no compensation. Add the 40 C terminals back: 12.68 + 1.61 = 14.29 mV, and the table says 350 C. The furnace was 39 degrees hotter than the log claimed.",
+    missGeneric: "Not within 2 C. Step it: convert the 40 C terminals to millivolts, add that to the meter reading, convert the sum back to degrees." }
+];
+
+TC79.INTRO_HTML =
+  "<p class=\"tc79-p\">A thermocouple on your bench reads 4.12 millivolts. Is the furnace at 101 C or 125 C? <b>The meter cannot tell you, because a thermocouple never measures temperature: it measures the gap between its two junctions.</b> The tip sits in the heat; the second junction sits where the wires meet copper at your meter. Every degree you forget at that cold junction is a degree of lie in the reading.</p>" +
+  "<p class=\"tc79-p\">Three junctions to certify: an ice bath, a warm board, and a furnace the last tech logged wrong. Work the cold-junction math on each and the bench certifies you.</p>";
+
+TC79.RULES_HTML =
+  "<p class=\"tc79-p\"><b>Two junctions, one loop.</b> The sensing tip (hot junction) and the terminal block where thermocouple wire meets the meter's copper (cold junction, also called the reference junction). The meter reads <b>V = V(tip) - V(cold)</b>, both looked up in the type-K table against 0 C. So <b>V(tip) = V(meter) + V(cold)</b>, then invert the table. That addition is the entire bench.</p>" +
+  "<p class=\"tc79-p\">The table on this bench is the real NIST ITS-90 type-K reference: 10 C steps from -50 to 500 C, straight-line interpolation between steps, about 41 microvolts per degree near room temperature. The converter below is that table, in-world.</p>" +
+  "<p class=\"tc79-p\">Failure modes, stated plainly. <b>Forget the cold junction and you read low by exactly the terminal temperature.</b> Swap the leads and the sign flips: a hot tip reads as cold. Grab the wrong type's table and every number is fiction. An open (broken) probe reads nonsense or rails: no loop, no Seebeck voltage. And a negative reading is not broken: it only means the tip is colder than the terminals.</p>";
+
+TC79.WORKED_HTML =
+  "<p class=\"tc79-p\"><b>Step 1:</b> the terminals sit at 25 C. The table says 25 C is worth 1.00 mV of hidden voltage.</p>" +
+  "<p class=\"tc79-p\"><b>Step 2:</b> add it back. 4.12 + 1.00 = 5.12 mV: that is the tip's voltage against a true 0 C reference.</p>" +
+  "<p class=\"tc79-p\"><b>Step 3:</b> invert the table. 5.12 mV sits between 120 C (4.920 mV) and 130 C (5.328 mV): about <b>125 C</b>. The naive lookup said 101 C. The missing 24 degrees were the room, all along.</p>";
+
+/* ---------------- styles ---------------- */
+var TC79_CSS = [
+  ".tc79-overlay{position:fixed;inset:0;z-index:90;background:var(--ink);display:none;overflow-y:auto;}",
+  ".tc79-overlay.open{display:block;}",
+  ".tc79-panel{max-width:860px;margin:0 auto;padding:28px 18px 60px;color:var(--paper);box-sizing:border-box;}",
+  ".tc79-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);}",
+  ".tc79-title{font-family:'Space Grotesk',sans-serif;font-size:34px;margin:6px 0 10px;color:var(--paper);}",
+  ".tc79-sec{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.16em;color:var(--ember);margin:26px 0 10px;padding-top:16px;border-top:1px solid var(--line);}",
+  ".tc79-p{font-size:13.5px;line-height:1.7;color:var(--dim);max-width:74ch;margin:0 0 12px;}",
+  ".tc79-p b{color:var(--paper);}",
+  ".tc79-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.06em;background:transparent;color:var(--paper);border:1px solid var(--line);padding:12px 16px;min-height:48px;cursor:pointer;}",
+  ".tc79-btn:hover{border-color:var(--ember);}",
+  ".tc79-btn:disabled{opacity:.45;cursor:default;}",
+  ".tc79-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+  ".tc79-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0;}",
+  ".tc79-out{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.08em;color:var(--dim);margin:8px 0;}",
+  ".tc79-out .v{color:var(--paper);}",
+  ".tc79-out .w{color:var(--ember);font-weight:700;}",
+  ".tc79-meter{font-family:'IBM Plex Mono',monospace;font-size:30px;color:var(--ember);letter-spacing:.04em;margin:6px 0;}",
+  ".tc79-meter small{font-size:13px;color:var(--dim);letter-spacing:.08em;}",
+  ".tc79-field{display:flex;flex-direction:column;gap:6px;margin:10px 0;max-width:340px;}",
+  ".tc79-field label{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:var(--dim);}",
+  ".tc79-field label .v{color:var(--paper);}",
+  ".tc79-input{font-family:'IBM Plex Mono',monospace;font-size:16px;background:var(--panel);color:var(--paper);border:1px solid var(--line);padding:12px;min-height:48px;box-sizing:border-box;width:100%;max-width:340px;}",
+  ".tc79-input:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+  ".tc79-slider{width:100%;max-width:520px;min-height:48px;accent-color:var(--ember);}",
+  ".tc79-verdict{font-family:'IBM Plex Mono',monospace;font-size:13px;line-height:1.6;margin:10px 0;max-width:74ch;}",
+  ".tc79-verdict.ok{color:var(--paper);}",
+  ".tc79-verdict.ok b{color:var(--ember);}",
+  ".tc79-verdict.bad{color:var(--dim);}",
+  ".tc79-verdict.bad b{color:var(--paper);}",
+  ".tc79-pass{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:var(--ember);border:1px solid var(--ember);padding:4px 10px;margin-left:10px;}",
+  ".tc79-banner{display:none;border:1px solid var(--ember);padding:18px;margin:26px 0 0;}",
+  ".tc79-banner.show{display:block;}",
+  ".tc79-banner h3{font-family:'IBM Plex Mono',monospace;font-size:14px;letter-spacing:.16em;color:var(--ember);margin:0 0 8px;}",
+  ".tc79-banner p{font-size:13.5px;line-height:1.7;color:var(--dim);margin:0;}",
+  ".tc79-banner p b{color:var(--paper);}",
+  ".tc79-trial{border:1px solid var(--line);padding:16px;margin:14px 0;}",
+  ".tc79-trial h4{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.14em;color:var(--paper);margin:0 0 8px;}",
+  ".tc79-trial .model{font-size:12.5px;color:var(--dim);margin:0 0 8px;}"
+].join("\n");
+
+/* ---------------- state ---------------- */
+var tc79St = null, tc79Els = {}, tc79EscBound = false;
+function tc79NewState() {
+  return { t1: { pass: false }, t2: { pass: false }, t3: { pass: false },
+           predicted: false, certified: false };
+}
+function tc79El(tag, cls, html) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html !== undefined && html !== "") e.innerHTML = html;
+  return e;
+}
+function tc79Btn(label, cls) {
+  var b = tc79El("button", "tc79-btn" + (cls ? " " + cls : ""), "");
+  b.type = "button";
+  b.textContent = label;
+  return b;
+}
+function tc79Trial(i) { return TC79.TRIALS[i]; }
+
+function tc79Progress() {
+  var n = 0;
+  if (tc79St.t1.pass) n++;
+  if (tc79St.t2.pass) n++;
+  if (tc79St.t3.pass) n++;
+  tc79Els.progress.innerHTML =
+    "JUNCTIONS CERTIFIED <span class=\"v\">" + n + " / 3</span>" +
+    (tc79St.certified ? " <span class=\"w\">CERTIFIED</span>" : "");
+}
+function tc79CheckCert() {
+  if (!tc79St.certified && tc79St.t1.pass && tc79St.t2.pass && tc79St.t3.pass) {
+    tc79St.certified = true;
+    tc79Els.banner.classList.add("show");
+    tc79Els.banner.innerHTML =
+      "<h3>BENCH 79 CERTIFIED</h3><p>Three junctions, three compensations, zero degrees of lie. " +
+      "The takeaway in one line: <b>the meter reads the gap between the two junctions, so the cold junction is half the measurement. Add it back, every time.</b></p>";
+  }
+  tc79Progress();
+}
+
+/* ---- do-first: predict before the math (no stakes) ---- */
+function tc79PredictRender() {
+  var box = tc79Els.predict;
+  box.innerHTML = "";
+  box.appendChild(tc79El("p", "tc79-p",
+    "One wire, two junctions. The tip sits in the reflow oven; the terminals sit on your bench at 25 C. " +
+    "The meter reads <b>4.12 mV</b>. Before any math: call it. What is the tip temperature, in degrees C? " +
+    "No stakes, just call it."));
+  var row = tc79El("div", "tc79-row", "");
+  var inp = tc79El("input", "tc79-input", "");
+  inp.id = "tc79PredictIn";
+  inp.type = "number";
+  inp.setAttribute("inputmode", "decimal");
+  inp.setAttribute("aria-label", "Predicted tip temperature in degrees C");
+  inp.placeholder = "tip temp, C";
+  row.appendChild(inp);
+  var b = tc79Btn("LOG PREDICTION", "");
+  b.setAttribute("aria-label", "Log your prediction");
+  b.addEventListener("click", function () { tc79PredictCall(inp.value); });
+  row.appendChild(b);
+  box.appendChild(row);
+  var out = tc79El("div", "tc79-verdict", "");
+  out.id = "tc79PredictOut";
+  out.setAttribute("aria-live", "polite");
+  box.appendChild(out);
+}
+function tc79PredictCall(raw) {
+  var out = document.getElementById("tc79PredictOut");
+  var x = parseFloat(raw);
+  tc79St.predicted = true;
+  if (isNaN(x)) {
+    out.className = "tc79-verdict bad";
+    out.innerHTML = "<b>NO CALL LOGGED.</b> Type a number: your best guess at the tip temperature.";
+    return;
+  }
+  var line;
+  if (Math.abs(x - 125) <= TC79.TOL) {
+    line = "<b>LOGGED: 125 C.</b> You called it like a compensated tech: the 25 C terminals hide 1.00 mV, " +
+      "and 4.12 + 1.00 = 5.12 mV reads as 125 C on the table.";
+  } else if (Math.abs(x - 101) <= 4) {
+    line = "<b>LOGGED: 101 C.</b> That is the table read straight off the meter, the classic trap. " +
+      "The worked example below shows where the missing 24 degrees went.";
+  } else {
+    line = "<b>LOGGED.</b> The worked example below runs the real math: the truth is 125 C, " +
+      "and the naive table lookup says 101 C. The gap between them is the whole bench.";
+  }
+  out.className = "tc79-verdict";
+  out.innerHTML = line;
+}
+
+/* ---- live probe: two sliders, one real meter ---- */
+function tc79ProbeRender() {
+  var box = tc79Els.probe;
+  box.innerHTML = "";
+  box.appendChild(tc79El("p", "tc79-p",
+    "Hands on before the trials. Drag the <b>TERMINALS</b> slider: the tip never moves, but the meter " +
+    "and the naive reading do. That drift is the whole bench."));
+  var tipF = tc79El("div", "tc79-field", "");
+  var tipL = tc79El("label", "", "TIP (HOT JUNCTION) <span class=\"v\" id=\"tc79TipVal\">125 C</span>");
+  tipL.setAttribute("for", "tc79Tip");
+  var tip = tc79El("input", "tc79-slider", "");
+  tip.id = "tc79Tip";
+  tip.type = "range";
+  tip.min = "-50"; tip.max = "500"; tip.step = "1"; tip.value = "125";
+  tip.setAttribute("aria-label", "Tip temperature in degrees C");
+  tipF.appendChild(tipL); tipF.appendChild(tip);
+  box.appendChild(tipF);
+  var coldF = tc79El("div", "tc79-field", "");
+  var coldL = tc79El("label", "", "TERMINALS (COLD JUNCTION) <span class=\"v\" id=\"tc79ColdVal\">25 C</span>");
+  coldL.setAttribute("for", "tc79Cold");
+  var cold = tc79El("input", "tc79-slider", "");
+  cold.id = "tc79Cold";
+  cold.type = "range";
+  cold.min = "0"; cold.max = "60"; cold.step = "1"; cold.value = "25";
+  cold.setAttribute("aria-label", "Terminal temperature in degrees C");
+  coldF.appendChild(coldL); coldF.appendChild(cold);
+  box.appendChild(coldF);
+  var meter = tc79El("div", "tc79-meter", "");
+  meter.id = "tc79Meter";
+  meter.setAttribute("aria-live", "polite");
+  box.appendChild(meter);
+  var naive = tc79El("div", "tc79-out", "");
+  naive.id = "tc79Naive";
+  box.appendChild(naive);
+  var truth = tc79El("div", "tc79-out", "");
+  truth.id = "tc79Truth";
+  box.appendChild(truth);
+  function upd() {
+    var t = parseFloat(tip.value), c = parseFloat(cold.value);
+    document.getElementById("tc79TipVal").textContent = t + " C";
+    document.getElementById("tc79ColdVal").textContent = c + " C";
+    var mv = TC79.meter(t, c);
+    meter.innerHTML = TC79.r2(mv).toFixed(2) + " <small>MILLIVOLTS ON THE METER</small>";
+    naive.innerHTML = "NAIVE LOOKUP (NO COMPENSATION) <span class=\"v\">" +
+      Math.round(TC79.naive(mv)) + " C</span>";
+    truth.innerHTML = "TRUE TIP <span class=\"w\">" + t + " C</span>";
+  }
+  tip.addEventListener("input", upd);
+  cold.addEventListener("input", upd);
+  upd();
+}
+
+/* ---- in-world table converter ---- */
+function tc79ConvRender() {
+  var box = tc79Els.conv;
+  box.innerHTML = "";
+  box.appendChild(tc79El("p", "tc79-p",
+    "The NIST ITS-90 type-K table, in-world: the same table the trials are graded against. " +
+    "10 C steps, straight-line interpolation between steps."));
+  var row = tc79El("div", "tc79-row", "");
+  var fc = tc79El("div", "tc79-field", "");
+  var lc = tc79El("label", "", "DEGREES C");
+  lc.setAttribute("for", "tc79ConvC");
+  var ic = tc79El("input", "tc79-input", "");
+  ic.id = "tc79ConvC"; ic.type = "number";
+  ic.setAttribute("inputmode", "decimal");
+  ic.setAttribute("aria-label", "Degrees C to convert to millivolts");
+  ic.placeholder = "C";
+  fc.appendChild(lc); fc.appendChild(ic);
+  var fm = tc79El("div", "tc79-field", "");
+  var lm = tc79El("label", "", "MILLIVOLTS");
+  lm.setAttribute("for", "tc79ConvMv");
+  var im = tc79El("input", "tc79-input", "");
+  im.id = "tc79ConvMv"; im.type = "number";
+  im.setAttribute("inputmode", "decimal");
+  im.setAttribute("aria-label", "Millivolts to convert to degrees C");
+  im.placeholder = "mV";
+  fm.appendChild(lm); fm.appendChild(im);
+  row.appendChild(fc); row.appendChild(fm);
+  box.appendChild(row);
+  var out = tc79El("div", "tc79-out", "");
+  out.id = "tc79ConvOut";
+  out.setAttribute("aria-live", "polite");
+  box.appendChild(out);
+  function fromC() {
+    var x = parseFloat(ic.value);
+    out.innerHTML = isNaN(x) ? "" :
+      "<span class=\"v\">" + x + " C</span> = <span class=\"v\">" +
+      TC79.mvAt(x).toFixed(3) + " mV</span> on the type-K table";
+  }
+  function fromMv() {
+    var x = parseFloat(im.value);
+    out.innerHTML = isNaN(x) ? "" :
+      "<span class=\"v\">" + x + " mV</span> = <span class=\"v\">" +
+      TC79.cAt(x).toFixed(1) + " C</span> on the type-K table";
+  }
+  ic.addEventListener("input", fromC);
+  im.addEventListener("input", fromMv);
+}
+
+/* ---- trials ---- */
+function tc79TrialRender(i) {
+  var tr = tc79Trial(i), st = tc79St[tr.id];
+  var box = tc79Els[tr.id];
+  box.innerHTML = "";
+  var tw = tc79El("div", "tc79-trial", "");
+  var pass = st.pass ? "<span class=\"tc79-pass\">PASS</span>" : "";
+  tw.appendChild(tc79El("h4", "", tr.tag + pass));
+  tw.appendChild(tc79El("p", "tc79-p", tr.story));
+  if (tr.note) tw.appendChild(tc79El("p", "tc79-p", tr.note));
+  tw.appendChild(tc79El("div", "tc79-meter",
+    TC79.r2(tr.meterMv).toFixed(2) + " <small>MILLIVOLTS ON THE METER</small>"));
+  tw.appendChild(tc79El("div", "tc79-out",
+    "TERMINALS <span class=\"v\">" + tr.cold + " C</span>"));
+  var row = tc79El("div", "tc79-row", "");
+  var inp = tc79El("input", "tc79-input", "");
+  inp.id = "tc79In" + tr.id;
+  inp.type = "number";
+  inp.setAttribute("inputmode", "decimal");
+  inp.setAttribute("aria-label", "Tip temperature for " + tr.tag + ", in degrees C");
+  inp.placeholder = "tip temp, C";
+  row.appendChild(inp);
+  var b = tc79Btn("CHECK", "");
+  b.setAttribute("aria-label", "Check the tip temperature for " + tr.tag);
+  b.addEventListener("click", function () { tc79TrialCall(i, inp.value); });
+  row.appendChild(b);
+  tw.appendChild(row);
+  var vl = tc79El("div", "tc79-verdict", "");
+  vl.id = "tc79Verdict" + tr.id;
+  vl.setAttribute("aria-live", "polite");
+  tw.appendChild(vl);
+  box.appendChild(tw);
+}
+function tc79TrialCall(i, raw) {
+  var tr = tc79Trial(i), st = tc79St[tr.id];
+  var vl = document.getElementById("tc79Verdict" + tr.id);
+  var x = parseFloat(raw);
+  if (isNaN(x)) {
+    vl.className = "tc79-verdict bad";
+    vl.innerHTML = "<b>NO READING LOGGED.</b> Type the tip temperature in degrees C.";
+    return;
+  }
+  if (TC79.check(x, tr.tip)) {
+    st.pass = true;
+    tc79TrialRender(i);
+    vl = document.getElementById("tc79Verdict" + tr.id);
+    vl.className = "tc79-verdict ok";
+    vl.innerHTML = "<b>CORRECT: " + tr.tip + " C.</b> Meter " +
+      TC79.r2(tr.meterMv).toFixed(2) + " mV plus the " + tr.cold +
+      " C terminals (" + TC79.mvAt(tr.cold).toFixed(2) + " mV) = " +
+      TC79.r2(tr.meterMv + TC79.mvAt(tr.cold)).toFixed(2) +
+      " mV, and the table says " + tr.tip + " C. Junction certified.";
+    tc79CheckCert();
+    return;
+  }
+  vl.className = "tc79-verdict bad";
+  if (Math.abs(x - tr.trap) <= tr.trapTol) {
+    vl.innerHTML = "<b>NOT QUITE.</b> " + tr.missNaive;
+  } else {
+    vl.innerHTML = "<b>NOT QUITE.</b> " + tr.missGeneric;
+  }
+}
+
+/* ---- open / close / build ---- */
+function tc79Open() {
+  tc79Els.overlay.classList.add("open");
+  document.body.style.overflow = "hidden";
+}
+function tc79Close() {
+  tc79Els.overlay.classList.remove("open");
+  document.body.style.overflow = "";
+}
+function tc79Build() {
+  var box = document.querySelector(".dossier .actions");
+  if (!box) return;
+  if (document.getElementById("tc79Btn")) return;
+  tc79St = tc79NewState();
+
+  var sty = document.createElement("style");
+  sty.id = "tc79Style";
+  sty.textContent = TC79_CSS;
+  document.head.appendChild(sty);
+
+  var b = document.createElement("button");
+  b.id = "tc79Btn";
+  b.className = "pg-launch";
+  b.textContent = "Open The Thermocouple Room";
+  b.addEventListener("click", tc79Open);
+  box.appendChild(b);
+
+  var ov = tc79El("div", "tc79-overlay", "");
+  ov.id = "tc79Overlay";
+  ov.setAttribute("role", "dialog");
+  ov.setAttribute("aria-label", "The Thermocouple Room");
+  var x = tc79Btn("CLOSE", "");
+  x.id = "tc79XBtn";
+  x.style.cssText = "position:fixed;top:calc(12px + env(safe-area-inset-top));right:calc(16px + env(safe-area-inset-right));z-index:95;";
+  x.setAttribute("aria-label", "Close The Thermocouple Room");
+  x.addEventListener("click", tc79Close);
+  ov.appendChild(x);
+  tc79Els.overlay = ov;
+  if (!tc79EscBound) {
+    tc79EscBound = true;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && tc79Els.overlay && tc79Els.overlay.classList.contains("open")) tc79Close();
+    });
+  }
+
+  var panel = tc79El("div", "tc79-panel", "");
+  panel.appendChild(tc79El("div", "tc79-kicker", "BENCH CRAFT \u00B7 BENCH 79"));
+  panel.appendChild(tc79El("h2", "tc79-title", "The Thermocouple Room"));
+
+  var intro = tc79El("div", "", "");
+  intro.innerHTML = TC79.INTRO_HTML;
+  panel.appendChild(intro);
+
+  var prog = tc79El("div", "tc79-out", "");
+  prog.id = "tc79Progress";
+  prog.setAttribute("aria-live", "polite");
+  panel.appendChild(prog);
+  tc79Els.progress = prog;
+
+  panel.appendChild(tc79El("h3", "tc79-sec", "DO FIRST: CALL IT BEFORE THE MATH"));
+  tc79Els.predict = tc79El("div", "", "");
+  panel.appendChild(tc79Els.predict);
+
+  panel.appendChild(tc79El("h3", "tc79-sec", "THE WORKED EXAMPLE"));
+  var worked = tc79El("div", "", "");
+  worked.innerHTML = TC79.WORKED_HTML;
+  panel.appendChild(worked);
+
+  panel.appendChild(tc79El("h3", "tc79-sec", "THE TWO-JUNCTION RULE"));
+  var rules = tc79El("div", "", "");
+  rules.innerHTML = TC79.RULES_HTML;
+  panel.appendChild(rules);
+
+  panel.appendChild(tc79El("h3", "tc79-sec", "THE LIVE PROBE"));
+  tc79Els.probe = tc79El("div", "", "");
+  panel.appendChild(tc79Els.probe);
+
+  panel.appendChild(tc79El("h3", "tc79-sec", "THE TABLE, IN-WORLD"));
+  tc79Els.conv = tc79El("div", "", "");
+  panel.appendChild(tc79Els.conv);
+
+  var ids = ["t1", "t2", "t3"];
+  for (var i = 0; i < ids.length; i++) {
+    panel.appendChild(tc79El("h3", "tc79-sec", "CERTIFY: " + tc79Trial(i).tag));
+    tc79Els[ids[i]] = tc79El("div", "", "");
+    panel.appendChild(tc79Els[ids[i]]);
+  }
+
+  var banner = tc79El("div", "tc79-banner", "");
+  banner.id = "tc79Banner";
+  banner.setAttribute("aria-live", "polite");
+  panel.appendChild(banner);
+  tc79Els.banner = banner;
+
+  /* hire line: thermal-numbers triage offer at the foot of the bench, matching
+     the Bench 71-78 pattern. The hire-chooser module binds [data-brief]
+     triggers document-wide. Copy only. */
+  var hire = tc79El("p", "tc79-p", "");
+  hire.innerHTML = "Oven readings nobody trusts and a profile built on guesses? " +
+    "<button type=\"button\" class=\"tc79-btn\" data-brief=\"triage\" data-bench-tag=\"Bench 79: The Thermocouple Room\">Crash triage</button>";
+  panel.appendChild(hire);
+
+  ov.appendChild(panel);
+  document.body.appendChild(ov);
+
+  tc79PredictRender();
+  tc79ProbeRender();
+  tc79ConvRender();
+  tc79TrialRender(0);
+  tc79TrialRender(1);
+  tc79TrialRender(2);
+  tc79Progress();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", tc79Build);
+} else {
+  tc79Build();
+}
+
+/* debug hooks for the smoke test */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.TC79 = TC79;
+  module.exports.tc79Debug = {
+    state: function () { return tc79St; },
+    els: function () { return tc79Els; },
+    predictCall: tc79PredictCall,
+    trialCall: tc79TrialCall,
+    trialRender: tc79TrialRender,
+    probeRender: tc79ProbeRender,
+    convRender: tc79ConvRender
+  };
+}
+})();
