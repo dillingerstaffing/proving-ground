@@ -6,14 +6,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
-<meta name="description" content="The Proving Ground: 79 interactive hardware benches, RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs entirely on your device.">
+<meta name="description" content="The Proving Ground: 80 interactive hardware benches, RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs entirely on your device.">
 <link rel="canonical" href="https://dillingerstaffing.github.io/proving-ground/">
 <meta name="robots" content="index, follow, max-image-preview:large">
 <meta name="theme-color" content="#0a0c0e">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="The Proving Ground">
 <meta property="og:title" content="The Proving Ground: Working Engineering Benches">
-<meta property="og:description" content="79 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs in the browser.">
+<meta property="og:description" content="80 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs in the browser.">
 <meta property="og:url" content="https://dillingerstaffing.github.io/proving-ground/">
 <meta property="og:image" content="https://dillingerstaffing.github.io/proving-ground/og-card.png">
 <meta property="og:image:width" content="1200">
@@ -25,7 +25,7 @@
 {"@context":"https://schema.org","@type":"WebApplication",
  "name":"The Proving Ground",
  "url":"https://dillingerstaffing.github.io/proving-ground/",
- "description":"79 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft.",
+ "description":"80 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft.",
  "applicationCategory":"BrowserApplication","operatingSystem":"Any modern web browser",
  "isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
@@ -1238,7 +1238,11 @@ var PG_BENCHES = [
   { section: "craft", n: "79", name: "The Thermocouple Room", btn: "tc79Btn", pill: "oldiron", pillLabel: "BENCH CRAFT",
     desc: "A thermocouple never reads temperature, only the gap between its two junctions. Real NIST type-K data, a live two-junction probe, three certification measurements.",
     how: "Predict the tip temperature, work the cold-junction math on the live probe, then certify three junctions.",
-    spec: "TYPE K \u00B7 CJC \u00B7 3 TRIALS" }
+    spec: "TYPE K \u00B7 CJC \u00B7 3 TRIALS" },
+  { section: "analog", n: "80", name: "The Opto Room", btn: "op80Btn", pill: "tapeout", pillLabel: "ANALOG AND POWER ELECTRONICS",
+    desc: "Isolation on the bench: an LED drives a phototransistor across a 3750 V gap, no copper between the sides. Size the LED resistor against CTR aging, outlast the mushy middle, and prove a 1 kV surge never reaches the output.",
+    how: "Predict the output before the math, work the live bench against the CTR selector, fire the surge, certify all three trials.",
+    spec: "OPTO ISOLATION \u00B7 CTR AGING \u00B7 1 KV SURGE" }
  ];
 /* Teaching order: the sequence a newcomer should take the benches in.
    The index renders this list top to bottom; the number on each row is its
@@ -1299,6 +1303,7 @@ var PG_TEACH_ORDER = [
   "69",
   "61",
   "62",
+  "80",
   "37",
   "50",
   "35",
@@ -1333,7 +1338,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-25-pg133";
+var PG_REV = "2026-09-26-pg134";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
@@ -1993,9 +1998,9 @@ if ('serviceWorker' in navigator) {
   apply(current());
 })();
 </script>
-<script src="rvcore.js?v=5c81308eab" defer></script>
-<script src="rvdata.js?v=5c81308eab" defer></script>
-<script src="riscv-lab.js?v=5c81308eab" defer></script>
-<script src="features.js?v=5c81308eab" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=23c1fa2afb" defer></script>
+<script src="rvdata.js?v=23c1fa2afb" defer></script>
+<script src="riscv-lab.js?v=23c1fa2afb" defer></script>
+<script src="features.js?v=23c1fa2afb" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>

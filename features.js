@@ -63283,3 +63283,685 @@ if (typeof module !== "undefined" && module.exports) {
   };
 }
 })();
+/* ============================================================
+   BENCH 80: THE OPTO ROOM (op80)
+   One atomic mechanism: an optocoupler moves a signal across a gap on
+   light alone. LED current times CTR equals phototransistor current,
+   and that current across the output resistor is the isolated output.
+   No copper touches between the two sides.
+   One sentence takeaway: the LED current times the CTR sets the
+   phototransistor current, the output resistor turns that current into
+   a voltage, and the isolation barrier means a surge on one side never
+   reaches the other.
+   Data: hand-verified resistor and CTR arithmetic (LED Vf 1.2 V,
+   Vce(sat) 0.2 V, 20 mA continuous LED rating, 3750 V isolation class,
+   CTR bands 100/45/25 pct). All trial numbers recomputed in OP80.t2fix
+   and the smoke assertions, 2026-09-26.
+   Do-first: predict the output for 3.3 V in through 220 ohms, CTR 100
+   pct, 5 V out through 680 ohms (the inversion trap: it reads LOW,
+   0.2 V, not HIGH).
+   Live bench: R1/R2 sliders, CTR selector (fresh/aged/hot), input
+   toggle, surge button, live LED/photo/output meters, saturation lamp.
+   Trials: T1 classifies a fresh-part output (the MUSHY trap), T2 picks
+   the fixes that re-saturate an aged part without burning the LED,
+   T3 proves the 1 kV surge never reaches the output.
+   Pure sim hooks live in OP80 for the smoke test; the DOM engine below
+   drives the same code. Self-contained IIFE, appended at the end of
+   features.js.
+   ============================================================ */
+(function () {
+"use strict";
+
+/* ---------------- pure hooks (testable, no DOM) ---------------- */
+var OP80 = {};
+OP80.VF = 1.2;        /* LED forward drop, volts */
+OP80.VIN1 = 3.3;      /* input-side logic rail, volts */
+OP80.VCC2 = 5.0;      /* output-side logic rail, volts */
+OP80.VCESAT = 0.2;    /* saturated phototransistor floor, volts */
+OP80.LED_MAX = 20;    /* continuous LED rating, mA */
+OP80.SAT_MAX = 0.4;   /* output at or under this is a legal LOW, volts */
+OP80.DARK_MIN = 4.5;  /* output at or over this is DARK, volts */
+OP80.BARRIER = 3750;  /* isolation class, volts */
+OP80.SURGE = 1000;    /* trial surge, volts */
+
+/* LED current in mA for a given R1 in ohms. */
+OP80.led = function (r1) {
+  var i = (OP80.VIN1 - OP80.VF) / r1 * 1000;
+  return i < 0 ? 0 : i;
+};
+/* Phototransistor current in mA: LED current times CTR percent. */
+OP80.photo = function (iLed, ctrPct) { return iLed * ctrPct / 100; };
+/* Output volts for photo current in mA and R2 in ohms, input HIGH.
+   The transistor can only pull to its saturation floor. */
+OP80.vout = function (iPhoto, r2) {
+  var v = OP80.VCC2 - iPhoto * r2 / 1000;
+  return v < OP80.VCESAT ? OP80.VCESAT : v;
+};
+/* Output state name when the input is HIGH. */
+OP80.state = function (vout, iLed) {
+  if (iLed > OP80.LED_MAX) return "overdrive";
+  if (vout <= OP80.SAT_MAX) return "saturated";
+  if (vout < OP80.DARK_MIN) return "mushy";
+  return "dark";
+};
+OP80.r2 = function (x) { return Math.round(x * 100) / 100; };
+
+/* Trial 2: the aged part. Baseline R1 220, R2 680, CTR 45 pct.
+   Each candidate fix changes one value; ok means the output
+   re-saturates (at or under 0.4 V) with the LED at or under 20 mA. */
+OP80.t2fix = function (id) {
+  var r1 = 220, r2 = 680, vcc = OP80.VCC2;
+  if (id === "A") r1 = 110;
+  if (id === "B") r2 = 1500;
+  if (id === "C") r1 = 470;
+  if (id === "D") vcc = 12.0;
+  var iLed = (OP80.VIN1 - OP80.VF) / r1 * 1000;
+  var iPh = iLed * 45 / 100;
+  var v = vcc - iPh * r2 / 1000;
+  if (v < OP80.VCESAT) v = OP80.VCESAT;
+  return { iLed: iLed, vout: v, ok: (v <= OP80.SAT_MAX) && (iLed <= OP80.LED_MAX) };
+};
+
+OP80.PREDICT = { r1: 220, ctr: 100, r2: 680, vout: 0.2 };
+OP80.T1 = { tag: "TRIAL 1: THE FRESH PART", r1: 330, ctr: 100, r2: 470,
+  answer: "MUSHY", vout: 2.01,
+  story: "Fresh optocoupler, CTR 100 pct. Input rail 3.3 V, R1 is 330 ohms, output rail 5 V, R2 is 470 ohms. Input HIGH. Classify the output: SATURATED, MUSHY, or DARK.",
+  note: "Work it by hand first: the LED current, times the CTR, times R2, against the 5 V rail.",
+  miss: "SATURATED is the worked-example answer, not this one. The LED runs (3.3 - 1.2) / 330 = 6.36 mA, the phototransistor sees the full 6.36 mA, and 6.36 mA across 470 ohms is a 2.99 V pull: 5 - 2.99 = 2.01 V. That is the mushy middle, not a logic LOW. The next stage would chatter." };
+OP80.T2 = { tag: "TRIAL 2: THE AGED PART",
+  story: "Same bench, but this optocoupler has run hot for years: CTR is now 45 pct. R1 is 220 ohms, R2 is 680 ohms. The LED runs (3.3 - 1.2) / 220 = 9.55 mA, the phototransistor sees 4.30 mA, and the output sits at 2.08 V: mushy. Check every fix that re-saturates the output (0.4 V or under) while keeping the LED at or under 20 mA.",
+  fixes: [
+    { id: "A", text: "R1: 220 ohms down to 110 ohms (drive the LED harder)" },
+    { id: "B", text: "R2: 680 ohms up to 1500 ohms (pull harder with less current)" },
+    { id: "C", text: "R1: 220 ohms up to 470 ohms (spare the LED)" },
+    { id: "D", text: "Output rail: 5 V up to 12 V (more headroom)" }
+  ],
+  good: ["A", "B"],
+  miss: "Run each fix through the chain. A: LED (3.3 - 1.2) / 110 = 19.09 mA, under the 20 mA ceiling, phototransistor 8.59 mA, 5.84 V of pull, output clamps at 0.2 V. B: same 4.30 mA of photo current, but 4.30 mA across 1500 ohms is 6.44 V of pull, clamped at 0.2 V. C starves the LED to 4.47 mA and the output drifts to 3.63 V. D gives the weak current a taller rail to fail against: 9.08 V. Only A and B re-saturate without burning the LED." };
+OP80.T3 = { tag: "TRIAL 3: THE SURGE",
+  story: "The barrier is rated 3750 V. The input side takes a 1000 V, 1 ms spike. Press the FIRE 1 KV SURGE button on the live bench, watch the output meter, then answer: during the spike, the output...",
+  options: [
+    { id: "A", text: "swings with the input side" },
+    { id: "B", text: "stays exactly where it was" },
+    { id: "C", text: "latches low until reset" }
+  ],
+  answer: "B",
+  needSurge: "Press the FIRE 1 KV SURGE button on the live bench first. The button works before you answer: fire it and watch the output meter hold.",
+  miss: "It stays exactly where it was. No copper crosses the barrier, so the spike has no path to the output side: isolation is geometric, not electrical. That is the entire reason the optocoupler exists." };
+
+OP80.INTRO_HTML =
+  "<p class=\"op80-p\">A switch-mode supply must send its feedback signal from the output side back to the controller. The catch: the two sides sit on opposite sides of the mains isolation barrier, and <b>no copper trace may cross it</b>. The optocoupler answers with light: an LED shines at a phototransistor across a 3750 V rated gap. Three trials to certify: classify a fresh part's output, rescue an aged part, and prove a 1 kV surge never reaches the other side.</p>";
+
+OP80.RULES_HTML =
+  "<p class=\"op80-p\"><b>The output is inverted.</b> Input HIGH lights the LED, the phototransistor conducts, and the output pulls LOW. If you predicted HIGH in the do-first above, you have met the trap this bench is named for.</p>" +
+  "<p class=\"op80-p\"><b>The chain has three links.</b> LED current = (input rail - 1.2 V) / R1. Phototransistor current = LED current x CTR. Output = 5 V - (photo current x R2), floored at the 0.2 V saturation floor. Every trial is this chain, nothing else.</p>" +
+  "<p class=\"op80-p\">Failure modes, stated plainly. <b>LED overdrive:</b> more than 20 mA cooks the emitter, the CTR collapses, the LED dies open, and the output goes dark forever. <b>CTR aging:</b> heat and time drag a 100 pct part toward 45 pct and below; size to the worst case, never the datasheet typical. <b>The mushy middle:</b> 0.4 to 4.5 V is not a logic level, and the next stage may chatter on it. <b>Reversed or open LED:</b> no light, output dark. <b>Floating input:</b> the LED current is undefined, tie the input down.</p>";
+
+OP80.WORKED_HTML =
+  "<p class=\"op80-p\"><b>Step 1, the LED:</b> (3.3 - 1.2) / 220 ohms = 9.55 mA. Under the 20 mA ceiling, the emitter lives.</p>" +
+  "<p class=\"op80-p\"><b>Step 2, the gain:</b> 9.55 mA x 100 pct CTR = 9.55 mA through the phototransistor.</p>" +
+  "<p class=\"op80-p\"><b>Step 3, the output:</b> 9.55 mA x 680 ohms = 6.49 V of pull against the 5 V rail. The transistor cannot pull below its 0.2 V floor, so it saturates and the output clamps at <b>0.2 V</b>. Input HIGH, output LOW: the inversion is the whole bench.</p>";
+
+/* ---------------- styles ---------------- */
+var OP80_CSS = [
+  ".op80-overlay{position:fixed;inset:0;z-index:90;background:var(--ink);display:none;overflow-y:auto;}",
+  ".op80-overlay.open{display:block;}",
+  ".op80-panel{max-width:860px;margin:0 auto;padding:28px 18px 60px;color:var(--paper);box-sizing:border-box;}",
+  ".op80-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);}",
+  ".op80-title{font-family:'Space Grotesk',sans-serif;font-size:34px;margin:6px 0 10px;color:var(--paper);}",
+  ".op80-sec{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.16em;color:var(--ember);margin:26px 0 10px;padding-top:16px;border-top:1px solid var(--line);}",
+  ".op80-p{font-size:13.5px;line-height:1.7;color:var(--dim);max-width:74ch;margin:0 0 12px;}",
+  ".op80-p b{color:var(--paper);}",
+  ".op80-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0;}",
+  ".op80-btn{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.08em;background:transparent;color:var(--paper);border:1px solid var(--line);padding:0 16px;min-height:48px;cursor:pointer;border-radius:2px;}",
+  ".op80-btn:hover{border-color:var(--ember);color:var(--ember);}",
+  ".op80-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+  ".op80-btn.on{background:var(--ember);border-color:var(--ember);color:#0a0a0a;}",
+  ".op80-btn:disabled{opacity:.4;cursor:default;}",
+  ".op80-input{font-family:'IBM Plex Mono',monospace;font-size:14px;background:var(--panel);color:var(--paper);border:1px solid var(--line);padding:0 12px;min-height:48px;border-radius:2px;width:180px;box-sizing:border-box;}",
+  ".op80-input:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+  ".op80-verdict{font-size:13px;line-height:1.6;color:var(--dim);margin:10px 0;padding:12px 14px;border:1px solid var(--line);border-radius:2px;max-width:74ch;}",
+  ".op80-verdict.ok{border-color:var(--ember);color:var(--paper);}",
+  ".op80-verdict.bad{border-color:#7a2a1a;color:var(--dim);}",
+  ".op80-verdict b{color:var(--paper);}",
+  ".op80-out{font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:var(--dim);margin:8px 0;}",
+  ".op80-out b{color:var(--ember);}",
+  ".op80-meter{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:12px 0;}",
+  ".op80-mbox{border:1px solid var(--line);border-radius:2px;padding:10px 12px;}",
+  ".op80-mbox .k{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.14em;color:var(--dim);}",
+  ".op80-mbox .v{font-family:'IBM Plex Mono',monospace;font-size:20px;color:var(--paper);margin-top:4px;}",
+  ".op80-mbox .v.hot{color:var(--ember);}",
+  ".op80-lamp{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.1em;padding:10px 14px;border:1px solid var(--line);border-radius:2px;display:inline-block;margin:6px 0;min-height:48px;line-height:28px;box-sizing:border-box;}",
+  ".op80-lamp.sat{border-color:var(--ember);color:var(--ember);}",
+  ".op80-lamp.warn{border-color:#7a2a1a;color:#ff8a6a;}",
+  ".op80-slider-row{display:grid;grid-template-columns:64px 1fr 96px;gap:10px;align-items:center;margin:8px 0;min-height:48px;}",
+  ".op80-slider-row label{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--paper);}",
+  ".op80-slider-row output{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ember);text-align:right;}",
+  ".op80-slider-row input[type=range]{width:100%;min-height:48px;accent-color:var(--ember);}",
+  ".op80-barrier{display:flex;align-items:stretch;gap:0;margin:14px 0;border:1px solid var(--line);border-radius:2px;overflow:hidden;}",
+  ".op80-side{flex:1;padding:12px;font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.6;color:var(--dim);}",
+  ".op80-side b{color:var(--paper);display:block;font-size:12px;letter-spacing:.1em;}",
+  ".op80-gap{background:repeating-linear-gradient(45deg,transparent,transparent 8px,rgba(255,90,31,.14) 8px,rgba(255,90,31,.14) 16px);border-left:1px solid var(--ember);border-right:1px solid var(--ember);padding:12px 10px;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.12em;color:var(--ember);text-align:center;display:flex;align-items:center;}",
+  ".op80-spark{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#ff8a6a;margin:8px 0;min-height:20px;}",
+  ".op80-choice{display:flex;align-items:center;gap:10px;margin:6px 0;min-height:48px;padding:6px 10px;border:1px solid var(--line);border-radius:2px;cursor:pointer;font-size:13px;color:var(--dim);}",
+  ".op80-choice input{width:22px;height:22px;accent-color:var(--ember);flex:none;}",
+  ".op80-choice.sel{border-color:var(--ember);color:var(--paper);}",
+  ".op80-banner{display:none;margin-top:22px;border:1px solid var(--ember);border-radius:2px;padding:18px;}",
+  ".op80-banner.show{display:block;}",
+  ".op80-banner h3{font-family:'IBM Plex Mono',monospace;font-size:14px;letter-spacing:.16em;color:var(--ember);margin:0 0 8px;}",
+  ".op80-banner p{font-size:13px;line-height:1.7;color:var(--dim);margin:0 0 10px;}",
+  ".op80-banner p b{color:var(--paper);}",
+  "@media (max-width:560px){.op80-title{font-size:26px;}.op80-barrier{flex-direction:column;}.op80-gap{border-left:none;border-right:none;border-top:1px solid var(--ember);border-bottom:1px solid var(--ember);background:repeating-linear-gradient(-45deg,transparent,transparent 8px,rgba(255,90,31,.14) 8px,rgba(255,90,31,.14) 16px);}}"
+].join("\n");
+
+/* ---------------- state and helpers ---------------- */
+var op80St = null;
+var op80Els = {};
+var op80EscBound = false;
+
+function op80NewState() {
+  return { t1: { pass: false }, t2: { pass: false }, t3: { pass: false },
+           predicted: false, certified: false, surgeSeen: false,
+           ctr: 100, r1: 220, r2: 680, inputHigh: true };
+}
+function op80El(tag, cls, html) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html !== undefined && html !== "") e.innerHTML = html;
+  return e;
+}
+function op80Btn(label, cls) {
+  var b = op80El("button", "op80-btn" + (cls ? " " + cls : ""), "");
+  b.type = "button";
+  b.textContent = label;
+  return b;
+}
+function op80Trial(i) { return [OP80.T1, OP80.T2, OP80.T3][i]; }
+
+/* The whole bench in one read: LED -> CTR -> R2 -> output. */
+function op80Read() {
+  var iLed = OP80.led(op80St.r1);
+  var iPh = OP80.photo(iLed, op80St.ctr);
+  var v = op80St.inputHigh ? OP80.vout(iPh, op80St.r2) : OP80.VCC2;
+  var st = op80St.inputHigh ? OP80.state(v, iLed) : "off";
+  return { iLed: iLed, iPh: iPh, vout: v, state: st };
+}
+function op80StateLabel(r) {
+  if (r.state === "overdrive") return "LED OVERDRIVE";
+  if (r.state === "saturated") return "SATURATED LOW";
+  if (r.state === "mushy") return "MUSHY MIDDLE";
+  if (r.state === "dark") return "DARK HIGH";
+  return "INPUT LOW: OUTPUT HIGH";
+}
+
+/* ---------------- predict (do-first) ---------------- */
+function op80PredictRender() {
+  var box = op80Els.predict;
+  box.innerHTML = "";
+  box.appendChild(op80El("p", "op80-p",
+    "The input rail is 3.3 V, R1 is 220 ohms, the CTR is 100 pct, the output rail is 5 V, R2 is 680 ohms. " +
+    "The input goes HIGH. Before any math: call it. What is the output voltage, in volts? No stakes, just call it."));
+  var row = op80El("div", "op80-row", "");
+  var inp = op80El("input", "op80-input", "");
+  inp.id = "op80PredictIn";
+  inp.type = "number";
+  inp.step = "0.01";
+  inp.setAttribute("inputmode", "decimal");
+  inp.setAttribute("aria-label", "Predicted output voltage in volts");
+  inp.placeholder = "output, V";
+  row.appendChild(inp);
+  var b = op80Btn("LOG PREDICTION", "");
+  b.setAttribute("aria-label", "Log your prediction");
+  b.addEventListener("click", function () { op80PredictCall(inp.value); });
+  row.appendChild(b);
+  box.appendChild(row);
+  var out = op80El("div", "op80-verdict", "");
+  out.id = "op80PredictOut";
+  out.setAttribute("aria-live", "polite");
+  box.appendChild(out);
+}
+function op80PredictCall(raw) {
+  var vl = document.getElementById("op80PredictOut");
+  var x = parseFloat(raw);
+  if (isNaN(x)) {
+    vl.className = "op80-verdict bad";
+    vl.innerHTML = "<b>NO READING LOGGED.</b> Type the output voltage in volts.";
+    return;
+  }
+  op80St.predicted = true;
+  if (Math.abs(x - OP80.PREDICT.vout) <= 0.15) {
+    vl.className = "op80-verdict ok";
+    vl.innerHTML = "<b>CALLED IT: 0.2 V.</b> You saw the inversion before the math did. " +
+      "The worked example below shows the three steps so you can check your chain.";
+  } else if (Math.abs(x - 5) <= 0.3) {
+    vl.className = "op80-verdict bad";
+    vl.innerHTML = "<b>THE TRAP.</b> 5 V is what the output reads with the input LOW. " +
+      "Input HIGH lights the LED, the phototransistor conducts, and the output pulls LOW to 0.2 V. " +
+      "The worked example below walks the three steps.";
+  } else {
+    vl.className = "op80-verdict bad";
+    vl.innerHTML = "<b>NOT QUITE.</b> The worked example below walks the three steps: " +
+      "LED current, CTR gain, then the R2 pull against the saturation floor.";
+  }
+  op80Progress();
+}
+
+/* ---------------- live bench ---------------- */
+function op80LiveRender() {
+  var box = op80Els.live;
+  box.innerHTML = "";
+  box.appendChild(op80El("p", "op80-p",
+    "Free bench, live model. Move the resistors, change the part's age, flip the input, " +
+    "and read the three meters. Every number below is the same chain the trials grade."));
+
+  var ctrRow = op80El("div", "op80-row", "");
+  ctrRow.setAttribute("role", "group");
+  ctrRow.setAttribute("aria-label", "Part age, current transfer ratio");
+  var ctrBtns = {};
+  [["FRESH 100%", 100], ["AGED 45%", 45], ["HOT 25%", 25]].forEach(function (c) {
+    var b = op80Btn(c[0], c[1] === op80St.ctr ? "on" : "");
+    b.setAttribute("aria-pressed", c[1] === op80St.ctr ? "true" : "false");
+    b.addEventListener("click", function () {
+      op80St.ctr = c[1];
+      for (var k in ctrBtns) {
+        ctrBtns[k].classList.toggle("on", parseInt(k, 10) === c[1]);
+        ctrBtns[k].setAttribute("aria-pressed", parseInt(k, 10) === c[1] ? "true" : "false");
+      }
+      op80LiveUpdate();
+    });
+    ctrBtns[c[1]] = b;
+    ctrRow.appendChild(b);
+  });
+  box.appendChild(ctrRow);
+
+  function sliderRow(label, id, min, max, step, val, fmt) {
+    var row = op80El("div", "op80-slider-row", "");
+    var lab = op80El("label", "", label);
+    lab.setAttribute("for", id);
+    row.appendChild(lab);
+    var s = document.createElement("input");
+    s.type = "range"; s.id = id;
+    s.min = min; s.max = max; s.step = step; s.value = val;
+    var out = op80El("output", "", fmt(val));
+    out.setAttribute("for", id);
+    s.addEventListener("input", function () {
+      out.textContent = fmt(parseFloat(s.value));
+      op80St[id === "op80R1" ? "r1" : "r2"] = parseFloat(s.value);
+      op80LiveUpdate();
+    });
+    row.appendChild(s);
+    row.appendChild(out);
+    return row;
+  }
+  box.appendChild(sliderRow("R1", "op80R1", 100, 1000, 10, op80St.r1, function (v) { return v + " ohm"; }));
+  box.appendChild(sliderRow("R2", "op80R2", 220, 4700, 10, op80St.r2, function (v) { return v + " ohm"; }));
+
+  var act = op80El("div", "op80-row", "");
+  var tg = op80Btn("INPUT: HIGH", "");
+  tg.id = "op80InputTg";
+  tg.setAttribute("aria-pressed", "true");
+  tg.addEventListener("click", function () {
+    op80St.inputHigh = !op80St.inputHigh;
+    tg.textContent = op80St.inputHigh ? "INPUT: HIGH" : "INPUT: LOW";
+    tg.setAttribute("aria-pressed", op80St.inputHigh ? "true" : "false");
+    op80LiveUpdate();
+  });
+  act.appendChild(tg);
+  var sg = op80Btn("FIRE 1 KV SURGE", "");
+  sg.id = "op80SurgeBtn";
+  sg.addEventListener("click", op80Surge);
+  act.appendChild(sg);
+  box.appendChild(act);
+
+  var barrier = op80El("div", "op80-barrier", "");
+  barrier.appendChild(op80El("div", "op80-side",
+    "<b>HOST SIDE</b>3.3 V logic<br>LED + R1<br>the spike lands here"));
+  barrier.appendChild(op80El("div", "op80-gap", "3750 V<br>ISOLATION<br>BARRIER"));
+  barrier.appendChild(op80El("div", "op80-side",
+    "<b>FIELD SIDE</b>5 V logic<br>phototransistor + R2<br>no copper crosses"));
+  box.appendChild(barrier);
+
+  var spark = op80El("div", "op80-spark", "");
+  spark.id = "op80Spark";
+  spark.setAttribute("aria-live", "polite");
+  box.appendChild(spark);
+
+  var meters = op80El("div", "op80-meter", "");
+  meters.setAttribute("aria-live", "polite");
+  [["LED CURRENT", "op80mLed", "mA"], ["PHOTO CURRENT", "op80mPh", "mA"],
+   ["OUTPUT", "op80mV", "V"]].forEach(function (m) {
+    var mb = op80El("div", "op80-mbox", "");
+    mb.appendChild(op80El("div", "k", m[0]));
+    var v = op80El("div", "v", "");
+    v.id = m[1];
+    mb.appendChild(v);
+    mb.appendChild(op80El("div", "k", m[2]));
+    meters.appendChild(mb);
+  });
+  box.appendChild(meters);
+
+  var lamp = op80El("div", "op80-lamp", "");
+  lamp.id = "op80Lamp";
+  lamp.setAttribute("aria-live", "polite");
+  box.appendChild(lamp);
+  var ledLine = op80El("div", "op80-out", "");
+  ledLine.id = "op80LedLine";
+  box.appendChild(ledLine);
+
+  op80LiveUpdate();
+}
+function op80LiveUpdate() {
+  var r = op80Read();
+  var mLed = document.getElementById("op80mLed");
+  if (!mLed) return;
+  mLed.textContent = OP80.r2(r.iLed).toFixed(2);
+  mLed.classList.toggle("hot", r.iLed > OP80.LED_MAX);
+  document.getElementById("op80mPh").textContent = OP80.r2(r.iPh).toFixed(2);
+  document.getElementById("op80mV").textContent = OP80.r2(r.vout).toFixed(2);
+  var lamp = document.getElementById("op80Lamp");
+  lamp.textContent = "OUTPUT STATE: " + op80StateLabel(r);
+  lamp.className = "op80-lamp" + (r.state === "saturated" || r.state === "off" ? " sat" : "") +
+    (r.state === "overdrive" || r.state === "mushy" ? " warn" : "");
+  var ll = document.getElementById("op80LedLine");
+  if (r.iLed > OP80.LED_MAX) {
+    ll.innerHTML = "LED: <b>OVERDRIVE</b>, the emitter is cooking. The CTR collapses and the LED dies open: output goes dark forever. Raise R1.";
+  } else {
+    ll.innerHTML = "LED: OK, " + OP80.r2(r.iLed).toFixed(2) + " mA against the 20 mA ceiling.";
+  }
+}
+function op80Surge() {
+  op80St.surgeSeen = true;
+  var r = op80Read();
+  var spark = document.getElementById("op80Spark");
+  if (spark) {
+    spark.textContent = "1 kV spike on the input side. Output held at " +
+      OP80.r2(r.vout).toFixed(2) + " V: unchanged. No copper crosses the barrier, so the spike has no path.";
+  }
+  op80LiveUpdate();
+}
+
+/* ---------------- trials ---------------- */
+function op80ChoiceRow(box, name, opts, type) {
+  opts.forEach(function (o) {
+    var lab = op80El("label", "op80-choice", "");
+    var inp = document.createElement("input");
+    inp.type = type; inp.name = name; inp.value = o.id;
+    inp.addEventListener("change", function () {
+      var all = box.querySelectorAll(".op80-choice");
+      for (var i = 0; i < all.length; i++) {
+        var boxInp = all[i].querySelector("input");
+        all[i].classList.toggle("sel", boxInp.checked);
+      }
+    });
+    lab.appendChild(inp);
+    var sp = op80El("span", "", "<b>" + o.id + ".</b> " + o.text);
+    lab.appendChild(sp);
+    box.appendChild(lab);
+  });
+}
+function op80TrialRender(i) {
+  var box = op80Els[["t1", "t2", "t3"][i]];
+  box.innerHTML = "";
+  var tr = op80Trial(i);
+  box.appendChild(op80El("p", "op80-p", tr.story));
+  if (tr.note) box.appendChild(op80El("p", "op80-p", tr.note));
+  if (i === 0) {
+    op80ChoiceRow(box, "op80t1", [
+      { id: "SATURATED", text: "a legal logic LOW, 0.4 V or under" },
+      { id: "MUSHY", text: "the mushy middle, 0.4 to 4.5 V, no logic level" },
+      { id: "DARK", text: "the LED never turned the transistor on" }
+    ], "radio");
+  } else if (i === 1) {
+    op80ChoiceRow(box, "op80t2", tr.fixes, "checkbox");
+  } else {
+    op80ChoiceRow(box, "op80t3", tr.options, "radio");
+  }
+  var row = op80El("div", "op80-row", "");
+  var b = op80Btn("CHECK", "");
+  b.addEventListener("click", function () { op80TrialCall(i); });
+  row.appendChild(b);
+  box.appendChild(row);
+  var vl = op80El("div", "op80-verdict", "");
+  vl.id = "op80Verdict" + ["t1", "t2", "t3"][i];
+  vl.setAttribute("aria-live", "polite");
+  box.appendChild(vl);
+}
+function op80TrialCall(i) {
+  var id = ["t1", "t2", "t3"][i];
+  var st = op80St[id];
+  var vl = document.getElementById("op80Verdict" + id);
+  var tr = op80Trial(i);
+  function pass(msg) {
+    st.pass = true;
+    op80TrialRender(i);
+    vl = document.getElementById("op80Verdict" + id);
+    vl.className = "op80-verdict ok";
+    vl.innerHTML = msg;
+    op80CheckCert();
+  }
+  function fail(msg) {
+    vl.className = "op80-verdict bad";
+    vl.innerHTML = msg;
+  }
+  if (i === 0) {
+    var sel = document.querySelector("input[name=op80t1]:checked");
+    if (!sel) { fail("<b>NO CALL LOGGED.</b> Pick SATURATED, MUSHY, or DARK, then CHECK."); return; }
+    if (sel.value === tr.answer) {
+      pass("<b>CORRECT: MUSHY.</b> 6.36 mA of LED current, the full 6.36 mA through the " +
+        "phototransistor, 2.99 V of pull on R2: the output sits at 2.01 V, in the forbidden middle. " +
+        "A fresh part with the wrong resistors lies just as well as an aged one.");
+    } else {
+      fail("<b>NOT QUITE.</b> " + tr.miss);
+    }
+    return;
+  }
+  if (i === 1) {
+    var checked = [];
+    var boxes = document.querySelectorAll("input[name=op80t2]:checked");
+    for (var k = 0; k < boxes.length; k++) checked.push(boxes[k].value);
+    checked.sort();
+    var good = tr.good.slice().sort();
+    if (checked.length === 0) { fail("<b>NO FIX CHECKED.</b> Check every fix that works, then CHECK."); return; }
+    if (checked.join(",") === good.join(",")) {
+      pass("<b>CORRECT: A AND B.</b> A drives the LED at 19.09 mA, just under the 20 mA ceiling, " +
+        "for 8.59 mA of photo current and a hard 0.2 V clamp. B keeps the tired 4.30 mA and pulls " +
+        "harder with it: 1500 ohms turns it into 6.44 V of pull, clamped at 0.2 V. Two different " +
+        "knobs, same saturation. That is the design freedom the chain gives you.");
+    } else {
+      fail("<b>NOT QUITE.</b> " + tr.miss);
+    }
+    return;
+  }
+  var s3 = document.querySelector("input[name=op80t3]:checked");
+  if (!op80St.surgeSeen) { fail("<b>NO SURGE FIRED.</b> " + tr.needSurge); return; }
+  if (!s3) { fail("<b>NO CALL LOGGED.</b> Pick A, B, or C, then CHECK."); return; }
+  if (s3.value === tr.answer) {
+    pass("<b>CORRECT.</b> " + tr.miss.replace(/^It stays/, "The output stays"));
+  } else {
+    fail("<b>NOT QUITE.</b> " + tr.miss);
+  }
+}
+
+/* ---------------- progress, cert, artifact ---------------- */
+function op80Progress() {
+  var el = document.getElementById("op80Progress");
+  if (!el) return;
+  function tag(id, n) { return op80St[id].pass ? n + ":PASS" : n + ":OPEN"; }
+  el.innerHTML = "TRIALS: <b>" + tag("t1", "T1") + "</b> " +
+    "<b>" + tag("t2", "T2") + "</b> <b>" + tag("t3", "T3") + "</b>" +
+    (op80St.predicted ? " PREDICTION:LOGGED" : " PREDICTION:OPEN");
+}
+function op80CertText() {
+  var d = new Date().toISOString().slice(0, 10);
+  return [
+    "THE PROVING GROUND, BENCH 80: THE OPTO ROOM",
+    "Certified: " + d,
+    "",
+    "T1 fresh part (R1 330, R2 470, CTR 100 pct): output 2.01 V, MUSHY. " +
+      "A weak pull is not a logic LOW.",
+    "T2 aged part (CTR 45 pct): fixes A (R1 to 110 ohms, LED 19.09 mA) and " +
+      "B (R2 to 1500 ohms) re-saturate the output without burning the LED.",
+    "T3 1 kV surge on the input side: output held. No copper crosses the " +
+      "3750 V barrier, so the spike has no path.",
+    "",
+    "Takeaway: the LED current times the CTR sets the phototransistor " +
+      "current, the output resistor turns that current into a voltage, and " +
+      "the isolation barrier keeps surges on their own side."
+  ].join("\n");
+}
+function op80Download(name, text) {
+  var blob = new Blob([text], { type: "text/plain" });
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+function op80CheckCert() {
+  if (!op80St.certified && op80St.t1.pass && op80St.t2.pass && op80St.t3.pass) {
+    op80St.certified = true;
+    op80Els.banner.classList.add("show");
+    var dl = op80Btn("DOWNLOAD CERTIFICATE (TXT)", "");
+    dl.addEventListener("click", function () { op80Download("opto-room-certificate.txt", op80CertText()); });
+    var row = op80El("div", "op80-row", "");
+    row.appendChild(dl);
+    op80Els.banner.appendChild(row);
+  }
+  op80Progress();
+}
+
+/* ---------------- open / close / build ---------------- */
+function op80Open() {
+  op80Els.overlay.classList.add("open");
+  try { localStorage.setItem("pg.seen.v1", JSON.stringify(Object.assign(
+    JSON.parse(localStorage.getItem("pg.seen.v1") || "{}"), { "80": 1 }))); } catch (e) {}
+  if (typeof pgPaintStates === "function") { try { pgPaintStates(); } catch (e) {} }
+}
+function op80Close() { op80Els.overlay.classList.remove("open"); }
+
+function op80Build() {
+  var box = document.querySelector(".dossier .actions");
+  if (!box) return;
+  if (document.getElementById("op80Btn")) return;
+  op80St = op80NewState();
+
+  var sty = document.createElement("style");
+  sty.id = "op80Style";
+  sty.textContent = OP80_CSS;
+  document.head.appendChild(sty);
+
+  var b = document.createElement("button");
+  b.id = "op80Btn";
+  b.className = "pg-launch";
+  b.textContent = "Open The Opto Room";
+  b.addEventListener("click", op80Open);
+  box.appendChild(b);
+
+  var ov = op80El("div", "op80-overlay", "");
+  ov.id = "op80Overlay";
+  ov.setAttribute("role", "dialog");
+  ov.setAttribute("aria-label", "The Opto Room");
+  var x = op80Btn("CLOSE", "");
+  x.id = "op80XBtn";
+  x.style.cssText = "position:fixed;top:calc(12px + env(safe-area-inset-top));right:calc(16px + env(safe-area-inset-right));z-index:95;";
+  x.setAttribute("aria-label", "Close The Opto Room");
+  x.addEventListener("click", op80Close);
+  ov.appendChild(x);
+  op80Els.overlay = ov;
+  if (!op80EscBound) {
+    op80EscBound = true;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && op80Els.overlay && op80Els.overlay.classList.contains("open")) op80Close();
+    });
+  }
+
+  var panel = op80El("div", "op80-panel", "");
+  panel.appendChild(op80El("div", "op80-kicker", "ANALOG AND POWER ELECTRONICS \u00B7 BENCH 80"));
+  panel.appendChild(op80El("h2", "op80-title", "The Opto Room"));
+
+  var intro = op80El("div", "", "");
+  intro.innerHTML = OP80.INTRO_HTML;
+  panel.appendChild(intro);
+
+  var prog = op80El("div", "op80-out", "");
+  prog.id = "op80Progress";
+  prog.setAttribute("aria-live", "polite");
+  panel.appendChild(prog);
+  op80Els.progress = prog;
+
+  panel.appendChild(op80El("h3", "op80-sec", "DO FIRST: CALL IT BEFORE THE MATH"));
+  op80Els.predict = op80El("div", "", "");
+  panel.appendChild(op80Els.predict);
+
+  panel.appendChild(op80El("h3", "op80-sec", "THE WORKED EXAMPLE"));
+  var worked = op80El("div", "", "");
+  worked.innerHTML = OP80.WORKED_HTML;
+  panel.appendChild(worked);
+
+  panel.appendChild(op80El("h3", "op80-sec", "THE THREE-LINK CHAIN"));
+  var rules = op80El("div", "", "");
+  rules.innerHTML = OP80.RULES_HTML;
+  panel.appendChild(rules);
+
+  panel.appendChild(op80El("h3", "op80-sec", "THE LIVE BENCH"));
+  op80Els.live = op80El("div", "", "");
+  panel.appendChild(op80Els.live);
+
+  var ids = ["t1", "t2", "t3"];
+  for (var i = 0; i < ids.length; i++) {
+    panel.appendChild(op80El("h3", "op80-sec", "CERTIFY: " + op80Trial(i).tag));
+    op80Els[ids[i]] = op80El("div", "", "");
+    panel.appendChild(op80Els[ids[i]]);
+  }
+
+  var banner = op80El("div", "op80-banner", "");
+  banner.id = "op80Banner";
+  banner.setAttribute("aria-live", "polite");
+  banner.innerHTML = "<h3>BENCH 80 CERTIFIED</h3><p>Three trials, three links in the chain, one surge survived. " +
+    "The takeaway in one line: <b>the LED current times the CTR is the phototransistor current, the output resistor " +
+    "turns it into volts, and the barrier keeps surges on their own side.</b></p>";
+  panel.appendChild(banner);
+  op80Els.banner = banner;
+
+  /* hire line: isolation-barrier triage offer at the foot of the bench, matching
+     the Bench 71-79 pattern. The hire-chooser module binds [data-brief]
+     triggers document-wide. Copy only. */
+  var hire = op80El("p", "op80-p", "");
+  hire.innerHTML = "A switcher whose feedback loop dies at the isolation barrier, or a refurb supply with a tired optocoupler? " +
+    "<button type=\"button\" class=\"op80-btn\" data-brief=\"triage\" data-bench-tag=\"Bench 80: The Opto Room\">Crash triage</button>";
+  panel.appendChild(hire);
+
+  ov.appendChild(panel);
+  document.body.appendChild(ov);
+
+  op80PredictRender();
+  op80LiveRender();
+  op80TrialRender(0);
+  op80TrialRender(1);
+  op80TrialRender(2);
+  op80Progress();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", op80Build);
+} else {
+  op80Build();
+}
+
+/* debug hooks for the smoke test */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.OP80 = OP80;
+  module.exports.op80Debug = {
+    newState: op80NewState,
+    readWith: function (st) { var keep = op80St; op80St = st; var r = op80Read(); op80St = keep; return r; },
+    predictCall: op80PredictCall,
+    trialCall: op80TrialCall,
+    trialRender: op80TrialRender,
+    liveRender: op80LiveRender,
+    liveUpdate: op80LiveUpdate,
+    surge: op80Surge,
+    certText: op80CertText
+  };
+}
+})();
