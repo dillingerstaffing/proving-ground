@@ -2,18 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260926-pg135">
+<meta name="build-version" content="v20260927-pg136">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
-<meta name="description" content="The Proving Ground: 80 interactive hardware benches, RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs entirely on your device.">
+<meta name="description" content="The Proving Ground: 81 interactive hardware benches, RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs entirely on your device.">
 <link rel="canonical" href="https://dillingerstaffing.github.io/proving-ground/">
 <meta name="robots" content="index, follow, max-image-preview:large">
 <meta name="theme-color" content="#0a0c0e">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="The Proving Ground">
 <meta property="og:title" content="The Proving Ground: Working Engineering Benches">
-<meta property="og:description" content="80 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs in the browser.">
+<meta property="og:description" content="81 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs in the browser.">
 <meta property="og:url" content="https://dillingerstaffing.github.io/proving-ground/">
 <meta property="og:image" content="https://dillingerstaffing.github.io/proving-ground/og-card.png">
 <meta property="og:image:width" content="1200">
@@ -25,7 +25,7 @@
 {"@context":"https://schema.org","@type":"WebApplication",
  "name":"The Proving Ground",
  "url":"https://dillingerstaffing.github.io/proving-ground/",
- "description":"80 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft.",
+ "description":"81 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft.",
  "applicationCategory":"BrowserApplication","operatingSystem":"Any modern web browser",
  "isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
@@ -774,7 +774,7 @@ body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
         <circle class="draw-core" cx="24" cy="24" r="2.6" fill="#0a0c0e"/>
       </svg>
       <div class="head-group">
-        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">80</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;INTERACTIVE,&nbsp;IN&nbsp;BROWSER</span></span></div>
+        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">81</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;INTERACTIVE,&nbsp;IN&nbsp;BROWSER</span></span></div>
         <button class="hire-btn" type="button" data-brief="general">HIRE CHRIS</button>
         <button class="theme-toggle" type="button" aria-label="Switch to terminal theme" title="Switch theme">
           <span class="theme-toggle-mark" aria-hidden="true"><i></i><i></i></span>
@@ -1242,7 +1242,11 @@ var PG_BENCHES = [
   { section: "analog", n: "80", name: "The Opto Room", btn: "op80Btn", pill: "tapeout", pillLabel: "ANALOG AND POWER ELECTRONICS",
     desc: "Isolation on the bench: an LED drives a phototransistor across a 3750 V gap, no copper between the sides. Size the LED resistor against CTR aging, outlast the mushy middle, and prove a 1 kV surge never reaches the output.",
     how: "Predict the output before the math, work the live bench against the CTR selector, fire the surge, certify all three trials.",
-    spec: "OPTO ISOLATION \u00B7 CTR AGING \u00B7 1 KV SURGE" }
+    spec: "OPTO ISOLATION \u00B7 CTR AGING \u00B7 1 KV SURGE" },
+  { section: "craft", n: "81", name: "The Battery Room", btn: "bt81Btn", pill: "oldiron", pillLabel: "BENCH CRAFT",
+    desc: "Li-ion charge qualification for the OLD IRON refurb line: constant current to 4.20 V, then constant voltage while the current tapers. Predict a charge time by hand, trickle-recover a deep-discharged cell, and call SELL, REWORK, or SCRAP on three intakes.",
+    how: "Call the start voltage, run the live charger, predict one charge time, trickle the dead cell, then verdict three intakes.",
+    spec: "CC/CV CHARGE \u00B7 3 TRIALS" }
  ];
 /* Teaching order: the sequence a newcomer should take the benches in.
    The index renders this list top to bottom; the number on each row is its
@@ -1323,6 +1327,7 @@ var PG_TEACH_ORDER = [
   "78",
   "46",
   "47",
+  "81",
   "22",
   "21",
   "23",
@@ -1338,7 +1343,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-26-pg135";
+var PG_REV = "2026-09-27-pg136";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
@@ -1998,9 +2003,9 @@ if ('serviceWorker' in navigator) {
   apply(current());
 })();
 </script>
-<script src="rvcore.js?v=23c1fa2afb" defer></script>
-<script src="rvdata.js?v=23c1fa2afb" defer></script>
-<script src="riscv-lab.js?v=23c1fa2afb" defer></script>
-<script src="features.js?v=23c1fa2afb" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=6e243b42cf" defer></script>
+<script src="rvdata.js?v=6e243b42cf" defer></script>
+<script src="riscv-lab.js?v=6e243b42cf" defer></script>
+<script src="features.js?v=6e243b42cf" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
