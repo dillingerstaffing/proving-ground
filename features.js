@@ -39349,7 +39349,10 @@ if (typeof module !== "undefined" && module.exports) {
   function drCurrent(vs, vf, r) { return (vs - vf) / r; } /* amps */
   function drMa(a) { return (a * 1000).toFixed(1) + " mA"; }
   function drVerdictT1(vs, vf, r) {
-    var ma = drCurrent(vs, vf, r) * 1000;
+    /* Round to the displayed 0.1 mA before grading: IEEE754 makes
+       (5 - 3.2) / 150 read 11.9999... mA, and grading the raw value
+       contradicts the displayed "12.0 mA" and the 12 mA pass line. */
+    var ma = Math.round(drCurrent(vs, vf, r) * 10000) / 10;
     if (ma > 25) {
       return { ok: false, ma: ma,
         why: "TOO HOT at " + ma.toFixed(1) + " mA: over the 25 mA line, this LED cooks. " +
@@ -39431,7 +39434,7 @@ if (typeof module !== "undefined" && module.exports) {
     "<ul><li><b>REVERSED:</b> dark, harmless at these voltages. In diode-test mode it reads the toll one way ",
     "and OL the other, so the part is healthy; the circuit has it backwards. Fix it by flipping it.</li>",
     "<li><b>NO RESISTOR:</b> with nothing to absorb the remainder, the current is set by wire resistance and the ",
-    "LED's own heat, so it climbs into the hundreds of milliamps until the bond wires melt. Dead in under a second. ",
+    "LED's own heat, so it climbs into the hundreds of milliamps until the hair-thin bond wires inside the LED package melt. Dead in under a second. ",
     "The fix is the resistor math, never hope.</li>",
     "<li><b>BURNED LED:</b> reads OL (open) or 0.00 V (shorted) both ways in diode-test mode. Nothing to fix. Bin it.</li>",
     "<li><b>WRONG TOLL:</b> size a white LED (3.2 V) with a red LED's toll (2.0 V) and the current misses by a mile. ",
@@ -39632,7 +39635,7 @@ if (typeof module !== "undefined" && module.exports) {
     card.id = "diT2_" + p.id;
     card.appendChild(drEl("div", "dr-parthead", "TRIAL 2 \u00B7 MYSTERY LED " + num + " OF 2"));
     card.appendChild(drEl("p", "dr-spec",
-      "Symptom: dark on a " + p.vs + " V rail, resistor correctly sized. " + p.tell));
+      "Symptom: dark on a " + p.vs + " V rail, resistor correctly sized. Probe it in diode mode, then call it."));
     var circuit = drEl("div", "dr-circuit");
     circuit.id = "diT2_" + p.id + "_circuit";
     function drawCircuit(rev, litMa, dead) {
@@ -39912,7 +39915,7 @@ if (typeof module !== "undefined" && module.exports) {
           t3Read.textContent = "CURRENT: 0.0 mA. Open.";
           smoke.textContent = "POP. THE LED IS DEAD.";
           var note2 = document.getElementById("diT3_predNote");
-          note2.textContent = "780 mA through a 20 mA part. The bond wires melted in under a second: " +
+          note2.textContent = "780 mA through a 20 mA part. The hair-thin bond wires inside the LED package melted in under a second: " +
             "that is the no-resistor failure mode. Now do it right: size the resistor that keeps this LED alive.";
           note2.className = "dr-verdict bad";
           drLog("trial 3: 780 mA, bond wires melted, LED open. Predicted and witnessed.", "bad");
