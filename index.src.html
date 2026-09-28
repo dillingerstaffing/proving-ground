@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260928-pg141">
+<meta name="build-version" content="v20260928-pg142">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
-<meta name="description" content="The Proving Ground: 81 interactive hardware benches, RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs entirely on your device.">
+<meta name="description" content="The Proving Ground: 82 interactive hardware benches, RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs entirely on your device.">
 <link rel="canonical" href="https://dillingerstaffing.github.io/proving-ground/">
 <link rel="preload" href="fonts/space-grotesk-var.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="fonts/ibm-plex-mono-400.woff2" as="font" type="font/woff2" crossorigin>
@@ -15,7 +15,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="The Proving Ground">
 <meta property="og:title" content="The Proving Ground: Working Engineering Benches">
-<meta property="og:description" content="81 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs in the browser.">
+<meta property="og:description" content="82 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs in the browser.">
 <meta property="og:url" content="https://dillingerstaffing.github.io/proving-ground/">
 <meta property="og:image" content="https://dillingerstaffing.github.io/proving-ground/og-card.png">
 <meta property="og:image:width" content="1200">
@@ -27,7 +27,7 @@
 {"@context":"https://schema.org","@type":"WebApplication",
  "name":"The Proving Ground",
  "url":"https://dillingerstaffing.github.io/proving-ground/",
- "description":"81 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft.",
+ "description":"82 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft.",
  "applicationCategory":"BrowserApplication","operatingSystem":"Any modern web browser",
  "isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
@@ -776,7 +776,7 @@ body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
         <circle class="draw-core" cx="24" cy="24" r="2.6" fill="#0a0c0e"/>
       </svg>
       <div class="head-group">
-        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">81</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;INTERACTIVE,&nbsp;IN&nbsp;BROWSER</span></span></div>
+        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">82</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;INTERACTIVE,&nbsp;IN&nbsp;BROWSER</span></span></div>
         <button class="hire-btn" type="button" data-brief="general">HIRE CHRIS</button>
         <button class="theme-toggle" type="button" aria-label="Switch to terminal theme" title="Switch theme">
           <span class="theme-toggle-mark" aria-hidden="true"><i></i><i></i></span>
@@ -1248,7 +1248,11 @@ var PG_BENCHES = [
   { section: "craft", n: "81", name: "The Battery Room", btn: "bt81Btn", pill: "oldiron", pillLabel: "BENCH CRAFT",
     desc: "Li-ion charge qualification for the OLD IRON refurb line: constant current to 4.20 V, then constant voltage while the current tapers. Predict a charge time by hand, trickle-recover a deep-discharged cell, and call SELL, REWORK, or SCRAP on three intakes.",
     how: "Call the start voltage, run the live charger, predict one charge time, trickle the dead cell, then verdict three intakes.",
-    spec: "CC/CV CHARGE \u00B7 3 TRIALS" }
+    spec: "CC/CV CHARGE \u00B7 3 TRIALS" },
+  { section: "craft", n: "82", name: "The Multimeter Room", btn: "mm82Btn", pill: "oldiron", pillLabel: "BENCH CRAFT",
+    desc: "The meter answers whichever question the dial asks: volts across two points, continuity along a trace, resistance of a quiet board, current through a break. Find the dead rail, the broken trace, and the out-of-spec resistor, and learn why the current range blows its fuse across a live rail.",
+    how: "Dial V, continuity, ohms, and amps across three boards, log the readings, commit the verdicts, and certify.",
+    spec: "MULTIMETER \u00B7 3 TRIALS" }
  ];
 /* Teaching order: the sequence a newcomer should take the benches in.
    The index renders this list top to bottom; the number on each row is its
@@ -1295,6 +1299,7 @@ var PG_TEACH_ORDER = [
   "38",
   "13",
   "12",
+  "82",
   "51",
   "48",
   "49",
@@ -1345,7 +1350,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-28-pg141";
+var PG_REV = "2026-09-28-pg142";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {

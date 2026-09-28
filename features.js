@@ -64824,3 +64824,850 @@ if (typeof module !== "undefined" && module.exports) {
 }
 
 })();
+/* =====================================================================
+ * Bench 82: The Multimeter Room (craft / oldiron)
+ * The meter answers whichever question the dial asks: volts across two
+ * points, continuity along a trace, resistance of a quiet board, current
+ * through a break. Three trials: find the dead rail, find the broken
+ * trace, qualify a resistor and a fan without blowing the meter's fuse.
+ * No em dashes in user-facing copy. Mobile: 48px targets, wrapping rows.
+ * ===================================================================== */
+(function () {
+"use strict";
+
+/* ---------------- bench data ---------------- */
+var BT82 = {};
+BT82.PREDICT = { v: -9.42,
+  hint: "The meter reports red minus black: swap the leads and the sign flips." };
+BT82.T1 = {
+  tag: "TRIAL 1: FIND THE DEAD RAIL",
+  rails: [
+    { id: "TP12", label: "12 V", v: 11.98 },
+    { id: "TP5", label: "5 V", v: 0.02 },
+    { id: "TP33", label: "3.3 V", v: 3.28 }
+  ],
+  dead: "5 V RAIL",
+  why: "TP5 reads 0.02 V against COM while TP12 holds 11.98 V and TP33 holds 3.28 V. " +
+    "A rail that reads zero with the dial on V is a dead rail, and the dead one is the 5 V rail."
+};
+BT82.T2 = {
+  tag: "TRIAL 2: THE BROKEN TRACE",
+  traces: [
+    { id: 1, r: 0.4 }, { id: 2, r: 0.6 }, { id: 3, r: null },
+    { id: 4, r: 0.5 }, { id: 5, r: 0.9 }
+  ],
+  broken: 3,
+  why: "Traces 1, 2, 4, and 5 beep with under 1 ohm end to end. Trace 3 reads OL and stays " +
+    "silent: no path, no beep. Silence on the continuity range is the break."
+};
+BT82.T3 = {
+  tag: "TRIAL 3: THE RESISTOR AND THE FAN",
+  rMark: 4700, rRead: 4680, rTol: 0.05,
+  fanA: 0.18, railV: 5.00, rPowerV: 2.10,
+  whyA: "4.68 k against a 4.7 k mark is inside the 5% band (4.465 to 4.935 k): GOOD. " +
+    "Measured with the board powered down, on the ohms range, so the reading is honest.",
+  whyB: "0.18 A through the series break. The A range is a near short, so it lives inside " +
+    "the circuit, in the break, never bridged across the rail."
+};
+
+BT82.INTRO_HTML =
+  "<p class=\"bt82-p\">Your eyes cannot see voltage, and a dead board tells you nothing by looking. " +
+  "The multimeter is the first tool you reach for on any bench, and the one most likely to lie to you: " +
+  "<b>set the dial wrong and it answers a different question than the one you asked</b>. The whole craft " +
+  "is one rule: the dial and the jacks decide which question the meter answers. Match the question to the " +
+  "job and every reading is honest. Three trials to certify: find the dead rail, find the broken trace, " +
+  "and qualify a resistor and a fan without blowing the meter's fuse.</p>";
+
+BT82.WORKED_HTML =
+  "<p class=\"bt82-p\"><b>The worked example: a 9 V battery on the bench.</b> Turn the dial to " +
+  "<b>V (DC VOLTS)</b>. Black lead in the <b>COM</b> jack, red lead in the <b>V-ohm</b> jack. Red probe on " +
+  "the positive terminal, black probe on the negative. The meter reads <b>9.42 V</b>. That is the entire " +
+  "ritual: the right dial, the right jacks, probes across the two points, read the number. Everything in " +
+  "this room is that ritual with higher stakes.</p>";
+
+BT82.RULES_HTML =
+  "<p class=\"bt82-p\"><b>Volts: probes across, circuit alive.</b> Dial V. The meter draws almost no " +
+  "current, so it can sit across two live points and report their difference. Red minus black: swap the " +
+  "leads and the sign flips, the magnitude stays.</p>" +
+  "<p class=\"bt82-p\"><b>Continuity: power off, listen for the beep.</b> Dial CONTINUITY. The meter " +
+  "injects a tiny current and beeps if it finds a path. Beep means one copper trace, silence means a " +
+  "break. On a live board it answers nonsense: continuity needs a dead board.</p>" +
+  "<p class=\"bt82-p\"><b>Ohms: power off, component quiet.</b> Dial OHMS. Same tiny current, but now " +
+  "the meter reports the number instead of beeping. Measure a resistor on a powered board and the board's " +
+  "own voltages drown the tiny test current: the reading lies. Power down first, always.</p>" +
+  "<p class=\"bt82-p\"><b>Amps: in series, never across.</b> Dial A. The current range is a near short: " +
+  "the meter becomes a wire so the circuit's current flows through it. Put that wire across a live rail " +
+  "and the rail dumps everything through the meter's fuse. The fuse blows to save the meter, and the " +
+  "reading is lost. Current is measured by breaking the circuit and inserting the meter in the break, " +
+  "never by bridging two points. When you turn this bench's dial to A, the red lead moves to the A jack " +
+  "by itself, and the meter face says so.</p>" +
+  "<p class=\"bt82-p\">Failure modes, stated plainly. <b>Blown fuse:</b> the A range across any live " +
+  "source; the display goes dark, replace the fuse on the meter station and carry on. <b>The lying " +
+  "ohmmeter:</b> OHMS or CONTINUITY on a powered board reads UNSTABLE; power down, then measure. " +
+  "<b>The asleep meter:</b> dial on OFF reads nothing at all, no matter where the probes sit.</p>";
+
+/* ---------------- styles ---------------- */
+var BT82_CSS = [
+  ".bt82-overlay{position:fixed;inset:0;z-index:90;background:var(--ink);display:none;overflow-y:auto;}",
+  ".bt82-overlay.open{display:block;}",
+  ".bt82-panel{max-width:860px;margin:0 auto;padding:28px 18px 60px;color:var(--paper);box-sizing:border-box;}",
+  ".bt82-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);}",
+  ".bt82-title{font-family:'Space Grotesk',sans-serif;font-size:34px;margin:6px 0 10px;color:var(--paper);}",
+  ".bt82-sec{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.16em;color:var(--ember);margin:26px 0 10px;padding-top:16px;border-top:1px solid var(--line);}",
+  ".bt82-p{font-size:13.5px;line-height:1.7;color:var(--dim);max-width:74ch;margin:0 0 12px;}",
+  ".bt82-p b{color:var(--paper);}",
+  ".bt82-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0;}",
+  ".bt82-btn{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.08em;background:transparent;color:var(--paper);border:1px solid var(--line);padding:0 16px;min-height:48px;cursor:pointer;border-radius:2px;}",
+  ".bt82-btn:hover{border-color:var(--ember);color:var(--ember);}",
+  ".bt82-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+  ".bt82-btn.on{background:var(--ember);border-color:var(--ember);color:#0a0a0a;}",
+  ".bt82-btn:disabled{opacity:.4;cursor:default;}",
+  ".bt82-input{font-family:'IBM Plex Mono',monospace;font-size:14px;background:var(--panel);color:var(--paper);border:1px solid var(--line);padding:0 12px;min-height:48px;border-radius:2px;width:180px;box-sizing:border-box;}",
+  ".bt82-input:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+  ".bt82-verdict{font-size:13px;line-height:1.6;color:var(--dim);margin:10px 0;padding:12px 14px;border:1px solid var(--line);border-radius:2px;max-width:74ch;}",
+  ".bt82-verdict.ok{border-color:var(--ember);color:var(--paper);}",
+  ".bt82-verdict.bad{border-color:#7a2a1a;color:var(--dim);}",
+  ".bt82-verdict b{color:var(--paper);}",
+  ".bt82-out{font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:var(--dim);margin:8px 0;}",
+  ".bt82-out b{color:var(--ember);}",
+  ".bt82-meter{border:1px solid var(--line);border-radius:2px;padding:14px;margin:12px 0;}",
+  ".bt82-disp{font-family:'IBM Plex Mono',monospace;font-size:30px;color:var(--paper);background:var(--panel);border:1px solid var(--line);border-radius:2px;padding:12px 16px;margin:10px 0;min-height:64px;box-sizing:border-box;}",
+  ".bt82-disp .unit{font-size:14px;color:var(--dim);margin-left:8px;}",
+  ".bt82-disp.dark{color:var(--dim);}",
+  ".bt82-fuse{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.1em;padding:10px 14px;border:1px solid var(--line);border-radius:2px;display:inline-block;margin:6px 0;min-height:48px;line-height:28px;box-sizing:border-box;}",
+  ".bt82-fuse.ok{border-color:#3a7a4a;color:#7ae89a;}",
+  ".bt82-fuse.blown{border-color:#7a2a1a;color:#e87a5a;}",
+  ".bt82-log{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--dim);margin:8px 0;max-width:74ch;}",
+  ".bt82-log div{padding:3px 0;border-bottom:1px dotted var(--line);}",
+  ".bt82-log b{color:var(--paper);}",
+  ".bt82-choice{display:flex;align-items:center;gap:10px;margin:6px 0;min-height:48px;padding:6px 10px;border:1px solid var(--line);border-radius:2px;cursor:pointer;font-size:13px;color:var(--dim);}",
+  ".bt82-choice input{width:22px;height:22px;accent-color:var(--ember);flex:none;}",
+  ".bt82-choice.sel{border-color:var(--ember);color:var(--paper);}",
+  ".bt82-banner{display:none;margin-top:22px;border:1px solid var(--ember);border-radius:2px;padding:18px;}",
+  ".bt82-banner.show{display:block;}",
+  ".bt82-banner h3{font-family:'IBM Plex Mono',monospace;font-size:14px;letter-spacing:.16em;color:var(--ember);margin:0 0 8px;}",
+  ".bt82-banner p{font-size:13px;line-height:1.7;color:var(--dim);margin:0 0 10px;}",
+  ".bt82-banner p b{color:var(--paper);}",
+  "@media (max-width:560px){.bt82-title{font-size:26px;}.bt82-disp{font-size:24px;}}"
+].join("\n");
+
+/* ---------------- state and helpers ---------------- */
+var bt82St = null;
+var bt82Els = {};
+var bt82EscBound = false;
+
+function bt82NewState() {
+  return {
+    predicted: false, certified: false,
+    dial: "off", fuse: true, fuseBlows: 0,
+    t1: { pass: false },
+    t2: { pass: false },
+    t3: { power: false, aPass: false, bMeasured: false, bPass: false, pass: false }
+  };
+}
+function bt82El(tag, cls, html) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html !== undefined && html !== "") e.innerHTML = html;
+  return e;
+}
+function bt82Btn(label, cls) {
+  var b = bt82El("button", "bt82-btn" + (cls ? " " + cls : ""), "");
+  b.type = "button";
+  b.textContent = label;
+  return b;
+}
+function bt82LogLine(hostId, html) {
+  var host = document.getElementById(hostId);
+  if (!host) return;
+  var d = bt82El("div", "", html);
+  host.appendChild(d);
+}
+
+/* ---------------- the meter station ---------------- */
+var BT82_DIALS = [
+  { id: "off", label: "OFF" },
+  { id: "v", label: "V (DC VOLTS)" },
+  { id: "cont", label: "CONTINUITY" },
+  { id: "ohm", label: "OHMS" },
+  { id: "a", label: "A (AMPS)" }
+];
+function bt82DialLabel(id) {
+  for (var i = 0; i < BT82_DIALS.length; i++) if (BT82_DIALS[i].id === id) return BT82_DIALS[i].label;
+  return id;
+}
+function bt82SetReadout(txt, unit, dark) {
+  var d = document.getElementById("bt82Disp");
+  if (!d) return;
+  d.className = "bt82-disp" + (dark ? " dark" : "");
+  d.innerHTML = "";
+  d.appendChild(document.createTextNode(txt));
+  if (unit) {
+    var u = bt82El("span", "unit", "");
+    u.textContent = unit;
+    d.appendChild(u);
+  }
+}
+function bt82PaintMeter() {
+  var row = document.getElementById("bt82DialRow");
+  if (row) {
+    var bs = row.querySelectorAll(".bt82-btn");
+    for (var i = 0; i < bs.length; i++) {
+      var on = bs[i].getAttribute("data-dial") === bt82St.dial;
+      bs[i].classList.toggle("on", on);
+      bs[i].setAttribute("aria-pressed", on ? "true" : "false");
+    }
+  }
+  var fuse = document.getElementById("bt82Fuse");
+  if (fuse) {
+    fuse.className = "bt82-fuse " + (bt82St.fuse ? "ok" : "blown");
+    fuse.textContent = bt82St.fuse ? "FUSE: OK" : "FUSE: BLOWN";
+  }
+  var rep = document.getElementById("bt82ReplaceFuse");
+  if (rep) rep.style.display = bt82St.fuse ? "none" : "";
+  var lead = document.getElementById("bt82LeadNote");
+  if (lead) {
+    lead.innerHTML = bt82St.dial === "a"
+      ? "RED LEAD: <b>A jack</b> (the bench moved it for you)"
+      : "RED LEAD: <b>V-ohm jack</b> (black lead stays in COM)";
+  }
+  var pwr = document.getElementById("bt82PowerBtn");
+  if (pwr) {
+    pwr.textContent = "BOARD POWER: " + (bt82St.t3.power ? "ON" : "OFF");
+    pwr.classList.toggle("on", bt82St.t3.power);
+    pwr.setAttribute("aria-pressed", bt82St.t3.power ? "true" : "false");
+  }
+}
+function bt82SetDial(id) {
+  bt82St.dial = id;
+  if (id === "off") bt82SetReadout("----", "", true);
+  bt82PaintMeter();
+}
+function bt82BlowFuse(where) {
+  bt82St.fuse = false;
+  bt82St.fuseBlows++;
+  bt82SetReadout("----", "", true);
+  bt82PaintMeter();
+  bt82Progress();
+  bt82LogLine("bt82LogT3", "<b>FUSE BLOWN</b> at " + where + ": the A range is a near short, and a live " +
+    "source dumps everything through it. The fuse died so the meter lived. " +
+    "REPLACE FUSE on the meter station, then measure current the safe way: in series.");
+}
+function bt82MeterReady(logHost) {
+  if (bt82St.dial === "off") {
+    bt82SetReadout("----", "", true);
+    bt82LogLine(logHost, "Dial is OFF: the meter is asleep. Turn the dial first.");
+    return false;
+  }
+  if (!bt82St.fuse) {
+    bt82SetReadout("----", "", true);
+    bt82LogLine(logHost, "Fuse is blown: the display stays dark until you REPLACE FUSE.");
+    return false;
+  }
+  return true;
+}
+
+/* ---------------- trial sampling ---------------- */
+function bt82ProbeT1(railId) {
+  var rail = null;
+  for (var i = 0; i < BT82.T1.rails.length; i++) if (BT82.T1.rails[i].id === railId) rail = BT82.T1.rails[i];
+  if (!bt82MeterReady("bt82LogT1")) return;
+  var d = bt82St.dial;
+  if (d === "a") { bt82BlowFuse(railId + " (live rail)"); return; }
+  if (d === "v") {
+    bt82SetReadout(rail.v.toFixed(2), "V DC", false);
+    bt82LogLine("bt82LogT1", "<b>" + railId + ":</b> " + rail.v.toFixed(2) + " V DC against COM.");
+  } else if (d === "cont" || d === "ohm") {
+    bt82SetReadout("UNSTABLE", "", true);
+    bt82LogLine("bt82LogT1", "<b>" + railId + ":</b> UNSTABLE. This board is live: ohms and continuity " +
+      "need a dead board. The reading lies, so the meter refuses it.");
+  }
+}
+function bt82ProbeT2(traceId) {
+  var tr = null;
+  for (var i = 0; i < BT82.T2.traces.length; i++) if (BT82.T2.traces[i].id === traceId) tr = BT82.T2.traces[i];
+  if (!bt82MeterReady("bt82LogT2")) return;
+  var d = bt82St.dial;
+  if (d === "a") {
+    bt82SetReadout("0.00", "A", false);
+    bt82LogLine("bt82LogT2", "<b>TRACE-" + traceId + ":</b> 0.00 A. Nothing flows here: this board is " +
+      "unpowered, and the A range answers a question nobody asked on a dead trace.");
+    return;
+  }
+  if (d === "v") {
+    bt82SetReadout("0.00", "V DC", false);
+    bt82LogLine("bt82LogT2", "<b>TRACE-" + traceId + ":</b> 0.00 V DC. An unpowered trace has no " +
+      "voltage to report. Wrong question: this job wants continuity.");
+    return;
+  }
+  if (d === "cont") {
+    if (tr.r === null) {
+      bt82SetReadout("OL", "", true);
+      bt82LogLine("bt82LogT2", "<b>TRACE-" + traceId + ":</b> OL, silent. No path, no beep: this trace is broken.");
+    } else {
+      bt82SetReadout("BEEP " + tr.r.toFixed(1), "ohm", false);
+      bt82LogLine("bt82LogT2", "<b>TRACE-" + traceId + ":</b> BEEP, " + tr.r.toFixed(1) + " ohm end to end. One copper trace.");
+    }
+    return;
+  }
+  if (d === "ohm") {
+    if (tr.r === null) {
+      bt82SetReadout("OL", "", true);
+      bt82LogLine("bt82LogT2", "<b>TRACE-" + traceId + ":</b> OL. Open circuit, infinite ohms.");
+    } else {
+      bt82SetReadout(tr.r.toFixed(1), "ohm", false);
+      bt82LogLine("bt82LogT2", "<b>TRACE-" + traceId + ":</b> " + tr.r.toFixed(1) + " ohm. Continuous copper.");
+    }
+  }
+}
+function bt82ProbeT3(target) {
+  if (!bt82MeterReady("bt82LogT3")) return;
+  var d = bt82St.dial;
+  var pwr = bt82St.t3.power;
+  if (target === "rail5v") {
+    if (d === "a") { bt82BlowFuse("5 V RAIL pads"); return; }
+    if (d === "v") {
+      bt82SetReadout(BT82.T3.railV.toFixed(2), "V DC", false);
+      bt82LogLine("bt82LogT3", "<b>5 V RAIL:</b> " + BT82.T3.railV.toFixed(2) + " V DC. Healthy rail, wrong job for trial 3.");
+    } else {
+      bt82SetReadout("UNSTABLE", "", true);
+      bt82LogLine("bt82LogT3", "<b>5 V RAIL:</b> UNSTABLE on this range with power on. Measure rails on V, not here.");
+    }
+    return;
+  }
+  if (target === "r1") {
+    if (d === "a") {
+      bt82SetReadout("0.00", "A", false);
+      bt82LogLine("bt82LogT3", "<b>R1:</b> 0.00 A. The meter in series with nothing measures nothing. " +
+        "The resistor's question is ohms, not amps.");
+      return;
+    }
+    if (d === "v") {
+      if (pwr) {
+        bt82SetReadout(BT82.T3.rPowerV.toFixed(2), "V DC", false);
+        bt82LogLine("bt82LogT3", "<b>R1:</b> " + BT82.T3.rPowerV.toFixed(2) + " V DC across R1 with power on. " +
+          "A voltage reading, not a value reading: power down for ohms.");
+      } else {
+        bt82SetReadout("0.00", "V DC", false);
+        bt82LogLine("bt82LogT3", "<b>R1:</b> 0.00 V DC. Dead board, no voltage: switch to OHMS for the value.");
+      }
+      return;
+    }
+    if (d === "cont") {
+      if (pwr) {
+        bt82SetReadout("UNSTABLE", "", true);
+        bt82LogLine("bt82LogT3", "<b>R1:</b> UNSTABLE. Continuity needs a dead board: power down first.");
+      } else {
+        bt82SetReadout("4.68", "k ohm, no beep", false);
+        bt82LogLine("bt82LogT3", "<b>R1:</b> 4.68 k ohm, no beep. Above the beep threshold, but a number " +
+          "you can read: switch to OHMS for the value call.");
+      }
+      return;
+    }
+    if (d === "ohm") {
+      if (pwr) {
+        bt82SetReadout("UNSTABLE", "", true);
+        bt82LogLine("bt82LogT3", "<b>R1:</b> UNSTABLE. The board's own voltages drown the meter's tiny " +
+          "test current: the reading lies. Power down, then measure.");
+      } else {
+        bt82SetReadout("4.68", "k ohm", false);
+        bt82LogLine("bt82LogT3", "<b>R1:</b> 4.68 k ohm, board powered down. Honest reading: commit the verdict.");
+      }
+    }
+    return;
+  }
+  if (target === "fanseries") {
+    if (d !== "a") {
+      bt82LogLine("bt82LogT3", "<b>FAN BREAK:</b> the fan's current is the question, so the dial must be " +
+        "on A. Turn the dial to A (the red lead moves to the A jack by itself), then probe the break.");
+      return;
+    }
+    bt82SetReadout(BT82.T3.fanA.toFixed(2), "A", false);
+    bt82St.t3.bMeasured = true;
+    bt82LogLine("bt82LogT3", "<b>FAN BREAK:</b> " + BT82.T3.fanA.toFixed(2) + " A through the series break. " +
+      "The meter sits inside the circuit, in the break: the only safe home for the A range.");
+    var cb = document.getElementById("bt82Commit3B");
+    if (cb) cb.disabled = false;
+  }
+}
+
+/* ---------------- do-first predict ---------------- */
+function bt82PredictRender() {
+  var host = bt82Els.predict;
+  host.innerHTML = "";
+  host.appendChild(bt82El("p", "bt82-p",
+    "The bench battery reads 9.42 V with red on positive, black on negative. Now the leads are swapped: " +
+    "red on the negative terminal, black on the positive. The meter reads ____ V. " + BT82.PREDICT.hint));
+  var row = bt82El("div", "bt82-row", "");
+  var inp = bt82El("input", "bt82-input", "");
+  inp.id = "bt82PredictIn";
+  inp.type = "text";
+  inp.inputMode = "decimal";
+  inp.setAttribute("aria-label", "Predicted meter reading in volts");
+  inp.placeholder = "volts";
+  row.appendChild(inp);
+  var b = bt82Btn("LOG PREDICTION", "");
+  b.id = "bt82PredictBtn";
+  b.addEventListener("click", bt82PredictCall);
+  row.appendChild(b);
+  host.appendChild(row);
+  var out = bt82El("div", "bt82-verdict", "No prediction logged yet.");
+  out.id = "bt82PredictOut";
+  host.appendChild(out);
+}
+function bt82PredictCall() {
+  var inp = document.getElementById("bt82PredictIn");
+  var out = document.getElementById("bt82PredictOut");
+  var raw = inp.value.trim();
+  var v = parseFloat(raw);
+  if (raw === "" || isNaN(v)) {
+    out.className = "bt82-verdict bad";
+    out.innerHTML = "<b>NO CALL LOGGED.</b> Enter a voltage in volts, then LOG PREDICTION.";
+    return;
+  }
+  if (Math.abs(v - BT82.PREDICT.v) <= 0.1) {
+    out.className = "bt82-verdict ok";
+    out.innerHTML = "<b>CALLED IT: -9.42 V.</b> The meter reports red minus black, so swapping the " +
+      "leads flips the sign and keeps the magnitude. Polarity is a lead position, not a property of " +
+      "the battery. Prediction logged.";
+    bt82St.predicted = true;
+  } else if (Math.abs(v - 9.42) <= 0.1) {
+    out.className = "bt82-verdict bad";
+    out.innerHTML = "<b>THE SIGN.</b> 9.42 V is the magnitude, but the red lead now sits on the " +
+      "negative terminal: red minus black is negative. The answer is -9.42 V. Log it again.";
+  } else {
+    out.className = "bt82-verdict bad";
+    out.innerHTML = "<b>NOT QUITE.</b> " + BT82.PREDICT.hint + " The answer is -9.42 V. Work it and log again.";
+  }
+  bt82Progress();
+}
+
+/* ---------------- meter station ---------------- */
+function bt82MeterRender() {
+  var host = bt82Els.meter;
+  host.innerHTML = "";
+  host.appendChild(bt82El("p", "bt82-p",
+    "One meter for the whole room. Turn the dial, watch the red-lead note, probe a board below. " +
+    "Black probe is fixed on COM (ground) for every trial."));
+  var row = bt82El("div", "bt82-row", "");
+  row.id = "bt82DialRow";
+  for (var i = 0; i < BT82_DIALS.length; i++) {
+    (function (dd) {
+      var b = bt82Btn(dd.label, "");
+      b.setAttribute("data-dial", dd.id);
+      b.setAttribute("aria-pressed", dd.id === bt82St.dial ? "true" : "false");
+      b.addEventListener("click", function () { bt82SetDial(dd.id); });
+      row.appendChild(b);
+    })(BT82_DIALS[i]);
+  }
+  host.appendChild(row);
+  var disp = bt82El("div", "bt82-disp dark", "");
+  disp.id = "bt82Disp";
+  disp.setAttribute("aria-live", "polite");
+  disp.setAttribute("role", "status");
+  host.appendChild(disp);
+  var lead = bt82El("div", "bt82-out", "");
+  lead.id = "bt82LeadNote";
+  host.appendChild(lead);
+  var frow = bt82El("div", "bt82-row", "");
+  var fuse = bt82El("span", "bt82-fuse ok", "FUSE: OK");
+  fuse.id = "bt82Fuse";
+  frow.appendChild(fuse);
+  var rep = bt82Btn("REPLACE FUSE", "");
+  rep.id = "bt82ReplaceFuse";
+  rep.style.display = "none";
+  rep.addEventListener("click", function () {
+    bt82St.fuse = true;
+    bt82SetReadout("----", "", true);
+    bt82PaintMeter();
+    bt82Progress();
+    bt82LogLine("bt82LogT3", "Fuse replaced. The lesson stands: current is measured in series, never across.");
+  });
+  frow.appendChild(rep);
+  host.appendChild(frow);
+  bt82SetReadout("----", "", true);
+  bt82PaintMeter();
+}
+
+/* ---------------- trials ---------------- */
+function bt82ChoiceRow(name, opts, commitLabel, onCommit) {
+  var wrap = bt82El("div", "", "");
+  var vr = bt82El("div", "bt82-row", "");
+  vr.appendChild(bt82El("span", "bt82-out", "<b>VERDICT:</b>"));
+  for (var o = 0; o < opts.length; o++) {
+    (function (op) {
+      var lab = bt82El("label", "bt82-choice", "");
+      var radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = name;
+      radio.value = op;
+      radio.setAttribute("aria-label", op);
+      lab.appendChild(radio);
+      lab.appendChild(bt82El("span", "", op));
+      vr.appendChild(lab);
+    })(opts[o]);
+  }
+  var commit = bt82Btn(commitLabel, "");
+  commit.addEventListener("click", onCommit);
+  vr.appendChild(commit);
+  wrap.appendChild(vr);
+  var vl = bt82El("div", "bt82-verdict", "No verdict committed.");
+  vl.id = "bt82-verdict-" + name;
+  wrap.appendChild(vl);
+  return wrap;
+}
+function bt82Trial1Render() {
+  var host = bt82Els.t1;
+  host.innerHTML = "";
+  host.appendChild(bt82El("p", "bt82-p",
+    "Board PSU-9: three rails, 12 V, 5 V, 3.3 V, with the black probe fixed on COM. " +
+    "Dial V, probe each test point, and call which rail is dead."));
+  var row = bt82El("div", "bt82-row", "");
+  for (var i = 0; i < BT82.T1.rails.length; i++) {
+    (function (r) {
+      var b = bt82Btn("PROBE " + r.id + " (" + r.label + ")", "");
+      b.addEventListener("click", function () { bt82ProbeT1(r.id); });
+      row.appendChild(b);
+    })(BT82.T1.rails[i]);
+  }
+  host.appendChild(row);
+  var log = bt82El("div", "bt82-log", "");
+  log.id = "bt82LogT1";
+  host.appendChild(log);
+  host.appendChild(bt82ChoiceRow("bt82t1", ["12 V RAIL", "5 V RAIL", "3.3 V RAIL", "ALL RAILS HEALTHY"],
+    "COMMIT T1", bt82T1Commit));
+}
+function bt82T1Commit() {
+  var vl = document.getElementById("bt82-verdict-bt82t1");
+  var sel = document.querySelector("input[name=bt82t1]:checked");
+  function fail(msg) {
+    vl.className = "bt82-verdict bad"; vl.innerHTML = msg;
+    bt82St.t1.pass = false; bt82Progress();
+  }
+  if (!sel) { fail("<b>NO VERDICT COMMITTED.</b> Pick a rail, then COMMIT T1."); return; }
+  if (sel.value === BT82.T1.dead) {
+    vl.className = "bt82-verdict ok";
+    vl.innerHTML = "<b>CORRECT: the 5 V rail is dead.</b> " + BT82.T1.why;
+    bt82St.t1.pass = true;
+    bt82CheckCert();
+  } else {
+    fail("<b>NOT QUITE.</b> " + BT82.T1.why + " Probe all three rails on V and commit the zero one.");
+  }
+}
+function bt82Trial2Render() {
+  var host = bt82Els.t2;
+  host.innerHTML = "";
+  host.appendChild(bt82El("p", "bt82-p",
+    "Harness HARNESS-4: five traces, unpowered. Dial CONTINUITY, probe each trace end to end, " +
+    "and call which trace is broken. Beep means copper, silence means a break."));
+  var row = bt82El("div", "bt82-row", "");
+  for (var i = 0; i < BT82.T2.traces.length; i++) {
+    (function (t) {
+      var b = bt82Btn("PROBE TRACE-" + t.id, "");
+      b.addEventListener("click", function () { bt82ProbeT2(t.id); });
+      row.appendChild(b);
+    })(BT82.T2.traces[i]);
+  }
+  host.appendChild(row);
+  var log = bt82El("div", "bt82-log", "");
+  log.id = "bt82LogT2";
+  host.appendChild(log);
+  host.appendChild(bt82ChoiceRow("bt82t2",
+    ["TRACE-1", "TRACE-2", "TRACE-3", "TRACE-4", "TRACE-5", "NONE: ALL CONTINUOUS"],
+    "COMMIT T2", bt82T2Commit));
+}
+function bt82T2Commit() {
+  var vl = document.getElementById("bt82-verdict-bt82t2");
+  var sel = document.querySelector("input[name=bt82t2]:checked");
+  function fail(msg) {
+    vl.className = "bt82-verdict bad"; vl.innerHTML = msg;
+    bt82St.t2.pass = false; bt82Progress();
+  }
+  if (!sel) { fail("<b>NO VERDICT COMMITTED.</b> Pick a trace, then COMMIT T2."); return; }
+  if (sel.value === "TRACE-" + BT82.T2.broken) {
+    vl.className = "bt82-verdict ok";
+    vl.innerHTML = "<b>CORRECT: TRACE-3 is broken.</b> " + BT82.T2.why;
+    bt82St.t2.pass = true;
+    bt82CheckCert();
+  } else {
+    fail("<b>NOT QUITE.</b> " + BT82.T2.why + " Probe every trace on CONTINUITY and commit the silent one.");
+  }
+}
+function bt82Trial3Render() {
+  var host = bt82Els.t3;
+  host.innerHTML = "";
+  host.appendChild(bt82El("p", "bt82-p",
+    "Board BOARD-7: a 4.7 k resistor with a 5% band, and a 5 V fan. Two jobs. First, read the " +
+    "resistor's value the honest way and call GOOD or SCRAP. Second, measure the fan's current " +
+    "without blowing the fuse. The board power switch starts OFF."));
+  var prow = bt82El("div", "bt82-row", "");
+  var pwr = bt82Btn("BOARD POWER: OFF", "");
+  pwr.id = "bt82PowerBtn";
+  pwr.setAttribute("aria-pressed", "false");
+  pwr.addEventListener("click", function () {
+    bt82St.t3.power = !bt82St.t3.power;
+    bt82PaintMeter();
+    bt82LogLine("bt82LogT3", "Board power " + (bt82St.t3.power ? "ON" : "OFF") + ".");
+  });
+  prow.appendChild(pwr);
+  host.appendChild(prow);
+  var row = bt82El("div", "bt82-row", "");
+  var b1 = bt82Btn("PROBE ACROSS R1", "");
+  b1.addEventListener("click", function () { bt82ProbeT3("r1"); });
+  row.appendChild(b1);
+  var b2 = bt82Btn("PROBE ACROSS THE 5 V RAIL", "");
+  b2.addEventListener("click", function () { bt82ProbeT3("rail5v"); });
+  row.appendChild(b2);
+  var b3 = bt82Btn("PROBE THE FAN SERIES BREAK", "");
+  b3.addEventListener("click", function () { bt82ProbeT3("fanseries"); });
+  row.appendChild(b3);
+  host.appendChild(row);
+  var log = bt82El("div", "bt82-log", "");
+  log.id = "bt82LogT3";
+  host.appendChild(log);
+  host.appendChild(bt82El("p", "bt82-out", "<b>3A: THE RESISTOR.</b> 4.7 k, 5% band. Read it honestly, then call it."));
+  host.appendChild(bt82ChoiceRow("bt82t3a", ["GOOD (IN SPEC)", "SCRAP (OUT OF SPEC)"],
+    "COMMIT 3A", bt82T3ACommit));
+  host.appendChild(bt82El("p", "bt82-out",
+    "<b>3B: THE FAN CURRENT.</b> Probe the series break with the dial on A, read the current, then commit."));
+  var cb = bt82Btn("COMMIT 3B: 180 mA, MEASURED IN SERIES", "");
+  cb.id = "bt82Commit3B";
+  cb.disabled = true;
+  cb.addEventListener("click", bt82T3BCommit);
+  var cwrap = bt82El("div", "bt82-row", "");
+  cwrap.appendChild(cb);
+  host.appendChild(cwrap);
+  var vl = bt82El("div", "bt82-verdict", "No verdict committed.");
+  vl.id = "bt82-verdict-3b";
+  host.appendChild(vl);
+}
+function bt82T3ACommit() {
+  var vl = document.getElementById("bt82-verdict-bt82t3a");
+  var sel = document.querySelector("input[name=bt82t3a]:checked");
+  function fail(msg) {
+    vl.className = "bt82-verdict bad"; vl.innerHTML = msg;
+    bt82St.t3.aPass = false; bt82Progress();
+  }
+  if (!sel) { fail("<b>NO VERDICT COMMITTED.</b> Pick GOOD or SCRAP, then COMMIT 3A."); return; }
+  if (sel.value.indexOf("GOOD") === 0) {
+    vl.className = "bt82-verdict ok";
+    vl.innerHTML = "<b>CORRECT: GOOD.</b> " + BT82.T3.whyA;
+    bt82St.t3.aPass = true;
+    bt82CheckCert();
+  } else {
+    fail("<b>NOT QUITE.</b> " + BT82.T3.whyA + " Read R1 with the board powered down on OHMS and call it again.");
+  }
+}
+function bt82T3BCommit() {
+  var vl = document.getElementById("bt82-verdict-3b");
+  if (!bt82St.t3.bMeasured) {
+    vl.className = "bt82-verdict bad";
+    vl.innerHTML = "<b>NOT MEASURED YET.</b> Turn the dial to A and PROBE THE FAN SERIES BREAK first: " +
+      "the commit needs a real reading.";
+    return;
+  }
+  vl.className = "bt82-verdict ok";
+  vl.innerHTML = "<b>CORRECT: 180 mA, in series.</b> " + BT82.T3.whyB;
+  bt82St.t3.bPass = true;
+  bt82CheckCert();
+}
+
+/* ---------------- progress, cert, artifact ---------------- */
+function bt82T3Pass() { return bt82St.t3.aPass && bt82St.t3.bPass; }
+function bt82Progress() {
+  var el = document.getElementById("bt82Progress");
+  if (!el) return;
+  function tag(p, n) { return p ? n + ":PASS" : n + ":OPEN"; }
+  el.innerHTML = "TRIALS: <b>" + tag(bt82St.t1.pass, "T1") + "</b> <b>" +
+    tag(bt82St.t2.pass, "T2") + "</b> <b>" + tag(bt82T3Pass(), "T3") + "</b>" +
+    (bt82St.predicted ? " PREDICTION:LOGGED" : " PREDICTION:OPEN") +
+    (bt82St.fuseBlows > 0 ? " FUSES BLOWN:" + bt82St.fuseBlows : "");
+}
+function bt82CertText() {
+  var d = new Date().toISOString().slice(0, 10);
+  return [
+    "THE PROVING GROUND, BENCH 82: THE MULTIMETER ROOM",
+    "Certified: " + d,
+    "",
+    "T1 dead rail (PSU-9): TP12 11.98 V, TP5 0.02 V, TP33 3.28 V against COM. " +
+      "The 5 V rail is dead.",
+    "T2 broken trace (HARNESS-4, unpowered): traces 1, 2, 4, 5 beep under 1 ohm; " +
+      "TRACE-3 reads OL and stays silent. The break is TRACE-3.",
+    "T3 resistor and fan (BOARD-7): R1 reads 4.68 k with the board powered down, " +
+      "inside the 5% band of the 4.7 k mark: GOOD. Fan draws 0.18 A through the " +
+      "series break: current is measured in series, never across.",
+    "Prediction: leads swapped on the 9.42 V battery read -9.42 V (red minus black).",
+    "",
+    "Takeaway: the dial and the jacks decide which question the meter answers; " +
+      "volts across, ohms on a dead board, current only in series."
+  ].join("\n");
+}
+function bt82Download(name, text) {
+  var blob = new Blob([text], { type: "text/plain" });
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+function bt82CheckCert() {
+  if (!bt82St.certified && bt82St.t1.pass && bt82St.t2.pass && bt82T3Pass()) {
+    bt82St.certified = true;
+    bt82St.t3.pass = true;
+    bt82Els.banner.classList.add("show");
+    var dl = bt82Btn("DOWNLOAD CERTIFICATE (TXT)", "");
+    dl.addEventListener("click", function () { bt82Download("multimeter-room-certificate.txt", bt82CertText()); });
+    var row = bt82El("div", "bt82-row", "");
+    row.appendChild(dl);
+    bt82Els.banner.appendChild(row);
+  }
+  bt82Progress();
+}
+
+/* ---------------- open / close / build ---------------- */
+function bt82Open() {
+  bt82Els.overlay.classList.add("open");
+  try { localStorage.setItem("pg.seen.v1", JSON.stringify(Object.assign(
+    JSON.parse(localStorage.getItem("pg.seen.v1") || "{}"), { "82": 1 }))); } catch (e) {}
+  if (typeof pgPaintStates === "function") { try { pgPaintStates(); } catch (e) {} }
+}
+function bt82Close() {
+  bt82Els.overlay.classList.remove("open");
+}
+
+function bt82Build() {
+  var box = document.querySelector(".dossier .actions");
+  if (!box) return;
+  if (document.getElementById("mm82Btn")) return;
+  bt82St = bt82NewState();
+
+  var sty = document.createElement("style");
+  sty.id = "bt82Style";
+  sty.textContent = BT82_CSS;
+  document.head.appendChild(sty);
+
+  var b = document.createElement("button");
+  b.id = "mm82Btn";
+  b.className = "pg-launch";
+  b.textContent = "Open The Multimeter Room";
+  b.addEventListener("click", bt82Open);
+  box.appendChild(b);
+
+  var ov = bt82El("div", "bt82-overlay", "");
+  ov.id = "bt82Overlay";
+  ov.setAttribute("role", "dialog");
+  ov.setAttribute("aria-label", "The Multimeter Room");
+  var x = bt82Btn("CLOSE", "");
+  x.id = "bt82XBtn";
+  x.style.cssText = "position:fixed;top:calc(12px + env(safe-area-inset-top));right:calc(16px + env(safe-area-inset-right));z-index:95;";
+  x.setAttribute("aria-label", "Close The Multimeter Room");
+  x.addEventListener("click", bt82Close);
+  ov.appendChild(x);
+  bt82Els.overlay = ov;
+  if (!bt82EscBound) {
+    bt82EscBound = true;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && bt82Els.overlay && bt82Els.overlay.classList.contains("open")) bt82Close();
+    });
+  }
+
+  var panel = bt82El("div", "bt82-panel", "");
+  panel.appendChild(bt82El("div", "bt82-kicker", "BENCH CRAFT \u00B7 BENCH 82"));
+  panel.appendChild(bt82El("h2", "bt82-title", "The Multimeter Room"));
+
+  var intro = bt82El("div", "", "");
+  intro.innerHTML = BT82.INTRO_HTML;
+  panel.appendChild(intro);
+
+  var prog = bt82El("div", "bt82-out", "");
+  prog.id = "bt82Progress";
+  prog.setAttribute("aria-live", "polite");
+  panel.appendChild(prog);
+  bt82Els.progress = prog;
+
+  panel.appendChild(bt82El("h3", "bt82-sec", "DO FIRST: CALL IT BEFORE THE MATH"));
+  bt82Els.predict = bt82El("div", "", "");
+  panel.appendChild(bt82Els.predict);
+
+  panel.appendChild(bt82El("h3", "bt82-sec", "THE WORKED EXAMPLE"));
+  var worked = bt82El("div", "", "");
+  worked.innerHTML = BT82.WORKED_HTML;
+  panel.appendChild(worked);
+
+  panel.appendChild(bt82El("h3", "bt82-sec", "THE FOUR QUESTIONS"));
+  var rules = bt82El("div", "", "");
+  rules.innerHTML = BT82.RULES_HTML;
+  panel.appendChild(rules);
+
+  panel.appendChild(bt82El("h3", "bt82-sec", "THE METER STATION"));
+  bt82Els.meter = bt82El("div", "", "");
+  panel.appendChild(bt82Els.meter);
+
+  panel.appendChild(bt82El("h3", "bt82-sec", "CERTIFY: " + BT82.T1.tag));
+  bt82Els.t1 = bt82El("div", "", "");
+  panel.appendChild(bt82Els.t1);
+
+  panel.appendChild(bt82El("h3", "bt82-sec", "CERTIFY: " + BT82.T2.tag));
+  bt82Els.t2 = bt82El("div", "", "");
+  panel.appendChild(bt82Els.t2);
+
+  panel.appendChild(bt82El("h3", "bt82-sec", "CERTIFY: " + BT82.T3.tag));
+  bt82Els.t3 = bt82El("div", "", "");
+  panel.appendChild(bt82Els.t3);
+
+  var banner = bt82El("div", "bt82-banner", "");
+  banner.id = "bt82Banner";
+  banner.setAttribute("aria-live", "polite");
+  banner.innerHTML = "<h3>BENCH 82 CERTIFIED</h3><p>Three trials, one meter, zero blown fuses left unreplaced. " +
+    "The takeaway in one line: <b>the dial and the jacks decide which question the meter answers; " +
+    "volts across, ohms on a dead board, current only in series.</b></p>";
+  panel.appendChild(banner);
+  bt82Els.banner = banner;
+
+  /* hire line: meter-first triage offer at the foot of the bench, matching
+     the Bench 71-81 pattern. The hire-chooser module binds [data-brief]
+     triggers document-wide. Copy only. */
+  var hire = bt82El("p", "bt82-p", "");
+  hire.innerHTML = "A bench full of dead boards and silent rails, or a refurb line that needs a meter-first triage station? " +
+    "<button type=\"button\" class=\"bt82-btn\" data-brief=\"triage\" data-bench-tag=\"Bench 82: The Multimeter Room\">Crash triage</button>";
+  panel.appendChild(hire);
+
+  ov.appendChild(panel);
+  document.body.appendChild(ov);
+
+  bt82PredictRender();
+  bt82MeterRender();
+  bt82Trial1Render();
+  bt82Trial2Render();
+  bt82Trial3Render();
+  bt82Progress();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", bt82Build);
+} else {
+  bt82Build();
+}
+
+/* debug hooks for the smoke test */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.BT82 = BT82;
+  module.exports.bt82Debug = {
+    newState: bt82NewState,
+    open: bt82Open,
+    setDial: bt82SetDial,
+    probeT1: bt82ProbeT1,
+    probeT2: bt82ProbeT2,
+    probeT3: bt82ProbeT3,
+    predictCall: bt82PredictCall,
+    t1Commit: bt82T1Commit,
+    t2Commit: bt82T2Commit,
+    t3ACommit: bt82T3ACommit,
+    t3BCommit: bt82T3BCommit,
+    blowFuse: bt82BlowFuse,
+    certText: bt82CertText
+  };
+}
+
+})();
