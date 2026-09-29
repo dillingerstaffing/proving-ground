@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260929-pg147">
+<meta name="build-version" content="v20260929-pg148">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -735,10 +735,12 @@ body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
   position: relative; /* anchor for the invisible 44px tap target below */
 }
 /* Invisible tap target: the 26px mark is a deliberate design size, but the
-   touch target must be at least 44px. ::after expands the hit area by 9px
-   on each side (26 + 18 = 44) with zero visual change. Nearest neighbor is
-   the HIRE CHRIS button, 12px away at 390px (18px at 1280px), so the
-   expansion never overlaps another control. */
+   touch target must be at least 44px. ::after stretches 9px past the padding
+   box on every side (a 42px square) with zero visual change. The header's
+   overflow:hidden clips the right 9px, the toggle sits flush at the header's
+   right edge, so the effective target is 34x42. Nearest neighbor is the
+   HIRE CHRIS button, 12px away at 390px (18px at 1280px), so the expansion
+   never overlaps another control. */
 .theme-toggle::after {
   content: "";
   position: absolute;
@@ -1366,7 +1368,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-29-pg147";
+var PG_REV = "2026-09-29-pg148";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
