@@ -65671,3 +65671,600 @@ if (typeof module !== "undefined" && module.exports) {
 }
 
 })();
+/* =====================================================================
+ * Bench 83: The Oops Room (arch / riscv)
+ * A dead kernel leaves a note: five lines naming the dead instruction,
+ * the bad address, and the reason it died. Crash 0 is worked in full
+ * (predict the cause, then walk the decode). Three trials: click the
+ * sepc line in each listing, name the bug, commit the diagnosis.
+ * No em dashes in user-facing copy. Mobile: 48px targets, wrapping rows.
+ * ===================================================================== */
+(function () {
+"use strict";
+
+/* ---------------- bench data ---------------- */
+var OP83 = {};
+OP83.CAUSES = [
+  "Null pointer dereference",
+  "Stack overflow",
+  "Corrupted function pointer",
+  "Illegal instruction"
+];
+OP83.CRASH0 = {
+  comm: "badprog", cpu: "0",
+  sepc: "ffffffff80200a40", scause: "13", stval: "0000000000000010",
+  regs: [["a0", "0000000000000000"], ["sp", "ffffffc0803fff00"]],
+  listing: [
+    { a: "ffffffff80200a38", t: "addi sp,sp,-32" },
+    { a: "ffffffff80200a3c", t: "sd ra,24(sp)" },
+    { a: "ffffffff80200a40", t: "ld a3,16(a0)" },
+    { a: "ffffffff80200a44", t: "bnez a3,ffffffff80200a50" },
+    { a: "ffffffff80200a48", t: "li a0,0" }
+  ],
+  predict: [
+    { t: "Null pointer dereference: the code read 16 bytes past a null pointer.", ok: true },
+    { t: "Corrupted jump: the CPU tried to execute code at address 0x10.", ok: false,
+      why: "scause 13 is a load fault: the CPU died reading, not fetching. And stval 0x10 is sixteen bytes past zero, not a code address." },
+    { t: "Stack overflow: the stack grew past its mapped range.", ok: false,
+      why: "sp is healthy (0xffffffc0803fff00, inside the stack range) and stval is 0x10: sixteen bytes past zero. The stack is not in this story." }
+  ],
+  steps: [
+    "<b>Step 1: sepc.</b> sepc = ffffffff80200a40. The listing line at that address reads <b>ld a3,16(a0)</b>: load 8 bytes from (a0 + 16) into a3. That is the instruction that did not survive.",
+    "<b>Step 2: the registers it used.</b> The register block says a0 = 0. Effective address = 0 + 16 = <b>0x10</b>.",
+    "<b>Step 3: the hardware's answer.</b> stval = 0x10 agrees with your arithmetic: the hardware refused exactly that address. scause 13 = load page fault: no page is mapped at 0x10.",
+    "<b>Step 4: the verdict.</b> Null pointer dereference. The pointer in a0 was null; the offset 16 only carried the fault sixteen bytes past zero. Memorize the signature: <b>small stval plus a faulting load or store means null plus an offset</b>."
+  ]
+};
+OP83.TRIALS = [
+  {
+    tag: "TRIAL 1: THE QUIET STORE",
+    comm: "badprog", cpu: "0",
+    sepc: "ffffffff802013c8", scause: "15", stval: "0000000000000020",
+    regs: [["a1", "0000000000000000"], ["sp", "ffffffc0803fff00"]],
+    listing: [
+      { a: "ffffffff802013bc", t: "sd ra,24(sp)" },
+      { a: "ffffffff802013c0", t: "mv a1,a0" },
+      { a: "ffffffff802013c4", t: "li a0,0" },
+      { a: "ffffffff802013c8", t: "sd a0,32(a1)" },
+      { a: "ffffffff802013cc", t: "ld ra,24(sp)" }
+    ],
+    cause: 0,
+    whyNot: [
+      "",
+      "sp is sane (0xffffffc0803fff00, inside the stack range) and stval is 0x20: thirty-two bytes past zero. This smells like null, not stack.",
+      "The fault is a store (scause 15), not a fetch. The CPU died writing, not jumping.",
+      "scause is 15, a page fault, not 2. The instruction decoded fine; the address was the problem."
+    ],
+    verdict: "NULL POINTER DEREFERENCE, store variant. a1 held 0, so <b>sd a0,32(a1)</b> wrote to address 0x20. stval = 0x20 confirms the hardware refused exactly that address, and scause 15 says it was a store. The pointer was null; the offset 32 only moved the fault thirty-two bytes past zero."
+  },
+  {
+    tag: "TRIAL 2: THE EATEN STACK",
+    comm: "recursor", cpu: "0", func: "recurse",
+    sepc: "ffffffff80202110", scause: "15", stval: "ffffffc0803fbff0",
+    regs: [["sp", "ffffffc0803fbfd0"]],
+    stack: "ffffffc0803fc000..ffffffc080400000",
+    listing: [
+      { a: "ffffffff80202108", t: "addi sp,sp,-48" },
+      { a: "ffffffff8020210c", t: "sd s0,40(sp)" },
+      { a: "ffffffff80202110", t: "sd ra,32(sp)" },
+      { a: "ffffffff80202114", t: "mv s0,sp" }
+    ],
+    cause: 1,
+    whyNot: [
+      "stval is 0xffffffc0803fbff0, nowhere near zero. The bad address sits just below the stack floor, not near the null page.",
+      "",
+      "scause 15 is a store fault, and sepc points at a real prologue instruction inside recurse(), not at a wild address.",
+      "scause is 15, not 2, and the bytes at sepc disassemble cleanly. The instruction is fine; the stack is gone."
+    ],
+    verdict: "STACK OVERFLOW. sp = 0xffffffc0803fbfd0 sits <b>below the stack floor</b> 0xffffffc0803fc000: this thread's 16 KiB stack is exhausted. The faulting push <b>sd ra,32(sp)</b> targeted stval = 0xffffffc0803fbff0, also below the floor, so scause 15 fired. sepc sits inside recurse(): unbounded recursion ate the stack one frame at a time."
+  },
+  {
+    tag: "TRIAL 3: THE BAD JUMP",
+    comm: "worker", cpu: "1",
+    sepc: "00000000deadbeef", scause: "12", stval: "00000000deadbeef",
+    regs: [["t0", "00000000deadbeef"], ["sp", "ffffffc0803fff40"]],
+    listing: [
+      { a: "00000000deadbeef", t: "<unmapped: no code here>" }
+    ],
+    ctx: [
+      { a: "ffffffff80203020", t: "ld t0,0(s0)" },
+      { a: "ffffffff80203024", t: "jalr ra,0(t0)   ; t0 = 0xdeadbeef" }
+    ],
+    cause: 2,
+    whyNot: [
+      "stval is 0xdeadbeef, not near zero. The address is garbage, not null plus an offset.",
+      "sp is sane and the fault is an instruction fetch (scause 12), not a push. The stack is innocent.",
+      "",
+      "scause 12 means the fetch itself faulted on an unmapped page. An illegal instruction (scause 2) would mean bytes were fetched but decoded to nothing."
+    ],
+    verdict: "CORRUPTED FUNCTION POINTER. sepc = stval = 0xdeadbeef: the CPU tried to fetch its next instruction from an unmapped address, so scause 12 fired and there is nothing to disassemble at sepc. The last jump, <b>jalr ra,0(t0)</b> with t0 = 0xdeadbeef loaded from (s0), carried the poison: something overwrote the pointer before the call."
+  }
+];
+
+OP83.INTRO_HTML =
+  "<p class=\"op83-p\">A dead kernel leaves a note. On RISC-V Linux it is five lines: where the CPU died, " +
+  "what it tried, which address the hardware refused, why the hardware refused it, and what the registers " +
+  "held. Read those five lines and a crashed machine stops being a mystery and becomes a named bug, usually " +
+  "in about a minute.</p>" +
+  "<p class=\"op83-p\">This room puts three crash dumps on your bench. You find the dead instruction in each " +
+  "listing and name the bug: a null dereference, a blown stack, or a corrupted jump. The one-line takeaway, " +
+  "up front so you can test it as you go: <b>sepc names the dead instruction, stval names the bad address, " +
+  "scause names the reason, and the three together name the bug</b>.</p>";
+
+OP83.FIELDS_HTML =
+  "<p class=\"op83-p\"><b>sepc: the program counter at the moment of death.</b> The address of the instruction " +
+  "that did not survive. Everything starts here: find this address in the listing first.</p>" +
+  "<p class=\"op83-p\"><b>The instruction at sepc: what the CPU tried to do.</b> A load or store names its " +
+  "registers, so read those registers next. A jump names its target, so check whether the target is sane.</p>" +
+  "<p class=\"op83-p\"><b>stval: the address the hardware refused</b> (page faults only). A small stval like " +
+  "0x10 or 0x20 beside a faulting load or store is the null-pointer signature: null plus a struct offset.</p>" +
+  "<p class=\"op83-p\"><b>scause: the hardware's reason code.</b> 12 = instruction page fault (the fetch failed), " +
+  "13 = load page fault (the read failed), 15 = store page fault (the write failed), 2 = illegal instruction " +
+  "(bytes were fetched but decode to nothing).</p>" +
+  "<p class=\"op83-p\"><b>The registers: the values the dead instruction used.</b> Read the ones its operands " +
+  "name. Check sp first: if sp is garbage, the register block was captured through a broken stack and the " +
+  "rest is suspect.</p>";
+
+OP83.FAILS_HTML =
+  "<p class=\"op83-p\"><b>No note at all.</b> If the console died before the print, or the crash landed before " +
+  "the console existed (early boot), there is no oops to read. The absence is itself a clue: it died early, " +
+  "or the console path is broken.</p>" +
+  "<p class=\"op83-p\"><b>A lying dump.</b> sepc, scause, and stval are captured by hardware and are almost " +
+  "always honest. The register block is captured by software, through the stack: a garbage sp means a garbage " +
+  "register block. Check sp before you trust anything else.</p>" +
+  "<p class=\"op83-p\"><b>The wrong suspect.</b> The Comm: line names the process that happened to be running " +
+  "when the kernel died. The bug usually lives in the kernel path it called into, not in the process. Do not " +
+  "prosecute the bystander.</p>";
+
+/* ---------------- styles ---------------- */
+var OP83_CSS = [
+  ".op83-overlay{position:fixed;inset:0;z-index:90;background:var(--ink);display:none;overflow-y:auto;}",
+  ".op83-overlay.open{display:block;}",
+  ".op83-panel{max-width:860px;margin:0 auto;padding:28px 18px 60px;color:var(--paper);box-sizing:border-box;}",
+  ".op83-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);}",
+  ".op83-title{font-family:'Space Grotesk',sans-serif;font-size:34px;margin:6px 0 10px;color:var(--paper);}",
+  ".op83-sec{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.16em;color:var(--ember);margin:26px 0 10px;padding-top:16px;border-top:1px solid var(--line);}",
+  ".op83-p{font-size:13.5px;line-height:1.7;color:var(--dim);max-width:74ch;margin:0 0 12px;}",
+  ".op83-p b{color:var(--paper);}",
+  ".op83-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0;}",
+  ".op83-btn{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.08em;background:transparent;color:var(--paper);border:1px solid var(--line);padding:0 16px;min-height:48px;cursor:pointer;border-radius:2px;}",
+  ".op83-btn:hover{border-color:var(--ember);color:var(--ember);}",
+  ".op83-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+  ".op83-btn:disabled{opacity:.4;cursor:default;}",
+  ".op83-dump{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.65;color:var(--paper);background:var(--panel);border:1px solid var(--line);border-radius:2px;padding:12px 14px;margin:10px 0;overflow-x:auto;white-space:pre;box-sizing:border-box;}",
+  ".op83-dump .k{color:var(--dim);}",
+  ".op83-line{display:flex;gap:12px;align-items:center;width:100%;box-sizing:border-box;text-align:left;font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:var(--paper);background:transparent;border:1px solid var(--line);border-radius:2px;padding:0 12px;min-height:48px;margin:6px 0;cursor:pointer;}",
+  ".op83-line .a{color:var(--ember);flex:none;}",
+  ".op83-line:hover{border-color:var(--ember);}",
+  ".op83-line:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+  ".op83-line.hit{border-color:var(--ember);background:rgba(255,90,31,.08);}",
+  ".op83-line:disabled{cursor:default;}",
+  ".op83-ctx{border-left:2px solid var(--line);padding:6px 0 6px 14px;margin:10px 0;}",
+  ".op83-ctx .lab{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:var(--dim);margin-bottom:6px;}",
+  ".op83-ctx .cl{font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:var(--dim);padding:4px 0;}",
+  ".op83-ctx .cl .a{color:var(--dim);}",
+  ".op83-choice{display:flex;align-items:center;gap:10px;margin:6px 0;min-height:48px;padding:6px 10px;border:1px solid var(--line);border-radius:2px;cursor:pointer;font-size:13px;color:var(--dim);background:transparent;width:100%;box-sizing:border-box;text-align:left;font-family:'IBM Plex Mono',monospace;}",
+  ".op83-choice.sel{border-color:var(--ember);color:var(--paper);}",
+  ".op83-choice:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+  ".op83-choice:disabled{cursor:default;}",
+  ".op83-verdict{font-size:13px;line-height:1.6;color:var(--dim);margin:10px 0;padding:12px 14px;border:1px solid var(--line);border-radius:2px;max-width:74ch;}",
+  ".op83-verdict.ok{border-color:var(--ember);color:var(--paper);}",
+  ".op83-verdict.bad{border-color:#7a2a1a;color:var(--dim);}",
+  ".op83-verdict b{color:var(--paper);}",
+  ".op83-out{font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:var(--dim);margin:8px 0;}",
+  ".op83-out b{color:var(--ember);}",
+  ".op83-step{font-size:13px;line-height:1.7;color:var(--dim);margin:0 0 12px;padding:12px 14px;border:1px solid var(--line);border-radius:2px;max-width:74ch;}",
+  ".op83-step b{color:var(--paper);}",
+  ".op83-banner{display:none;margin-top:22px;border:1px solid var(--ember);border-radius:2px;padding:18px;}",
+  ".op83-banner.show{display:block;}",
+  ".op83-banner h3{font-family:'IBM Plex Mono',monospace;font-size:14px;letter-spacing:.16em;color:var(--ember);margin:0 0 8px;}",
+  ".op83-banner p{font-size:13px;line-height:1.7;color:var(--dim);margin:0 0 10px;}",
+  ".op83-banner p b{color:var(--paper);}",
+  "@media (max-width:560px){.op83-title{font-size:26px;}.op83-dump{font-size:11px;}}"
+].join("\n");
+
+/* ---------------- state and helpers ---------------- */
+var op83St = null;
+var op83Els = {};
+var op83EscBound = false;
+
+function op83NewState() {
+  return {
+    predicted: -1, decoded: false, decodeStep: 0, certified: false,
+    trials: [
+      { found: false, cause: -1, done: false },
+      { found: false, cause: -1, done: false },
+      { found: false, cause: -1, done: false }
+    ]
+  };
+}
+function op83El(tag, cls, html) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html !== undefined && html !== "") e.innerHTML = html;
+  return e;
+}
+function op83Btn(label, cls) {
+  var b = op83El("button", "op83-btn" + (cls ? " " + cls : ""), "");
+  b.type = "button";
+  b.textContent = label;
+  return b;
+}
+function op83ScauseName(c) {
+  return { "2": "illegal instruction", "12": "instruction page fault",
+           "13": "load page fault", "15": "store page fault" }[c] || "unknown";
+}
+function op83DumpHTML(d, num) {
+  var h = "Oops [#" + num + "] \u00b7 Comm: " + d.comm + " \u00b7 CPU " + d.cpu + "\n";
+  h += "sepc:   " + d.sepc + (d.func ? "  (in " + d.func + ")" : "") + "\n";
+  h += "scause: " + d.scause + " (" + op83ScauseName(d.scause) + ")\n";
+  h += "stval:  " + d.stval + "\n";
+  for (var i = 0; i < d.regs.length; i++) {
+    h += d.regs[i][0] + ": " + d.regs[i][1] + "\n";
+  }
+  if (d.stack) h += "stack:  " + d.stack + "\n";
+  return h.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+}
+
+/* ---------------- predict (crash 0) ---------------- */
+function op83PredictRender() {
+  var host = op83Els.predict;
+  host.innerHTML = "";
+  host.appendChild(op83El("p", "op83-p",
+    "Crash 0 is on the bench, fully worked below. Before you scroll to the decode, " +
+    "call it. The dump says: scause 13 (load page fault), stval 0x0000000000000010, " +
+    "the dead instruction is <b>ld a3,16(a0)</b>, and a0 holds 0. What is the one-line diagnosis?"));
+  for (var i = 0; i < OP83.CRASH0.predict.length; i++) {
+    (function (i) {
+      var c = op83El("button", "op83-choice", "");
+      c.type = "button";
+      c.id = "op83P" + i;
+      c.textContent = OP83.CRASH0.predict[i].t;
+      c.addEventListener("click", function () { op83PredictPick(i); });
+      host.appendChild(c);
+    })(i);
+  }
+  var v = op83El("div", "op83-verdict", "No call yet. Pick one: the decode below will confirm or correct you.");
+  v.id = "op83PVerdict";
+  v.style.display = "none";
+  host.appendChild(v);
+  var row = op83El("div", "op83-row", "");
+  var go = op83Btn("RUN THE DECODE", "");
+  go.id = "op83DecodeBtn";
+  go.disabled = true;
+  go.addEventListener("click", op83DecodeStart);
+  row.appendChild(go);
+  host.appendChild(row);
+  op83Els.pVerdict = v;
+  op83Els.decodeBtn = go;
+}
+function op83PredictPick(i) {
+  op83St.predicted = i;
+  var opts = op83Els.predict.querySelectorAll(".op83-choice");
+  for (var k = 0; k < opts.length; k++) opts[k].classList.remove("sel");
+  var btn = document.getElementById("op83P" + i);
+  if (btn) btn.classList.add("sel");
+  var p = OP83.CRASH0.predict[i];
+  var v = op83Els.pVerdict;
+  v.style.display = "block";
+  if (p.ok) {
+    v.className = "op83-verdict ok";
+    v.innerHTML = "<b>CALL RIGHT.</b> Null plus an offset, exactly. The decode below walks the proof.";
+  } else {
+    v.className = "op83-verdict bad";
+    v.innerHTML = "<b>CALL WRONG, usefully.</b> " + p.why + " The decode below walks the real chain.";
+  }
+  op83Els.decodeBtn.disabled = false;
+  op83Progress();
+}
+function op83DecodeStart() {
+  op83St.decodeStep = 0;
+  op83Els.decodeSteps.innerHTML = "";
+  op83Els.decodeNext.disabled = false;
+  op83Els.decodeNext.style.display = "";
+  op83DecodeNext();
+}
+function op83DecodeNext() {
+  var steps = OP83.CRASH0.steps;
+  if (op83St.decodeStep >= steps.length) return;
+  var d = op83El("div", "op83-step", steps[op83St.decodeStep]);
+  op83Els.decodeSteps.appendChild(d);
+  op83St.decodeStep++;
+  if (op83St.decodeStep >= steps.length) {
+    op83Els.decodeNext.style.display = "none";
+    op83St.decoded = true;
+    var v = op83El("div", "op83-verdict ok", "<b>CRASH 0 DECODED.</b> sepc to instruction, instruction to registers, " +
+      "registers to stval, stval plus scause to the verdict. That chain is the whole craft.");
+    op83Els.decodeSteps.appendChild(v);
+    op83Progress();
+    op83CertCheck();
+  }
+}
+
+/* ---------------- trials ---------------- */
+function op83TrialRender(i) {
+  var t = OP83.TRIALS[i];
+  var host = op83Els["t" + i];
+  host.innerHTML = "";
+  host.appendChild(op83El("h3", "op83-sec", t.tag));
+  var pre = op83El("pre", "op83-dump", op83DumpHTML(t, i + 1));
+  host.appendChild(pre);
+  host.appendChild(op83El("p", "op83-p", "<b>Step 1:</b> click the listing line where the CPU died (match the sepc address)."));
+  var list = op83El("div", "", "");
+  for (var j = 0; j < t.listing.length; j++) {
+    (function (j) {
+      var ln = t.listing[j];
+      var b = op83El("button", "op83-line", "");
+      b.type = "button";
+      b.id = "op83T" + i + "L" + j;
+      b.innerHTML = "<span class=\"a\">" + ln.a + ":</span><span>" +
+        ln.t.replace(/&/g, "&amp;").replace(/</g, "&lt;") + "</span>";
+      b.addEventListener("click", function () { op83TrialClick(i, j); });
+      list.appendChild(b);
+    })(j);
+  }
+  host.appendChild(list);
+  if (t.ctx) {
+    var ctx = op83El("div", "op83-ctx", "<div class=\"lab\">THE LAST JUMP (CONTEXT, NOT THE DEATH SITE)</div>");
+    for (var q = 0; q < t.ctx.length; q++) {
+      ctx.appendChild(op83El("div", "cl",
+        "<span class=\"a\">" + t.ctx[q].a + ":</span> " +
+        t.ctx[q].t.replace(/&/g, "&amp;").replace(/</g, "&lt;")));
+    }
+    host.appendChild(ctx);
+  }
+  host.appendChild(op83El("p", "op83-p", "<b>Step 2:</b> name the bug."));
+  var causes = op83El("div", "", "");
+  causes.id = "op83T" + i + "Causes";
+  for (var c = 0; c < OP83.CAUSES.length; c++) {
+    (function (c) {
+      var ch = op83El("button", "op83-choice", "");
+      ch.type = "button";
+      ch.id = "op83T" + i + "C" + c;
+      ch.textContent = OP83.CAUSES[c];
+      ch.disabled = true;
+      ch.addEventListener("click", function () { op83TrialCause(i, c); });
+      causes.appendChild(ch);
+    })(c);
+  }
+  host.appendChild(causes);
+  var row = op83El("div", "op83-row", "");
+  var go = op83Btn("COMMIT DIAGNOSIS", "");
+  go.id = "op83T" + i + "Go";
+  go.disabled = true;
+  go.addEventListener("click", function () { op83TrialCommit(i); });
+  row.appendChild(go);
+  host.appendChild(row);
+  var v = op83El("div", "op83-verdict", "");
+  v.id = "op83T" + i + "V";
+  v.style.display = "none";
+  host.appendChild(v);
+  op83Els["t" + i + "V"] = v;
+  op83Els["t" + i + "Go"] = go;
+}
+function op83TrialClick(i, j) {
+  var st = op83St.trials[i];
+  if (st.done) return;
+  var t = OP83.TRIALS[i];
+  var v = op83Els["t" + i + "V"];
+  var clickedAddr = t.listing[j].a;
+  if (clickedAddr === t.sepc) {
+    st.found = true;
+    var lines = op83Els["t" + i].querySelectorAll(".op83-line");
+    for (var k = 0; k < lines.length; k++) lines[k].disabled = true;
+    document.getElementById("op83T" + i + "L" + j).classList.add("hit");
+    var causes = op83Els["t" + i].querySelectorAll(".op83-choice");
+    for (var q = 0; q < causes.length; q++) causes[q].disabled = false;
+    v.style.display = "block";
+    v.className = "op83-verdict ok";
+    v.innerHTML = "<b>THAT IS THE DEATH SITE.</b> sepc = " + t.sepc + ". Now step 2: name the bug.";
+  } else {
+    v.style.display = "block";
+    v.className = "op83-verdict bad";
+    v.innerHTML = "Not that line. sepc says <b>" + t.sepc + "</b>: match that address.";
+  }
+  op83Progress();
+}
+function op83TrialCause(i, c) {
+  var st = op83St.trials[i];
+  if (st.done || !st.found) return;
+  st.cause = c;
+  var causes = op83Els["t" + i].querySelectorAll(".op83-choice");
+  for (var k = 0; k < causes.length; k++) causes[k].classList.remove("sel");
+  document.getElementById("op83T" + i + "C" + c).classList.add("sel");
+  op83Els["t" + i + "Go"].disabled = false;
+}
+function op83TrialCommit(i) {
+  var st = op83St.trials[i];
+  if (st.done || st.cause < 0) return;
+  var t = OP83.TRIALS[i];
+  var v = op83Els["t" + i + "V"];
+  v.style.display = "block";
+  if (st.cause === t.cause) {
+    st.done = true;
+    v.className = "op83-verdict ok";
+    v.innerHTML = "<b>DIAGNOSED.</b> " + t.verdict;
+    var causes = op83Els["t" + i].querySelectorAll(".op83-choice");
+    for (var k = 0; k < causes.length; k++) causes[k].disabled = true;
+    op83Els["t" + i + "Go"].disabled = true;
+  } else {
+    v.className = "op83-verdict bad";
+    v.innerHTML = "<b>NOT QUITE.</b> " + t.whyNot[st.cause] + " Pick again.";
+  }
+  op83Progress();
+  op83CertCheck();
+}
+
+/* ---------------- progress and certification ---------------- */
+function op83Progress() {
+  var done = 0;
+  for (var i = 0; i < 3; i++) if (op83St.trials[i].done) done++;
+  op83Els.progress.innerHTML =
+    "CRASH 0: <b>" + (op83St.decoded ? "DECODED" : (op83St.predicted >= 0 ? "CALLED" : "PENDING")) + "</b>" +
+    " \u00b7 TRIALS: <b>" + done + "/3</b> DIAGNOSED";
+}
+function op83CertCheck() {
+  if (op83St.certified) return;
+  var done = 0;
+  for (var i = 0; i < 3; i++) if (op83St.trials[i].done) done++;
+  if (op83St.decoded && done === 3) {
+    op83St.certified = true;
+    op83Els.banner.classList.add("show");
+    op83Progress();
+  }
+}
+
+/* ---------------- open / close / build ---------------- */
+function op83Open() {
+  op83Els.overlay.classList.add("open");
+  try { localStorage.setItem("pg.seen.v1", JSON.stringify(Object.assign(
+    JSON.parse(localStorage.getItem("pg.seen.v1") || "{}"), { "83": 1 }))); } catch (e) {}
+  if (typeof pgPaintStates === "function") { try { pgPaintStates(); } catch (e) {} }
+}
+function op83Close() {
+  op83Els.overlay.classList.remove("open");
+}
+
+function op83Build() {
+  var box = document.querySelector(".dossier .actions");
+  if (!box) return;
+  if (document.getElementById("op83Btn")) return;
+  op83St = op83NewState();
+
+  var sty = document.createElement("style");
+  sty.id = "op83Style";
+  sty.textContent = OP83_CSS;
+  document.head.appendChild(sty);
+
+  var b = document.createElement("button");
+  b.id = "op83Btn";
+  b.className = "pg-launch";
+  b.textContent = "Open The Oops Room";
+  b.addEventListener("click", op83Open);
+  box.appendChild(b);
+
+  var ov = op83El("div", "op83-overlay", "");
+  ov.id = "op83Overlay";
+  ov.setAttribute("role", "dialog");
+  ov.setAttribute("aria-label", "The Oops Room");
+  var x = op83Btn("CLOSE", "");
+  x.id = "op83XBtn";
+  x.style.cssText = "position:fixed;top:calc(12px + env(safe-area-inset-top));right:calc(16px + env(safe-area-inset-right));z-index:95;";
+  x.setAttribute("aria-label", "Close The Oops Room");
+  x.addEventListener("click", op83Close);
+  ov.appendChild(x);
+  op83Els.overlay = ov;
+  if (!op83EscBound) {
+    op83EscBound = true;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && op83Els.overlay && op83Els.overlay.classList.contains("open")) op83Close();
+    });
+  }
+
+  var panel = op83El("div", "op83-panel", "");
+  panel.appendChild(op83El("div", "op83-kicker", "RISC-V \u00b7 BENCH 83"));
+  panel.appendChild(op83El("h2", "op83-title", "The Oops Room"));
+
+  var intro = op83El("div", "", "");
+  intro.innerHTML = OP83.INTRO_HTML;
+  panel.appendChild(intro);
+
+  var prog = op83El("div", "op83-out", "");
+  prog.id = "op83Progress";
+  prog.setAttribute("aria-live", "polite");
+  panel.appendChild(prog);
+  op83Els.progress = prog;
+
+  panel.appendChild(op83El("h3", "op83-sec", "DO FIRST: CALL IT BEFORE THE DECODE"));
+  op83Els.predict = op83El("div", "", "");
+  panel.appendChild(op83Els.predict);
+
+  panel.appendChild(op83El("h3", "op83-sec", "THE WORKED CRASH"));
+  var worked = op83El("div", "", "");
+  var pre0 = op83El("pre", "op83-dump", op83DumpHTML(OP83.CRASH0, 0));
+  worked.appendChild(pre0);
+  var lst0 = op83El("div", "op83-ctx", "<div class=\"lab\">CODE AROUND sepc</div>");
+  for (var w = 0; w < OP83.CRASH0.listing.length; w++) {
+    lst0.appendChild(op83El("div", "cl",
+      "<span class=\"a\">" + OP83.CRASH0.listing[w].a + ":</span> " +
+      OP83.CRASH0.listing[w].t.replace(/&/g, "&amp;").replace(/</g, "&lt;")));
+  }
+  worked.appendChild(lst0);
+  op83Els.decodeSteps = op83El("div", "", "");
+  worked.appendChild(op83Els.decodeSteps);
+  var drow = op83El("div", "op83-row", "");
+  var dn = op83Btn("NEXT STEP", "");
+  dn.id = "op83DNext";
+  dn.style.display = "none";
+  dn.addEventListener("click", op83DecodeNext);
+  drow.appendChild(dn);
+  worked.appendChild(drow);
+  op83Els.decodeNext = dn;
+  panel.appendChild(worked);
+
+  panel.appendChild(op83El("h3", "op83-sec", "THE FIVE LINES"));
+  var fields = op83El("div", "", "");
+  fields.innerHTML = OP83.FIELDS_HTML;
+  panel.appendChild(fields);
+
+  panel.appendChild(op83El("h3", "op83-sec", "THE FAILURE MODES"));
+  var fails = op83El("div", "", "");
+  fails.innerHTML = OP83.FAILS_HTML;
+  panel.appendChild(fails);
+
+  for (var ti = 0; ti < 3; ti++) {
+    op83Els["t" + ti] = op83El("div", "", "");
+    panel.appendChild(op83Els["t" + ti]);
+  }
+
+  var banner = op83El("div", "op83-banner", "");
+  banner.id = "op83Banner";
+  banner.setAttribute("aria-live", "polite");
+  banner.innerHTML = "<h3>BENCH 83 CERTIFIED</h3><p>Three crashes, three named bugs, zero mysteries left standing. " +
+    "The takeaway in one line: <b>sepc names the dead instruction, stval names the bad address, scause names " +
+    "the reason, and the three together name the bug.</b></p>";
+  panel.appendChild(banner);
+  op83Els.banner = banner;
+
+  /* hire line: crash-dump triage offer at the foot of the bench, matching
+     the Bench 71-82 pattern. The hire-chooser module binds [data-brief]
+     triggers document-wide. Copy only. */
+  var hire = op83El("p", "op83-p", "");
+  hire.innerHTML = "A lab full of crashing boards and crash dumps nobody reads? " +
+    "<button type=\"button\" class=\"op83-btn\" data-brief=\"triage\" data-bench-tag=\"Bench 83: The Oops Room\">Crash triage</button>";
+  panel.appendChild(hire);
+
+  ov.appendChild(panel);
+  document.body.appendChild(ov);
+
+  op83PredictRender();
+  op83TrialRender(0);
+  op83TrialRender(1);
+  op83TrialRender(2);
+  op83Progress();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", op83Build);
+} else {
+  op83Build();
+}
+
+/* debug hooks for the smoke test */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.OP83 = OP83;
+  module.exports.op83Debug = {
+    newState: op83NewState,
+    open: op83Open,
+    predictPick: op83PredictPick,
+    decodeStart: op83DecodeStart,
+    decodeNext: op83DecodeNext,
+    trialClick: op83TrialClick,
+    trialCause: op83TrialCause,
+    trialCommit: op83TrialCommit,
+    scauseName: op83ScauseName,
+    dumpHTML: op83DumpHTML
+  };
+}
+
+})();
