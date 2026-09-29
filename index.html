@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260928-pg142">
+<meta name="build-version" content="v20260929-pg143">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -1997,7 +1997,12 @@ if ('serviceWorker' in navigator) {
       root.style.setProperty('--ty', Math.round(r.top + r.height / 2) + 'px');
     }
     if (!reduced && document.startViewTransition) {
-      document.startViewTransition(function () { apply(next); });
+      // Guard both transition promises: a second toggle that skips an
+      // in-flight transition rejects ready/finished with AbortError, and
+      // an unhandled rejection is console noise for the visitor.
+      const vt = document.startViewTransition(function () { apply(next); });
+      vt.ready.catch(function () {});
+      vt.finished.catch(function () {});
     } else {
       apply(next);
     }
