@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260930-pg151">
+<meta name="build-version" content="v20260930-pg152">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
-<meta name="description" content="The Proving Ground: 83 interactive hardware benches, RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs entirely on your device.">
+<meta name="description" content="The Proving Ground: 84 interactive hardware benches, RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs entirely on your device.">
 <link rel="canonical" href="https://dillingerstaffing.github.io/proving-ground/">
 <link rel="preload" href="fonts/space-grotesk-var.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="fonts/ibm-plex-mono-400.woff2" as="font" type="font/woff2" crossorigin>
@@ -15,7 +15,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="The Proving Ground">
 <meta property="og:title" content="The Proving Ground: Working Engineering Benches">
-<meta property="og:description" content="83 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs in the browser.">
+<meta property="og:description" content="84 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs in the browser.">
 <meta property="og:url" content="https://dillingerstaffing.github.io/proving-ground/">
 <meta property="og:image" content="https://dillingerstaffing.github.io/proving-ground/og-card.png">
 <meta property="og:image:width" content="1200">
@@ -27,7 +27,7 @@
 {"@context":"https://schema.org","@type":"WebApplication",
  "name":"The Proving Ground",
  "url":"https://dillingerstaffing.github.io/proving-ground/",
- "description":"83 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft.",
+ "description":"84 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft.",
  "applicationCategory":"BrowserApplication","operatingSystem":"Any modern web browser",
  "isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
@@ -824,7 +824,7 @@ body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
         <circle class="draw-core" cx="24" cy="24" r="2.6" fill="#0a0c0e"/>
       </svg>
       <div class="head-group">
-        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">83</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;INTERACTIVE,&nbsp;IN&nbsp;BROWSER</span></span></div>
+        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">84</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;INTERACTIVE,&nbsp;IN&nbsp;BROWSER</span></span></div>
         <button class="hire-btn" type="button" data-brief="general">HIRE CHRIS</button>
         <button class="theme-toggle" type="button" aria-label="Switch to terminal theme" title="Switch theme">
           <span class="theme-toggle-mark" aria-hidden="true"><i></i><i></i></span>
@@ -1304,7 +1304,11 @@ var PG_BENCHES = [
   { section: "arch", n: "83", name: "The Oops Room", btn: "op83Btn", pill: "riscv", pillLabel: "RISC-V",
     desc: "A dead kernel leaves a note: five lines naming the dead instruction, the bad address, and the reason it died. Read three RISC-V crash dumps, find the faulting instruction in each listing, and name the bug: a null dereference, a blown stack, or a corrupted jump.",
     how: "Call the cause before the decode on the worked crash, then click each sepc line and commit three diagnoses.",
-    spec: "OOPS AUTOPSY \u00B7 3 CRASHES" }
+    spec: "OOPS AUTOPSY \u00B7 3 CRASHES" },
+  { section: "craft", n: "84", name: "The Solder Room", btn: "sd84Btn", pill: "oldiron", pillLabel: "BENCH CRAFT",
+    desc: "Hand-soldering qualification for the OLD IRON refurb line: heat the pad and the pin past the 217 C wetting line before the wire feeds, because solder flows toward heat and wets only metal hot enough to accept it. Certify three joints: a standard lead, a heat-drinking ground pour, and a fine-pitch bridge trap.",
+    how: "Call the cold-joint trap, run the reference recipe on the practice joint, then heat and feed three stations to a shiny fillet each and commit SHIP on all three.",
+    spec: "HAND SOLDERING \u00B7 3 JOINTS" }
  ];
 /* Teaching order: the sequence a newcomer should take the benches in.
    The index renders this list top to bottom; the number on each row is its
@@ -1391,6 +1395,7 @@ var PG_TEACH_ORDER = [
   "22",
   "21",
   "23",
+  "84",
   "19",
   "79",
   "04",
@@ -1403,7 +1408,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-30-pg151";
+var PG_REV = "2026-09-30-pg152";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {

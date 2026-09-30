@@ -66268,3 +66268,590 @@ if (typeof module !== "undefined" && module.exports) {
 }
 
 })();
+/* =====================================================================
+ * Bench 84: The Solder Room (craft / oldiron)
+ * Hand-soldering joint craft for the OLD IRON refurb line. One atomic
+ * mechanism: heat the pad and the pin past the 217 C wetting line before
+ * the wire feeds. Solder flows toward heat and wets only metal hot enough
+ * to accept it. Worked predict moment (the pad-only heat trap), one free
+ * practice joint with the reference recipe, three certification stations
+ * (standard lead, copper ground pour, fine-pitch bridge trap).
+ * Press-and-hold HEAT and FEED (pointer and keyboard), live joint
+ * temperature, COMMIT grades SHIP / COLD / STARVED / BRIDGE / LIFTED /
+ * NEVER HEATED / FLOODED. Triple SHIP issues a certificate download.
+ * No em dashes in user-facing copy. Mobile: 48px targets, wrapping rows.
+ * ===================================================================== */
+(function () {
+"use strict";
+
+/* ---------------- bench data ---------------- */
+var SD84 = {};
+SD84.WET = 217;        /* SAC305 liquidus: the wetting line, degrees C */
+SD84.TIP = 350;        /* iron tip temperature, degrees C */
+SD84.AMB = 25;         /* bench ambient, degrees C */
+SD84.FEED_RATE = 2.0;  /* mm of 0.8 mm wire fed per second while FEED is held */
+
+SD84.JOINTS = {
+  worked: { tag: "THE PRACTICE JOINT", sub: "standard through-hole lead, plain 2-layer board",
+            tau: 1.8, lift: 9.0, bridgeMm: 9.0, minMm: 3.0, maxMm: 8.0, fine: false },
+  j1: { tag: "TRIAL 1: THE STANDARD LEAD", sub: "the same lead you practiced on",
+        tau: 1.6, lift: 9.0, bridgeMm: 9.0, minMm: 3.0, maxMm: 8.0, fine: false },
+  j2: { tag: "TRIAL 2: THE GROUND POUR", sub: "the pad sits on a 4 oz copper pour that drinks heat: longer soak, same lift limit",
+        tau: 4.2, lift: 14.0, bridgeMm: 9.0, minMm: 4.0, maxMm: 8.5, fine: false },
+  j3: { tag: "TRIAL 3: THE FINE PITCH", sub: "a neighbor pin sits 2 mm away and hates surprises: keep the wire lean",
+        tau: 1.2, lift: 7.0, bridgeMm: 5.0, minMm: 2.5, maxMm: 4.5, fine: true }
+};
+
+SD84.INTRO_HTML =
+  "<b>WHY THIS ROOM EXISTS</b> A solder joint can look finished and still fail in the field: " +
+  "grainy, dull, cracked under vibration, dead at the worst moment. The mechanism that keeps a " +
+  "joint alive is one rule: <b>heat the pad and the pin past 217 C before the wire feeds</b>. " +
+  "Solder flows toward heat and wets only metal hot enough to accept it, so wire fed onto cold " +
+  "copper balls up instead of bonding. Three joints, one rule, zero cold ones shipped.";
+
+SD84.PREDICT_Q =
+  "THE TRAP: the iron touches the pad only, never the pin. One second of heat, then the wire " +
+  "feeds for two seconds. Call it before you touch anything: WET or COLD?";
+SD84.PREDICT_WHY =
+  "COLD. After one second the metal sits near 160 C, under the 217 C wetting line, and the pin " +
+  "side got almost no heat at all. The solder balls up on the pad and never wets the pin: a " +
+  "textbook cold joint. Run exactly that sequence on the practice joint below and watch the " +
+  "gray blob prove it.";
+
+SD84.WORKED_HTML =
+  "<b>THE WORKED JOINT</b> A standard through-hole lead on a plain 2-layer board. The iron sits " +
+  "at 350 C and touches pad and pin together, so both climb at the same rate. After 2.5 s the " +
+  "joint reads 269 C, past the 217 C wetting line. Keep the iron on the joint and feed the wire " +
+  "for 2.5 s (5.0 mm of 0.8 mm wire): it melts on contact and flows around the pin into a shiny " +
+  "concave fillet. Wire out, one more second of heat, iron lifts straight up. COMMIT calls it " +
+  "SHIP. The whole recipe is two numbers: heat past 217, feed inside the target range. " +
+  "HEAT and FEED are independent controls: hold both at once, the way two hands work.";
+
+SD84.RULES_HTML =
+  "<b>THE WAYS A JOINT DIES</b> COLD JOINT: most of the wire fed below 217 C, dull gray ball, " +
+  "cracks later. STARVED JOINT: too little wire, pinholes, no mechanical strength. " +
+  "SOLDER BRIDGE: too much wire on tight pitch, the fillet reaches the neighbor and shorts it. " +
+  "LIFTED PAD: the iron camped too long, the copper peels off the board and the joint has " +
+  "nothing to hold. NEVER HEATED: the wire fed onto a cold board. Every COMMIT names which " +
+  "one you built.";
+
+/* ---------------- pure logic (shared with the smoke test) ---------------- */
+function sd84Rise(tau, t) {
+  return SD84.AMB + (SD84.TIP - SD84.AMB) * (1 - Math.exp(-t / tau));
+}
+function sd84NewStation(key) {
+  return { key: key, cfg: SD84.JOINTS[key], heatT: 0, T: SD84.AMB,
+           feedMm: 0, coldMm: 0, heating: false, feeding: false,
+           bridged: false, lifted: false, committed: false,
+           verdict: "", pass: false, iv: 0, refs: {} };
+}
+/* Advance one station by dt seconds. Deterministic: the DOM ticker and the
+   smoke test call the same function. */
+function sd84Step(st, dt) {
+  var tau = st.cfg.tau;
+  if (st.lifted || st.committed) return;
+  if (st.heating) {
+    st.heatT += dt;
+    st.T += (SD84.TIP - st.T) * (1 - Math.exp(-dt / tau));
+    if (st.heatT > st.cfg.lift) {
+      st.lifted = true; st.heating = false; st.feeding = false;
+    }
+  } else {
+    st.T += (SD84.AMB - st.T) * (1 - Math.exp(-dt / (2.5 * tau)));
+  }
+  if (st.feeding && !st.lifted) {
+    var w = SD84.FEED_RATE * dt;
+    st.feedMm += w;
+    if (st.T < SD84.WET) st.coldMm += w;
+    if (st.feedMm > st.cfg.bridgeMm) st.bridged = true;
+  }
+}
+function sd84Grade(st) {
+  var c = st.cfg;
+  function v(pass, code, text) { return { pass: pass, code: code, text: text }; }
+  if (st.lifted) return v(false, "LIFTED PAD",
+    "LIFTED PAD: " + st.heatT.toFixed(1) + " s of heat peeled the copper off the board. " +
+    "The joint has nothing to hold. Rework: new board, shorter soak.");
+  if (st.bridged) return v(false, "SOLDER BRIDGE",
+    "SOLDER BRIDGE: " + st.feedMm.toFixed(1) + " mm of wire reached the neighbor pin. " +
+    "That is a short. Rework: wick it off, feed leaner.");
+  if (st.heatT < 0.99) return v(false, "NEVER HEATED",
+    "NEVER HEATED: the iron barely touched the joint (" + st.heatT.toFixed(1) + " s). " +
+    "The wire never had a chance. Heat first, then feed.");
+  if (st.coldMm > 1.0) return v(false, "COLD JOINT",
+    "COLD JOINT: " + st.coldMm.toFixed(1) + " mm of wire fed below the 217 C wetting line. " +
+    "Dull gray ball, cracks later. Heat the work past 217, then feed.");
+  if (st.feedMm < c.minMm) return v(false, "STARVED JOINT",
+    "STARVED JOINT: only " + st.feedMm.toFixed(1) + " mm of wire (target " +
+    c.minMm.toFixed(1) + "-" + c.maxMm.toFixed(1) + " mm). Pinholes, no strength.");
+  if (st.feedMm > c.maxMm) return v(false, "FLOODED",
+    "FLOODED: " + st.feedMm.toFixed(1) + " mm of wire (target " +
+    c.minMm.toFixed(1) + "-" + c.maxMm.toFixed(1) + " mm). A blob hides the fillet and " +
+    "wastes solder. Feed inside the range.");
+  return v(true, "SHIP",
+    "SHIP: " + st.heatT.toFixed(1) + " s of heat, " + st.feedMm.toFixed(1) +
+    " mm of wire, all of it past 217 C. Shiny concave fillet, wets pad and pin.");
+}
+
+/* ---------------- dom helpers ---------------- */
+var sd84Els = { overlay: null, progress: null, banner: null, predict: null };
+var sd84St = null;
+var sd84EscBound = false;
+function sd84El(tag, cls, html) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html) e.innerHTML = html;
+  return e;
+}
+function sd84Btn(label, cls) {
+  var b = document.createElement("button");
+  b.type = "button";
+  b.className = "sd84-btn" + (cls ? " " + cls : "");
+  b.textContent = label;
+  return b;
+}
+/* Press-and-hold wiring: pointer plus keyboard (Space/Enter hold, keyup
+   releases). The heat/feed buttons have no click action; only the hold. */
+function sd84Hold(btn, down, up) {
+  var held = false;
+  function start(e) {
+    if (held) return;
+    held = true; down();
+    if (e && e.preventDefault) e.preventDefault();
+  }
+  function stop() { if (held) { held = false; up(); } }
+  btn.addEventListener("pointerdown", start);
+  btn.addEventListener("pointerup", stop);
+  btn.addEventListener("pointercancel", stop);
+  btn.addEventListener("pointerleave", stop);
+  btn.addEventListener("keydown", function (e) {
+    if ((e.key === " " || e.key === "Enter") && !e.repeat) start(e);
+  });
+  btn.addEventListener("keyup", function (e) {
+    if (e.key === " " || e.key === "Enter") stop();
+  });
+  btn.addEventListener("click", function (e) { e.preventDefault(); });
+}
+
+/* ---------------- station svg ---------------- */
+function sd84Svg(st) {
+  var c = st.cfg;
+  var wetMm = Math.max(0, st.feedMm - st.coldMm);
+  var h = Math.min(1, wetMm / c.maxMm) * 13 + (wetMm > 0.3 ? 2 : 0);
+  var s = "";
+  s += "<rect x=\"16\" y=\"140\" width=\"288\" height=\"34\" class=\"sd84-board\"/>";
+  if (c.tau > 3) {
+    s += "<rect x=\"96\" y=\"134\" width=\"128\" height=\"6\" class=\"sd84-pour\"/>";
+  }
+  var padT = st.lifted ? " transform=\"translate(8,-12) rotate(-16 162 136)\"" : "";
+  s += "<g" + padT + "><rect x=\"140\" y=\"132\" width=\"44\" height=\"8\" class=\"sd84-pad\"/></g>";
+  if (c.fine) {
+    s += "<rect x=\"200\" y=\"132\" width=\"28\" height=\"8\" class=\"sd84-pad\"/>";
+    s += "<rect x=\"210\" y=\"74\" width=\"8\" height=\"58\" class=\"sd84-pin\"/>";
+  }
+  s += "<rect x=\"158\" y=\"66\" width=\"8\" height=\"66\" class=\"sd84-pin\"/>";
+  if (h > 0 && !st.lifted) {
+    var hy = (132 - h).toFixed(1);
+    s += "<path d=\"M144,132 Q152," + hy + " 158," + (130 - h * 0.55).toFixed(1) +
+         " L158,132 Z\" class=\"sd84-fillet\"/>";
+    s += "<path d=\"M174,132 Q166," + hy + " 160," + (130 - h * 0.55).toFixed(1) +
+         " L160,132 Z\" class=\"sd84-fillet\"/>";
+  }
+  if (st.coldMm > 0.5 && !st.lifted) {
+    var r = (4 + st.coldMm * 1.1).toFixed(1);
+    s += "<ellipse cx=\"150\" cy=\"124\" rx=\"" + r + "\" ry=\"" + (r * 0.62).toFixed(1) +
+         "\" class=\"sd84-blob\"/>";
+  }
+  if (st.bridged && c.fine && !st.lifted) {
+    s += "<path d=\"M184,130 C192,124 194,124 200,130\" class=\"sd84-bridge\"/>";
+  }
+  if (st.heating) {
+    s += "<polygon points=\"112,92 128,92 148,126 136,130\" class=\"sd84-iron\"/>";
+    s += "<line x1=\"120\" y1=\"92\" x2=\"112\" y2=\"36\" class=\"sd84-iron\"/>";
+  }
+  if (st.feeding) {
+    s += "<line x1=\"296\" y1=\"16\" x2=\"176\" y2=\"108\" class=\"sd84-wire\"/>";
+    s += "<circle cx=\"176\" cy=\"108\" r=\"3\" class=\"sd84-wiretip\"/>";
+  }
+  return s;
+}
+
+/* ---------------- station render ---------------- */
+function sd84Render(st) {
+  var r = st.refs;
+  if (!r.svg) return;
+  var c = st.cfg;
+  r.svg.innerHTML = sd84Svg(st);
+  var t = Math.round(st.T);
+  r.temp.textContent = t + " C";
+  r.temp.classList.toggle("hot", st.T >= SD84.WET);
+  var pct = Math.max(0, Math.min(100, (st.T - SD84.AMB) / (SD84.TIP - SD84.AMB) * 100));
+  r.tfill.style.width = pct.toFixed(1) + "%";
+  var state = "JOINT " + t + " C \u00B7 HEAT " + st.heatT.toFixed(1) + " s \u00B7 WIRE " +
+    st.feedMm.toFixed(1) + " mm (target " + c.minMm.toFixed(1) + "-" +
+    c.maxMm.toFixed(1) + " mm)";
+  if (st.lifted) state += " \u00B7 PAD LIFTED";
+  else if (st.bridged) state += " \u00B7 BRIDGED";
+  else if (st.feeding && st.T < SD84.WET) state += " \u00B7 WIRE BALLING (TOO COLD)";
+  else if (st.heating && st.T < SD84.WET) state += " \u00B7 HEATING";
+  else if (st.T >= SD84.WET && !st.committed) state += " \u00B7 PAST 217: FEED NOW";
+  r.state.textContent = state;
+  r.heat.disabled = st.committed || st.lifted;
+  r.feed.disabled = st.committed || st.lifted;
+  r.commit.disabled = st.committed || st.lifted;
+  if (st.committed) {
+    r.verdict.textContent = st.verdict;
+    r.verdict.className = "sd84-verdict " + (st.pass ? "pass" : "fail");
+  } else if (st.lifted) {
+    r.verdict.textContent = "LIFTED PAD: the copper peeled. Press REWORK and run it again.";
+    r.verdict.className = "sd84-verdict fail";
+  } else {
+    r.verdict.textContent = "";
+    r.verdict.className = "sd84-verdict";
+  }
+}
+function sd84Commit(st) {
+  if (st.committed || st.lifted) return;
+  st.heating = false; st.feeding = false;
+  var g = sd84Grade(st);
+  st.committed = true; st.pass = g.pass; st.verdict = g.text;
+  sd84Render(st);
+  sd84Progress();
+  sd84CheckCert();
+}
+function sd84Rework(st) {
+  var key = st.key;
+  if (st.iv) { try { clearInterval(st.iv); } catch (e) {} }
+  var fresh = sd84NewStation(key);
+  for (var k in fresh) { if (k !== "refs") st[k] = fresh[k]; }
+  st.committed = false; st.refs.verdict.textContent = "";
+  st.iv = setInterval(function () { sd84Step(st, 0.1); sd84Render(st); }, 100);
+  sd84Render(st);
+  sd84Progress();
+}
+function sd84BuildStation(key) {
+  var st = sd84NewStation(key);
+  var c = st.cfg;
+  var wrap = sd84El("div", "sd84-station", "");
+  var head = sd84El("div", "sd84-sthead", "");
+  head.appendChild(sd84El("div", "sd84-sttag", c.tag));
+  head.appendChild(sd84El("div", "sd84-stsub", c.sub));
+  wrap.appendChild(head);
+
+  var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 320 190");
+  svg.setAttribute("class", "sd84-svg");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "Solder joint cross-section: copper pad, component pin, iron and wire");
+  wrap.appendChild(svg);
+  st.refs.svg = svg;
+  wrap.appendChild(sd84El("div", "sd84-legend",
+    "COPPER PAD \u00B7 COMPONENT PIN \u00B7 IRON (while heating) \u00B7 WIRE (while feeding)" +
+    (c.fine ? " \u00B7 NEIGHBOR PIN 2 mm AWAY" : "")));
+
+  var trow = sd84El("div", "sd84-trow", "");
+  var temp = sd84El("div", "sd84-temp", "25 C");
+  temp.setAttribute("aria-live", "polite");
+  trow.appendChild(temp);
+  var tbar = sd84El("div", "sd84-tbar", "");
+  var tfill = sd84El("div", "sd84-tfill", "");
+  tbar.appendChild(tfill);
+  var tick = sd84El("div", "sd84-ttick", "");
+  tick.style.left = "59.1%";
+  tick.title = "217 C wetting line";
+  tbar.appendChild(tick);
+  trow.appendChild(tbar);
+  wrap.appendChild(trow);
+  wrap.appendChild(sd84El("div", "sd84-tlabels", "25 \u00B7 217 WET \u00B7 350"));
+  st.refs.temp = temp; st.refs.tfill = tfill;
+
+  var state = sd84El("div", "sd84-state", "");
+  state.setAttribute("aria-live", "polite");
+  wrap.appendChild(state);
+  st.refs.state = state;
+
+  var row = sd84El("div", "sd84-row", "");
+  var heat = sd84Btn("HOLD TO HEAT", "");
+  heat.setAttribute("aria-label", "Hold to heat the joint: press and hold, release to stop");
+  var feed = sd84Btn("HOLD TO FEED", "");
+  feed.setAttribute("aria-label", "Hold to feed solder wire: press and hold, release to stop");
+  var commit = sd84Btn("COMMIT THE JOINT", "primary");
+  var rework = sd84Btn("REWORK", "");
+  sd84Hold(heat, function () { st.heating = true; }, function () { st.heating = false; });
+  sd84Hold(feed, function () { st.feeding = true; }, function () { st.feeding = false; });
+  commit.addEventListener("click", function () { sd84Commit(st); });
+  rework.addEventListener("click", function () { sd84Rework(st); });
+  row.appendChild(heat); row.appendChild(feed);
+  row.appendChild(commit); row.appendChild(rework);
+  wrap.appendChild(row);
+  st.refs.heat = heat; st.refs.feed = feed; st.refs.commit = commit;
+
+  var verdict = sd84El("div", "sd84-verdict", "");
+  verdict.setAttribute("aria-live", "polite");
+  wrap.appendChild(verdict);
+  st.refs.verdict = verdict;
+
+  st.iv = setInterval(function () { sd84Step(st, 0.1); sd84Render(st); }, 100);
+  sd84Render(st);
+  return { el: wrap, st: st };
+}
+
+/* ---------------- predict ---------------- */
+function sd84PredictRender() {
+  var box = sd84Els.predict;
+  box.innerHTML = "";
+  box.appendChild(sd84El("p", "sd84-p", SD84.PREDICT_Q));
+  var row = sd84El("div", "sd84-row", "");
+  var wet = sd84Btn("CALL: WET", "");
+  var cold = sd84Btn("CALL: COLD", "");
+  var done = false;
+  function answer(calledWet) {
+    if (done) return;
+    done = true;
+    sd84St.predicted = true;
+    var a = sd84El("p", "sd84-p", "");
+    a.innerHTML = "<b>" + (calledWet ? "WET" : "COLD") + " CALLED.</b> " + SD84.PREDICT_WHY;
+    box.appendChild(a);
+    sd84Progress();
+  }
+  wet.addEventListener("click", function () { answer(true); });
+  cold.addEventListener("click", function () { answer(false); });
+  row.appendChild(wet); row.appendChild(cold);
+  box.appendChild(row);
+}
+
+/* ---------------- progress, cert, artifact ---------------- */
+function sd84TrialPass(k) { return sd84St.stations[k].pass; }
+function sd84Progress() {
+  var el = document.getElementById("sd84Progress");
+  if (!el || !sd84St) return;
+  function tag(p, n) { return p ? n + ":PASS" : n + ":OPEN"; }
+  el.innerHTML = "TRIALS: <b>" + tag(sd84TrialPass("j1"), "T1") + "</b> <b>" +
+    tag(sd84TrialPass("j2"), "T2") + "</b> <b>" +
+    tag(sd84TrialPass("j3"), "T3") + "</b>" +
+    (sd84St.predicted ? " PREDICTION:LOGGED" : " PREDICTION:OPEN");
+}
+function sd84CertText() {
+  var d = new Date().toISOString().slice(0, 10);
+  var s = sd84St.stations;
+  function line(k, name) {
+    var st = s[k];
+    return name + ": " + st.heatT.toFixed(1) + " s heat, " +
+      st.feedMm.toFixed(1) + " mm wire, verdict " + st.verdict.split(":")[0] + ".";
+  }
+  return [
+    "THE PROVING GROUND, BENCH 84: THE SOLDER ROOM",
+    "Certified: " + d,
+    "",
+    line("j1", "Trial 1, the standard lead"),
+    line("j2", "Trial 2, the ground pour"),
+    line("j3", "Trial 3, the fine pitch"),
+    "",
+    "Takeaway: solder flows toward heat. Bring the pad and the pin past " +
+      "217 C before the wire feeds, and the joint wets itself."
+  ].join("\n");
+}
+function sd84Download(name, text) {
+  var blob = new Blob([text], { type: "text/plain" });
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+function sd84CheckCert() {
+  if (!sd84St.certified && sd84TrialPass("j1") && sd84TrialPass("j2") && sd84TrialPass("j3")) {
+    sd84St.certified = true;
+    sd84Els.banner.classList.add("show");
+    var dl = sd84Btn("DOWNLOAD CERTIFICATE (TXT)", "primary");
+    dl.addEventListener("click", function () {
+      sd84Download("solder-room-certificate.txt", sd84CertText());
+    });
+    var row = sd84El("div", "sd84-row", "");
+    row.appendChild(dl);
+    sd84Els.banner.appendChild(row);
+  }
+  sd84Progress();
+}
+
+/* ---------------- open / close / build ---------------- */
+function sd84Open() {
+  sd84Els.overlay.classList.add("open");
+  try { localStorage.setItem("pg.seen.v1", JSON.stringify(Object.assign(
+    JSON.parse(localStorage.getItem("pg.seen.v1") || "{}"), { "84": 1 }))); } catch (e) {}
+  if (typeof pgPaintStates === "function") { try { pgPaintStates(); } catch (e) {} }
+}
+function sd84Close() {
+  sd84Els.overlay.classList.remove("open");
+}
+
+var SD84_CSS = [
+".sd84-overlay{position:fixed;inset:0;z-index:90;display:none;overflow-y:auto;background:var(--ink);color:var(--paper);}",
+".sd84-overlay.open{display:block;}",
+".sd84-panel{max-width:760px;margin:0 auto;padding:calc(20px + env(safe-area-inset-top)) 16px calc(48px + env(safe-area-inset-bottom));}",
+".sd84-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);margin-bottom:8px;}",
+".sd84-title{font-family:'Space Grotesk',sans-serif;font-size:30px;margin:0 0 12px;letter-spacing:-.01em;}",
+".sd84-p{font-size:15px;line-height:1.65;margin:0 0 14px;max-width:62ch;}",
+".sd84-p b{color:var(--ember);}",
+".sd84-sec{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.16em;color:var(--ember);margin:28px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px;}",
+".sd84-out{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.08em;border:1px solid var(--line);padding:10px 12px;margin:0 0 6px;background:var(--panel);}",
+".sd84-out b{color:var(--ember);}",
+".sd84-station{border:1px solid var(--line);background:var(--panel);padding:14px;margin:0 0 18px;}",
+".sd84-sthead{margin-bottom:10px;}",
+".sd84-sttag{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.14em;color:var(--ember);}",
+".sd84-stsub{font-size:13px;opacity:.75;margin-top:2px;}",
+".sd84-svg{width:100%;height:auto;display:block;background:#101012;border:1px solid var(--line);}",
+".sd84-board{fill:#26262a;stroke:#3a3a40;stroke-width:1;}",
+".sd84-pour{fill:#8a5a24;opacity:.55;}",
+".sd84-pad{fill:#c08040;stroke:#7a4f1e;stroke-width:1;}",
+".sd84-pin{fill:#9a9a9a;stroke:#5f5f5f;stroke-width:1;}",
+".sd84-fillet{fill:#d7d7d7;stroke:#8a8a8a;stroke-width:1;}",
+".sd84-blob{fill:#666;stroke:#444;stroke-width:1;}",
+".sd84-bridge{fill:none;stroke:#cfcfcf;stroke-width:5;stroke-linecap:round;}",
+".sd84-iron{fill:#3a3a3a;stroke:#999;stroke-width:1.5;}",
+".sd84-wire{stroke:#bbb;stroke-width:3;}",
+".sd84-wiretip{fill:#ddd;}",
+".sd84-legend{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.1em;opacity:.65;margin:8px 0 12px;}",
+".sd84-trow{display:flex;align-items:center;gap:12px;margin-bottom:4px;}",
+".sd84-temp{font-family:'IBM Plex Mono',monospace;font-size:26px;min-width:96px;}",
+".sd84-temp.hot{color:var(--ember);}",
+".sd84-tbar{position:relative;flex:1;height:10px;background:#1c1c20;border:1px solid var(--line);}",
+".sd84-tfill{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--ember);}",
+".sd84-ttick{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--paper);}",
+".sd84-tlabels{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.1em;opacity:.6;margin-bottom:10px;}",
+".sd84-state{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.04em;margin-bottom:10px;min-height:18px;}",
+".sd84-row{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px;}",
+".sd84-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper);border:1px solid var(--line);cursor:pointer;}",
+".sd84-btn.primary{border-color:var(--ember);color:var(--ember);}",
+".sd84-btn:disabled{opacity:.35;cursor:default;}",
+".sd84-btn:not(:disabled):active{background:var(--ember);color:var(--ink);border-color:var(--ember);}",
+".sd84-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+".sd84-verdict{font-family:'IBM Plex Mono',monospace;font-size:13px;line-height:1.6;min-height:20px;}",
+".sd84-verdict.pass{color:#7fd67f;}",
+".sd84-verdict.fail{color:var(--ember);}",
+".sd84-banner{display:none;border:1px solid var(--ember);padding:18px;margin-top:24px;}",
+".sd84-banner.show{display:block;}",
+".sd84-banner h3{font-family:'Space Grotesk',sans-serif;margin:0 0 8px;font-size:20px;color:var(--ember);}",
+".sd84-banner p{font-size:14px;line-height:1.65;margin:0 0 12px;}"
+].join("\n");
+
+function sd84Build() {
+  var box = document.querySelector(".dossier .actions");
+  if (!box) return;
+  if (document.getElementById("sd84Btn")) return;
+  sd84St = { predicted: false, certified: false, stations: {} };
+
+  var sty = document.createElement("style");
+  sty.id = "sd84Style";
+  sty.textContent = SD84_CSS;
+  document.head.appendChild(sty);
+
+  var b = document.createElement("button");
+  b.id = "sd84Btn";
+  b.className = "pg-launch";
+  b.textContent = "Open The Solder Room";
+  b.addEventListener("click", sd84Open);
+  box.appendChild(b);
+
+  var ov = sd84El("div", "sd84-overlay", "");
+  ov.id = "sd84Overlay";
+  ov.setAttribute("role", "dialog");
+  ov.setAttribute("aria-label", "The Solder Room");
+  var x = sd84Btn("CLOSE", "");
+  x.id = "sd84XBtn";
+  x.style.cssText = "position:fixed;top:calc(12px + env(safe-area-inset-top));right:calc(16px + env(safe-area-inset-right));z-index:95;";
+  x.setAttribute("aria-label", "Close The Solder Room");
+  x.addEventListener("click", sd84Close);
+  ov.appendChild(x);
+  sd84Els.overlay = ov;
+  if (!sd84EscBound) {
+    sd84EscBound = true;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && sd84Els.overlay && sd84Els.overlay.classList.contains("open")) sd84Close();
+    });
+  }
+
+  var panel = sd84El("div", "sd84-panel", "");
+  panel.appendChild(sd84El("div", "sd84-kicker", "BENCH CRAFT \u00B7 BENCH 84"));
+  panel.appendChild(sd84El("h2", "sd84-title", "The Solder Room"));
+
+  var intro = sd84El("div", "", "");
+  intro.innerHTML = SD84.INTRO_HTML;
+  panel.appendChild(intro);
+
+  var prog = sd84El("div", "sd84-out", "");
+  prog.id = "sd84Progress";
+  prog.setAttribute("aria-live", "polite");
+  panel.appendChild(prog);
+  sd84Els.progress = prog;
+
+  panel.appendChild(sd84El("h3", "sd84-sec", "DO FIRST: CALL IT BEFORE YOU TOUCH ANYTHING"));
+  sd84Els.predict = sd84El("div", "", "");
+  panel.appendChild(sd84Els.predict);
+
+  panel.appendChild(sd84El("h3", "sd84-sec", "THE WORKED JOINT"));
+  var worked = sd84El("div", "", "");
+  worked.innerHTML = SD84.WORKED_HTML;
+  panel.appendChild(worked);
+  var wsta = sd84BuildStation("worked");
+  panel.appendChild(wsta.el);
+  sd84St.stations.worked = wsta.st;
+
+  panel.appendChild(sd84El("h3", "sd84-sec", "THE WAYS A JOINT DIES"));
+  var rules = sd84El("div", "", "");
+  rules.innerHTML = SD84.RULES_HTML;
+  panel.appendChild(rules);
+
+  ["j1", "j2", "j3"].forEach(function (k) {
+    panel.appendChild(sd84El("h3", "sd84-sec", "CERTIFY: " + SD84.JOINTS[k].tag));
+    var s = sd84BuildStation(k);
+    panel.appendChild(s.el);
+    sd84St.stations[k] = s.st;
+  });
+
+  var banner = sd84El("div", "sd84-banner", "");
+  banner.id = "sd84Banner";
+  banner.setAttribute("aria-live", "polite");
+  banner.innerHTML = "<h3>BENCH 84 CERTIFIED</h3><p>Three joints, one rule, zero cold ones shipped. " +
+    "The takeaway in one line: <b>solder flows toward heat: bring the pad and the pin past " +
+    "217 C before the wire feeds, and the joint wets itself.</b></p>";
+  panel.appendChild(banner);
+  sd84Els.banner = banner;
+
+  var hire = sd84El("p", "sd84-p", "");
+  hire.innerHTML = "A refurb line full of boards with cold joints, lifted pads, or bridges? " +
+    "<button type=\"button\" class=\"sd84-btn\" data-brief=\"general\" data-bench-tag=\"Bench 84: The Solder Room\">Rework bench</button>";
+  panel.appendChild(hire);
+
+  ov.appendChild(panel);
+  document.body.appendChild(ov);
+
+  sd84PredictRender();
+  sd84Progress();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", sd84Build);
+} else {
+  sd84Build();
+}
+
+/* debug hooks for the smoke test */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.SD84 = SD84;
+  module.exports.sd84Debug = {
+    rise: sd84Rise,
+    newStation: sd84NewStation,
+    step: sd84Step,
+    grade: sd84Grade,
+    open: sd84Open,
+    stations: function () { return sd84St ? sd84St.stations : null; },
+    commit: sd84Commit,
+    rework: sd84Rework,
+    predicted: function () { return !!(sd84St && sd84St.predicted); },
+    certified: function () { return !!(sd84St && sd84St.certified); }
+  };
+}
+
+})();
