@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260929-pg149">
+<meta name="build-version" content="v20260929-pg150">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -409,7 +409,7 @@ a { color: var(--ember); }
 .hire-btn:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
 /* Invisible tap target: the header HIRE CHRIS button is the primary contact
    CTA and measured 34px tall at 390px (39px at 1280px), under the 44px touch
-   bar. ::after stretches 5px past the padding box top and bottom (a 44px+
+   bar. ::after stretches 6px past the padding box top and bottom (a 44px+
    tall hit area) with zero visual change. Horizontal expansion stays at 0:
    the theme toggle sits 12px away at 390px and its own invisible expansion
    reaches 9px toward the button, so any horizontal stretch would overlap it.
@@ -417,7 +417,7 @@ a { color: var(--ember); }
 .hire-btn::after {
   content: "";
   position: absolute;
-  inset: -5px 0;
+  inset: -6px 0;
 }
 .work { margin: 64px 0 0; }
 .work .kicker {
@@ -1381,7 +1381,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-29-pg149";
+var PG_REV = "2026-09-29-pg150";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
