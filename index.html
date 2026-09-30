@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260929-pg150">
+<meta name="build-version" content="v20260930-pg151">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -451,6 +451,22 @@ button.vrow .vname { font-weight: 600; }
 }
 .ch-close:hover, .ch-close:focus-visible { color: var(--ember); outline: none; }
 .ch-close:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+/* Invisible tap targets: the chooser's dismiss control measured 25x26 and the
+   workstream pills 32px tall at 390px, both under the 44px touch bar. ::after
+   zones fix them with zero visual change.
+   - .ch-close: 9px vertical + 10px horizontal (border 0) = 44x45 zone. Nearest
+     interactive neighbor is the title text 18px away (flex gap), so nothing
+     is stolen.
+   - .ch-wb: 4px vertical only (border-box, 1px border: 32+8-2 = 38px zone).
+     The 8px flex row gap caps vertical expansion (4+4 meets exactly), so a
+     zone never overlaps a neighboring pill. Horizontal stays 0 (pills are
+     76px+ wide). */
+.ch-close { position: relative; }
+.ch-close::after {
+  content: "";
+  position: absolute;
+  inset: -9px -10px;
+}
 .ch-opts { display: grid; gap: 10px; padding: 18px 20px 20px; }
 .ch-opt {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -476,6 +492,12 @@ button.vrow .vname { font-weight: 600; }
 .ch-wb:hover { color: var(--paper); border-color: var(--dim); }
 .ch-wb.is-on { color: var(--ember); border-color: var(--ember); }
 .ch-wb:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+.ch-wb { position: relative; }
+.ch-wb::after {
+  content: "";
+  position: absolute;
+  inset: -4px 0;
+}
 button.vrow:hover .vext { transform: translate(3px, 0); }
 @media (max-width: 560px) {
   .head-group { gap: 12px; }
@@ -1381,7 +1403,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-29-pg150";
+var PG_REV = "2026-09-30-pg151";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
