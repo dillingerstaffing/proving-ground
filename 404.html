@@ -52,6 +52,8 @@
   }
   .btn.solid { background: #8c3f22; color: #ece6d5; }
   .btn.ghost { background: transparent; color: #8c3f22; }
+  button.btn { cursor: pointer; }
+  .copy-status { min-height: 18px; margin: 14px 0 0; font-size: 12px; letter-spacing: 0.04em; color: #686156; }
   .btn:focus-visible { outline: 2px solid #8c3f22; outline-offset: 2px; }
   .foot {
     margin-top: 32px; padding-top: 16px; border-top: 1px solid #c9bfa4;
@@ -72,9 +74,36 @@
     <p class="lede">This page does not exist on The Proving Ground.<br><span class="dim">The benches are all one click away.</span></p>
     <div class="actions">
       <a class="btn solid" href="https://dillingerstaffing.github.io/proving-ground/">BACK TO THE BENCHES</a>
-      <a class="btn ghost" href="mailto:shipthisgroup@gmail.com?subject=Proving%20Ground%20inquiry">EMAIL CHRIS</a>
+      <a class="btn ghost" href="https://mail.google.com/mail/?view=cm&amp;fs=1&amp;to=shipthisgroup@gmail.com&amp;su=Proving%20Ground%20inquiry" target="_blank" rel="noopener">EMAIL VIA GMAIL</a>
+      <a class="btn ghost" href="mailto:shipthisgroup@gmail.com?subject=Proving%20Ground%20inquiry">EMAIL VIA MY APP</a>
+      <button class="btn ghost" type="button" id="copyEmail">COPY EMAIL ADDRESS</button>
     </div>
+    <p class="copy-status" id="copyStatus" role="status" aria-live="polite"></p>
     <p class="foot">THE PROVING GROUND &middot; WORKING ENGINEERING BENCHES</p>
   </main>
+<script>
+  (function () {
+    var btn = document.getElementById('copyEmail');
+    var status = document.getElementById('copyStatus');
+    var email = 'shipthisgroup@gmail.com';
+    function done() { status.textContent = 'Copied: ' + email; }
+    btn.addEventListener('click', function () {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(email).then(done, function () { fallback(); });
+      } else { fallback(); }
+      function fallback() {
+        var ta = document.createElement('textarea');
+        ta.value = email;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'absolute';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); done(); } catch (e) { status.textContent = email; }
+        document.body.removeChild(ta);
+      }
+    });
+  })();
+</script>
 </body>
 </html>
