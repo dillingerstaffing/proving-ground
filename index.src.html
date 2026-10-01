@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20261001-pg154">
+<meta name="build-version" content="v20261001-pg155">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
-<meta name="description" content="The Proving Ground: 84 interactive hardware benches, RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs entirely on your device.">
+<meta name="description" content="The Proving Ground: 85 interactive hardware benches, RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs entirely on your device.">
 <link rel="canonical" href="https://dillingerstaffing.github.io/proving-ground/">
 <link rel="preload" href="fonts/space-grotesk-var.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="fonts/ibm-plex-mono-400.woff2" as="font" type="font/woff2" crossorigin>
@@ -15,7 +15,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="The Proving Ground">
 <meta property="og:title" content="The Proving Ground: Working Engineering Benches">
-<meta property="og:description" content="84 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs in the browser.">
+<meta property="og:description" content="85 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs in the browser.">
 <meta property="og:url" content="https://dillingerstaffing.github.io/proving-ground/">
 <meta property="og:image" content="https://dillingerstaffing.github.io/proving-ground/og-card.png">
 <meta property="og:image:width" content="1200">
@@ -27,7 +27,7 @@
 {"@context":"https://schema.org","@type":"WebApplication",
  "name":"The Proving Ground",
  "url":"https://dillingerstaffing.github.io/proving-ground/",
- "description":"84 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft.",
+ "description":"85 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft.",
  "applicationCategory":"BrowserApplication","operatingSystem":"Any modern web browser",
  "isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
@@ -824,7 +824,7 @@ body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
         <circle class="draw-core" cx="24" cy="24" r="2.6" fill="#0a0c0e"/>
       </svg>
       <div class="head-group">
-        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">84</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;INTERACTIVE,&nbsp;IN&nbsp;BROWSER</span></span></div>
+        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">85</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;INTERACTIVE,&nbsp;IN&nbsp;BROWSER</span></span></div>
         <button class="hire-btn" type="button" data-brief="general">HIRE CHRIS</button>
         <button class="theme-toggle" type="button" aria-label="Switch to terminal theme" title="Switch theme">
           <span class="theme-toggle-mark" aria-hidden="true"><i></i><i></i></span>
@@ -1413,7 +1413,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-10-01-pg154";
+var PG_REV = "2026-10-01-pg155";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
