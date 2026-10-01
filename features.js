@@ -66855,3 +66855,475 @@ if (typeof module !== "undefined" && module.exports) {
 }
 
 })();
+/* =====================================================================
+ * Bench 85: The Drop Room (analog / tapeout)
+ * One atomic mechanism: a power cable is a resistor. The load sees the
+ * source minus I times the round-trip wire resistance (out and back):
+ * Vload = Vsrc - I * 2 * L * r, and the missing volts burn as heat.
+ * Predict moment (the forgotten return leg), one free exploration rig
+ * preset to the worked example, three sizing trials where the thinnest
+ * in-budget gauge wins (mid GPU feed, heavy GPU feed, short patch).
+ * Triple pass plus the logged prediction issues a certificate download.
+ * No em dashes in user-facing copy. Mobile: 48px targets, wrapping rows.
+ * ===================================================================== */
+(function () {
+"use strict";
+
+/* ---------------- bench data ---------------- */
+var VD85 = {};
+VD85.VSRC = 12.0;
+VD85.MAXDROP = 0.60;
+VD85.GAUGES = [
+  { awg: "18", r: 0.0210, cost: 1.0 },
+  { awg: "16", r: 0.0132, cost: 1.6 },
+  { awg: "14", r: 0.00829, cost: 2.5 },
+  { awg: "12", r: 0.00521, cost: 4.0 },
+  { awg: "10", r: 0.00328, cost: 6.3 }
+];
+VD85.TRIALS = [
+  { tag: "TRIAL 1: THE BENCH FEED", sub: "15 A at 2.0 m one-way. Copper budget 12.0 units.",
+    I: 15, L: 2.0, budget: 12.0 },
+  { tag: "TRIAL 2: THE GPU FEED", sub: "25 A at 3.0 m one-way. Copper budget 40.0 units.",
+    I: 25, L: 3.0, budget: 40.0 },
+  { tag: "TRIAL 3: THE SHORT PATCH", sub: "4 A at 0.5 m one-way. Copper budget 1.2 units.",
+    I: 4, L: 0.5, budget: 1.2 }
+];
+VD85.INTRO_HTML =
+  "<b>WHY THIS ROOM EXISTS</b> The supply says 12.0 V and the card still crashes under load. " +
+  "The missing volts never left the supply: the cable ate them. Every wire is a resistor, so a " +
+  "feed run drops voltage in proportion to current, length, and thinness, and the current makes " +
+  "the trip twice, out on one leg and back on the other. Size the run so the load keeps at least " +
+  "11.40 V (a 0.60 V drop budget on a 12 V rail) without buying copper the run does not need.";
+VD85.PREDICT_Q =
+  "THE TRAP: a 12.0 V source feeds 20 A through 2.0 m of 14 AWG, one-way. What does the load see?";
+VD85.PREDICT_OPTS = ["11.90 V", "11.34 V", "10.71 V"];
+VD85.PREDICT_WHY =
+  "11.34 V. The loop is 4.0 m of wire (2.0 out, 2.0 back) at 0.00829 ohm per meter: 0.0332 ohm. " +
+  "Times 20 A is a 0.66 V drop. Forgetting the return leg halves the drop and calls it 11.67 V, " +
+  "and forgetting both legs calls it 11.90 V. Run the rig below and watch the bar prove it.";
+VD85.WORKED_HTML =
+  "<b>THE WORKED RUN</b> 10 A through 1.5 m of 16 AWG. Loop resistance: 2 x 1.5 m x 0.0132 " +
+  "ohm per meter = 0.0396 ohm. Drop: 10 x 0.0396 = 0.40 V. The load sees 11.60 V, inside the " +
+  "0.60 V budget, and the cable burns 10 x 0.40 = 4.0 W as heat. The rig below starts on these " +
+  "exact numbers: change one control at a time and watch which term moves the bar.";
+VD85.RULES_HTML =
+  "<b>THE WAYS A RUN DIES</b> BROWNOUT: the drop eats the budget and the load resets the moment " +
+  "current peaks, while an unloaded meter still reads a happy 12 V. HOT WIRE: drop times current " +
+  "is watts heating the insulation. OVERSIZED: the voltage passes and the copper budget does not. " +
+  "Every RUN THE LOAD verdict names which one you built.";
+
+/* ---------------- pure logic (shared with the smoke test) ---------------- */
+function vd85LoopR(L, g) { return 2 * L * g.r; }
+function vd85Drop(I, L, g) { return I * vd85LoopR(L, g); }
+function vd85LoadV(I, L, g) { return VD85.VSRC - vd85Drop(I, L, g); }
+function vd85Cost(L, g) { return 2 * L * g.cost; }
+function vd85Grade(t, gi) {
+  var g = VD85.GAUGES[gi];
+  var drop = vd85Drop(t.I, t.L, g);
+  var v = VD85.VSRC - drop;
+  var cost = vd85Cost(t.L, g);
+  function out(pass, code, text) { return { pass: pass, code: code, drop: drop, v: v, cost: cost, text: text }; }
+  if (drop > VD85.MAXDROP + 1e-9) return out(false, "BROWNOUT",
+    "BROWNOUT: " + g.awg + " AWG drops " + drop.toFixed(2) + " V, so the load sees " + v.toFixed(2) +
+    " V against the 11.40 V floor. Thicker wire or a shorter run.");
+  if (cost > t.budget + 1e-9) return out(false, "OVERSIZED",
+    "OVERSIZED: " + g.awg + " AWG holds " + v.toFixed(2) + " V but costs " + cost.toFixed(1) +
+    " copper units against a " + t.budget.toFixed(1) + " budget. One gauge thinner still holds the rail.");
+  return out(true, "SHIP",
+    "SHIP: " + g.awg + " AWG drops " + drop.toFixed(2) + " V, the load sees " + v.toFixed(2) +
+    " V, copper " + cost.toFixed(1) + " of " + t.budget.toFixed(1) + " units, " +
+    (t.I * drop).toFixed(1) + " W lost as heat.");
+}
+
+/* ---------------- dom helpers ---------------- */
+var vd85Els = { overlay: null, progress: null, banner: null, predict: null };
+var vd85St = null;
+var vd85EscBound = false;
+function vd85El(tag, cls, html) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html !== undefined && html !== "") e.innerHTML = html;
+  return e;
+}
+function vd85Btn(label, cls) {
+  var b = document.createElement("button");
+  b.type = "button";
+  b.className = "vd85-btn" + (cls ? " " + cls : "");
+  b.textContent = label;
+  return b;
+}
+
+/* ---------------- free rig ---------------- */
+function vd85RigRender(r) {
+  var g = VD85.GAUGES[r.gi];
+  var drop = vd85Drop(r.I, r.L, g);
+  var v = VD85.VSRC - drop;
+  r.svg.innerHTML = vd85Svg(v, drop);
+  r.read.textContent = "SOURCE 12.00 V \u00B7 " + r.I.toFixed(0) + " A \u00B7 " + r.L.toFixed(1) +
+    " m ONE-WAY \u00B7 " + g.awg + " AWG \u00B7 LOOP " + vd85LoopR(r.L, g).toFixed(4) +
+    " OHM \u00B7 DROP " + drop.toFixed(2) + " V \u00B7 LOAD " + v.toFixed(2) +
+    " V \u00B7 HEAT " + (r.I * drop).toFixed(1) + " W";
+  r.verdict.textContent = drop <= VD85.MAXDROP ?
+    "INSIDE THE BUDGET: the load keeps " + v.toFixed(2) + " V." :
+    "BROWNOUT: the load sees " + v.toFixed(2) + " V, under the 11.40 V floor.";
+  r.verdict.className = "vd85-verdict " + (drop <= VD85.MAXDROP ? "pass" : "fail");
+  r.iVal.textContent = r.I.toFixed(0) + " A";
+  r.lVal.textContent = r.L.toFixed(1) + " m";
+  for (var i = 0; i < r.gBtns.length; i++) {
+    r.gBtns[i].classList.toggle("sel", i === r.gi);
+    r.gBtns[i].setAttribute("aria-pressed", i === r.gi ? "true" : "false");
+  }
+}
+function vd85Svg(v, drop) {
+  var pct = Math.max(0, Math.min(100, v / VD85.VSRC * 100));
+  var floorX = (11.40 / VD85.VSRC * 260).toFixed(1);
+  var s = "";
+  s += "<rect x=\"10\" y=\"58\" width=\"56\" height=\"34\" class=\"vd85-box\"/>";
+  s += "<text x=\"38\" y=\"79\" class=\"vd85-txt\" text-anchor=\"middle\">12 V</text>";
+  s += "<line x1=\"66\" y1=\"68\" x2=\"234\" y2=\"68\" class=\"vd85-wire\"/>";
+  s += "<line x1=\"66\" y1=\"82\" x2=\"234\" y2=\"82\" class=\"vd85-wire\"/>";
+  s += "<text x=\"150\" y=\"60\" class=\"vd85-txt\" text-anchor=\"middle\">OUT AND BACK</text>";
+  s += "<rect x=\"234\" y=\"58\" width=\"56\" height=\"34\" class=\"vd85-box\"/>";
+  s += "<text x=\"262\" y=\"79\" class=\"vd85-txt\" text-anchor=\"middle\">LOAD</text>";
+  s += "<rect x=\"20\" y=\"118\" width=\"260\" height=\"12\" class=\"vd85-bar\"/>";
+  s += "<rect x=\"20\" y=\"118\" width=\"" + (pct * 2.6).toFixed(1) + "\" height=\"12\" class=\"vd85-fill\"/>";
+  s += "<line x1=\"" + (20 + parseFloat(floorX)).toFixed(1) + "\" y1=\"112\" x2=\"" +
+       (20 + parseFloat(floorX)).toFixed(1) + "\" y2=\"136\" class=\"vd85-tick\"/>";
+  s += "<text x=\"20\" y=\"148\" class=\"vd85-txt\">LOAD VOLTAGE: WHITE MARK IS THE 11.40 V FLOOR \u00B7 DROP " +
+       drop.toFixed(2) + " V</text>";
+  return s;
+}
+function vd85BuildRig() {
+  var wrap = vd85El("div", "vd85-station");
+  var r = { I: 10, L: 1.5, gi: 1, gBtns: [] };
+  var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 300 158");
+  svg.setAttribute("class", "vd85-svg");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "Power source, out and back cable pair, load, and load voltage bar");
+  wrap.appendChild(svg);
+  r.svg = svg;
+  var read = vd85El("div", "vd85-read", "");
+  read.setAttribute("aria-live", "polite");
+  wrap.appendChild(read);
+  r.read = read;
+
+  var iRow = vd85El("div", "vd85-crow");
+  iRow.appendChild(vd85El("label", "vd85-lab", "CURRENT"));
+  var iIn = document.createElement("input");
+  iIn.type = "range"; iIn.min = "1"; iIn.max = "30"; iIn.step = "1"; iIn.value = "10";
+  iIn.className = "vd85-range";
+  iIn.setAttribute("aria-label", "Load current in amps");
+  iRow.appendChild(iIn);
+  r.iVal = vd85El("span", "vd85-cval", "10 A");
+  iRow.appendChild(r.iVal);
+  wrap.appendChild(iRow);
+  iIn.addEventListener("input", function () { r.I = parseFloat(iIn.value); vd85RigRender(r); });
+
+  var lRow = vd85El("div", "vd85-crow");
+  lRow.appendChild(vd85El("label", "vd85-lab", "ONE-WAY LENGTH"));
+  var lIn = document.createElement("input");
+  lIn.type = "range"; lIn.min = "0.5"; lIn.max = "5"; lIn.step = "0.5"; lIn.value = "1.5";
+  lIn.className = "vd85-range";
+  lIn.setAttribute("aria-label", "One-way cable length in meters");
+  lRow.appendChild(lIn);
+  r.lVal = vd85El("span", "vd85-cval", "1.5 m");
+  lRow.appendChild(r.lVal);
+  wrap.appendChild(lRow);
+  lIn.addEventListener("input", function () { r.L = parseFloat(lIn.value); vd85RigRender(r); });
+
+  var gRow = vd85El("div", "vd85-row");
+  VD85.GAUGES.forEach(function (g, i) {
+    var b = vd85Btn(g.awg + " AWG", "");
+    b.setAttribute("aria-label", "Use " + g.awg + " AWG wire");
+    b.addEventListener("click", function () { r.gi = i; vd85RigRender(r); });
+    gRow.appendChild(b);
+    r.gBtns.push(b);
+  });
+  wrap.appendChild(gRow);
+  var verdict = vd85El("div", "vd85-verdict", "");
+  verdict.setAttribute("aria-live", "polite");
+  wrap.appendChild(verdict);
+  r.verdict = verdict;
+  vd85RigRender(r);
+  return wrap;
+}
+
+/* ---------------- trials ---------------- */
+function vd85BuildTrial(ti) {
+  var t = VD85.TRIALS[ti];
+  var wrap = vd85El("div", "vd85-station");
+  var head = vd85El("div", "vd85-sthead");
+  head.appendChild(vd85El("div", "vd85-sttag", t.tag));
+  head.appendChild(vd85El("div", "vd85-stsub", t.sub));
+  wrap.appendChild(head);
+  var spec = vd85El("p", "vd85-p",
+    "Source 12.00 V, floor 11.40 V, load " + t.I + " A, run " + t.L.toFixed(1) +
+    " m one-way. Pick a gauge, then run the load.");
+  wrap.appendChild(spec);
+  var sel = { gi: 2 };
+  var gRow = vd85El("div", "vd85-row");
+  var btns = [];
+  VD85.GAUGES.forEach(function (g, i) {
+    var b = vd85Btn(g.awg + " AWG", i === sel.gi ? "sel" : "");
+    b.setAttribute("aria-label", "Trial " + (ti + 1) + ": use " + g.awg + " AWG wire");
+    b.setAttribute("aria-pressed", i === sel.gi ? "true" : "false");
+    b.addEventListener("click", function () {
+      sel.gi = i;
+      btns.forEach(function (x, j) {
+        x.classList.toggle("sel", j === i);
+        x.setAttribute("aria-pressed", j === i ? "true" : "false");
+      });
+    });
+    gRow.appendChild(b);
+    btns.push(b);
+  });
+  wrap.appendChild(gRow);
+  var verdict = vd85El("div", "vd85-verdict", "");
+  verdict.setAttribute("aria-live", "polite");
+  var run = vd85Btn("RUN THE LOAD", "primary");
+  run.setAttribute("aria-label", "Trial " + (ti + 1) + ": run the load with the selected gauge");
+  run.addEventListener("click", function () {
+    var gres = vd85Grade(t, sel.gi);
+    vd85St.pass[ti] = gres.pass;
+    verdict.textContent = gres.text;
+    verdict.className = "vd85-verdict " + (gres.pass ? "pass" : "fail");
+    vd85Progress();
+    vd85CheckCert();
+  });
+  var row = vd85El("div", "vd85-row");
+  row.appendChild(run);
+  wrap.appendChild(row);
+  wrap.appendChild(verdict);
+  return wrap;
+}
+
+/* ---------------- predict ---------------- */
+function vd85PredictRender() {
+  var box = vd85Els.predict;
+  box.innerHTML = "";
+  box.appendChild(vd85El("p", "vd85-p", VD85.PREDICT_Q));
+  var row = vd85El("div", "vd85-row");
+  var done = false;
+  VD85.PREDICT_OPTS.forEach(function (opt) {
+    var b = vd85Btn("CALL: " + opt, "");
+    b.addEventListener("click", function () {
+      if (done) return;
+      done = true;
+      vd85St.predicted = true;
+      box.appendChild(vd85El("p", "vd85-p",
+        "<b>" + opt + " CALLED.</b> " + VD85.PREDICT_WHY));
+      vd85Progress();
+      vd85CheckCert();
+    });
+    row.appendChild(b);
+  });
+  box.appendChild(row);
+}
+
+/* ---------------- progress, cert, artifact ---------------- */
+function vd85Progress() {
+  if (!vd85Els.progress || !vd85St) return;
+  function tag(p, n) { return n + ":" + (p ? "PASS" : "OPEN"); }
+  vd85Els.progress.innerHTML = "TRIALS: <b>" + tag(vd85St.pass[0], "T1") + "</b> <b>" +
+    tag(vd85St.pass[1], "T2") + "</b> <b>" + tag(vd85St.pass[2], "T3") + "</b>" +
+    (vd85St.predicted ? " PREDICTION:LOGGED" : " PREDICTION:OPEN");
+}
+function vd85CertText() {
+  var d = new Date().toISOString().slice(0, 10);
+  var lines = ["THE PROVING GROUND, BENCH 85: THE DROP ROOM", "Certified: " + d, ""];
+  VD85.TRIALS.forEach(function (t, i) {
+    var best = null;
+    VD85.GAUGES.forEach(function (g, gi) {
+      if (vd85Grade(t, gi).pass) best = g;
+    });
+    lines.push("Trial " + (i + 1) + ": " + t.I + " A, " + t.L.toFixed(1) + " m one-way, passed.");
+  });
+  lines.push("");
+  lines.push("Takeaway: the load sees the source minus current times the round-trip wire " +
+    "resistance. Count both legs, keep the drop inside budget, buy no extra copper.");
+  return lines.join("\n");
+}
+function vd85Download(name, text) {
+  var blob = new Blob([text], { type: "text/plain" });
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+function vd85CheckCert() {
+  if (!vd85St.certified && vd85St.pass[0] && vd85St.pass[1] && vd85St.pass[2]) {
+    vd85St.certified = true;
+    vd85Els.banner.classList.add("show");
+    var dl = vd85Btn("DOWNLOAD CERTIFICATE (TXT)", "primary");
+    dl.addEventListener("click", function () {
+      vd85Download("drop-room-certificate.txt", vd85CertText());
+    });
+    var row = vd85El("div", "vd85-row");
+    row.appendChild(dl);
+    vd85Els.banner.appendChild(row);
+  }
+  vd85Progress();
+}
+
+/* ---------------- open / close / build ---------------- */
+function vd85Open() {
+  vd85Els.overlay.classList.add("open");
+  try { localStorage.setItem("pg.seen.v1", JSON.stringify(Object.assign(
+    JSON.parse(localStorage.getItem("pg.seen.v1") || "{}"), { "85": 1 }))); } catch (e) {}
+  if (typeof pgPaintStates === "function") { try { pgPaintStates(); } catch (e) {} }
+}
+function vd85Close() { vd85Els.overlay.classList.remove("open"); }
+
+var VD85_CSS = [
+".vd85-overlay{position:fixed;inset:0;z-index:90;display:none;overflow-y:auto;background:var(--ink);color:var(--paper);}",
+".vd85-overlay.open{display:block;}",
+".vd85-panel{max-width:760px;margin:0 auto;padding:calc(20px + env(safe-area-inset-top)) 16px calc(48px + env(safe-area-inset-bottom));}",
+".vd85-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);margin-bottom:8px;}",
+".vd85-title{font-family:'Space Grotesk',sans-serif;font-size:30px;margin:0 0 12px;letter-spacing:-.01em;}",
+".vd85-p{font-size:15px;line-height:1.65;margin:0 0 14px;max-width:62ch;}",
+".vd85-p b{color:var(--ember);}",
+".vd85-sec{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.16em;color:var(--ember);margin:28px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px;}",
+".vd85-out{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.08em;border:1px solid var(--line);padding:10px 12px;margin:0 0 6px;background:var(--panel);}",
+".vd85-out b{color:var(--ember);}",
+".vd85-station{border:1px solid var(--line);background:var(--panel);padding:14px;margin:0 0 18px;}",
+".vd85-sttag{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.14em;color:var(--ember);}",
+".vd85-stsub{font-size:13px;opacity:.75;margin-top:2px;}",
+".vd85-svg{width:100%;height:auto;display:block;background:#101012;border:1px solid var(--line);}",
+".vd85-box{fill:#26262a;stroke:#3a3a40;stroke-width:1;}",
+".vd85-wire{stroke:#c08040;stroke-width:2;}",
+".vd85-bar{fill:#1c1c20;stroke:#3a3a40;stroke-width:1;}",
+".vd85-fill{fill:var(--ember);}",
+".vd85-tick{stroke:var(--paper);stroke-width:2;}",
+".vd85-txt{fill:var(--paper);font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.08em;}",
+".vd85-read{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;margin:10px 0;}",
+".vd85-crow{display:flex;align-items:center;gap:12px;margin:0 0 10px;flex-wrap:wrap;}",
+".vd85-lab{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.12em;min-width:128px;}",
+".vd85-range{flex:1;min-width:140px;min-height:48px;accent-color:var(--ember);}",
+".vd85-cval{font-family:'IBM Plex Mono',monospace;font-size:13px;min-width:56px;}",
+".vd85-row{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px;}",
+".vd85-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper);border:1px solid var(--line);cursor:pointer;}",
+".vd85-btn.primary{border-color:var(--ember);color:var(--ember);}",
+".vd85-btn.sel{border-color:var(--ember);color:var(--ember);}",
+".vd85-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+".vd85-verdict{font-family:'IBM Plex Mono',monospace;font-size:13px;line-height:1.6;min-height:20px;}",
+".vd85-verdict.pass{color:#7fd67f;}",
+".vd85-verdict.fail{color:var(--ember);}",
+".vd85-banner{display:none;border:1px solid var(--ember);padding:18px;margin-top:24px;}",
+".vd85-banner.show{display:block;}",
+".vd85-banner h3{font-family:'Space Grotesk',sans-serif;margin:0 0 8px;font-size:20px;color:var(--ember);}",
+".vd85-banner p{font-size:14px;line-height:1.65;margin:0 0 12px;}"
+].join("\n");
+
+function vd85Build() {
+  var box = document.querySelector(".dossier .actions");
+  if (!box) return;
+  if (document.getElementById("vd85Btn")) return;
+  vd85St = { predicted: false, certified: false, pass: [false, false, false] };
+
+  var sty = document.createElement("style");
+  sty.id = "vd85Style";
+  sty.textContent = VD85_CSS;
+  document.head.appendChild(sty);
+
+  var b = document.createElement("button");
+  b.id = "vd85Btn";
+  b.className = "pg-launch";
+  b.textContent = "Open The Drop Room";
+  b.addEventListener("click", vd85Open);
+  box.appendChild(b);
+
+  var ov = vd85El("div", "vd85-overlay");
+  ov.id = "vd85Overlay";
+  ov.setAttribute("role", "dialog");
+  ov.setAttribute("aria-label", "The Drop Room");
+  var x = vd85Btn("CLOSE", "");
+  x.id = "vd85XBtn";
+  x.style.cssText = "position:fixed;top:calc(12px + env(safe-area-inset-top));right:calc(16px + env(safe-area-inset-right));z-index:95;";
+  x.setAttribute("aria-label", "Close The Drop Room");
+  x.addEventListener("click", vd85Close);
+  ov.appendChild(x);
+  vd85Els.overlay = ov;
+  if (!vd85EscBound) {
+    vd85EscBound = true;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && vd85Els.overlay && vd85Els.overlay.classList.contains("open")) vd85Close();
+    });
+  }
+
+  var panel = vd85El("div", "vd85-panel");
+  panel.appendChild(vd85El("div", "vd85-kicker", "ANALOG AND POWER ELECTRONICS \u00B7 BENCH 85"));
+  panel.appendChild(vd85El("h2", "vd85-title", "The Drop Room"));
+
+  var intro = vd85El("div", "");
+  intro.innerHTML = VD85.INTRO_HTML;
+  panel.appendChild(intro);
+
+  var prog = vd85El("div", "vd85-out");
+  prog.id = "vd85Progress";
+  prog.setAttribute("aria-live", "polite");
+  panel.appendChild(prog);
+  vd85Els.progress = prog;
+
+  panel.appendChild(vd85El("h3", "vd85-sec", "DO FIRST: CALL IT BEFORE YOU TOUCH ANYTHING"));
+  vd85Els.predict = vd85El("div", "");
+  panel.appendChild(vd85Els.predict);
+
+  panel.appendChild(vd85El("h3", "vd85-sec", "THE WORKED RUN"));
+  var worked = vd85El("div", "");
+  worked.innerHTML = VD85.WORKED_HTML;
+  panel.appendChild(worked);
+  panel.appendChild(vd85BuildRig());
+
+  panel.appendChild(vd85El("h3", "vd85-sec", "THE WAYS A RUN DIES"));
+  var rules = vd85El("div", "");
+  rules.innerHTML = VD85.RULES_HTML;
+  panel.appendChild(rules);
+
+  for (var ti = 0; ti < 3; ti++) {
+    panel.appendChild(vd85El("h3", "vd85-sec", "CERTIFY: " + VD85.TRIALS[ti].tag));
+    panel.appendChild(vd85BuildTrial(ti));
+  }
+
+  var banner = vd85El("div", "vd85-banner");
+  banner.id = "vd85Banner";
+  banner.setAttribute("aria-live", "polite");
+  banner.innerHTML = "<h3>BENCH 85 CERTIFIED</h3><p>Three runs, one rule, zero brownouts shipped. " +
+    "The takeaway in one line: <b>the load sees the source minus current times the round-trip wire " +
+    "resistance: count both legs, keep the drop inside budget, buy no extra copper.</b></p>";
+  panel.appendChild(banner);
+  vd85Els.banner = banner;
+
+  var hire = vd85El("p", "vd85-p");
+  hire.innerHTML = "A rig that browns out under load on a long power run? " +
+    "<button type=\"button\" class=\"vd85-btn\" data-brief=\"general\" data-bench-tag=\"Bench 85: The Drop Room\">Power audit</button>";
+  panel.appendChild(hire);
+
+  ov.appendChild(panel);
+  document.body.appendChild(ov);
+
+  vd85PredictRender();
+  vd85Progress();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", vd85Build);
+} else {
+  vd85Build();
+}
+
+/* debug hooks for the smoke test */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.VD85 = VD85;
+  module.exports.vd85Debug = {
+    drop: vd85Drop,
+    loadV: vd85LoadV,
+    grade: vd85Grade,
+    open: vd85Open,
+    state: function () { return vd85St; }
+  };
+}
+
+})();

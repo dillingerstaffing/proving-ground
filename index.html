@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20260930-pg153">
+<meta name="build-version" content="v20261001-pg154">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -1308,7 +1308,11 @@ var PG_BENCHES = [
   { section: "craft", n: "84", name: "The Solder Room", btn: "sd84Btn", pill: "oldiron", pillLabel: "BENCH CRAFT",
     desc: "Hand-soldering qualification for the OLD IRON refurb line: heat the pad and the pin past the 217 C wetting line before the wire feeds, because solder flows toward heat and wets only metal hot enough to accept it. Certify three joints: a standard lead, a heat-drinking ground pour, and a fine-pitch bridge trap.",
     how: "Call the cold-joint trap, run the reference recipe on the practice joint, then heat and feed three stations to a shiny fillet each and commit SHIP on all three.",
-    spec: "HAND SOLDERING \u00B7 3 JOINTS" }
+    spec: "HAND SOLDERING \u00B7 3 JOINTS" },
+  { section: "analog", n: "85", name: "The Drop Room", btn: "vd85Btn", pill: "tapeout", pillLabel: "ANALOG AND POWER ELECTRONICS",
+    desc: "A power cable is a resistor: the load sees the source minus current times the round-trip wire resistance. Work the free rig, then size three runs to hold an 11.40 V floor on the thinnest copper that passes.",
+    how: "Call the return-leg trap, work the rig on the worked run, then pick a gauge and run the load on all three trials.",
+    spec: "WIRE DROP \u00B7 3 RUNS \u00B7 12 V RAIL" }
  ];
 /* Teaching order: the sequence a newcomer should take the benches in.
    The index renders this list top to bottom; the number on each row is its
@@ -1359,6 +1363,7 @@ var PG_TEACH_ORDER = [
   "82",
   "51",
   "48",
+  "85",
   "49",
   "58",
   "52",
@@ -1408,7 +1413,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-09-30-pg153";
+var PG_REV = "2026-10-01-pg154";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
@@ -2073,9 +2078,9 @@ if ('serviceWorker' in navigator) {
   apply(current());
 })();
 </script>
-<script src="rvcore.js?v=8cfba041bc" defer></script>
-<script src="rvdata.js?v=8cfba041bc" defer></script>
-<script src="riscv-lab.js?v=8cfba041bc" defer></script>
-<script src="features.js?v=8cfba041bc" defer onerror="pgBundleFailed()"></script>
+<script src="rvcore.js?v=48fc91e184" defer></script>
+<script src="rvdata.js?v=48fc91e184" defer></script>
+<script src="riscv-lab.js?v=48fc91e184" defer></script>
+<script src="features.js?v=48fc91e184" defer onerror="pgBundleFailed()"></script>
 </body>
 </html>
