@@ -67327,3 +67327,741 @@ if (typeof module !== "undefined" && module.exports) {
 }
 
 })();
+
+/* =====================================================================
+ * Bench 86: The PMP Room (arch / riscv)
+ * One atomic mechanism: every physical memory access is checked against
+ * a short numbered table of regions, in order. The lowest-numbered region
+ * containing the address decides with its R/W/X bits; a locked (L=1)
+ * region binds M-mode too and can never be changed, even by M-mode;
+ * an address no region covers faults in S/U-mode and passes in M-mode.
+ * Predict moment (unmatched S-mode access), one free table rig preset to
+ * the worked key-store entry, three certifying trials: call six accesses,
+ * encode one NAPOT pmpaddr by hand, lock the vault before the malware
+ * rewrites it. Triple pass issues a certificate download.
+ * No em dashes in user-facing copy. Mobile: 48px targets, wrapping rows.
+ * ===================================================================== */
+(function () {
+"use strict";
+
+/* ---------------- bench data ---------------- */
+var PMP86 = {};
+PMP86.INTRO_HTML =
+  "<b>WHY THIS ROOM EXISTS</b> One buggy S-mode driver should never be able to read the AES " +
+  "keys or overwrite M-mode firmware, and a rogue DMA engine should never get a free pass to RAM. " +
+  "The PMP, Physical Memory Protection, is the hardware bouncer that stands between every load, " +
+  "store, and instruction fetch and physical memory: a short numbered table of regions, checked in " +
+  "order, where the first region containing the address decides. This room is that table, and you " +
+  "are the firmware writing it.";
+PMP86.PREDICT_Q =
+  "DO FIRST: S-mode stores one word to 0x90000000. The table holds four entries and none of them " +
+  "covers that address. Call it: does the store go through?";
+PMP86.PREDICT_OPTS = ["ALLOW: no region matches, so nothing stops it", "DENY: unmatched S-mode access faults"];
+PMP86.PREDICT_WHY =
+  "DENY. An unmatched access is not an unguarded one: S-mode and U-mode fault on any address no " +
+  "entry covers, while M-mode sails through the same gap. That asymmetry is the whole design: " +
+  "M-mode firmware writes the table, everyone else lives inside it. The rig below starts on the " +
+  "worked key-store entry: point the tester at 0x20001004 as S-mode and watch the default deny fire.";
+PMP86.WORKED_HTML =
+  "<b>THE WORKED ENTRY</b> Key store: base 0x20001000, size 4 KiB (0x1000). NAPOT packs base and " +
+  "size into one register: pmpaddr = (base &gt;&gt; 2) | ((size &gt;&gt; 3) - 1) = 0x08000400 | 0x1FF = " +
+  "0x080005FF. Read it back: the low 9 bits are all ones, so the region is 2^(9+3) = 4096 bytes; " +
+  "clear those 9 bits and shift left 2 to recover the base, 0x20001000. Config byte: L=1, A=NAPOT, " +
+  "X=0, W=0, R=0, which is 0x98: locked, and not even readable. The rig below starts on exactly " +
+  "this entry. Test 0x20001004 as S-mode and watch it deny, then flip to M-mode and watch it deny " +
+  "too, because locked means locked.";
+PMP86.RULES_HTML =
+  "<b>THE WAYS A TABLE DIES</b> DEFAULT DENY: no matching entry means S-mode and U-mode fault " +
+  "while M-mode passes; an empty table is a locked building with the master key still inside. " +
+  "UNLOCKED HOLE: M-mode ignores unlocked entries, so malware running in M-mode can rewrite them; " +
+  "the L bit is the only thing that makes a region stick. TOR FROM ZERO: entry 0 in TOR mode spans " +
+  "from address 0, so it always covers the reset vector's neighborhood; size it on purpose. " +
+  "NAPOT SLIP: one wrong hex digit in pmpaddr moves or resizes the region; the decoder below shows " +
+  "the damage instantly. SILENT IGNORE: writes to a locked pmpcfg are dropped without a trap; the " +
+  "table looks changed and is not.";
+/* T1 fixed table: [pmpaddr, cfg] x4. cfg bits: L(7) A(4:3) X(2) W(1) R(0). */
+PMP86.T1 = [
+  { pmpaddr: 0x080005FF, cfg: 0x98, note: "E0 key store, locked NAPOT, no permissions" },
+  { pmpaddr: 0x2001FFFF, cfg: 0x1B, note: "E1 RAM, unlocked NAPOT, read and write" },
+  { pmpaddr: 0x00004000, cfg: 0x8D, note: "E2 firmware, locked TOR, read and execute" },
+  { pmpaddr: 0x00000000, cfg: 0x00, note: "E3 off" }
+];
+PMP86.T1Q = [
+  { addr: 0x20001004, type: "R", priv: "S", label: "S-mode reads the key store at 0x20001004" },
+  { addr: 0x80001000, type: "W", priv: "S", label: "S-mode writes RAM at 0x80001000" },
+  { addr: 0x20001004, type: "W", priv: "M", label: "M-mode writes the key store at 0x20001004" },
+  { addr: 0x80002000, type: "R", priv: "M", label: "M-mode reads RAM at 0x80002000" },
+  { addr: 0x00008000, type: "X", priv: "S", label: "S-mode fetches firmware at 0x00008000" },
+  { addr: 0x90000000, type: "R", priv: "S", label: "S-mode reads 0x90000000, covered by nothing" }
+];
+PMP86.T1KEY = [false, true, false, true, true, false];
+PMP86.T2 = {
+  base: 0x20002000, size: 0x2000, answer: 0x08000BFF,
+  opts: [0x08000BFF, 0x08000800, 0x08000FFF, 0x20002000],
+  probes: [
+    { addr: 0x20002004, inside: true },
+    { addr: 0x20004000, inside: false }
+  ]
+};
+/* T3: the vault. E0 starts unlocked; the visitor sets L, then the gauntlet runs. */
+PMP86.T3 = [
+  { pmpaddr: 0x080005FF, cfg: 0x18, lock: false, note: "E0 key store, NAPOT, no permissions, UNLOCKED" },
+  { pmpaddr: 0x2001FFFF, cfg: 0x1B, lock: false, note: "E1 RAM, NAPOT, read and write" },
+  { pmpaddr: 0x00000000, cfg: 0x00, lock: false, note: "E2 off" },
+  { pmpaddr: 0x00000000, cfg: 0x00, lock: false, note: "E3 off" }
+];
+
+/* ---------------- pure logic (shared with the smoke test) ---------------- */
+function pmp86CfgByte(L, A, X, W, R) { return ((L << 7) | (A << 3) | (X << 2) | (W << 1) | R) & 0xFF; }
+function pmp86Hex(n) {
+  var s = (n >>> 0).toString(16).toUpperCase();
+  while (s.length < 8) s = "0" + s;
+  return "0x" + s;
+}
+function pmp86Size(n) {
+  if (n >= 1048576 && n % 1048576 === 0) return (n / 1048576) + " MiB";
+  if (n >= 1024 && n % 1024 === 0) return (n / 1024) + " KiB";
+  return n + " B";
+}
+function pmp86TrailOnes(a) {
+  var k = 0;
+  a = a >>> 0;
+  while (k < 32 && (a & 1) === 1) { k++; a >>>= 1; }
+  return k;
+}
+/* Decode one entry to {lo, hi} byte addresses, or null when OFF. */
+function pmp86Region(i, cfgs, addrs) {
+  var c = cfgs[i] & 0xFF, a = addrs[i] >>> 0;
+  var mode = (c >> 3) & 3;
+  if (mode === 0) return null;
+  if (mode === 2) { var b4 = (a << 2) >>> 0; return { lo: b4, hi: (b4 + 4) >>> 0 }; }
+  if (mode === 3) {
+    var k = pmp86TrailOnes(a);
+    var size = Math.pow(2, k + 3);
+    var base = (((a >>> k) << k) << 2) >>> 0;
+    return { lo: base, hi: (base + size) >>> 0 };
+  }
+  var hi = (a << 2) >>> 0, lo = 0;
+  if (i > 0 && (((cfgs[i - 1] >> 3) & 3) === 1)) lo = (addrs[i - 1] << 2) >>> 0;
+  return { lo: lo, hi: hi };
+}
+/* The bouncer. Returns {allow, idx, why}. */
+function pmp86Check(addr, type, priv, cfgs, addrs) {
+  addr = addr >>> 0;
+  for (var i = 0; i < cfgs.length; i++) {
+    var r = pmp86Region(i, cfgs, addrs);
+    if (!r) continue;
+    if (addr >= r.lo && addr < r.hi) {
+      var c = cfgs[i] & 0xFF, L = (c >> 7) & 1;
+      if (priv === "M" && !L)
+        return { allow: true, idx: i, why: "entry " + i + " is unlocked, so M-mode ignores it" };
+      var bit = type === "R" ? 1 : type === "W" ? 2 : 4;
+      var ok = (c & bit) !== 0;
+      return { allow: ok, idx: i,
+        why: (L ? "locked " : "") + "entry " + i + " " + (ok ? "grants " : "denies ") + type };
+    }
+  }
+  if (priv === "M") return { allow: true, idx: -1, why: "no entry matches: M-mode default allow" };
+  return { allow: false, idx: -1, why: "no entry matches: S-mode default deny" };
+}
+/* T3 attack: M-mode malware rewrites entry 0 to full access, then S-mode reads the key.
+   Writes to a locked pmpcfg are ignored, so the attack only lands when L is clear.
+   Returns {landed, readAllow, trace}. */
+function pmp86Attack(lock0) {
+  var cfgs = [PMP86.T3[0].cfg, PMP86.T3[1].cfg, PMP86.T3[2].cfg, PMP86.T3[3].cfg];
+  var addrs = [PMP86.T3[0].pmpaddr, PMP86.T3[1].pmpaddr, PMP86.T3[2].pmpaddr, PMP86.T3[3].pmpaddr];
+  var trace;
+  if (lock0) {
+    trace = "M-mode writes pmpcfg0 = 0x1F: IGNORED, entry 0 is locked.";
+  } else {
+    cfgs[0] = pmp86CfgByte(0, 3, 1, 1, 1);
+    trace = "M-mode writes pmpcfg0 = 0x1F: accepted, entry 0 is unlocked.";
+  }
+  var r = pmp86Check(0x20001004, "R", "S", cfgs, addrs);
+  return { landed: r.allow, readAllow: r.allow, trace: trace + " S-mode reads the key: " +
+    (r.allow ? "ALLOW, the vault is open." : "DENY, the vault holds.") };
+}
+/* T3 gauntlet: four behaviors that must hold. lockFlags[i] = L bit per entry. */
+function pmp86Gauntlet(lockFlags) {
+  var cfgs = [], addrs = [], out = [];
+  for (var i = 0; i < 4; i++) {
+    var e = PMP86.T3[i];
+    cfgs.push(pmp86CfgByte(lockFlags[i] ? 1 : 0, (e.cfg >> 3) & 3, (e.cfg >> 2) & 1, (e.cfg >> 1) & 1, e.cfg & 1));
+    addrs.push(e.pmpaddr);
+  }
+  function item(label, addr, type, priv, want) {
+    var r = pmp86Check(addr, type, priv, cfgs, addrs);
+    var good = (r.allow === want);
+    out.push({ label: label, good: good,
+      text: (good ? "HOLDS: " : "BROKEN: ") + label + " -> " + (r.allow ? "ALLOW" : "DENY") + " (" + r.why + ")" });
+    return good;
+  }
+  var all = true;
+  all = item("S-mode reads the key store", 0x20001004, "R", "S", false) && all;
+  all = item("S-mode writes RAM", 0x80001000, "W", "S", true) && all;
+  all = item("M-mode reads RAM", 0x80002000, "R", "M", true) && all;
+  var atk = pmp86Attack(!!lockFlags[0]);
+  var atkGood = !atk.readAllow;
+  out.push({ label: "malware rewrites entry 0, then reads the key from S-mode", good: atkGood,
+    text: (atkGood ? "HOLDS: " : "BROKEN: ") + atk.trace });
+  all = atkGood && all;
+  return { pass: all, items: out };
+}
+
+/* ---------------- dom helpers ---------------- */
+var pmp86Els = { overlay: null, progress: null, banner: null, predict: null };
+var pmp86St = null;
+var pmp86EscBound = false;
+function pmp86El(tag, cls, html) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html !== undefined && html !== "") e.innerHTML = html;
+  return e;
+}
+function pmp86Btn(label, cls) {
+  var b = document.createElement("button");
+  b.type = "button";
+  b.className = "pmp86-btn" + (cls ? " " + cls : "");
+  b.textContent = label;
+  return b;
+}
+function pmp86RegionLine(i, cfgs, addrs) {
+  var r = pmp86Region(i, cfgs, addrs);
+  var c = cfgs[i] & 0xFF;
+  var aName = ["OFF", "TOR", "NA4", "NAPOT"][(c >> 3) & 3];
+  var perms = ((c & 4) ? "X" : "-") + ((c & 2) ? "W" : "-") + ((c & 1) ? "R" : "-");
+  if (!r) return "E" + i + " " + aName + " " + perms + (((c >> 7) & 1) ? " LOCKED" : "");
+  return "E" + i + " " + aName + " " + perms + (((c >> 7) & 1) ? " LOCKED" : "") +
+    " : " + pmp86Hex(r.lo) + " .. " + pmp86Hex(r.hi) + " (" + pmp86Size(r.hi - r.lo) + ")";
+}
+
+/* ---------------- free rig: editable table + access tester ---------------- */
+function pmp86BuildRig() {
+  var wrap = pmp86El("div", "pmp86-station");
+  wrap.appendChild(pmp86El("div", "pmp86-sttag", "THE TABLE RIG"));
+  wrap.appendChild(pmp86El("div", "pmp86-stsub",
+    "Four entries, live decoding. Edit any field and the regions redraw. Starts on the worked key-store entry."));
+  var rows = [];
+  var cfgs = [0x98, 0x1B, 0x8D, 0x00];
+  var addrs = [0x080005FF, 0x2001FFFF, 0x00004000, 0x00000000];
+  function redraw() {
+    for (var i = 0; i < 4; i++) rows[i].dec.textContent = pmp86RegionLine(i, cfgs, addrs);
+  }
+  for (var i = 0; i < 4; i++) (function (i) {
+    var row = pmp86El("div", "pmp86-trow");
+    row.appendChild(pmp86El("span", "pmp86-elab", "E" + i));
+    var pa = document.createElement("input");
+    pa.type = "text"; pa.value = pmp86Hex(addrs[i]); pa.className = "pmp86-hex";
+    pa.setAttribute("aria-label", "Entry " + i + " pmpaddr in hex");
+    pa.addEventListener("input", function () {
+      var v = parseInt(pa.value, 16);
+      if (!isNaN(v)) { addrs[i] = v >>> 0; redraw(); }
+    });
+    row.appendChild(pa);
+    var as = document.createElement("select");
+    as.className = "pmp86-sel";
+    as.setAttribute("aria-label", "Entry " + i + " address matching mode");
+    [["OFF", 0], ["TOR", 1], ["NA4", 2], ["NAPOT", 3]].forEach(function (o) {
+      var op = document.createElement("option");
+      op.value = o[1]; op.textContent = o[0];
+      as.appendChild(op);
+    });
+    as.value = String((cfgs[i] >> 3) & 3);
+    as.addEventListener("change", function () {
+      cfgs[i] = (cfgs[i] & 0xE7) | ((parseInt(as.value, 10) & 3) << 3);
+      redraw();
+    });
+    row.appendChild(as);
+    [["R", 1], ["W", 2], ["X", 4]].forEach(function (p) {
+      var lab = pmp86El("label", "pmp86-chk", p[0]);
+      var cb = document.createElement("input");
+      cb.type = "checkbox"; cb.checked = (cfgs[i] & p[1]) !== 0;
+      cb.setAttribute("aria-label", "Entry " + i + " allow " + p[0]);
+      cb.addEventListener("change", function () {
+        cfgs[i] = cb.checked ? (cfgs[i] | p[1]) : (cfgs[i] & ~p[1]);
+        redraw();
+      });
+      lab.insertBefore(cb, lab.firstChild);
+      row.appendChild(lab);
+    });
+    var llab = pmp86El("label", "pmp86-chk", "L");
+    var lcb = document.createElement("input");
+    lcb.type = "checkbox"; lcb.checked = ((cfgs[i] >> 7) & 1) === 1;
+    lcb.setAttribute("aria-label", "Entry " + i + " lock bit");
+    lcb.addEventListener("change", function () {
+      cfgs[i] = lcb.checked ? (cfgs[i] | 0x80) : (cfgs[i] & 0x7F);
+      redraw();
+    });
+    llab.insertBefore(lcb, llab.firstChild);
+    row.appendChild(llab);
+    wrap.appendChild(row);
+    var dec = pmp86El("div", "pmp86-dec", "");
+    dec.setAttribute("aria-live", "polite");
+    wrap.appendChild(dec);
+    rows.push({ dec: dec });
+  })(i);
+  redraw();
+  /* tester */
+  wrap.appendChild(pmp86El("div", "pmp86-sttag", "THE ACCESS TESTER"));
+  var trow = pmp86El("div", "pmp86-trow");
+  var ta = document.createElement("input");
+  ta.type = "text"; ta.value = "0x20001004"; ta.className = "pmp86-hex";
+  ta.setAttribute("aria-label", "Access address in hex");
+  trow.appendChild(ta);
+  var tt = document.createElement("select");
+  tt.className = "pmp86-sel"; tt.setAttribute("aria-label", "Access type");
+  ["R", "W", "X"].forEach(function (t) {
+    var op = document.createElement("option"); op.value = t;
+    op.textContent = t === "R" ? "READ" : t === "W" ? "WRITE" : "EXEC";
+    tt.appendChild(op);
+  });
+  trow.appendChild(tt);
+  var tp = document.createElement("select");
+  tp.className = "pmp86-sel"; tp.setAttribute("aria-label", "Privilege mode");
+  [["S", "S-mode"], ["M", "M-mode"]].forEach(function (p) {
+    var op = document.createElement("option"); op.value = p[0]; op.textContent = p[1];
+    tp.appendChild(op);
+  });
+  trow.appendChild(tp);
+  var go = pmp86Btn("TEST ACCESS", "primary");
+  go.setAttribute("aria-label", "Test this access against the table");
+  trow.appendChild(go);
+  wrap.appendChild(trow);
+  var verdict = pmp86El("div", "pmp86-verdict", "");
+  verdict.setAttribute("aria-live", "polite");
+  wrap.appendChild(verdict);
+  go.addEventListener("click", function () {
+    var av = parseInt(ta.value, 16);
+    if (isNaN(av)) { verdict.textContent = "That address is not hex."; verdict.className = "pmp86-verdict fail"; return; }
+    var r = pmp86Check(av, tt.value, tp.value, cfgs, addrs);
+    verdict.textContent = (r.allow ? "ALLOW" : "DENY") + ": " + r.why + ".";
+    verdict.className = "pmp86-verdict " + (r.allow ? "pass" : "fail");
+  });
+  return wrap;
+}
+
+/* ---------------- trial 1: call the access ---------------- */
+function pmp86BuildT1() {
+  var wrap = pmp86El("div", "pmp86-station");
+  var head = pmp86El("div", "");
+  head.appendChild(pmp86El("div", "pmp86-sttag", "CERTIFY 1: CALL THE ACCESS"));
+  head.appendChild(pmp86El("div", "pmp86-stsub",
+    "Six accesses against the fixed table. Call ALLOW or DENY on each, then submit. Five of six passes."));
+  wrap.appendChild(head);
+  var tbl = pmp86El("div", "pmp86-out", "");
+  var cfgs = [], addrs = [];
+  PMP86.T1.forEach(function (e, i) {
+    cfgs.push(e.cfg); addrs.push(e.pmpaddr);
+    tbl.appendChild(pmp86El("div", "", pmp86RegionLine(i, cfgs, addrs) + " <span style=\"opacity:.6\">" + e.note + "</span>"));
+  });
+  wrap.appendChild(tbl);
+  var calls = [null, null, null, null, null, null];
+  var qdivs = [];
+  PMP86.T1Q.forEach(function (q, qi) {
+    var qd = pmp86El("div", "pmp86-q");
+    qd.appendChild(pmp86El("div", "pmp86-qq", (qi + 1) + ". " + q.label));
+    var row = pmp86El("div", "pmp86-row");
+    var bA = pmp86Btn("ALLOW", ""), bD = pmp86Btn("DENY", "");
+    bA.setAttribute("aria-label", "Access " + (qi + 1) + ": allow");
+    bD.setAttribute("aria-label", "Access " + (qi + 1) + ": deny");
+    bA.addEventListener("click", function () {
+      calls[qi] = true;
+      bA.classList.add("sel"); bD.classList.remove("sel");
+      bA.setAttribute("aria-pressed", "true"); bD.setAttribute("aria-pressed", "false");
+    });
+    bD.addEventListener("click", function () {
+      calls[qi] = false;
+      bD.classList.add("sel"); bA.classList.remove("sel");
+      bD.setAttribute("aria-pressed", "true"); bA.setAttribute("aria-pressed", "false");
+    });
+    row.appendChild(bA); row.appendChild(bD);
+    qd.appendChild(row);
+    var fb = pmp86El("div", "pmp86-verdict", "");
+    qd.appendChild(fb);
+    qdivs.push(fb);
+    wrap.appendChild(qd);
+  });
+  var verdict = pmp86El("div", "pmp86-verdict", "");
+  verdict.setAttribute("aria-live", "polite");
+  var sub = pmp86Btn("SUBMIT CALLS", "primary");
+  sub.setAttribute("aria-label", "Submit the six access calls");
+  sub.addEventListener("click", function () {
+    var n = 0, right = 0;
+    PMP86.T1Q.forEach(function (q, qi) {
+      if (calls[qi] === null) {
+        qdivs[qi].textContent = "No call made.";
+        qdivs[qi].className = "pmp86-verdict";
+        return;
+      }
+      n++;
+      var r = pmp86Check(q.addr, q.type, q.priv, cfgs, addrs);
+      var good = (r.allow === PMP86.T1KEY[qi]) && (calls[qi] === PMP86.T1KEY[qi]);
+      if (good) right++;
+      qdivs[qi].textContent = (good ? "RIGHT: " : "WRONG: ") + (r.allow ? "ALLOW" : "DENY") + " (" + r.why + ").";
+      qdivs[qi].className = "pmp86-verdict " + (good ? "pass" : "fail");
+    });
+    pmp86St.t1 = (n === 6 && right >= 5);
+    verdict.textContent = right + " of 6 right" + (n < 6 ? " (" + (6 - n) + " uncalled)" : "") +
+      (pmp86St.t1 ? ": TRIAL 1 PASSES." : ": TRIAL 1 OPEN.");
+    verdict.className = "pmp86-verdict " + (pmp86St.t1 ? "pass" : "fail");
+    pmp86Progress();
+    pmp86CheckCert();
+  });
+  var row = pmp86El("div", "pmp86-row");
+  row.appendChild(sub);
+  wrap.appendChild(row);
+  wrap.appendChild(verdict);
+  return wrap;
+}
+
+/* ---------------- trial 2: encode the region ---------------- */
+function pmp86BuildT2() {
+  var wrap = pmp86El("div", "pmp86-station");
+  wrap.appendChild(pmp86El("div", "pmp86-sttag", "CERTIFY 2: ENCODE THE REGION"));
+  wrap.appendChild(pmp86El("div", "pmp86-stsub",
+    "A new key store: base 0x20002000, size 8 KiB. Compute pmpaddr = (base >> 2) | ((size >> 3) - 1), " +
+    "pick it, then call two probes IN or OUT of the decoded region."));
+  var t = PMP86.T2;
+  wrap.appendChild(pmp86El("p", "pmp86-p",
+    "base &gt;&gt; 2 = " + pmp86Hex(t.base >>> 2) + ". (size &gt;&gt; 3) - 1 = " +
+    pmp86Hex((t.size >>> 3) - 1) + ". OR them:"));
+  var sel = { opt: null, probes: [null, null] };
+  var orow = pmp86El("div", "pmp86-row");
+  var obtns = [];
+  t.opts.forEach(function (o) {
+    var b = pmp86Btn(pmp86Hex(o), "");
+    b.setAttribute("aria-label", "pmpaddr " + pmp86Hex(o));
+    b.addEventListener("click", function () {
+      sel.opt = o;
+      obtns.forEach(function (x, j) {
+        x.classList.toggle("sel", t.opts[j] === o);
+        x.setAttribute("aria-pressed", t.opts[j] === o ? "true" : "false");
+      });
+    });
+    orow.appendChild(b);
+    obtns.push(b);
+  });
+  wrap.appendChild(orow);
+  var cfgs = [pmp86CfgByte(1, 3, 0, 0, 0), 0, 0, 0];
+  t.probes.forEach(function (p, pi) {
+    var qd = pmp86El("div", "pmp86-q");
+    qd.appendChild(pmp86El("div", "pmp86-qq", "Probe " + pmp86Hex(p.addr) + ": IN or OUT of the region?"));
+    var row = pmp86El("div", "pmp86-row");
+    var bI = pmp86Btn("IN", ""), bO = pmp86Btn("OUT", "");
+    bI.setAttribute("aria-label", "Probe " + (pi + 1) + ": inside the region");
+    bO.setAttribute("aria-label", "Probe " + (pi + 1) + ": outside the region");
+    bI.addEventListener("click", function () {
+      sel.probes[pi] = true;
+      bI.classList.add("sel"); bO.classList.remove("sel");
+    });
+    bO.addEventListener("click", function () {
+      sel.probes[pi] = false;
+      bO.classList.add("sel"); bI.classList.remove("sel");
+    });
+    row.appendChild(bI); row.appendChild(bO);
+    qd.appendChild(row);
+    wrap.appendChild(qd);
+  });
+  var verdict = pmp86El("div", "pmp86-verdict", "");
+  verdict.setAttribute("aria-live", "polite");
+  var chk = pmp86Btn("CHECK", "primary");
+  chk.setAttribute("aria-label", "Check the pmpaddr and probe calls");
+  chk.addEventListener("click", function () {
+    var encOk = (sel.opt === t.answer);
+    var addrs = [sel.opt === null ? 0 : sel.opt, 0, 0, 0];
+    var r = pmp86Region(0, cfgs, addrs);
+    var pOk = true;
+    t.probes.forEach(function (p, pi) {
+      var inside = encOk && r && p.addr >= r.lo && p.addr < r.hi;
+      if (sel.probes[pi] === null || sel.probes[pi] !== inside) pOk = false;
+    });
+    pmp86St.t2 = encOk && pOk && sel.probes[0] !== null && sel.probes[1] !== null;
+    verdict.textContent = (encOk ? "pmpaddr " + pmp86Hex(t.answer) + " decodes to " +
+      pmp86Hex(r.lo) + " .. " + pmp86Hex(r.hi) + ". " : "Wrong pmpaddr. ") +
+      (pmp86St.t2 ? "Both probes right: TRIAL 2 PASSES." : "Probes: 0x20002004 is IN, 0x20004000 is OUT (hi is exclusive). TRIAL 2 OPEN.");
+    verdict.className = "pmp86-verdict " + (pmp86St.t2 ? "pass" : "fail");
+    pmp86Progress();
+    pmp86CheckCert();
+  });
+  var row = pmp86El("div", "pmp86-row");
+  row.appendChild(chk);
+  wrap.appendChild(row);
+  wrap.appendChild(verdict);
+  return wrap;
+}
+
+/* ---------------- trial 3: lock the vault ---------------- */
+function pmp86BuildT3() {
+  var wrap = pmp86El("div", "pmp86-station");
+  wrap.appendChild(pmp86El("div", "pmp86-sttag", "CERTIFY 3: LOCK THE VAULT"));
+  wrap.appendChild(pmp86El("div", "pmp86-stsub",
+    "The key-store entry below is UNLOCKED. M-mode malware is about to rewrite it to full access " +
+    "and read the keys from S-mode. Set the L bit where it belongs, then run the gauntlet: all " +
+    "four behaviors must hold, and the attack must fail."));
+  var locks = [false, false, false, false];
+  PMP86.T3.forEach(function (e, i) {
+    var row = pmp86El("div", "pmp86-trow");
+    row.appendChild(pmp86El("span", "pmp86-elab", "E" + i));
+    row.appendChild(pmp86El("span", "pmp86-dec", pmp86Hex(e.pmpaddr) + " cfg " + pmp86Hex(e.cfg)));
+    var lab = pmp86El("label", "pmp86-chk", "L");
+    var cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = false;
+    cb.setAttribute("aria-label", "Trial 3 entry " + i + " lock bit");
+    (function (ii, c) {
+      c.addEventListener("change", function () { locks[ii] = c.checked; });
+    })(i, cb);
+    lab.insertBefore(cb, lab.firstChild);
+    row.appendChild(lab);
+    wrap.appendChild(row);
+    wrap.appendChild(pmp86El("div", "pmp86-dec", e.note));
+  });
+  var verdict = pmp86El("div", "pmp86-verdict", "");
+  verdict.setAttribute("aria-live", "polite");
+  var run = pmp86Btn("RUN GAUNTLET", "primary");
+  run.setAttribute("aria-label", "Run the four-behavior gauntlet and the malware attack");
+  run.addEventListener("click", function () {
+    var g = pmp86Gauntlet(locks);
+    pmp86St.t3 = g.pass;
+    verdict.innerHTML = "";
+    g.items.forEach(function (it) {
+      var d = pmp86El("div", "pmp86-verdict " + (it.good ? "pass" : "fail"), "");
+      d.textContent = it.text;
+      verdict.appendChild(d);
+    });
+    var fin = pmp86El("div", "pmp86-verdict " + (g.pass ? "pass" : "fail"), "");
+    fin.textContent = g.pass ? "ALL FOUR HOLD: TRIAL 3 PASSES." : "TRIAL 3 OPEN: the L bit is the only thing that makes a region stick.";
+    verdict.appendChild(fin);
+    pmp86Progress();
+    pmp86CheckCert();
+  });
+  var row = pmp86El("div", "pmp86-row");
+  row.appendChild(run);
+  wrap.appendChild(row);
+  wrap.appendChild(verdict);
+  return wrap;
+}
+
+/* ---------------- predict ---------------- */
+function pmp86PredictRender() {
+  var box = pmp86Els.predict;
+  box.innerHTML = "";
+  box.appendChild(pmp86El("p", "pmp86-p", PMP86.PREDICT_Q));
+  var row = pmp86El("div", "pmp86-row");
+  var done = false;
+  PMP86.PREDICT_OPTS.forEach(function (opt) {
+    var b = pmp86Btn("CALL: " + opt, "");
+    b.addEventListener("click", function () {
+      if (done) return;
+      done = true;
+      pmp86St.predicted = true;
+      box.appendChild(pmp86El("p", "pmp86-p", "<b>" + opt + " CALLED.</b> " + PMP86.PREDICT_WHY));
+      pmp86Progress();
+      pmp86CheckCert();
+    });
+    row.appendChild(b);
+  });
+  box.appendChild(row);
+}
+
+/* ---------------- progress, cert, artifact ---------------- */
+function pmp86Progress() {
+  if (!pmp86Els.progress || !pmp86St) return;
+  function tag(p, n) { return n + ":" + (p ? "PASS" : "OPEN"); }
+  pmp86Els.progress.innerHTML = "TRIALS: <b>" + tag(pmp86St.t1, "T1") + "</b> <b>" +
+    tag(pmp86St.t2, "T2") + "</b> <b>" + tag(pmp86St.t3, "T3") + "</b>" +
+    (pmp86St.predicted ? " PREDICTION:LOGGED" : " PREDICTION:OPEN");
+}
+function pmp86CertText() {
+  var d = new Date().toISOString().slice(0, 10);
+  var lines = ["THE PROVING GROUND, BENCH 86: THE PMP ROOM", "Certified: " + d, "",
+    "Trial 1: six access calls against the fixed table, five of six right.",
+    "Trial 2: NAPOT pmpaddr 0x08000BFF encoded by hand, both probes called.",
+    "Trial 3: key-store entry locked, malware rewrite ignored, vault holds.", "",
+    "Takeaway: the lowest-numbered matching region decides, a locked region binds M-mode too,",
+    "and an address no region covers faults in S-mode while M-mode passes."];
+  return lines.join("\n");
+}
+function pmp86Download(name, text) {
+  var blob = new Blob([text], { type: "text/plain" });
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+function pmp86CheckCert() {
+  if (!pmp86St.certified && pmp86St.t1 && pmp86St.t2 && pmp86St.t3) {
+    pmp86St.certified = true;
+    pmp86Els.banner.classList.add("show");
+    var dl = pmp86Btn("DOWNLOAD CERTIFICATE (TXT)", "primary");
+    dl.addEventListener("click", function () {
+      pmp86Download("pmp-room-certificate.txt", pmp86CertText());
+    });
+    var row = pmp86El("div", "pmp86-row");
+    row.appendChild(dl);
+    pmp86Els.banner.appendChild(row);
+  }
+  pmp86Progress();
+}
+
+/* ---------------- open / close / build ---------------- */
+function pmp86Open() {
+  pmp86Els.overlay.classList.add("open");
+  try { localStorage.setItem("pg.seen.v1", JSON.stringify(Object.assign(
+    JSON.parse(localStorage.getItem("pg.seen.v1") || "{}"), { "86": 1 }))); } catch (e) {}
+  if (typeof pgPaintStates === "function") { try { pgPaintStates(); } catch (e) {} }
+}
+function pmp86Close() { pmp86Els.overlay.classList.remove("open"); }
+
+var PMP86_CSS = [
+".pmp86-overlay{position:fixed;inset:0;z-index:90;display:none;overflow-y:auto;background:var(--ink);color:var(--paper);}",
+".pmp86-overlay.open{display:block;}",
+".pmp86-panel{max-width:760px;margin:0 auto;padding:calc(20px + env(safe-area-inset-top)) 16px calc(48px + env(safe-area-inset-bottom));}",
+".pmp86-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--ember);margin-bottom:8px;}",
+".pmp86-title{font-family:'Space Grotesk',sans-serif;font-size:30px;margin:0 0 12px;letter-spacing:-.01em;}",
+".pmp86-p{font-size:15px;line-height:1.65;margin:0 0 14px;max-width:62ch;}",
+".pmp86-p b{color:var(--ember);}",
+".pmp86-sec{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.16em;color:var(--ember);margin:28px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px;}",
+".pmp86-out{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.08em;border:1px solid var(--line);padding:10px 12px;margin:0 0 6px;background:var(--panel);line-height:1.7;}",
+".pmp86-out b{color:var(--ember);}",
+".pmp86-station{border:1px solid var(--line);background:var(--panel);padding:14px;margin:0 0 18px;}",
+".pmp86-sttag{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.14em;color:var(--ember);}",
+".pmp86-stsub{font-size:13px;opacity:.75;margin-top:2px;margin-bottom:10px;}",
+".pmp86-trow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 6px;}",
+".pmp86-elab{font-family:'IBM Plex Mono',monospace;font-size:12px;min-width:28px;color:var(--ember);}",
+".pmp86-hex{font-family:'IBM Plex Mono',monospace;font-size:13px;min-height:48px;padding:8px 10px;background:var(--ink);color:var(--paper);border:1px solid var(--line);width:150px;}",
+".pmp86-sel{font-family:'IBM Plex Mono',monospace;font-size:13px;min-height:48px;padding:8px 10px;background:var(--ink);color:var(--paper);border:1px solid var(--line);}",
+".pmp86-chk{font-family:'IBM Plex Mono',monospace;font-size:12px;display:flex;align-items:center;gap:6px;min-height:48px;cursor:pointer;}",
+".pmp86-chk input{width:22px;height:22px;accent-color:var(--ember);}",
+".pmp86-dec{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6;opacity:.85;margin:0 0 8px;}",
+".pmp86-row{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px;}",
+".pmp86-q{margin:0 0 12px;}",
+".pmp86-qq{font-size:14px;margin-bottom:8px;}",
+".pmp86-btn{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.08em;min-height:48px;padding:12px 18px;background:transparent;color:var(--paper);border:1px solid var(--line);cursor:pointer;}",
+".pmp86-btn.primary{border-color:var(--ember);color:var(--ember);}",
+".pmp86-btn.sel{border-color:var(--ember);color:var(--ember);}",
+".pmp86-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px;}",
+".pmp86-verdict{font-family:'IBM Plex Mono',monospace;font-size:13px;line-height:1.6;min-height:20px;}",
+".pmp86-verdict.pass{color:#7fd67f;}",
+".pmp86-verdict.fail{color:var(--ember);}",
+".pmp86-banner{display:none;border:1px solid var(--ember);padding:18px;margin-top:24px;}",
+".pmp86-banner.show{display:block;}",
+".pmp86-banner h3{font-family:'Space Grotesk',sans-serif;margin:0 0 8px;font-size:20px;color:var(--ember);}",
+".pmp86-banner p{font-size:14px;line-height:1.65;margin:0 0 12px;}"
+].join("\n");
+
+function pmp86Build() {
+  var box = document.querySelector(".dossier .actions");
+  if (!box) return;
+  if (document.getElementById("pmp86Btn")) return;
+  pmp86St = { predicted: false, certified: false, t1: false, t2: false, t3: false };
+
+  var sty = document.createElement("style");
+  sty.id = "pmp86Style";
+  sty.textContent = PMP86_CSS;
+  document.head.appendChild(sty);
+
+  var b = document.createElement("button");
+  b.id = "pmp86Btn";
+  b.className = "pg-launch";
+  b.textContent = "Open The PMP Room";
+  b.addEventListener("click", pmp86Open);
+  box.appendChild(b);
+
+  var ov = pmp86El("div", "pmp86-overlay");
+  ov.id = "pmp86Overlay";
+  ov.setAttribute("role", "dialog");
+  ov.setAttribute("aria-label", "The PMP Room");
+  var x = pmp86Btn("CLOSE", "");
+  x.id = "pmp86XBtn";
+  x.style.cssText = "position:fixed;top:calc(12px + env(safe-area-inset-top));right:calc(16px + env(safe-area-inset-right));z-index:95;";
+  x.setAttribute("aria-label", "Close The PMP Room");
+  x.addEventListener("click", pmp86Close);
+  ov.appendChild(x);
+  pmp86Els.overlay = ov;
+  if (!pmp86EscBound) {
+    pmp86EscBound = true;
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && pmp86Els.overlay && pmp86Els.overlay.classList.contains("open")) pmp86Close();
+    });
+  }
+
+  var panel = pmp86El("div", "pmp86-panel");
+  panel.appendChild(pmp86El("div", "pmp86-kicker", "RISC-V \u00B7 BENCH 86"));
+  panel.appendChild(pmp86El("h2", "pmp86-title", "The PMP Room"));
+
+  var intro = pmp86El("div", "");
+  intro.innerHTML = PMP86.INTRO_HTML;
+  panel.appendChild(intro);
+
+  var prog = pmp86El("div", "pmp86-out");
+  prog.id = "pmp86Progress";
+  prog.setAttribute("aria-live", "polite");
+  panel.appendChild(prog);
+  pmp86Els.progress = prog;
+
+  panel.appendChild(pmp86El("h3", "pmp86-sec", "DO FIRST: CALL IT BEFORE YOU TOUCH ANYTHING"));
+  pmp86Els.predict = pmp86El("div", "");
+  panel.appendChild(pmp86Els.predict);
+
+  panel.appendChild(pmp86El("h3", "pmp86-sec", "THE WORKED ENTRY"));
+  var worked = pmp86El("div", "");
+  worked.innerHTML = PMP86.WORKED_HTML;
+  panel.appendChild(worked);
+  panel.appendChild(pmp86BuildRig());
+
+  panel.appendChild(pmp86El("h3", "pmp86-sec", "THE WAYS A TABLE DIES"));
+  var rules = pmp86El("div", "");
+  rules.innerHTML = PMP86.RULES_HTML;
+  panel.appendChild(rules);
+
+  panel.appendChild(pmp86El("h3", "pmp86-sec", "CERTIFY: THREE TRIALS"));
+  panel.appendChild(pmp86BuildT1());
+  panel.appendChild(pmp86BuildT2());
+  panel.appendChild(pmp86BuildT3());
+
+  var banner = pmp86El("div", "pmp86-banner");
+  banner.id = "pmp86Banner";
+  banner.setAttribute("aria-live", "polite");
+  banner.innerHTML = "<h3>BENCH 86 CERTIFIED</h3><p>Three trials, one table, zero open vaults. " +
+    "The takeaway in one line: <b>the lowest-numbered matching region decides, a locked region binds " +
+    "M-mode too, and an address no region covers faults in S-mode while M-mode passes.</b></p>";
+  panel.appendChild(banner);
+  pmp86Els.banner = banner;
+
+  var hire = pmp86El("p", "pmp86-p");
+  hire.innerHTML = "Shipping firmware where S-mode must never reach the keys? " +
+    "<button type=\"button\" class=\"pmp86-btn\" data-brief=\"general\" data-bench-tag=\"Bench 86: The PMP Room\">Lockdown review</button>";
+  panel.appendChild(hire);
+
+  ov.appendChild(panel);
+  document.body.appendChild(ov);
+
+  pmp86PredictRender();
+  pmp86Progress();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", pmp86Build);
+} else {
+  pmp86Build();
+}
+
+/* debug hooks for the smoke test */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.PMP86 = PMP86;
+  module.exports.pmp86Debug = {
+    region: pmp86Region,
+    check: pmp86Check,
+    attack: pmp86Attack,
+    gauntlet: pmp86Gauntlet,
+    cfgByte: pmp86CfgByte,
+    hex: pmp86Hex,
+    open: pmp86Open,
+    state: function () { return pmp86St; }
+  };
+}
+
+})();
+/* end Bench 86 */

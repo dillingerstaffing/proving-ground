@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20261002-pg156">
+<meta name="build-version" content="v20261002-pg157">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
-<meta name="description" content="The Proving Ground: 85 interactive hardware benches, RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs entirely on your device.">
+<meta name="description" content="The Proving Ground: 86 interactive hardware benches, RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs entirely on your device.">
 <link rel="canonical" href="https://dillingerstaffing.github.io/proving-ground/">
 <link rel="preload" href="fonts/space-grotesk-var.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="fonts/ibm-plex-mono-400.woff2" as="font" type="font/woff2" crossorigin>
@@ -15,7 +15,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="The Proving Ground">
 <meta property="og:title" content="The Proving Ground: Working Engineering Benches">
-<meta property="og:description" content="85 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs in the browser.">
+<meta property="og:description" content="86 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft. Free, no account, runs in the browser.">
 <meta property="og:url" content="https://dillingerstaffing.github.io/proving-ground/">
 <meta property="og:image" content="https://dillingerstaffing.github.io/proving-ground/og-card.png">
 <meta property="og:image:width" content="1200">
@@ -27,7 +27,7 @@
 {"@context":"https://schema.org","@type":"WebApplication",
  "name":"The Proving Ground",
  "url":"https://dillingerstaffing.github.io/proving-ground/",
- "description":"85 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft.",
+ "description":"86 interactive hardware benches: RISC-V bring-up, analog and power electronics, bench craft.",
  "applicationCategory":"BrowserApplication","operatingSystem":"Any modern web browser",
  "isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
@@ -824,7 +824,7 @@ body, .deck, .btitle, .filters, .pg-chooser, .theme-toggle {
         <circle class="draw-core" cx="24" cy="24" r="2.6" fill="#0a0c0e"/>
       </svg>
       <div class="head-group">
-        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">85</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;INTERACTIVE,&nbsp;IN&nbsp;BROWSER</span></span></div>
+        <div class="sysstat"><span class="pulse" aria-hidden="true"></span><span><b id="benchCount">86</b>&nbsp;BENCHES<span class="sysstat-tail">&nbsp;&middot;&nbsp;INTERACTIVE,&nbsp;IN&nbsp;BROWSER</span></span></div>
         <button class="hire-btn" type="button" data-brief="general">HIRE CHRIS</button>
         <button class="theme-toggle" type="button" aria-label="Switch to terminal theme" title="Switch theme">
           <span class="theme-toggle-mark" aria-hidden="true"><i></i><i></i></span>
@@ -1312,7 +1312,11 @@ var PG_BENCHES = [
   { section: "analog", n: "85", name: "The Drop Room", btn: "vd85Btn", pill: "tapeout", pillLabel: "ANALOG AND POWER ELECTRONICS",
     desc: "A power cable is a resistor: the load sees the source minus current times the round-trip wire resistance. Work the free rig, then size three runs to hold an 11.40 V floor on the thinnest copper that passes.",
     how: "Call the return-leg trap, work the rig on the worked run, then pick a gauge and run the load on all three trials.",
-    spec: "WIRE DROP \u00B7 3 RUNS \u00B7 12 V RAIL" }
+    spec: "WIRE DROP \u00B7 3 RUNS \u00B7 12 V RAIL" },
+  { section: "arch", n: "86", name: "The PMP Room", btn: "pmp86Btn", pill: "riscv", pillLabel: "RISC-V",
+    desc: "RISC-V Physical Memory Protection on the bench: a real numbered region table with TOR and NAPOT decoding, priority matching, and the L bit. Call six accesses, encode one region by hand, then lock the vault before the malware rewrites it.",
+    how: "Call ALLOW or DENY on six accesses, compute one pmpaddr by hand, set the L bit, then run the four-behavior gauntlet.",
+    spec: "PMP TABLE \u00B7 NAPOT MATH \u00B7 3 TRIALS" }
  ];
 /* Teaching order: the sequence a newcomer should take the benches in.
    The index renders this list top to bottom; the number on each row is its
@@ -1356,6 +1360,7 @@ var PG_TEACH_ORDER = [
   "33",
   "09",
   "83",
+  "86",
   "11",
   "38",
   "13",
@@ -1413,7 +1418,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-10-02-pg156";
+var PG_REV = "2026-10-02-pg157";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
