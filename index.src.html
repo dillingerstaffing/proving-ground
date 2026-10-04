@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20261002-pg157">
+<meta name="build-version" content="v20261004-pg158">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -1254,8 +1254,8 @@ var PG_BENCHES = [
     how: "Ring the free 2-second tick, predict a 750 ms deadline to the tick, hold 2.00 Hz for 10 blinks, then survive the interrupt storm you armed yourself.",
     spec: "MTIME / MTIMECMP \u00B7 3 TRIALS" },
   { section: "arch", n: "71", name: "The Two Guesses", btn: "bpBtn", pill: "riscv", pillLabel: "RISC-V",
-    desc: "A branch predictor makes two guesses: where the branch goes (the BTB) and whether it goes (the direction predictor). Prove the aggregate hides the cause, then read the state trace and name the repair the evidence justifies.",
-    how: "Answer the aggregate honestly, then classify every mispredict from the state trace and pick the repair your classifications justify.",
+    desc: "A branch predictor makes two guesses: where the branch goes (the BTB) and whether it goes (the direction predictor). From the totals alone, fetch redirects and cycles lost, you cannot tell which guess failed: different faults produce the same numbers. Read the state trace and name the repair the evidence justifies.",
+    how: "Answer from the totals first, then classify every mispredict from the state trace and pick the repair your classifications justify.",
     spec: "BTB vs DIRECTION \u00B7 2 STAGES" },
   { section: "craft", n: "72", name: "The Handshake Room", btn: "hsBtn", pill: "oldiron", pillLabel: "BENCH CRAFT",
     desc: "The wire drops, duplicates, and reorders packets, and never warns you. TCP answers with a number on every byte and a receipt for every number: agree the starting numbers first (the handshake), then keep the stream whole by retransmitting only what the receipts say went missing. Call every sequence number yourself, lose a segment on purpose, and convict a broken connection from its wire tap.",
@@ -1418,7 +1418,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-10-02-pg157";
+var PG_REV = "2026-10-04-pg158";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
