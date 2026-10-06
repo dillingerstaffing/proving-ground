@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20261004-pg158">
+<meta name="build-version" content="v20261005-pg159">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -1146,7 +1146,7 @@ var PG_BENCHES = [
     how: "Predict the result byte and the borrow, step the lanes to see why, then call every unsigned comparison.",
     spec: "SUB/BORROW \u00B7 3 TRIALS" },
   { section: "arch", n: "44", name: "The Watchdog Room", btn: "wdBtn", pill: "riscv", pillLabel: "RISC-V",
-    desc: "A frozen machine never calls for help. Meet the watchdog: the hardware countdown that resets the board when software stops proving it is alive. Size the timeout, place the kick, and set the timeout and the early-warning edge.",
+    desc: "A frozen machine never calls for help. Meet the watchdog: the hardware countdown that resets the board when software stops proving it is alive. Size the timeout, place the kick, set the early edge.",
     how: "Pet the watchdog, predict the worst-case loop, then survive the hang, the misplaced kick, and the runaway.",
     spec: "WATCHDOG TIMER \u00B7 3 TRIALS" },
   { section: "arch", n: "45", name: "The Shift Room", btn: "shBtn", pill: "riscv", pillLabel: "RISC-V",
@@ -1418,7 +1418,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-10-04-pg158";
+var PG_REV = "2026-10-05-pg159";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
