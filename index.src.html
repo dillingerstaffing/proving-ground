@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20261008-pg160">
+<meta name="build-version" content="v20261010-pg161">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -1114,7 +1114,7 @@ var PG_BENCHES = [
     how: "Call the duty, set frequency, inductor, and capacitor, run the sim, hold each rail inside its ripple budget.",
     spec: "BUCK VRM \u00B7 3 RAILS" },
   { section: "arch", n: "36", name: "The Division Deck", btn: "dvBtn", pill: "riscv", pillLabel: "RISC-V",
-    desc: "The algorithm real dividers fall back on: a real shift-subtract engine, one quotient bit per cycle. Call every shift across three divisions, do the signed wrapper's job, and meet the two inputs where RISC-V division refuses to trap.",
+    desc: "The algorithm real dividers fall back on: a real shift-subtract engine, one quotient bit per cycle. Call every shift across three divisions, do the signed wrapper's job, and handle the two cases no shift-subtract loop can produce: divide by zero and overflow.",
     how: "Predict each quotient and remainder, call SHIFT or SHIFT-SUBTRACT for every bit, certify all three trials.",
     spec: "DIV HARDWARE \u00B7 3 TRIALS" },
   { section: "analog", n: "37", name: "The Ripple Room", btn: "rlBtn", pill: "oldiron", pillLabel: "ANALOG AND POWER ELECTRONICS",
@@ -1418,7 +1418,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-10-08-pg160";
+var PG_REV = "2026-10-10-pg161";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
