@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20261015-pg162">
+<meta name="build-version" content="v20261025-pg163">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -1003,7 +1003,7 @@ var PG_BENCHES = [
     spec: "REGALLOC \u00B7 CHAITIN-BRIGGS" },
   { section: "arch", n: "08", name: "The RISC-V Playground", btn: "rpBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "The full interactive RISC-V course, as a bench: a real RV32I core in your browser, 10 guided lessons, 8 auto-graded challenges.",
-    how: "Work the lessons, beat the challenges, earn the win.",
+    how: "Work the lessons, pass all 8 challenges.",
     spec: "RV32I CORE \u00B7 10 LESSONS \u00B7 8 CHALLENGES" },
   { section: "arch", n: "09", name: "The Page Walker", btn: "pwBtn", pill: "riscv", pillLabel: "RISC-V",
     desc: "Sv32-style virtual memory on the bench: walk real two-level page tables, decode PTE flags, survive superpages, raise page faults like xv6 does.",
@@ -1418,7 +1418,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-10-15-pg162";
+var PG_REV = "2026-10-25-pg163";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
