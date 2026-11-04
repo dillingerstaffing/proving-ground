@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="build-version" content="v20261029-pg164">
+<meta name="build-version" content="v20261103-pg165">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Proving Ground: Working Engineering Benches</title>
@@ -1290,7 +1290,7 @@ var PG_BENCHES = [
     how: "Predict the tip temperature, work the cold-junction math on the live probe, then certify three junctions.",
     spec: "TYPE K \u00B7 CJC \u00B7 3 TRIALS" },
   { section: "analog", n: "80", name: "The Opto Room", btn: "op80Btn", pill: "tapeout", pillLabel: "ANALOG AND POWER ELECTRONICS",
-    desc: "Isolation on the bench: an LED drives a phototransistor across a 3750 V gap, no copper between the sides. Size the LED resistor against CTR aging, outlast the mushy middle, and prove a 1 kV surge never reaches the output.",
+    desc: "Isolation on the bench: an LED drives a phototransistor across a 3750 V gap, no copper between the sides. Size the LED resistor against CTR aging, keep the output saturated instead of stuck in the 0.4 to 4.5 V band that is no logic level, and prove a 1 kV surge never reaches the output.",
     how: "Predict the output before the math, work the live bench against the CTR selector, fire the surge, certify all three trials.",
     spec: "OPTO ISOLATION \u00B7 CTR AGING \u00B7 1 KV SURGE" },
   { section: "craft", n: "81", name: "The Battery Room", btn: "bt81Btn", pill: "oldiron", pillLabel: "BENCH CRAFT",
@@ -1418,7 +1418,7 @@ var pgLastPoint = null;
 var pgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 /* Revision stamp for the bench-index title block. Real data: the date of
    the precision-terminal redesign pass. */
-var PG_REV = "2026-10-29-pg164";
+var PG_REV = "2026-11-03-pg165";
 
 function pgDomainDef(id) {
   for (var i = 0; i < PG_SECTIONS.length; i++) {
